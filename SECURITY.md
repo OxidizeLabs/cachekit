@@ -10,7 +10,7 @@
 
 ## Reporting a Vulnerability
 
-We take security and correctness issues in **cachekit** seriously.  
+We take security and correctness issues in **cachekit** seriously.
 If you discover a potential vulnerability, soundness issue, or misuse of `unsafe` code, please report it responsibly.
 
 ### How to Report
@@ -19,14 +19,14 @@ If you discover a potential vulnerability, soundness issue, or misuse of `unsafe
 
 Instead, report privately via email:
 
-**ferrite.db@gmail.com**  
+**ferrite.db@gmail.com**
 (or the maintainer contact listed in the repository)
 
 ### What to Include
 
 Please include as much of the following as possible:
 
-- Type of issue  
+- Type of issue
   (e.g. soundness bug, data race, undefined behavior, logic error, DoS via pathological inputs)
 - Affected source file(s) and module(s)
 - Git tag / branch / commit hash

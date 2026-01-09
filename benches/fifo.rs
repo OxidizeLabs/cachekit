@@ -1,6 +1,6 @@
-use cachekit::traits::CoreCache;
-use criterion::{criterion_group, criterion_main, Criterion};
 use cachekit::policy::fifo::FIFOCache;
+use cachekit::traits::CoreCache;
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_fifo_insert_get(c: &mut Criterion) {
     c.bench_function("fifo_insert_get", |b| {

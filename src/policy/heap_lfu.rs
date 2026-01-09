@@ -232,10 +232,10 @@
 //! - **Memory overhead**: ~3x standard LFU due to three data structures
 //! - **Reverse wrapper**: Converts max-heap to min-heap for LFU semantics
 
+use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
-use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 
 /// Heap-based LFU Cache with O(log n) eviction.
 ///
@@ -508,8 +508,8 @@ where
 
 #[cfg(test)]
 mod heap_lfu_tests {
-    use crate::policy::lfu::LFUCache;
     use super::*;
+    use crate::policy::lfu::LFUCache;
 
     #[test]
     fn test_heap_lfu_basic_operations() {

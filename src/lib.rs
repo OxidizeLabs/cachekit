@@ -3,8 +3,8 @@
 //! See `docs/design.md` for internal architecture and invariants.
 
 pub mod error;
-pub mod policy;
 pub mod manager;
+pub mod policy;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
