@@ -427,23 +427,6 @@ pub trait CacheStats {
     fn reset_stats(&mut self);
 }
 
-/// Database-specific cache operations
-pub trait DatabaseCache<K, V>: CoreCache<K, V> {
-    /// Bulk eviction for memory pressure scenarios
-    fn evict_batch(&mut self, target_size: usize) -> Vec<(K, V)>;
-
-    /// Check if the cache is under memory pressure
-    fn is_under_pressure(&self) -> bool {
-        self.len() as f64 / self.capacity() as f64 > 0.9
-    }
-
-    /// Get memory usage in bytes (approximate)
-    fn memory_usage_bytes(&self) -> usize;
-
-    /// Prepare for shutdown (flush pending operations, etc.)
-    fn prepare_shutdown(&mut self);
-}
-
 /// High-level cache tier management
 pub trait CacheTierManager<K, V> {
     type HotCache: LRUCacheTrait<K, V> + ConcurrentCache;
