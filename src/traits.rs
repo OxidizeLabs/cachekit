@@ -22,14 +22,14 @@
 //!                    ┌───────────────────────────┼───────────────────────────┐
 //!                    │                           │                           │
 //!                    ▼                           ▼                           ▼
-//!   ┌────────────────────────────┐   ┌─────────────────────────┐   ┌───────────────────────┐
-//!   │   FIFOCacheTrait<K, V>     │   │   MutableCache<K, V>    │   │  DatabaseCache<K, V>  │
-//!   │                            │   │                         │   │                       │
-//!   │  pop_oldest() → (K, V)     │   │  remove(&K) → Option<V> │   │  evict_batch(n)       │
-//!   │  peek_oldest() → (&K, &V)  │   │  remove_batch(&[K])     │   │  is_under_pressure()  │
-//!   │  pop_oldest_batch(n)       │   │                         │   │  memory_usage_bytes() │
-//!   │  age_rank(&K) → usize      │   └───────────┬─────────────┘   │  prepare_shutdown()   │
-//!   │                            │               │                 └───────────────────────┘
+//!   ┌────────────────────────────┐   ┌─────────────────────────┐
+//!   │   FIFOCacheTrait<K, V>     │   │   MutableCache<K, V>    │
+//!   │                            │   │                         │
+//!   │  pop_oldest() → (K, V)     │   │  remove(&K) → Option<V> │
+//!   │  peek_oldest() → (&K, &V)  │   │  remove_batch(&[K])     │
+//!   │  pop_oldest_batch(n)       │   │                         │
+//!   │  age_rank(&K) → usize      │   └───────────┬─────────────┘
+//!   │                            │               │
 //!   │  No arbitrary removal!     │               │
 //!   └────────────────────────────┘               │
 //!                                    ┌───────────┴───────────┐
@@ -95,7 +95,6 @@
 //! | `LRUKCacheTrait`     | `MutableCache`  | LRU-K with K-distance tracking       |
 //! | `ConcurrentCache`    | `Send + Sync`   | Marker for thread-safe caches        |
 //! | `CacheStats`         | -               | Hit ratio and monitoring             |
-//! | `DatabaseCache`      | `CoreCache`     | Database-specific operations         |
 //! | `CacheTierManager`   | -               | Multi-tier cache management          |
 //! | `CacheFactory`       | -               | Cache instance creation              |
 //! | `AsyncCacheFuture`   | `Send + Sync`   | Future async operation support       |
@@ -155,14 +154,6 @@
 //!   │   reset_stats()                                                         │
 //!   └─────────────────────────────────────────────────────────────────────────┘
 //!
-//!   ┌─────────────────────────────────────────────────────────────────────────┐
-//!   │ DatabaseCache                                                           │
-//!   │                                                                         │
-//!   │   evict_batch(target_size) → Vec<(K, V)>   Bulk eviction                │
-//!   │   is_under_pressure()      → bool          len/capacity > 0.9           │
-//!   │   memory_usage_bytes()     → usize         Approximate memory usage     │
-//!   │   prepare_shutdown()                       Flush pending operations     │
-//!   └─────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! ## Cache Tier Management
@@ -264,11 +255,9 @@
 //! ## Implementation Notes
 //!
 //! - **Trait Bounds**: `CoreCache` has no bounds on K, V; implementations add as needed
-//! - **Default Implementations**: `is_empty()`, `total_misses()`, `is_under_pressure()`
+//! - **Default Implementations**: `is_empty()`, `total_misses()`, `remove_batch()`, `pop_oldest_batch()`
 //! - **Batch Operations**: Default implementations loop over single operations
 //! - **Async Support**: `AsyncCacheFuture` prepared for Phase 2 async-trait integration
-
-use std::hash::Hash;
 
 /// Core cache operations that all caches support.
 ///
@@ -417,7 +406,7 @@ pub trait CacheStats {
 
     /// Total number of cache misses
     fn total_misses(&self) -> u64 {
-        self.total_gets() - self.total_hits()
+        self.total_gets().saturating_sub(self.total_hits())
     }
 
     /// Total number of evictions
@@ -515,6 +504,9 @@ mod tests {
     impl CoreCache<i32, String> for MockFIFOCache {
         fn insert(&mut self, key: i32, value: String) -> Option<String> {
             // Simple mock implementation
+            if let Some((_, existing)) = self.data.iter_mut().find(|(k, _)| *k == key) {
+                return Some(std::mem::replace(existing, value));
+            }
             if self.data.len() >= self.capacity {
                 self.data.remove(0);
             }
@@ -595,5 +587,102 @@ mod tests {
         assert_eq!(config.capacity, 500);
         assert!(config.enable_stats);
         assert!(config.prealloc_memory); // from default
+    }
+
+    struct MockStats {
+        gets: u64,
+        hits: u64,
+        evictions: u64,
+    }
+
+    impl CacheStats for MockStats {
+        fn hit_ratio(&self) -> f64 {
+            debug_assert!(
+                self.hits <= self.gets,
+                "total_hits cannot exceed total_gets"
+            );
+            if self.gets == 0 {
+                0.0
+            } else {
+                self.hits as f64 / self.gets as f64
+            }
+        }
+
+        fn total_gets(&self) -> u64 {
+            self.gets
+        }
+
+        fn total_hits(&self) -> u64 {
+            self.hits
+        }
+
+        fn total_misses(&self) -> u64 {
+            debug_assert!(
+                self.hits <= self.gets,
+                "total_hits cannot exceed total_gets"
+            );
+            self.total_gets().saturating_sub(self.total_hits())
+        }
+
+        fn total_evictions(&self) -> u64 {
+            self.evictions
+        }
+
+        fn reset_stats(&mut self) {
+            self.gets = 0;
+            self.hits = 0;
+            self.evictions = 0;
+        }
+    }
+
+    #[test]
+    fn test_cache_stats_total_misses_clamps() {
+        let stats = MockStats {
+            gets: 5,
+            hits: 3,
+            evictions: 0,
+        };
+
+        assert_eq!(stats.total_misses(), 2);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn test_cache_stats_total_misses_clamps_invalid_counts() {
+        let stats = MockStats {
+            gets: 1,
+            hits: 2,
+            evictions: 0,
+        };
+
+        assert_eq!(stats.total_misses(), 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "total_hits cannot exceed total_gets")]
+    fn test_cache_stats_total_misses_debug_asserts_invalid_counts() {
+        let stats = MockStats {
+            gets: 1,
+            hits: 2,
+            evictions: 0,
+        };
+
+        let _ = stats.total_misses();
+    }
+
+    #[test]
+    fn test_core_cache_insert_returns_previous_value() {
+        let mut cache = MockFIFOCache {
+            data: Vec::new(),
+            capacity: 2,
+        };
+
+        assert_eq!(cache.insert(1, "first".to_string()), None);
+        assert_eq!(
+            cache.insert(1, "second".to_string()),
+            Some("first".to_string())
+        );
+        assert_eq!(cache.get(&1), Some(&"second".to_string()));
     }
 }
