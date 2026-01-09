@@ -87,7 +87,7 @@ Before creating bug reports, please check existing issues to avoid duplicates. W
 - **Clear title** describing the issue
 - **Steps to reproduce** the behavior
 - **Expected behavior** vs. actual behavior
-- **Environment details** (OS, Rust version, Ferrite version)
+- **Environment details** (OS, Rust version, cachekit version)
 - **Relevant logs or error messages**
 - **Minimal reproduction case** if possible
 
@@ -256,8 +256,8 @@ All contributors will be recognized in release notes. Significant contributions 
 
 ## License
 
-By contributing to Ferrite, you agree that your contributions will be licensed under the same terms as the project (MIT or Apache-2.0, at your option).
+By contributing to cachekit, you agree that your contributions will be licensed under the same terms as the project (MIT or Apache-2.0, at your option).
 
 ---
 
-Thank you for contributing to Ferrite! Your efforts help make database technology more accessible and reliable.
+Thank you for contributing to cachekit! Your efforts help make database technology more accessible and reliable.

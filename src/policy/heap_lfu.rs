@@ -361,7 +361,7 @@ where
     }
 }
 
-// Implementation of CoreCache trait for compatibility with Ferrite cache system
+// Implementation of CoreCache trait
 impl<K, V> CoreCache<K, V> for HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
