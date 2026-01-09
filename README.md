@@ -31,12 +31,11 @@ cachekit = { git = "https://github.com/OxidizeLabs/cachekit" }
 ```
 ## example
 ```rust
-use cachekit::policy::lru::LruCache;
-use std::time::Duration;
+use cachekit::policy::lru_k::LRUKCache;
 
 fn main() {
     // Create an LRU cache with a capacity of 100 entries
-    let mut cache = LruCache::new(100);
+    let mut cache = LRUKCache::new(2);
 
     // Insert an item
     cache.insert("key1", "value1");
@@ -45,8 +44,5 @@ fn main() {
     if let Some(value) = cache.get(&"key1") {
         println!("Got from cache: {}", value);
     }
-
-    // TTL example (if supported)
-    // cache.insert_with_ttl("key2", "value2", Duration::from_secs(60));
 }
 ```

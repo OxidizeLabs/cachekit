@@ -965,17 +965,6 @@ where
     }
 }
 
-// Database-specific type aliases for common usage patterns
-/// Type alias for buffer pool cache (PageId -> Page)
-/// Optimized for database buffer pool workloads
-pub type BufferPoolCache<V> = ConcurrentLRUCache<u32, V>; // PageId is typically u32
-
-/// Type alias for generic page cache
-pub type PageCache<K, V> = ConcurrentLRUCache<K, V>;
-
-// Re-export core types for backward compatibility and flexibility
-pub type LRUCache<K, V> = LRUCore<K, V>; // For single-threaded usage
-
 #[cfg(test)]
 mod tests {
     use super::*;
