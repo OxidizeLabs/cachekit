@@ -14,11 +14,9 @@ categories = ["data-structures", "caching"]
 default = []
 manager = []
 metrics = []          # enables instrumentation layer
-otel = ["metrics"]    # optional: OTEL integration (if you add it later)
 
 [dependencies]
-# keep deps lean; add only if needed
-parking_lot = "0.12"   # optional if you want faster locks in your crate
+parking_lot = "0.12"
 
 [dev-dependencies]
 criterion = "0.8"
