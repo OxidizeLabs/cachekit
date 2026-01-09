@@ -19,7 +19,7 @@ If you discover a potential vulnerability, soundness issue, or misuse of `unsafe
 
 Instead, report privately via email:
 
-**cachekit.security@gmail.com**  
+**ferrite.db@gmail.com**  
 (or the maintainer contact listed in the repository)
 
 ### What to Include
