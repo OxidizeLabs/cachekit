@@ -2,7 +2,6 @@
 //!
 //! See `docs/design.md` for internal architecture and invariants.
 
-pub mod error;
 pub mod manager;
 pub mod policy;
 

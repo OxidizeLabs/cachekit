@@ -17,6 +17,7 @@ metrics = []          # enables instrumentation layer
 
 [dependencies]
 parking_lot = "0.12"
+log = "0.4.29"
 
 [dev-dependencies]
 criterion = "0.8"
