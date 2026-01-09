@@ -271,12 +271,13 @@
 //! - **Update Semantics**: Updating existing key preserves insertion position
 //! - **Zero Capacity**: Supported - rejects all insertions
 
-use std::cell::Cell;
+use crate::metrics::metrics_impl::CacheMetrics;
+use crate::metrics::snapshot::CacheMetricsSnapshot;
+use crate::traits::{CoreCache, FIFOCacheTrait};
 use std::collections::{HashMap, VecDeque, hash_map};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
-use crate::traits::{CoreCache, FIFOCacheTrait};
 
 /// FIFO (First In, First Out) Cache.
 ///
@@ -288,7 +289,7 @@ where
     K: Eq + Hash,
 {
     inner: FIFOCacheInner<K, V>,
-    metrics: FifoMetrics,
+    metrics: CacheMetrics,
 }
 
 #[derive(Debug)]
@@ -300,117 +301,6 @@ where
     cache: HashMap<Arc<K>, Arc<V>>,
     insertion_order: VecDeque<Arc<K>>, // Tracks the order of insertion
 }
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FifoMetricsSnapshot {
-    pub get_calls: u64,
-    pub get_hits: u64,
-    pub get_misses: u64,
-
-    pub insert_calls: u64,
-    pub insert_updates: u64,
-    pub insert_new: u64,
-
-    pub evict_calls: u64,
-    pub evicted_entries: u64,
-    pub stale_skips: u64, // queue entries popped that were already removed from map
-    pub evict_scan_steps: u64, // how many pop_front iterations inside eviction
-
-    pub pop_oldest_calls: u64,
-    pub pop_oldest_found: u64,
-    pub pop_oldest_empty_or_stale: u64,
-
-    pub peek_oldest_calls: u64,
-    pub peek_oldest_found: u64,
-
-    pub age_rank_calls: u64,
-    pub age_rank_found: u64,
-    pub age_rank_scan_steps: u64,
-
-    // gauges captured at snapshot time
-    pub cache_len: usize,
-    pub insertion_order_len: usize,
-    pub capacity: usize,
-}
-
-#[derive(Debug)]
-struct FifoMetrics {
-    get_calls: u64,
-    get_hits: u64,
-    get_misses: u64,
-    insert_calls: u64,
-    insert_updates: u64,
-    insert_new: u64,
-    evict_calls: u64,
-    evicted_entries: u64,
-    stale_skips: u64,
-    evict_scan_steps: u64,
-    pop_oldest_calls: u64,
-    pop_oldest_found: u64,
-    pop_oldest_empty_or_stale: u64,
-    peek_oldest_calls: MetricsCell,
-    peek_oldest_found: MetricsCell,
-    age_rank_calls: MetricsCell,
-    age_rank_scan_steps: MetricsCell,
-    age_rank_found: MetricsCell,
-}
-
-impl FifoMetrics {
-    fn new() -> FifoMetrics {
-        Self {
-            get_calls: 0,
-            get_hits: 0,
-            get_misses: 0,
-            insert_calls: 0,
-            insert_updates: 0,
-            insert_new: 0,
-            evict_calls: 0,
-            evicted_entries: 0,
-            stale_skips: 0,
-            evict_scan_steps: 0,
-            pop_oldest_calls: 0,
-            pop_oldest_found: 0,
-            pop_oldest_empty_or_stale: 0,
-            peek_oldest_calls: MetricsCell::new(),
-            peek_oldest_found: MetricsCell::new(),
-            age_rank_calls: MetricsCell::new(),
-            age_rank_scan_steps: MetricsCell::new(),
-            age_rank_found: MetricsCell::new(),
-        }
-    }
-}
-
-/// A metrics-only cell.
-///
-/// # Safety
-/// This type is only safe if all accesses are externally synchronized.
-/// In this system, it is protected by an RwLock at a higher level.
-#[repr(transparent)]
-#[derive(Debug)]
-struct MetricsCell(Cell<u64>);
-
-impl MetricsCell {
-    #[inline]
-    fn new() -> Self {
-        Self(Cell::new(0))
-    }
-
-    #[inline]
-    fn get(&self) -> u64 {
-        self.0.get()
-    }
-
-    #[inline]
-    fn incr(&self) {
-        self.0.set(self.0.get() + 1);
-    }
-}
-
-// SAFETY:
-// All access to MetricsCell is externally synchronized by an RwLock.
-// Metrics are observational and do not affect correctness.
-unsafe impl Sync for MetricsCell {}
-unsafe impl Send for MetricsCell {}
 
 impl<K, V> FIFOCacheInner<K, V>
 where
@@ -434,7 +324,7 @@ where
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: FIFOCacheInner::new(capacity),
-            metrics: FifoMetrics::new(),
+            metrics: CacheMetrics::new(),
         }
     }
 
@@ -464,8 +354,8 @@ where
 
     /// Returns snapshot metrics from the cache
     /// Can be used to help understand the state of the cache
-    pub fn metrics_snapshot(&self) -> FifoMetricsSnapshot {
-        FifoMetricsSnapshot {
+    pub fn metrics_snapshot(&self) -> CacheMetricsSnapshot {
+        CacheMetricsSnapshot {
             get_calls: self.metrics.get_calls,
             get_hits: self.metrics.get_hits,
             get_misses: self.metrics.get_misses,
@@ -683,14 +573,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use crate::policy::fifo::FIFOCache;
     use crate::traits::{CoreCache, FIFOCacheTrait};
+    use std::collections::HashSet;
 
     // Basic FIFO Behavior Tests
     mod basic_behavior {
-        use crate::traits::FIFOCacheTrait;
         use super::*;
+        use crate::traits::FIFOCacheTrait;
 
         #[test]
         fn test_basic_fifo_insertion_and_retrieval() {
@@ -887,8 +777,6 @@ mod tests {
             assert_eq!(cache.get(&"key2"), Some(&"value2"));
             assert_eq!(cache.get(&"key3"), Some(&"value3"));
             assert_eq!(cache.len(), 3);
-
-
 
             assert_eq!(cache.metrics.insert_new, 3);
             assert_eq!(cache.metrics.get_calls, 3);
