@@ -1,0 +1,85 @@
+repos:
+  # Pre-commit hooks for general code quality
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=1024']
+      - id: mixed-line-ending
+
+  # Rust-specific hooks
+  - repo: local
+    hooks:
+      # Format code with rustfmt
+      - id: cargo-fmt
+        name: cargo fmt
+        description: Format Rust code with rustfmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Lint with clippy
+      - id: cargo-clippy
+        name: cargo clippy
+        description: Lint Rust code with clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Check compilation
+      - id: cargo-check
+        name: cargo check
+        description: Check that Rust code compiles
+        entry: cargo check --all-targets --all-features
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # Run unit tests (fast)
+      # - id: cargo-test
+      #   name: cargo test
+      #   description: Run Rust unit tests
+      #   entry: cargo test --lib --bins --tests
+      #   language: system
+      #   types: [rust]
+      #   pass_filenames: false
+
+  # Security audit (optional, can be slow)
+  - repo: local
+    hooks:
+      - id: cargo-audit
+        name: cargo audit
+        description: Audit Rust dependencies for security vulnerabilities
+        entry: bash
+        args:
+          - -c
+          - |
+            if command -v cargo-audit >/dev/null 2>&1; then
+              cargo audit
+            else
+              echo "cargo-audit not installed, skipping security check"
+            fi
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]  # Only run on push, not commit
+
+# Configuration for specific hooks
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit.com hooks
+
+    for more information, see https://pre-commit.ci
+  autofix_prs: true
+  autoupdate_branch: ''
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: []
+  submodules: false

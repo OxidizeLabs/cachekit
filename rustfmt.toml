@@ -1,0 +1,43 @@
+# cachekit rustfmt configuration
+# See: https://rust-lang.github.io/rustfmt/
+
+edition = "2024"
+
+# Line width
+max_width = 100
+use_small_heuristics = "Default"
+
+# Imports
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Comments
+wrap_comments = false
+normalize_comments = false
+normalize_doc_attributes = true
+
+# Formatting
+newline_style = "Auto"
+hard_tabs = false
+tab_spaces = 4
+
+# Function signatures
+fn_params_layout = "Tall"
+
+# Match arms
+match_block_trailing_comma = true
+
+# Struct/enum formatting
+struct_lit_single_line = true
+enum_discrim_align_threshold = 20
+
+# Control flow
+format_code_in_doc_comments = true
+format_macro_matchers = true
+format_strings = false
+
+# Error recovery
+error_on_line_overflow = false
+error_on_unformatted = false

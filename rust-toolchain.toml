@@ -1,0 +1,7 @@
+# cachkit Rust toolchain configuration
+# This ensures all contributors use the same Rust version
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
