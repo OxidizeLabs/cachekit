@@ -2,91 +2,148 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-
-## Reporting a Vulnerability
-
-We take security vulnerabilities seriously. If you discover a security issue in Ferrite, please report it responsibly.
-
-### How to Report
-
-**Please do NOT report security vulnerabilities through public GitHub issues.**
-
-Instead, please report them via email to: **ferrite.db@gmail.com**
-
-### What to Include
-
-Please include as much of the following information as possible:
-
-- Type of vulnerability (e.g., buffer overflow, SQL injection, privilege escalation)
-- Full paths of source file(s) related to the vulnerability
-- Location of the affected source code (tag/branch/commit or direct URL)
-- Step-by-step instructions to reproduce the issue
-- Proof-of-concept or exploit code (if possible)
-- Impact of the issue, including how an attacker might exploit it
-
-### Response Timeline
-
-- **Initial Response**: Within 48 hours, we will acknowledge receipt of your report
-- **Status Update**: Within 7 days, we will provide an initial assessment
-- **Resolution**: We aim to resolve critical vulnerabilities within 30 days
-
-### Disclosure Policy
-
-- We will work with you to understand and resolve the issue quickly
-- We will keep you informed of our progress
-- We will credit you in the security advisory (unless you prefer to remain anonymous)
-- We ask that you give us reasonable time to address the issue before public disclosure
-
-### Safe Harbor
-
-We consider security research conducted in accordance with this policy to be:
-
-- Authorized and lawful
-- Helpful to the security of our users
-- Conducted in good faith
-
-We will not pursue legal action against researchers who:
-
-- Follow this responsible disclosure policy
-- Make a good faith effort to avoid privacy violations and data destruction
-- Do not exploit vulnerabilities beyond what is necessary for testing
-
-## Security Best Practices for Users
-
-### Production Deployment
-
-1. **Network Security**: Run Ferrite behind a firewall; do not expose directly to the internet without proper authentication
-2. **Authentication**: Enable authentication when available; use strong credentials
-3. **Encryption**: Use TLS for network connections when available
-4. **Updates**: Keep Ferrite updated to the latest version
-5. **Backups**: Regularly backup your data and test recovery procedures
-6. **Monitoring**: Monitor logs for suspicious activity
-
-### Development
-
-1. **Dependencies**: Run `cargo audit` regularly to check for vulnerable dependencies
-2. **Secrets**: Never commit credentials or secrets to version control
-3. **Testing**: Test security-sensitive code paths thoroughly
-
-## Known Security Considerations
-
-As a database system, Ferrite handles sensitive data. Current security considerations:
-
-- **Memory Safety**: Ferrite is written in Rust, providing memory safety guarantees
-- **No Unsafe in Critical Paths**: We avoid `unsafe` code in security-critical areas
-- **Input Validation**: SQL parsing includes input validation to prevent injection
-
-## Security Updates
-
-Security updates will be announced through:
-
-- GitHub Security Advisories
-- Release notes
-- The project's security mailing list (when established)
+| Version | Supported |
+|--------|-----------|
+| 0.1.x  | ✔️        |
 
 ---
 
-Thank you for helping keep Ferrite and its users safe!
+## Reporting a Vulnerability
+
+We take security and correctness issues in **cachekit** seriously.  
+If you discover a potential vulnerability, soundness issue, or misuse of `unsafe` code, please report it responsibly.
+
+### How to Report
+
+**Please do NOT report security issues via public GitHub issues.**
+
+Instead, report privately via email:
+
+**cachekit.security@gmail.com**  
+(or the maintainer contact listed in the repository)
+
+### What to Include
+
+Please include as much of the following as possible:
+
+- Type of issue  
+  (e.g. soundness bug, data race, undefined behavior, logic error, DoS via pathological inputs)
+- Affected source file(s) and module(s)
+- Git tag / branch / commit hash
+- Minimal reproduction steps or test case
+- Explanation of the impact:
+    - incorrect eviction
+    - memory safety violation
+    - violation of documented invariants
+    - performance degradation exploitable by input patterns
+- Proof-of-concept code, if available
+
+---
+
+## Response Timeline
+
+- **Acknowledgement**: within 48 hours
+- **Initial assessment**: within 7 days
+- **Fix or mitigation plan**: as soon as practical, with priority given to:
+    1. soundness or memory safety issues
+    2. data races or `unsafe` misuse
+    3. correctness bugs with security implications
+
+---
+
+## Disclosure Policy
+
+- We will coordinate privately to understand and resolve the issue
+- We will keep reporters informed of progress
+- We will credit reporters in release notes or advisories (unless anonymity is requested)
+- We ask for reasonable time to address the issue before public disclosure
+
+---
+
+## Safe Harbor
+
+Security research conducted under this policy is considered:
+
+- Authorized and welcome
+- Performed in good faith
+- Beneficial to users of the crate
+
+We will not pursue legal action against researchers who:
+
+- Follow responsible disclosure
+- Avoid unnecessary data corruption or denial of service
+- Do not exploit issues beyond what is needed to demonstrate impact
+
+---
+
+## Security Model and Scope
+
+### What cachekit *is*
+
+- An **in-process Rust library**
+- Provides cache policies (FIFO/LRU/etc.) and optional tiering
+- Does **not** perform IO, networking, authentication, or encryption
+- Does **not** manage persistence or durability
+
+### What cachekit *does not protect against*
+
+- Attacks on host applications
+- Malicious callers with arbitrary code execution
+- Logic bugs introduced by incorrect integration
+- Misuse outside documented invariants
+
+---
+
+## Security-Relevant Design Considerations
+
+### Memory Safety
+
+- cachekit is written in Rust and relies on Rust’s memory safety guarantees
+- `unsafe` code is used **sparingly and intentionally**, primarily for:
+    - performance-critical metrics with external synchronization
+- All `unsafe` blocks are documented with explicit invariants
+
+### Concurrency
+
+- Thread safety is achieved through **external synchronization**
+- Some internal components assume:
+    - exclusive access via `Mutex` / `RwLock`
+    - no concurrent mutation without higher-level locking
+- Violating these assumptions is considered undefined behavior
+
+### Denial of Service Considerations
+
+- Certain cache policies have O(n) paths (e.g. scans for eviction or ranking)
+- Adversarial or pathological access patterns may degrade performance
+- These are documented and treated as **correctness-preserving but performance-sensitive** behaviors
+
+---
+
+## Guidance for Users
+
+### Safe Integration
+
+- Respect documented locking and concurrency requirements
+- Do not share cache instances across threads without synchronization
+- Avoid holding locks across unbounded or user-controlled work
+
+### Development Best Practices
+
+- Run `cargo audit` regularly
+- Enable `clippy` and `-D warnings`
+- Review `unsafe` blocks carefully when modifying internals
+- Add regression tests for any discovered correctness or soundness issue
+
+---
+
+## Security Updates
+
+Security-relevant fixes will be communicated via:
+
+- GitHub Security Advisories
+- Release notes
+- Changelog entries
+
+---
+
+Thank you for helping keep **cachekit** correct, sound, and dependable.
