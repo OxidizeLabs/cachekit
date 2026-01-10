@@ -22,7 +22,7 @@
 //!   │   │  │ page_4  │  (data,  7)  ← Warm: moderate accesses            │   │ │
 //!   │   │  └─────────┴───────────────────────────────────────────────────┘   │ │
 //!   │   │                                                                    │ │
-//!   │   │  Eviction: O(n) scan to find minimum frequency                     │ │
+//!   │   │  Eviction: O(1) bucket pop using min_freq                           │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   capacity: usize  (maximum entries)                                     │
@@ -70,18 +70,18 @@
 //!   │ Cache at capacity?                                                     │
 //!   │                                                                        │
 //!   │   NO  → Insert new entry with frequency = 1                            │
-//!   │   YES → Find and evict LFU item (O(n) scan)                            │
+//!   │   YES → Find and evict LFU item (O(1) bucket pop)                      │
 //!   └────────────────────────────────────────────────────────────────────────┘
 //!        │
 //!        ▼ (capacity reached)
 //!   ┌────────────────────────────────────────────────────────────────────────┐
-//!   │ LFU Eviction (O(n)):                                                   │
+//!   │ LFU Eviction (O(1)):                                                   │
 //!   │                                                                        │
-//!   │   1. Scan all entries to find minimum frequency                        │
-//!   │   2. Remove first entry with minimum frequency                         │
+//!   │   1. Use min_freq to select the lowest bucket                          │
+//!   │   2. Pop the LRU entry in that bucket                                  │
 //!   │   3. Insert new entry with frequency = 1                               │
 //!   │                                                                        │
-//!   │   Tie-breaking: HashMap iteration order (non-deterministic)            │
+//!   │   Tie-breaking: LRU order within the lowest-frequency bucket           │
 //!   └────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -119,7 +119,8 @@
 //! | Component        | Description                                        |
 //! |------------------|----------------------------------------------------|
 //! | `LFUCache<K, V>` | Main cache struct                                  |
-//! | `cache`          | `HashMap<K, (V, usize)>` storing (value, freq)     |
+//! | `index`          | `HashMap<K, usize>` to slot indices                |
+//! | `freq_lists`     | Per-frequency LRU lists                            |
 //! | `capacity`       | Maximum number of entries                          |
 //!
 //! ## Core Operations (CoreCache + MutableCache)
@@ -127,7 +128,7 @@
 //! | Method           | Complexity | Description                              |
 //! |------------------|------------|------------------------------------------|
 //! | `new(capacity)`  | O(1)       | Create cache with given capacity         |
-//! | `insert(k, v)`   | O(n)*      | Insert/update, may trigger O(n) eviction |
+//! | `insert(k, v)`   | O(1)*      | Insert/update, may trigger O(1) eviction |
 //! | `get(&k)`        | O(1)       | Get value, increments frequency          |
 //! | `contains(&k)`   | O(1)       | Check if key exists                      |
 //! | `remove(&k)`     | O(1)       | Remove entry by key                      |
@@ -139,8 +140,8 @@
 //!
 //! | Method                   | Complexity | Description                       |
 //! |--------------------------|------------|-----------------------------------|
-//! | `pop_lfu()`              | O(n)       | Remove and return LFU item        |
-//! | `peek_lfu()`             | O(n)       | Peek at LFU item without removing |
+//! | `pop_lfu()`              | O(1)       | Remove and return LFU item        |
+//! | `peek_lfu()`             | O(1)       | Peek at LFU item without removing |
 //! | `frequency(&k)`          | O(1)       | Get frequency count for key       |
 //! | `reset_frequency(&k)`    | O(1)       | Reset frequency to 1              |
 //! | `increment_frequency(&k)`| O(1)       | Manually increment frequency      |
@@ -151,9 +152,9 @@
 //! |------------------------|------------|------------------------------------|
 //! | `get`                  | O(1)       | HashMap lookup + freq increment    |
 //! | `insert` (no eviction) | O(1)       | HashMap insert                     |
-//! | `insert` (eviction)    | O(n)       | Scans all entries for min freq     |
-//! | `pop_lfu`              | O(n)       | Scans all entries                  |
-//! | `peek_lfu`             | O(n)       | Scans all entries                  |
+//! | `insert` (eviction)    | O(1)       | Bucket pop via min_freq            |
+//! | `pop_lfu`              | O(1)       | Bucket pop via min_freq            |
+//! | `peek_lfu`             | O(1)       | Tail lookup in min_freq bucket     |
 //! | Per-entry overhead     | ~24 bytes  | Key + value + usize + HashMap      |
 //!
 //! ## Trade-offs
@@ -161,13 +162,13 @@
 //! | Aspect           | Pros                              | Cons                            |
 //! |------------------|-----------------------------------|---------------------------------|
 //! | Hot Item Retain  | Keeps frequently accessed items   | Cold start problem              |
-//! | Eviction Quality | Good for stable access patterns   | O(n) eviction scan              |
+//! | Eviction Quality | Good for stable access patterns   | O(1) eviction                    |
 //! | Memory           | Single HashMap, simple structure  | No frequency decay/aging        |
 //! | Simplicity       | Easy to understand and debug      | Non-deterministic tie-breaking  |
 //!
 //! ## Limitations
 //!
-//! 1. **O(n) LFU Operations**: `pop_lfu()` and `peek_lfu()` scan all entries
+//! 1. **Bucketed LFU**: `pop_lfu()` and `peek_lfu()` use the min_freq bucket
 //! 2. **Cold Start Problem**: New items have frequency 1, easily evicted
 //! 3. **No Aging**: Old frequent items stay forever unless manually reset
 //! 4. **Tie-Breaking**: Non-deterministic when multiple items have same frequency
@@ -213,12 +214,12 @@
 //! cache.increment_frequency(&"key2".to_string()); // freq: 1 → 2
 //! cache.reset_frequency(&"key1".to_string());     // freq: 3 → 1
 //!
-//! // Peek at LFU candidate (O(n) scan)
+//! // Peek at LFU candidate (O(1) bucket pop)
 //! if let Some((key, value)) = cache.peek_lfu() {
 //!     println!("Next victim: {} = {}", key, value);
 //! }
 //!
-//! // Evict LFU item (O(n) scan)
+//! // Evict LFU item (O(1) bucket pop)
 //! if let Some((key, value)) = cache.pop_lfu() {
 //!     println!("Evicted: {} = {}", key, value);
 //! }
@@ -238,20 +239,20 @@
 //!
 //! | Policy   | Eviction Basis | Eviction Time | Best For                  |
 //! |----------|----------------|---------------|---------------------------|
-//! | LFU      | Frequency      | O(n)          | Stable access patterns    |
+//! | LFU      | Frequency      | O(1)          | Stable access patterns    |
 //! | LRU      | Recency        | O(1)          | Temporal locality         |
-//! | LRU-K    | K-th access    | O(n)          | Scan resistance           |
+//! | LRU-K    | K-th access    | O(1)          | Scan resistance           |
 //! | FIFO     | Insertion time | O(1)          | Simple, predictable       |
 //!
 //! ## Thread Safety
 //!
 //! - `LFUCache` is **NOT thread-safe**
 //! - Wrap in `Arc<Mutex<LFUCache>>` or `Arc<RwLock<LFUCache>>` for concurrent access
-//! - Note: O(n) operations hold locks longer, may cause contention
+//! - Note: Long critical sections still matter; keep list operations tight
 //!
 //! ## Implementation Notes
 //!
-//! - **No Clone Requirement**: Keys and values don't need `Clone`
+//! - **Key Clone Requirement**: Keys must be `Clone` for O(1) indexing
 //! - **Zero Capacity**: Supported - rejects all insertions
 //! - **Frequency Overflow**: Theoretically possible at `usize::MAX` accesses
 //! - **Single HashMap**: Reduces allocations vs. separate frequency tracking
@@ -269,6 +270,33 @@ use crate::metrics::traits::{
 };
 use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 
+#[derive(Debug)]
+struct Entry<K, V> {
+    key: K,
+    value: V,
+    freq: u64,
+}
+
+#[derive(Debug)]
+struct Slot<K, V> {
+    entry: Option<Entry<K, V>>,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+#[derive(Debug, Default)]
+struct FreqList {
+    head: Option<usize>,
+    tail: Option<usize>,
+    len: usize,
+}
+
+impl FreqList {
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// LFU (Least Frequently Used) Cache.
 ///
 /// Evicts the item with the lowest access frequency when capacity is reached.
@@ -276,42 +304,198 @@ use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 #[derive(Debug)]
 pub struct LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     capacity: usize,
-    cache: HashMap<K, (V, usize)>, // (value, frequency)
+    slots: Vec<Slot<K, V>>,
+    free_list: Vec<usize>,
+    index: HashMap<K, usize>,
+    freq_lists: HashMap<u64, FreqList>,
+    min_freq: u64,
     #[cfg(feature = "metrics")]
     metrics: LfuMetrics,
 }
 
 impl<K, V> LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     pub fn new(capacity: usize) -> Self {
         LFUCache {
             capacity,
-            cache: HashMap::with_capacity(capacity),
+            slots: Vec::with_capacity(capacity),
+            free_list: Vec::new(),
+            index: HashMap::with_capacity(capacity),
+            freq_lists: HashMap::new(),
+            min_freq: 0,
             #[cfg(feature = "metrics")]
             metrics: LfuMetrics::default(),
         }
+    }
+
+    fn allocate_slot(&mut self, entry: Entry<K, V>) -> usize {
+        if let Some(idx) = self.free_list.pop() {
+            self.slots[idx] = Slot {
+                entry: Some(entry),
+                prev: None,
+                next: None,
+            };
+            idx
+        } else {
+            self.slots.push(Slot {
+                entry: Some(entry),
+                prev: None,
+                next: None,
+            });
+            self.slots.len() - 1
+        }
+    }
+
+    fn remove_slot(&mut self, idx: usize) -> Entry<K, V> {
+        let entry = self.slots[idx].entry.take().expect("lfu entry missing");
+        self.slots[idx].prev = None;
+        self.slots[idx].next = None;
+        self.free_list.push(idx);
+        entry
+    }
+
+    fn list_push_front(slots: &mut [Slot<K, V>], list: &mut FreqList, idx: usize) {
+        let old_head = list.head;
+        slots[idx].prev = None;
+        slots[idx].next = old_head;
+        if let Some(head_idx) = old_head {
+            slots[head_idx].prev = Some(idx);
+        } else {
+            list.tail = Some(idx);
+        }
+        list.head = Some(idx);
+        list.len += 1;
+    }
+
+    fn list_remove(slots: &mut [Slot<K, V>], list: &mut FreqList, idx: usize) {
+        let prev = slots[idx].prev;
+        let next = slots[idx].next;
+        if let Some(prev_idx) = prev {
+            slots[prev_idx].next = next;
+        } else {
+            list.head = next;
+        }
+        if let Some(next_idx) = next {
+            slots[next_idx].prev = prev;
+        } else {
+            list.tail = prev;
+        }
+        slots[idx].prev = None;
+        slots[idx].next = None;
+        list.len = list.len.saturating_sub(1);
+    }
+
+    fn list_pop_back(slots: &mut [Slot<K, V>], list: &mut FreqList) -> Option<usize> {
+        let idx = list.tail?;
+        Self::list_remove(slots, list, idx);
+        Some(idx)
+    }
+
+    fn find_next_min_freq(freq_lists: &HashMap<u64, FreqList>, mut freq: u64) -> u64 {
+        if freq_lists.is_empty() {
+            return 0;
+        }
+        while !freq_lists.contains_key(&freq) {
+            freq = freq.saturating_add(1);
+            if freq == u64::MAX {
+                break;
+            }
+        }
+        if freq_lists.contains_key(&freq) {
+            freq
+        } else {
+            0
+        }
+    }
+
+    fn move_to_freq(&mut self, idx: usize, new_freq: u64) {
+        let old_freq = self
+            .slots
+            .get(idx)
+            .and_then(|slot| slot.entry.as_ref())
+            .expect("lfu entry missing")
+            .freq;
+
+        if old_freq == new_freq {
+            return;
+        }
+
+        let old_list_empty = {
+            let slots = &mut self.slots;
+            if let Some(list) = self.freq_lists.get_mut(&old_freq) {
+                Self::list_remove(slots, list, idx);
+                list.is_empty()
+            } else {
+                false
+            }
+        };
+
+        if old_list_empty {
+            self.freq_lists.remove(&old_freq);
+            if self.min_freq == old_freq {
+                self.min_freq =
+                    Self::find_next_min_freq(&self.freq_lists, old_freq.saturating_add(1));
+            }
+        }
+
+        if let Some(entry) = self.slots[idx].entry.as_mut() {
+            entry.freq = new_freq;
+        }
+        let list = self.freq_lists.entry(new_freq).or_default();
+        Self::list_push_front(&mut self.slots, list, idx);
+        if self.min_freq == 0 || new_freq < self.min_freq {
+            self.min_freq = new_freq;
+        }
+    }
+
+    fn evict_min_freq(&mut self) -> Option<(K, V)> {
+        let min_freq = self.min_freq;
+        if min_freq == 0 {
+            return None;
+        }
+
+        let (idx, list_empty) = {
+            let slots = &mut self.slots;
+            let list = self.freq_lists.get_mut(&min_freq)?;
+            let idx = Self::list_pop_back(slots, list)?;
+            (idx, list.is_empty())
+        };
+
+        if list_empty {
+            self.freq_lists.remove(&min_freq);
+            self.min_freq = Self::find_next_min_freq(&self.freq_lists, min_freq.saturating_add(1));
+        }
+
+        let entry = self.remove_slot(idx);
+        self.index.remove(&entry.key);
+        Some((entry.key, entry.value))
     }
 }
 
 // Implementation of specialized traits
 impl<K, V> CoreCache<K, V> for LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        // If key already exists, just update the value
-        if let Some((old_value, _freq)) = self.cache.get_mut(&key) {
+        if let Some(&idx) = self.index.get(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
-            return Some(std::mem::replace(old_value, value));
+
+            let entry = self
+                .slots
+                .get_mut(idx)
+                .and_then(|slot| slot.entry.as_mut())
+                .expect("lfu entry missing");
+            return Some(std::mem::replace(&mut entry.value, value));
         }
 
         // Handle zero capacity case - reject all new insertions
@@ -322,60 +506,60 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_new();
 
-        // If cache is at capacity, remove the least frequently used item
-        if self.cache.len() >= self.capacity {
-            // Find the minimum frequency
-            let min_freq = self
-                .cache
-                .values()
-                .map(|(_, freq)| *freq)
-                .min()
-                .unwrap_or(0);
-
-            // Find the first key with minimum frequency and remove it
-            let mut removed = false;
-            self.cache.retain(|_, (_, freq)| {
-                if !removed && *freq == min_freq {
-                    removed = true;
-                    false // Remove this entry
-                } else {
-                    true // Keep this entry
-                }
-            });
-
+        if self.index.len() >= self.capacity {
             #[cfg(feature = "metrics")]
-            if removed {
-                self.metrics.record_evict_call();
+            self.metrics.record_evict_call();
+
+            if let Some((_key, _value)) = self.evict_min_freq() {
+                #[cfg(feature = "metrics")]
                 self.metrics.record_evicted_entry();
             }
         }
 
-        // Insert new entry with frequency 1
-        self.cache
-            .insert(key, (value, 1))
-            .map(|(old_value, _)| old_value)
+        let entry = Entry {
+            key: key.clone(),
+            value,
+            freq: 1,
+        };
+        let idx = self.allocate_slot(entry);
+        self.index.insert(key, idx);
+        let list = self.freq_lists.entry(1).or_default();
+        Self::list_push_front(&mut self.slots, list, idx);
+        self.min_freq = 1;
+
+        None
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        if let Some((value, freq)) = self.cache.get_mut(key) {
-            // Increment frequency
-            *freq += 1;
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_hit();
-            Some(value)
-        } else {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_miss();
-            None
-        }
+        let idx = match self.index.get(key) {
+            Some(idx) => *idx,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
+
+        let new_freq = self.slots[idx]
+            .entry
+            .as_ref()
+            .expect("lfu entry missing")
+            .freq
+            .saturating_add(1);
+        self.move_to_freq(idx, new_freq);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
+
+        self.slots[idx].entry.as_ref().map(|entry| &entry.value)
     }
 
     fn contains(&self, key: &K) -> bool {
-        self.cache.contains_key(key)
+        self.index.contains_key(key)
     }
 
     fn len(&self) -> usize {
-        self.cache.len()
+        self.index.len()
     }
 
     fn capacity(&self) -> usize {
@@ -385,49 +569,54 @@ where
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
-        self.cache.clear();
+        self.index.clear();
+        self.freq_lists.clear();
+        self.slots.clear();
+        self.free_list.clear();
+        self.min_freq = 0;
     }
 }
 
 impl<K, V> MutableCache<K, V> for LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     fn remove(&mut self, key: &K) -> Option<V> {
-        self.cache.remove(key).map(|(value, _)| value)
+        let idx = self.index.remove(key)?;
+        let freq = self.slots[idx]
+            .entry
+            .as_ref()
+            .expect("lfu entry missing")
+            .freq;
+
+        let list_empty = if let Some(list) = self.freq_lists.get_mut(&freq) {
+            Self::list_remove(&mut self.slots, list, idx);
+            list.is_empty()
+        } else {
+            false
+        };
+
+        if list_empty {
+            self.freq_lists.remove(&freq);
+            if self.min_freq == freq {
+                self.min_freq = Self::find_next_min_freq(&self.freq_lists, freq.saturating_add(1));
+            }
+        }
+
+        let entry = self.remove_slot(idx);
+        Some(entry.value)
     }
 }
 
 impl<K, V> LFUCacheTrait<K, V> for LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     fn pop_lfu(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lfu_call();
 
-        // If cache is empty, return None
-        if self.cache.is_empty() {
-            return None;
-        }
-
-        // Find the minimum frequency first
-        let min_freq = self.cache.values().map(|(_, freq)| *freq).min()?;
-
-        // Take ownership of the cache temporarily to avoid borrowing issues
-        let mut temp_cache = std::mem::take(&mut self.cache);
-        let mut result = None;
-
-        // Process entries: keep the first LFU item, put back the rest
-        for (key, (value, freq)) in temp_cache.drain() {
-            if freq == min_freq && result.is_none() {
-                // This is our LFU item to return
-                result = Some((key, value));
-            } else {
-                // Put this item back in the cache
-                self.cache.insert(key, (value, freq));
-            }
-        }
+        let result = self.evict_min_freq();
 
         #[cfg(feature = "metrics")]
         if result.is_some() {
@@ -441,30 +630,25 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_call();
 
-        // Find the key with minimum frequency in a single pass
-        let mut min_freq = usize::MAX;
-        let mut lfu_item: Option<(&K, &V)> = None;
-
-        for (key, (value, freq)) in &self.cache {
-            if *freq < min_freq {
-                min_freq = *freq;
-                lfu_item = Some((key, value));
-            }
-        }
+        let min_freq = self.min_freq;
+        let idx = self.freq_lists.get(&min_freq).and_then(|list| list.tail)?;
+        let entry = self.slots[idx].entry.as_ref()?;
 
         #[cfg(feature = "metrics")]
-        if lfu_item.is_some() {
-            (&self.metrics).record_peek_lfu_found();
-        }
+        (&self.metrics).record_peek_lfu_found();
 
-        lfu_item
+        Some((&entry.key, &entry.value))
     }
 
     fn frequency(&self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_frequency_call();
 
-        let result = self.cache.get(key).map(|(_, freq)| *freq as u64);
+        let result = self
+            .index
+            .get(key)
+            .and_then(|idx| self.slots[*idx].entry.as_ref())
+            .map(|entry| entry.freq);
 
         #[cfg(feature = "metrics")]
         if result.is_some() {
@@ -478,36 +662,44 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_reset_frequency_call();
 
-        if let Some((_, freq)) = self.cache.get_mut(key) {
-            let previous_freq = *freq;
-            *freq = 1;
-            #[cfg(feature = "metrics")]
-            self.metrics.record_reset_frequency_found();
-            Some(previous_freq as u64)
-        } else {
-            None
-        }
+        let idx = *self.index.get(key)?;
+        let previous_freq = self.slots[idx]
+            .entry
+            .as_ref()
+            .expect("lfu entry missing")
+            .freq;
+        self.move_to_freq(idx, 1);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_found();
+
+        Some(previous_freq)
     }
 
     fn increment_frequency(&mut self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
         self.metrics.record_increment_frequency_call();
 
-        if let Some((_, freq)) = self.cache.get_mut(key) {
-            *freq += 1;
-            #[cfg(feature = "metrics")]
-            self.metrics.record_increment_frequency_found();
-            Some(*freq as u64)
-        } else {
-            None
-        }
+        let idx = *self.index.get(key)?;
+        let new_freq = self.slots[idx]
+            .entry
+            .as_ref()
+            .expect("lfu entry missing")
+            .freq
+            .saturating_add(1);
+        self.move_to_freq(idx, new_freq);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_found();
+
+        Some(new_freq)
     }
 }
 
 #[cfg(feature = "metrics")]
 impl<K, V> LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
         LfuMetricsSnapshot {
@@ -529,7 +721,7 @@ where
             reset_frequency_found: self.metrics.reset_frequency_found,
             increment_frequency_calls: self.metrics.increment_frequency_calls,
             increment_frequency_found: self.metrics.increment_frequency_found,
-            cache_len: self.cache.len(),
+            cache_len: self.index.len(),
             capacity: self.capacity,
         }
     }
@@ -538,7 +730,7 @@ where
 #[cfg(feature = "metrics")]
 impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     fn snapshot(&self) -> LfuMetricsSnapshot {
         self.metrics_snapshot()
@@ -2076,8 +2268,13 @@ mod tests {
             let lfu_freq = cache.frequency(lfu_key).unwrap();
 
             // LFU frequency should be minimal among current items
-            for (_key, (_, freq)) in cache.cache.iter() {
-                assert!(freq >= &(lfu_freq as usize));
+            for idx in cache.index.values() {
+                let freq = cache.slots[*idx]
+                    .entry
+                    .as_ref()
+                    .expect("lfu entry missing")
+                    .freq;
+                assert!(freq >= lfu_freq);
             }
 
             // Test eviction with zero capacity
@@ -2214,7 +2411,7 @@ mod tests {
                 assert!(cache.len() <= cache.capacity());
 
                 // Invariant 2: All keys in cache have corresponding frequencies > 0
-                for (key, _) in cache.cache.iter() {
+                for key in cache.index.keys() {
                     let freq = cache.frequency(key);
                     assert!(freq.is_some() && freq.unwrap() > 0);
                 }
@@ -2229,7 +2426,7 @@ mod tests {
                 // Invariant 4: LFU item has minimum frequency among all items
                 if let Some((lfu_key, _)) = cache.peek_lfu() {
                     let lfu_freq = cache.frequency(lfu_key).unwrap();
-                    for (key, _) in cache.cache.iter() {
+                    for key in cache.index.keys() {
                         let freq = cache.frequency(key).unwrap();
                         assert!(freq >= lfu_freq);
                     }
@@ -2239,7 +2436,7 @@ mod tests {
                 let test_keys = vec!["key1", "key2", "key3", "key4", "key5", "nonexistent"];
                 for key in test_keys {
                     let contains_result = cache.contains(&key.to_string());
-                    let get_result = cache.cache.contains_key(key);
+                    let get_result = cache.index.contains_key(key);
                     assert_eq!(contains_result, get_result);
                 }
             };
@@ -2303,7 +2500,7 @@ mod tests {
             verify_invariants(&cache);
 
             // Test invariants after removals
-            let keys_to_remove: Vec<_> = cache.cache.keys().take(2).cloned().collect();
+            let keys_to_remove: Vec<_> = cache.index.keys().take(2).cloned().collect();
             for key in keys_to_remove {
                 cache.remove(&key);
                 verify_invariants(&cache);

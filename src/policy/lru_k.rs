@@ -106,7 +106,8 @@
 //! | Component        | Description                                        |
 //! |------------------|----------------------------------------------------|
 //! | `LRUKCache<K,V>` | Main cache struct with capacity and K value        |
-//! | `cache`          | `HashMap<K, (V, VecDeque<u64>)>` storing entries   |
+//! | `index`          | `HashMap<K, usize>` to slot indices                |
+//! | `cold`/`hot`      | Segmented LRU lists (<K and >=K accesses)          |
 //! | `capacity`       | Maximum number of entries                          |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!
@@ -116,7 +117,7 @@
 //! |---------------------|------------|------------------------------------------|
 //! | `new(capacity)`     | O(1)       | Create cache with K=2 (default)          |
 //! | `with_k(cap, k)`    | O(1)       | Create cache with custom K value         |
-//! | `insert(key, val)`  | O(N)*      | Insert/update, may trigger O(N) eviction |
+//! | `insert(key, val)`  | O(1)*      | Insert/update, may trigger O(1) eviction |
 //! | `get(&key)`         | O(1)       | Get value, updates access history        |
 //! | `contains(&key)`    | O(1)       | Check if key exists                      |
 //! | `remove(&key)`      | O(1)       | Remove entry by key                      |
@@ -128,8 +129,8 @@
 //!
 //! | Method               | Complexity | Description                             |
 //! |----------------------|------------|-----------------------------------------|
-//! | `pop_lru_k()`        | O(N)       | Remove and return victim entry          |
-//! | `peek_lru_k()`       | O(N)       | Peek at victim without removing         |
+//! | `pop_lru_k()`        | O(1)       | Remove and return victim entry          |
+//! | `peek_lru_k()`       | O(1)       | Peek at victim without removing         |
 //! | `k_value()`          | O(1)       | Get the K value                         |
 //! | `access_history()`   | O(K)       | Get timestamps (most recent first)      |
 //! | `access_count()`     | O(1)       | Get number of accesses for key          |
@@ -142,9 +143,9 @@
 //! | Operation              | Time       | Notes                              |
 //! |------------------------|------------|------------------------------------|
 //! | `get`, `insert` (hit)  | O(1)       | HashMap lookup + VecDeque update   |
-//! | `insert` (eviction)    | O(N)       | Scans all entries for victim       |
-//! | `pop_lru_k`            | O(N)       | Scans all entries for victim       |
-//! | `peek_lru_k`           | O(N)       | Scans all entries                  |
+//! | `insert` (eviction)    | O(1)       | Bucketed by cold/hot lists         |
+//! | `pop_lru_k`            | O(1)       | Tail lookup on cold/hot list       |
+//! | `peek_lru_k`           | O(1)       | Tail lookup on cold/hot list       |
 //! | `k_distance_rank`      | O(N log N) | Collects and sorts all entries     |
 //! | Per-entry overhead     | ~24 bytes  | VecDeque + K × 8 bytes timestamps  |
 //!
@@ -152,9 +153,8 @@
 //!
 //! - **Scan Resistance**: Standard LRU flushes entire cache on sequential scans.
 //!   LRU-K requires K accesses before an item is considered "hot".
-//! - **Simplicity**: O(N) eviction avoids complex multi-queue or heap structures
-//!   needed for O(log N) implementations.
-//! - **Correctness First**: Prioritizes correct LRU-K semantics over raw performance.
+//! - **Segmented Queues**: Cold entries (<K) are FIFO; hot entries (>=K) are LRU.
+//! - **Predictability**: O(1) eviction paths with bounded list operations.
 //!
 //! ## Trade-offs
 //!
@@ -162,7 +162,7 @@
 //! |------------------|------------------------------------|---------------------------------|
 //! | Hit Ratio        | Better than LRU for DB workloads   | Overhead for simple patterns    |
 //! | Scan Resistance  | Excellent (core feature)           | -                               |
-//! | Eviction Time    | -                                  | O(N) scans all entries          |
+//! | Eviction Time    | -                                  | O(1) list operations            |
 //! | Memory           | Bounded history (K timestamps)     | Extra ~24 + 8K bytes per entry  |
 //! | Complexity       | Simple HashMap-based               | No advanced data structures     |
 //!
@@ -170,11 +170,11 @@
 //!
 //! **Use when:**
 //! - Implementing a database buffer pool where scan resistance is critical
-//! - Cost of cache miss (disk I/O) >> CPU cost of O(N) eviction scan
+//! - Cost of cache miss (disk I/O) >> CPU cost of O(1) list maintenance
 //! - Cache size is moderate, or evictions are infrequent vs. hits
 //!
 //! **Avoid when:**
-//! - You need strictly bounded O(1) latency (use `LRUCache`)
+//! - You need exact LRU-K semantics (this is an O(1) approximation)
 //! - Cache size is very large (millions of items) with frequent evictions
 //! - High-frequency, low-latency environment (e.g., CPU cache simulation)
 //!
@@ -239,8 +239,8 @@
 //! | Policy | K-distance | Scan Resistant | Eviction | Best For                |
 //! |--------|------------|----------------|----------|-------------------------|
 //! | LRU    | K=1        | No             | O(1)     | Simple recency patterns |
-//! | LRU-2  | K=2        | Yes            | O(N)     | DB buffer pools         |
-//! | LRU-K  | Any K      | Yes            | O(N)     | Tunable scan resistance |
+//! | LRU-2  | K=2        | Yes            | O(1)     | DB buffer pools         |
+//! | LRU-K  | Any K      | Yes            | O(1)     | Tunable scan resistance |
 //! | LFU    | Frequency  | Partial        | O(log N) | Frequency-heavy loads   |
 //!
 //! ## Thread Safety
@@ -257,7 +257,6 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LruKMetrics;
@@ -270,6 +269,40 @@ use crate::metrics::traits::{
 };
 use crate::traits::{CoreCache, LRUKCacheTrait, MutableCache};
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum Segment {
+    Cold,
+    Hot,
+}
+
+#[derive(Debug)]
+struct Entry<K, V> {
+    key: K,
+    value: V,
+    history: VecDeque<u64>,
+    segment: Segment,
+}
+
+#[derive(Debug)]
+struct Slot<K, V> {
+    entry: Option<Entry<K, V>>,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+#[derive(Debug, Default)]
+struct LruList {
+    head: Option<usize>,
+    tail: Option<usize>,
+    len: usize,
+}
+
+impl LruList {
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// LRU-K Cache implementation.
 ///
 /// This cache evicts the item whose K-th most recent access is furthest in the past.
@@ -281,7 +314,12 @@ where
 {
     capacity: usize,
     k: usize,
-    cache: HashMap<K, (V, VecDeque<u64>)>, // (value, access history)
+    slots: Vec<Slot<K, V>>,
+    free_list: Vec<usize>,
+    index: HashMap<K, usize>,
+    cold: LruList,
+    hot: LruList,
+    tick: u64,
     #[cfg(feature = "metrics")]
     metrics: LruKMetrics,
 }
@@ -298,21 +336,148 @@ where
 
     /// Creates a new LRU-K cache with the specified capacity and K value.
     pub fn with_k(capacity: usize, k: usize) -> Self {
+        let k = k.max(1);
         LRUKCache {
             capacity,
             k,
-            cache: HashMap::with_capacity(capacity),
+            slots: Vec::with_capacity(capacity),
+            free_list: Vec::new(),
+            index: HashMap::with_capacity(capacity),
+            cold: LruList::default(),
+            hot: LruList::default(),
+            tick: 0,
             #[cfg(feature = "metrics")]
             metrics: LruKMetrics::default(),
         }
     }
 
-    /// Gets the current time in microseconds.
-    fn current_time_in_micros() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u64
+    fn allocate_slot(&mut self, entry: Entry<K, V>) -> usize {
+        if let Some(idx) = self.free_list.pop() {
+            self.slots[idx] = Slot {
+                entry: Some(entry),
+                prev: None,
+                next: None,
+            };
+            idx
+        } else {
+            self.slots.push(Slot {
+                entry: Some(entry),
+                prev: None,
+                next: None,
+            });
+            self.slots.len() - 1
+        }
+    }
+
+    fn remove_slot(&mut self, idx: usize) -> Entry<K, V> {
+        let entry = self.slots[idx].entry.take().expect("lru-k entry missing");
+        self.slots[idx].prev = None;
+        self.slots[idx].next = None;
+        self.free_list.push(idx);
+        entry
+    }
+
+    fn list_push_front(slots: &mut [Slot<K, V>], list: &mut LruList, idx: usize) {
+        let old_head = list.head;
+        slots[idx].prev = None;
+        slots[idx].next = old_head;
+        if let Some(head_idx) = old_head {
+            slots[head_idx].prev = Some(idx);
+        } else {
+            list.tail = Some(idx);
+        }
+        list.head = Some(idx);
+        list.len += 1;
+    }
+
+    fn list_remove(slots: &mut [Slot<K, V>], list: &mut LruList, idx: usize) {
+        let prev = slots[idx].prev;
+        let next = slots[idx].next;
+        if let Some(prev_idx) = prev {
+            slots[prev_idx].next = next;
+        } else {
+            list.head = next;
+        }
+        if let Some(next_idx) = next {
+            slots[next_idx].prev = prev;
+        } else {
+            list.tail = prev;
+        }
+        slots[idx].prev = None;
+        slots[idx].next = None;
+        list.len = list.len.saturating_sub(1);
+    }
+
+    fn list_pop_back(slots: &mut [Slot<K, V>], list: &mut LruList) -> Option<usize> {
+        let idx = list.tail?;
+        Self::list_remove(slots, list, idx);
+        Some(idx)
+    }
+
+    fn record_access(&mut self, idx: usize) -> usize {
+        self.tick = self.tick.saturating_add(1);
+        let entry = self.slots[idx].entry.as_mut().expect("lru-k entry missing");
+        entry.history.push_back(self.tick);
+        if entry.history.len() > self.k {
+            entry.history.pop_front();
+        }
+        entry.history.len()
+    }
+
+    fn promote_if_needed(&mut self, idx: usize) {
+        let promote = self
+            .slots
+            .get(idx)
+            .and_then(|slot| slot.entry.as_ref())
+            .map(|entry| entry.segment == Segment::Cold && entry.history.len() >= self.k)
+            .unwrap_or(false);
+        if !promote {
+            return;
+        }
+
+        let slots = &mut self.slots;
+        Self::list_remove(slots, &mut self.cold, idx);
+
+        if let Some(entry) = slots[idx].entry.as_mut() {
+            entry.segment = Segment::Hot;
+        }
+        Self::list_push_front(slots, &mut self.hot, idx);
+    }
+
+    fn move_hot_to_front(&mut self, idx: usize) {
+        let is_hot = self
+            .slots
+            .get(idx)
+            .and_then(|slot| slot.entry.as_ref())
+            .map(|entry| entry.segment == Segment::Hot)
+            .unwrap_or(false);
+        if !is_hot {
+            return;
+        }
+        let slots = &mut self.slots;
+        Self::list_remove(slots, &mut self.hot, idx);
+        Self::list_push_front(slots, &mut self.hot, idx);
+    }
+
+    fn evict_candidate(&mut self) -> Option<(K, V)> {
+        let slots = &mut self.slots;
+        let idx = if !self.cold.is_empty() {
+            Self::list_pop_back(slots, &mut self.cold)?
+        } else {
+            Self::list_pop_back(slots, &mut self.hot)?
+        };
+
+        let entry = self.remove_slot(idx);
+        self.index.remove(&entry.key);
+        Some((entry.key, entry.value))
+    }
+
+    fn peek_candidate(&self) -> Option<usize> {
+        if !self.cold.is_empty() {
+            self.cold.tail
+        } else {
+            self.hot.tail
+        }
     }
 }
 
@@ -323,116 +488,84 @@ where
     V: Clone,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return None;
         }
 
-        #[cfg(feature = "metrics")]
-        self.metrics.record_insert_call();
-
-        let now = Self::current_time_in_micros();
-
-        // If key already exists, update its value and access history
-        if let Some((old_value, history)) = self.cache.get_mut(&key) {
+        if let Some(&idx) = self.index.get(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            let old_value_clone = old_value.clone();
-            *old_value = value;
+            let old_value = {
+                let entry = self.slots[idx].entry.as_mut().expect("lru-k entry missing");
+                std::mem::replace(&mut entry.value, value)
+            };
 
-            // Update access history
-            history.push_back(now);
-            if history.len() > self.k {
-                history.pop_front();
-            }
+            self.record_access(idx);
+            self.promote_if_needed(idx);
+            self.move_hot_to_front(idx);
 
-            return Some(old_value_clone);
+            return Some(old_value);
         }
 
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_new();
 
-        // If cache is at capacity, evict based on LRU-K policy
-        if self.cache.len() >= self.capacity && !self.cache.is_empty() {
+        if self.index.len() >= self.capacity && !self.index.is_empty() {
             #[cfg(feature = "metrics")]
             self.metrics.record_evict_call();
 
-            let mut victim_key = None;
-            let mut min_k_accesses = usize::MAX;
-            let mut oldest_k_access = u64::MAX;
-
-            for (k, (_, history)) in &self.cache {
-                let num_accesses = history.len();
-
-                // First prioritize items with fewer than k accesses
-                if num_accesses < self.k {
-                    if victim_key.is_none() || num_accesses < min_k_accesses {
-                        min_k_accesses = num_accesses;
-                        oldest_k_access = history.front().copied().unwrap_or(u64::MAX);
-                        victim_key = Some(k.clone());
-                    } else if num_accesses == min_k_accesses {
-                        // If same number of accesses, choose the one with earlier first access
-                        let first_access = history.front().copied().unwrap_or(u64::MAX);
-                        if first_access < oldest_k_access {
-                            oldest_k_access = first_access;
-                            victim_key = Some(k.clone());
-                        }
-                    }
-                } else if min_k_accesses >= self.k {
-                    // For items with k or more accesses, compare their k-th most recent access
-                    let k_access = history
-                        .get(num_accesses - self.k)
-                        .copied()
-                        .unwrap_or(u64::MAX);
-
-                    if victim_key.is_none() || k_access < oldest_k_access {
-                        min_k_accesses = self.k;
-                        oldest_k_access = k_access;
-                        victim_key = Some(k.clone());
-                    }
-                }
-            }
-
-            if let Some(key_to_remove) = victim_key {
-                self.cache.remove(&key_to_remove);
+            if let Some((_key, _value)) = self.evict_candidate() {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_evicted_entry();
             }
         }
 
-        // Initialize access history with current time
+        self.tick = self.tick.saturating_add(1);
         let mut history = VecDeque::with_capacity(self.k);
-        history.push_back(now);
+        history.push_back(self.tick);
+        let entry = Entry {
+            key: key.clone(),
+            value,
+            history,
+            segment: Segment::Cold,
+        };
+        let idx = self.allocate_slot(entry);
+        self.index.insert(key, idx);
+        Self::list_push_front(&mut self.slots, &mut self.cold, idx);
 
-        // Insert the new item
-        self.cache.insert(key, (value, history)).map(|(v, _)| v)
+        None
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        let now = Self::current_time_in_micros();
+        let idx = match self.index.get(key) {
+            Some(idx) => *idx,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
 
-        if let Some((_, history)) = self.cache.get_mut(key) {
-            // Update access history
-            history.push_back(now);
-            if history.len() > self.k {
-                history.pop_front();
-            }
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_hit();
-        } else {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_miss();
-        }
+        self.record_access(idx);
+        self.promote_if_needed(idx);
+        self.move_hot_to_front(idx);
 
-        self.cache.get(key).map(|(v, _)| v)
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
+
+        self.slots[idx].entry.as_ref().map(|entry| &entry.value)
     }
 
     fn contains(&self, key: &K) -> bool {
-        self.cache.contains_key(key)
+        self.index.contains_key(key)
     }
 
     fn len(&self) -> usize {
-        self.cache.len()
+        self.index.len()
     }
 
     fn capacity(&self) -> usize {
@@ -442,7 +575,12 @@ where
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
-        self.cache.clear()
+        self.index.clear();
+        self.slots.clear();
+        self.free_list.clear();
+        self.cold = LruList::default();
+        self.hot = LruList::default();
+        self.tick = 0;
     }
 }
 
@@ -452,7 +590,19 @@ where
     V: Clone,
 {
     fn remove(&mut self, key: &K) -> Option<V> {
-        self.cache.remove(key).map(|(v, _)| v)
+        let idx = self.index.remove(key)?;
+        let segment = self.slots[idx]
+            .entry
+            .as_ref()
+            .expect("lru-k entry missing")
+            .segment;
+        if segment == Segment::Cold {
+            Self::list_remove(&mut self.slots, &mut self.cold, idx);
+        } else {
+            Self::list_remove(&mut self.slots, &mut self.hot, idx);
+        }
+        let entry = self.remove_slot(idx);
+        Some(entry.value)
     }
 }
 
@@ -465,50 +615,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_k_call();
 
-        if self.cache.is_empty() {
-            return None;
-        }
-
-        // Find the victim key using the same logic as the insert method
-        let mut victim_key = None;
-        let mut min_k_accesses = usize::MAX;
-        let mut oldest_k_access = u64::MAX;
-
-        for (k, (_, history)) in &self.cache {
-            let num_accesses = history.len();
-
-            // First prioritize items with fewer than k accesses
-            if num_accesses < self.k {
-                if victim_key.is_none() || num_accesses < min_k_accesses {
-                    min_k_accesses = num_accesses;
-                    oldest_k_access = history.front().copied().unwrap_or(u64::MAX);
-                    victim_key = Some(k.clone());
-                } else if num_accesses == min_k_accesses {
-                    // If same number of accesses, choose the one with earlier first access
-                    let first_access = history.front().copied().unwrap_or(u64::MAX);
-                    if first_access < oldest_k_access {
-                        oldest_k_access = first_access;
-                        victim_key = Some(k.clone());
-                    }
-                }
-            } else if min_k_accesses >= self.k {
-                // For items with k or more accesses, compare their k-th most recent access
-                let k_access = history
-                    .get(num_accesses - self.k)
-                    .copied()
-                    .unwrap_or(u64::MAX);
-
-                if victim_key.is_none() || k_access < oldest_k_access {
-                    min_k_accesses = self.k;
-                    oldest_k_access = k_access;
-                    victim_key = Some(k.clone());
-                }
-            }
-        }
-
-        // Remove and return the victim
-        let result =
-            victim_key.and_then(|key| self.cache.remove(&key).map(|(value, _)| (key, value)));
+        let result = self.evict_candidate();
 
         #[cfg(feature = "metrics")]
         if result.is_some() {
@@ -522,51 +629,13 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_k_call();
 
-        if self.cache.is_empty() {
-            return None;
-        }
-
-        let mut victim_key = None;
-        let mut min_k_accesses = usize::MAX;
-        let mut oldest_k_access = u64::MAX;
-
-        for (k, (_, history)) in &self.cache {
-            let num_accesses = history.len();
-
-            if num_accesses < self.k {
-                if victim_key.is_none() || num_accesses < min_k_accesses {
-                    min_k_accesses = num_accesses;
-                    oldest_k_access = history.front().copied().unwrap_or(u64::MAX);
-                    victim_key = Some(k);
-                } else if num_accesses == min_k_accesses {
-                    let first_access = history.front().copied().unwrap_or(u64::MAX);
-                    if first_access < oldest_k_access {
-                        oldest_k_access = first_access;
-                        victim_key = Some(k);
-                    }
-                }
-            } else if min_k_accesses >= self.k {
-                let k_access = history
-                    .get(num_accesses - self.k)
-                    .copied()
-                    .unwrap_or(u64::MAX);
-
-                if victim_key.is_none() || k_access < oldest_k_access {
-                    min_k_accesses = self.k;
-                    oldest_k_access = k_access;
-                    victim_key = Some(k);
-                }
-            }
-        }
-
-        let result = victim_key.and_then(|key| self.cache.get(key).map(|(value, _)| (key, value)));
+        let idx = self.peek_candidate()?;
+        let entry = self.slots[idx].entry.as_ref()?;
 
         #[cfg(feature = "metrics")]
-        if result.is_some() {
-            (&self.metrics).record_peek_lru_k_found();
-        }
+        (&self.metrics).record_peek_lru_k_found();
 
-        result
+        Some((&entry.key, &entry.value))
     }
 
     fn k_value(&self) -> usize {
@@ -574,27 +643,35 @@ where
     }
 
     fn access_history(&self, key: &K) -> Option<Vec<u64>> {
-        self.cache.get(key).map(|(_, history)| {
-            history.iter().rev().copied().collect() // Most recent first
+        let idx = self.index.get(key)?;
+        self.slots[*idx].entry.as_ref().map(|entry| {
+            entry.history.iter().rev().copied().collect() // Most recent first
         })
     }
 
     fn access_count(&self, key: &K) -> Option<usize> {
-        self.cache.get(key).map(|(_, history)| history.len())
+        let idx = self.index.get(key)?;
+        self.slots[*idx]
+            .entry
+            .as_ref()
+            .map(|entry| entry.history.len())
     }
 
     fn k_distance(&self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_k_distance_call();
 
-        let result = self.cache.get(key).and_then(|(_, history)| {
-            if history.len() >= self.k {
-                // Get the K-th most recent access (index from the end)
-                history.get(history.len() - self.k).copied()
-            } else {
-                None
-            }
-        });
+        let result = self
+            .index
+            .get(key)
+            .and_then(|idx| self.slots[*idx].entry.as_ref())
+            .and_then(|entry| {
+                if entry.history.len() >= self.k {
+                    entry.history.front().copied()
+                } else {
+                    None
+                }
+            });
 
         #[cfg(feature = "metrics")]
         if result.is_some() {
@@ -608,31 +685,35 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_call();
 
-        if let Some((_, history)) = self.cache.get_mut(key) {
-            let now = Self::current_time_in_micros();
-            history.push_back(now);
-            if history.len() > self.k {
-                history.pop_front();
-            }
-            #[cfg(feature = "metrics")]
-            self.metrics.record_touch_found();
-            true
-        } else {
-            false
-        }
+        let idx = match self.index.get(key) {
+            Some(idx) => *idx,
+            None => return false,
+        };
+        self.record_access(idx);
+        self.promote_if_needed(idx);
+        self.move_hot_to_front(idx);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_touch_found();
+        true
     }
 
     fn k_distance_rank(&self, key: &K) -> Option<usize> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_k_distance_rank_call();
 
-        if !self.cache.contains_key(key) {
+        if !self.index.contains_key(key) {
             return None;
         }
 
         let mut items_with_distances: Vec<(bool, u64)> = Vec::new();
 
-        for (_, history) in self.cache.values() {
+        for idx in self.index.values() {
+            let history = &self.slots[*idx]
+                .entry
+                .as_ref()
+                .expect("lru-k entry missing")
+                .history;
             #[cfg(feature = "metrics")]
             (&self.metrics).record_k_distance_rank_scan_step();
 
@@ -644,10 +725,7 @@ where
                 items_with_distances.push((false, earliest)); // false = not full K accesses
             } else {
                 // Items with K or more accesses use their K-distance
-                let k_distance = history
-                    .get(num_accesses - self.k)
-                    .copied()
-                    .unwrap_or(u64::MAX);
+                let k_distance = history.front().copied().unwrap_or(u64::MAX);
                 items_with_distances.push((true, k_distance)); // true = has full K accesses
             }
         }
@@ -664,18 +742,17 @@ where
         });
 
         // Find the rank of the target key
-        let target_history = &self.cache[key].1;
+        let target_idx = *self.index.get(key)?;
+        let target_history = &self.slots[target_idx]
+            .entry
+            .as_ref()
+            .expect("lru-k entry missing")
+            .history;
         let target_num_accesses = target_history.len();
         let target_value = if target_num_accesses < self.k {
             (false, target_history.front().copied().unwrap_or(u64::MAX))
         } else {
-            (
-                true,
-                target_history
-                    .get(target_num_accesses - self.k)
-                    .copied()
-                    .unwrap_or(u64::MAX),
-            )
+            (true, target_history.front().copied().unwrap_or(u64::MAX))
         };
 
         items_with_distances
@@ -722,7 +799,7 @@ where
             k_distance_rank_calls: self.metrics.k_distance_rank_calls.get(),
             k_distance_rank_found: self.metrics.k_distance_rank_found.get(),
             k_distance_rank_scan_steps: self.metrics.k_distance_rank_scan_steps.get(),
-            cache_len: self.cache.len(),
+            cache_len: self.index.len(),
             capacity: self.capacity,
         }
     }
@@ -1166,7 +1243,7 @@ mod tests {
         #[test]
         fn test_lru_k_tie_breaking() {
             let mut cache = LRUKCache::with_k(5, 2);
-            // Since we rely on SystemTime, true ties are hard to manufacture without mocking.
+            // Since we use a monotonic logical clock, true ties are unlikely without mocking.
             // But logic says: if same K-distance, result is undefined/implementation dependent
             // unless we have secondary sort key.
             // The implementation handles "same number of accesses" for < K by checking earliest access.
