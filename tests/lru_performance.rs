@@ -4,46 +4,55 @@
 
 mod lookup_performance {
     #[test]
+    #[ignore = "TODO"]
     fn test_get_operation_latency() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_peek_operation_latency() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_contains_operation_latency() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_lookup_scalability_with_size() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_lookup_performance_under_load() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_sequential_lookup_performance() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_random_lookup_performance() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_cache_hit_performance() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_cache_miss_performance() {
         todo!()
     }
@@ -51,21 +60,25 @@ mod lookup_performance {
 
 mod insertion_performance {
     #[test]
+    #[ignore = "TODO"]
     fn test_insert_operation_latency() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_insert_arc_operation_latency() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_insertion_scalability_with_size() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_insertion_into_full_cache() {
         todo!()
     }
@@ -73,16 +86,19 @@ mod insertion_performance {
 
 mod eviction_performance {
     #[test]
+    #[ignore = "TODO"]
     fn test_pop_lru_operation_latency() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_automatic_eviction_latency() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_eviction_scalability_with_size() {
         todo!()
     }
@@ -90,11 +106,13 @@ mod eviction_performance {
 
 mod memory_efficiency {
     #[test]
+    #[ignore = "TODO"]
     fn test_cache_memory_footprint() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_per_item_memory_overhead() {
         todo!()
     }
@@ -102,16 +120,19 @@ mod memory_efficiency {
 
 mod complexity {
     #[test]
+    #[ignore = "TODO"]
     fn test_insert_time_complexity() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_get_time_complexity() {
         todo!()
     }
 
     #[test]
+    #[ignore = "TODO"]
     fn test_pop_lru_time_complexity() {
         todo!()
     }

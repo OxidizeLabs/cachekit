@@ -310,6 +310,14 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::LruMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::LruMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    CoreMetricsRecorder, LruMetricsReadRecorder, LruMetricsRecorder, MetricsSnapshotProvider,
+};
 use crate::traits::{CoreCache, LRUCacheTrait, MutableCache};
 
 /// Node in the doubly-linked list for LRU tracking
@@ -386,6 +394,8 @@ where
     map: HashMap<K, NonNull<Node<K, V>>>,
     head: Option<NonNull<Node<K, V>>>, // Most recently used
     tail: Option<NonNull<Node<K, V>>>, // Least recently used
+    #[cfg(feature = "metrics")]
+    metrics: LruMetrics,
     _phantom: PhantomData<(K, V)>,
 }
 
@@ -417,7 +427,9 @@ where
     ///
     /// # Example
     /// ```
-    /// let mut cache = LRUCore::new(100);
+    /// use cachekit::policy::lru::LRUCore;
+    ///
+    /// let mut cache: LRUCore<u32, String> = LRUCore::new(100);
     /// ```
     pub fn new(capacity: usize) -> Self {
         LRUCore {
@@ -425,6 +437,8 @@ where
             map: HashMap::with_capacity(capacity),
             head: None,
             tail: None,
+            #[cfg(feature = "metrics")]
+            metrics: LruMetrics::default(),
             _phantom: PhantomData,
         }
     }
@@ -617,7 +631,13 @@ where
 {
     /// Zero-copy insert: key is copied (cheap), value is Arc-wrapped and moved
     fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if let Some(&existing_node) = self.map.get(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             // Update existing node - O(1) - zero-copy value replacement
             let old_value = unsafe {
                 // SAFETY: existing_node is from our HashMap, so it's valid
@@ -642,8 +662,14 @@ where
                 return None;
             }
 
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_new();
+
             if self.map.len() >= self.capacity {
                 // Evict LRU item - O(1) - zero copy eviction
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evict_call();
+
                 if let Some(tail_node) = unsafe { self.remove_tail() } {
                     // Extract key and value by taking ownership (no clone!)
                     let (tail_key, _tail_value) = unsafe {
@@ -654,6 +680,8 @@ where
                     };
                     // Remove from map using the copied key (Copy trait - cheap)
                     self.map.remove(&tail_key);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_evicted_entry();
                     // Node is already deallocated by Box::from_raw above
                 }
             }
@@ -679,6 +707,9 @@ where
     /// Zero-copy get: returns `Arc<V>` clone (O(1) atomic increment)
     fn get(&mut self, key: &K) -> Option<&Arc<V>> {
         if let Some(&node) = self.map.get(key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
+
             // Move to head (mark as most recently used) - O(1)
             unsafe {
                 // SAFETY: node is from our HashMap, so it's valid and in our list
@@ -687,6 +718,8 @@ where
                 Some(&(*node.as_ptr()).value)
             }
         } else {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
             None
         }
     }
@@ -704,6 +737,9 @@ where
     }
 
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         // Collect all nodes first to avoid borrow checker issues
         let nodes: Vec<_> = self.map.drain().map(|(_, node)| node).collect();
 
@@ -729,10 +765,15 @@ where
     /// Zero-copy peek: read-only lookup without LRU update (allows concurrent reads)
     /// Returns `Arc<V>` clone for zero-copy sharing
     pub fn peek(&self, key: &K) -> Option<Arc<V>> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lru_call();
+
         if let Some(&node) = self.map.get(key) {
             unsafe {
                 // SAFETY: node is from our HashMap, so it's valid
                 let value = &(*node.as_ptr()).value;
+                #[cfg(feature = "metrics")]
+                (&self.metrics).record_peek_lru_found();
                 Some(Arc::clone(value)) // O(1) atomic increment
             }
         } else {
@@ -775,6 +816,9 @@ where
 {
     /// Zero-copy pop_lru: returns `(K, Arc<V>)` without cloning data
     fn pop_lru(&mut self) -> Option<(K, Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lru_call();
+
         self.tail.map(|tail_node| unsafe {
             // SAFETY: tail_node is our tail pointer, so it's valid
             // First get key while node is still accessible
@@ -794,20 +838,31 @@ where
             #[cfg(debug_assertions)]
             self.validate_invariants();
 
+            #[cfg(feature = "metrics")]
+            self.metrics.record_pop_lru_found();
+
             (key, value)
         })
     }
 
     /// Zero-copy peek_lru: returns references without affecting LRU order
     fn peek_lru(&self) -> Option<(&K, &Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lru_call();
+
         self.tail.map(|tail_node| unsafe {
             // SAFETY: tail_node is our tail pointer, so it's valid
             let node_ref = &*tail_node.as_ptr();
+            #[cfg(feature = "metrics")]
+            (&self.metrics).record_peek_lru_found();
             (&node_ref.key, &node_ref.value)
         })
     }
 
     fn touch(&mut self, key: &K) -> bool {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_touch_call();
+
         if let Some(&node) = self.map.get(key) {
             unsafe {
                 // SAFETY: node is from our HashMap, so it's valid and in our list
@@ -817,6 +872,9 @@ where
             #[cfg(debug_assertions)]
             self.validate_invariants();
 
+            #[cfg(feature = "metrics")]
+            self.metrics.record_touch_found();
+
             true
         } else {
             false
@@ -824,6 +882,9 @@ where
     }
 
     fn recency_rank(&self, key: &K) -> Option<usize> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_recency_rank_call();
+
         if let Some(&target_node) = self.map.get(key) {
             let mut rank = 0;
             let mut current = self.head;
@@ -831,8 +892,13 @@ where
             // Walk from head (most recent) to find the target node
             while let Some(node) = current {
                 unsafe {
+                    #[cfg(feature = "metrics")]
+                    (&self.metrics).record_recency_rank_scan_step();
+
                     // SAFETY: All nodes in the list are valid
                     if node == target_node {
+                        #[cfg(feature = "metrics")]
+                        (&self.metrics).record_recency_rank_found();
                         return Some(rank);
                     }
                     current = (*node.as_ptr()).next;
@@ -841,6 +907,36 @@ where
             }
         }
         None
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> LRUCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    pub fn metrics_snapshot(&self) -> LruMetricsSnapshot {
+        LruMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            pop_lru_calls: self.metrics.pop_lru_calls,
+            pop_lru_found: self.metrics.pop_lru_found,
+            peek_lru_calls: self.metrics.peek_lru_calls.get(),
+            peek_lru_found: self.metrics.peek_lru_found.get(),
+            touch_calls: self.metrics.touch_calls,
+            touch_found: self.metrics.touch_found,
+            recency_rank_calls: self.metrics.recency_rank_calls.get(),
+            recency_rank_found: self.metrics.recency_rank_found.get(),
+            recency_rank_scan_steps: self.metrics.recency_rank_scan_steps.get(),
+            cache_len: self.map.len(),
+            capacity: self.capacity,
+        }
     }
 }
 
@@ -962,6 +1058,39 @@ where
     pub fn peek_lru(&self) -> Option<(K, Arc<V>)> {
         let cache = self.inner.read();
         cache.peek_lru().map(|(k, v)| (*k, Arc::clone(v)))
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> ConcurrentLRUCache<K, V>
+where
+    K: Copy + Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    pub fn metrics_snapshot(&self) -> LruMetricsSnapshot {
+        let cache = self.inner.read();
+        cache.metrics_snapshot()
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for LRUCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    fn snapshot(&self) -> LruMetricsSnapshot {
+        self.metrics_snapshot()
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for ConcurrentLRUCache<K, V>
+where
+    K: Copy + Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    fn snapshot(&self) -> LruMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

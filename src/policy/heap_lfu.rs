@@ -265,7 +265,7 @@ where
     ///
     /// # Examples
     /// ```rust,no_run
-    /// use crate::storage::disk::async_disk::cache::lfu::HeapLFUCache;
+    /// use cachekit::policy::heap_lfu::HeapLFUCache;
     ///
     /// let cache: HeapLFUCache<String, i32> = HeapLFUCache::new(100);
     /// assert_eq!(cache.capacity(), 100);

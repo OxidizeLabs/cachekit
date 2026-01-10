@@ -273,6 +273,9 @@
 
 use crate::metrics::metrics_impl::CacheMetrics;
 use crate::metrics::snapshot::CacheMetricsSnapshot;
+use crate::metrics::traits::{
+    CoreMetricsRecorder, FifoMetricsReadRecorder, FifoMetricsRecorder, MetricsSnapshotProvider,
+};
 use crate::traits::{ConcurrentCache, CoreCache, FIFOCacheTrait};
 use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque, hash_map};
@@ -411,19 +414,19 @@ where
     /// Evicts the oldest valid entry from the cache.
     /// Skips over any stale entries (keys that were lazily deleted).
     fn evict_oldest(&mut self) {
-        self.metrics.evict_calls += 1;
+        self.metrics.record_evict_call();
         // Keep popping from the front until we find a valid key or the queue is empty
         while let Some(oldest_key) = self.inner.insertion_order.pop_front() {
-            self.metrics.evict_scan_steps += 1;
+            self.metrics.record_evict_scan_step();
 
             if self.inner.cache.contains_key(&oldest_key) {
                 // Found a valid key, remove it and stop
                 self.inner.cache.remove(&oldest_key);
-                self.metrics.evicted_entries += 1;
+                self.metrics.record_evicted_entry();
                 break;
             }
             // Skip stale entries (keys that were already removed from the cache)
-            self.metrics.stale_skips += 1;
+            self.metrics.record_stale_skip();
         }
     }
 }
@@ -523,6 +526,26 @@ where
 {
 }
 
+impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FIFOCache<K, V>
+where
+    K: Eq + Hash,
+    V: Debug,
+{
+    fn snapshot(&self) -> CacheMetricsSnapshot {
+        self.metrics_snapshot()
+    }
+}
+
+impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFIFOCache<K, V>
+where
+    K: Eq + Hash + Debug,
+    V: Debug,
+{
+    fn snapshot(&self) -> CacheMetricsSnapshot {
+        self.metrics_snapshot()
+    }
+}
+
 impl<K, V> CoreCache<K, V> for FIFOCache<K, V>
 where
     K: Eq + Hash,
@@ -530,7 +553,7 @@ where
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         // Update cache metrics
-        self.metrics.insert_calls += 1;
+        self.metrics.record_insert_call();
 
         // If capacity is 0, cannot store anything
         if self.inner.capacity == 0 {
@@ -542,14 +565,14 @@ where
 
         // If the key already exists, update the value
         if let hash_map::Entry::Occupied(mut e) = self.inner.cache.entry(key_arc.clone()) {
-            self.metrics.insert_updates += 1;
+            self.metrics.record_insert_update();
 
             return Some(e.insert(value_arc)).map(|old_value_arc| {
                 Arc::try_unwrap(old_value_arc).expect("external Arc<V> references detected")
             });
         }
 
-        self.metrics.insert_new += 1;
+        self.metrics.record_insert_new();
 
         // If the cache is at capacity, remove the oldest valid item (FIFO)
         if self.inner.cache.len() >= self.inner.capacity {
@@ -564,18 +587,16 @@ where
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        self.metrics.get_calls += 1;
-
         // In FIFO, getting an item doesn't change its position
         // Use HashMap's O(1) lookup by leveraging Borrow trait
         // HashMap<Arc<K>, V> supports lookups with &K when K implements Borrow
         match self.inner.cache.get(key) {
             Some(v) => {
-                self.metrics.get_hits += 1;
+                self.metrics.record_get_hit();
                 Some(v.as_ref())
             },
             None => {
-                self.metrics.get_misses += 1;
+                self.metrics.record_get_miss();
                 None
             },
         }
@@ -607,12 +628,12 @@ where
     V: Debug,
 {
     fn pop_oldest(&mut self) -> Option<(K, V)> {
-        self.metrics.pop_oldest_calls += 1;
+        self.metrics.record_pop_oldest_call();
 
         // Use the existing evict_oldest logic but return the key-value pair
         while let Some(oldest_key_arc) = self.inner.insertion_order.pop_front() {
             if let Some(value_arc) = self.inner.cache.remove(&oldest_key_arc) {
-                self.metrics.pop_oldest_found += 1;
+                self.metrics.record_pop_oldest_found();
 
                 // Try to unwrap both Arcs to get the original key and value
                 // This should succeed since we just removed them from the cache
@@ -625,15 +646,17 @@ where
             }
             // Skip stale entries (keys that were already removed from the cache)
         }
+        self.metrics.record_pop_oldest_empty_or_stale();
         None
     }
 
     fn peek_oldest(&self) -> Option<(&K, &V)> {
-        self.metrics.peek_oldest_calls.incr();
+        (&self.metrics).record_peek_oldest_call();
 
         // Find the first valid entry in the insertion order
         for key_arc in &self.inner.insertion_order {
             if let Some(value_arc) = self.inner.cache.get(key_arc) {
+                (&self.metrics).record_peek_oldest_found();
                 return Some((key_arc.as_ref(), value_arc.as_ref()));
             }
         }
@@ -653,11 +676,14 @@ where
     }
 
     fn age_rank(&self, key: &K) -> Option<usize> {
+        (&self.metrics).record_age_rank_call();
         // Find position in insertion order, accounting for stale entries
         let mut rank = 0;
         for insertion_key_arc in &self.inner.insertion_order {
+            (&self.metrics).record_age_rank_scan_step();
             if self.inner.cache.contains_key(insertion_key_arc) {
                 if insertion_key_arc.as_ref() == key {
+                    (&self.metrics).record_age_rank_found();
                     return Some(rank);
                 }
                 rank += 1;

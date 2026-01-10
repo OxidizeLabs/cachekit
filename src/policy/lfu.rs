@@ -259,6 +259,14 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::LfuMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::LfuMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    CoreMetricsRecorder, LfuMetricsReadRecorder, LfuMetricsRecorder, MetricsSnapshotProvider,
+};
 use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 
 /// LFU (Least Frequently Used) Cache.
@@ -272,6 +280,8 @@ where
 {
     capacity: usize,
     cache: HashMap<K, (V, usize)>, // (value, frequency)
+    #[cfg(feature = "metrics")]
+    metrics: LfuMetrics,
 }
 
 impl<K, V> LFUCache<K, V>
@@ -282,6 +292,8 @@ where
         LFUCache {
             capacity,
             cache: HashMap::with_capacity(capacity),
+            #[cfg(feature = "metrics")]
+            metrics: LfuMetrics::default(),
         }
     }
 }
@@ -292,8 +304,13 @@ where
     K: Eq + Hash,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         // If key already exists, just update the value
         if let Some((old_value, _freq)) = self.cache.get_mut(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
             return Some(std::mem::replace(old_value, value));
         }
 
@@ -301,6 +318,9 @@ where
         if self.capacity == 0 {
             return None;
         }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
 
         // If cache is at capacity, remove the least frequently used item
         if self.cache.len() >= self.capacity {
@@ -322,6 +342,12 @@ where
                     true // Keep this entry
                 }
             });
+
+            #[cfg(feature = "metrics")]
+            if removed {
+                self.metrics.record_evict_call();
+                self.metrics.record_evicted_entry();
+            }
         }
 
         // Insert new entry with frequency 1
@@ -334,8 +360,12 @@ where
         if let Some((value, freq)) = self.cache.get_mut(key) {
             // Increment frequency
             *freq += 1;
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
             Some(value)
         } else {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
             None
         }
     }
@@ -353,6 +383,8 @@ where
     }
 
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
         self.cache.clear();
     }
 }
@@ -371,6 +403,9 @@ where
     K: Eq + Hash,
 {
     fn pop_lfu(&mut self) -> Option<(K, V)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lfu_call();
+
         // If cache is empty, return None
         if self.cache.is_empty() {
             return None;
@@ -394,10 +429,18 @@ where
             }
         }
 
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            self.metrics.record_pop_lfu_found();
+        }
+
         result
     }
 
     fn peek_lfu(&self) -> Option<(&K, &V)> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_call();
+
         // Find the key with minimum frequency in a single pass
         let mut min_freq = usize::MAX;
         let mut lfu_item: Option<(&K, &V)> = None;
@@ -409,17 +452,37 @@ where
             }
         }
 
+        #[cfg(feature = "metrics")]
+        if lfu_item.is_some() {
+            (&self.metrics).record_peek_lfu_found();
+        }
+
         lfu_item
     }
 
     fn frequency(&self, key: &K) -> Option<u64> {
-        self.cache.get(key).map(|(_, freq)| *freq as u64)
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_frequency_call();
+
+        let result = self.cache.get(key).map(|(_, freq)| *freq as u64);
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_frequency_found();
+        }
+
+        result
     }
 
     fn reset_frequency(&mut self, key: &K) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_call();
+
         if let Some((_, freq)) = self.cache.get_mut(key) {
             let previous_freq = *freq;
             *freq = 1;
+            #[cfg(feature = "metrics")]
+            self.metrics.record_reset_frequency_found();
             Some(previous_freq as u64)
         } else {
             None
@@ -427,12 +490,58 @@ where
     }
 
     fn increment_frequency(&mut self, key: &K) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_call();
+
         if let Some((_, freq)) = self.cache.get_mut(key) {
             *freq += 1;
+            #[cfg(feature = "metrics")]
+            self.metrics.record_increment_frequency_found();
             Some(*freq as u64)
         } else {
             None
         }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> LFUCache<K, V>
+where
+    K: Eq + Hash,
+{
+    pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
+        LfuMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            pop_lfu_calls: self.metrics.pop_lfu_calls,
+            pop_lfu_found: self.metrics.pop_lfu_found,
+            peek_lfu_calls: self.metrics.peek_lfu_calls.get(),
+            peek_lfu_found: self.metrics.peek_lfu_found.get(),
+            frequency_calls: self.metrics.frequency_calls.get(),
+            frequency_found: self.metrics.frequency_found.get(),
+            reset_frequency_calls: self.metrics.reset_frequency_calls,
+            reset_frequency_found: self.metrics.reset_frequency_found,
+            increment_frequency_calls: self.metrics.increment_frequency_calls,
+            increment_frequency_found: self.metrics.increment_frequency_found,
+            cache_len: self.cache.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUCache<K, V>
+where
+    K: Eq + Hash,
+{
+    fn snapshot(&self) -> LfuMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

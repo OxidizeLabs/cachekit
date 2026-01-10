@@ -259,6 +259,15 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::LruKMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::LruKMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    CoreMetricsRecorder, LruKMetricsReadRecorder, LruKMetricsRecorder, LruMetricsRecorder,
+    MetricsSnapshotProvider,
+};
 use crate::traits::{CoreCache, LRUKCacheTrait, MutableCache};
 
 /// LRU-K Cache implementation.
@@ -273,6 +282,8 @@ where
     capacity: usize,
     k: usize,
     cache: HashMap<K, (V, VecDeque<u64>)>, // (value, access history)
+    #[cfg(feature = "metrics")]
+    metrics: LruKMetrics,
 }
 
 impl<K, V> LRUKCache<K, V>
@@ -291,6 +302,8 @@ where
             capacity,
             k,
             cache: HashMap::with_capacity(capacity),
+            #[cfg(feature = "metrics")]
+            metrics: LruKMetrics::default(),
         }
     }
 
@@ -314,10 +327,16 @@ where
             return None;
         }
 
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         let now = Self::current_time_in_micros();
 
         // If key already exists, update its value and access history
         if let Some((old_value, history)) = self.cache.get_mut(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             let old_value_clone = old_value.clone();
             *old_value = value;
 
@@ -330,8 +349,14 @@ where
             return Some(old_value_clone);
         }
 
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         // If cache is at capacity, evict based on LRU-K policy
         if self.cache.len() >= self.capacity && !self.cache.is_empty() {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_evict_call();
+
             let mut victim_key = None;
             let mut min_k_accesses = usize::MAX;
             let mut oldest_k_access = u64::MAX;
@@ -370,6 +395,8 @@ where
 
             if let Some(key_to_remove) = victim_key {
                 self.cache.remove(&key_to_remove);
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
             }
         }
 
@@ -390,6 +417,11 @@ where
             if history.len() > self.k {
                 history.pop_front();
             }
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
+        } else {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
         }
 
         self.cache.get(key).map(|(v, _)| v)
@@ -408,6 +440,8 @@ where
     }
 
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
         self.cache.clear()
     }
 }
@@ -428,6 +462,9 @@ where
     V: Clone,
 {
     fn pop_lru_k(&mut self) -> Option<(K, V)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lru_k_call();
+
         if self.cache.is_empty() {
             return None;
         }
@@ -470,10 +507,21 @@ where
         }
 
         // Remove and return the victim
-        victim_key.and_then(|key| self.cache.remove(&key).map(|(value, _)| (key, value)))
+        let result =
+            victim_key.and_then(|key| self.cache.remove(&key).map(|(value, _)| (key, value)));
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            self.metrics.record_pop_lru_k_found();
+        }
+
+        result
     }
 
     fn peek_lru_k(&self) -> Option<(&K, &V)> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lru_k_call();
+
         if self.cache.is_empty() {
             return None;
         }
@@ -511,7 +559,14 @@ where
             }
         }
 
-        victim_key.and_then(|key| self.cache.get(key).map(|(value, _)| (key, value)))
+        let result = victim_key.and_then(|key| self.cache.get(key).map(|(value, _)| (key, value)));
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_peek_lru_k_found();
+        }
+
+        result
     }
 
     fn k_value(&self) -> usize {
@@ -529,23 +584,38 @@ where
     }
 
     fn k_distance(&self, key: &K) -> Option<u64> {
-        self.cache.get(key).and_then(|(_, history)| {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_k_distance_call();
+
+        let result = self.cache.get(key).and_then(|(_, history)| {
             if history.len() >= self.k {
                 // Get the K-th most recent access (index from the end)
                 history.get(history.len() - self.k).copied()
             } else {
                 None
             }
-        })
+        });
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_k_distance_found();
+        }
+
+        result
     }
 
     fn touch(&mut self, key: &K) -> bool {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_touch_call();
+
         if let Some((_, history)) = self.cache.get_mut(key) {
             let now = Self::current_time_in_micros();
             history.push_back(now);
             if history.len() > self.k {
                 history.pop_front();
             }
+            #[cfg(feature = "metrics")]
+            self.metrics.record_touch_found();
             true
         } else {
             false
@@ -553,6 +623,9 @@ where
     }
 
     fn k_distance_rank(&self, key: &K) -> Option<usize> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_k_distance_rank_call();
+
         if !self.cache.contains_key(key) {
             return None;
         }
@@ -560,6 +633,9 @@ where
         let mut items_with_distances: Vec<(bool, u64)> = Vec::new();
 
         for (_, history) in self.cache.values() {
+            #[cfg(feature = "metrics")]
+            (&self.metrics).record_k_distance_rank_scan_step();
+
             let num_accesses = history.len();
 
             if num_accesses < self.k {
@@ -605,6 +681,61 @@ where
         items_with_distances
             .iter()
             .position(|item| item == &target_value)
+            .inspect(|_| {
+                #[cfg(feature = "metrics")]
+                (&self.metrics).record_k_distance_rank_found();
+            })
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> LRUKCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    pub fn metrics_snapshot(&self) -> LruKMetricsSnapshot {
+        LruKMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            pop_lru_calls: self.metrics.pop_lru_calls,
+            pop_lru_found: self.metrics.pop_lru_found,
+            peek_lru_calls: self.metrics.peek_lru_calls,
+            peek_lru_found: self.metrics.peek_lru_found,
+            touch_calls: self.metrics.touch_calls,
+            touch_found: self.metrics.touch_found,
+            recency_rank_calls: self.metrics.recency_rank_calls,
+            recency_rank_found: self.metrics.recency_rank_found,
+            recency_rank_scan_steps: self.metrics.recency_rank_scan_steps,
+            pop_lru_k_calls: self.metrics.pop_lru_k_calls,
+            pop_lru_k_found: self.metrics.pop_lru_k_found,
+            peek_lru_k_calls: self.metrics.peek_lru_k_calls.get(),
+            peek_lru_k_found: self.metrics.peek_lru_k_found.get(),
+            k_distance_calls: self.metrics.k_distance_calls.get(),
+            k_distance_found: self.metrics.k_distance_found.get(),
+            k_distance_rank_calls: self.metrics.k_distance_rank_calls.get(),
+            k_distance_rank_found: self.metrics.k_distance_rank_found.get(),
+            k_distance_rank_scan_steps: self.metrics.k_distance_rank_scan_steps.get(),
+            cache_len: self.cache.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<LruKMetricsSnapshot> for LRUKCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn snapshot(&self) -> LruKMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 
