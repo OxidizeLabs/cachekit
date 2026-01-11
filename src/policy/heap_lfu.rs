@@ -88,6 +88,12 @@
 //!   ═══════════════════════════════════════════════════════════════════════════
 //! ```
 //!
+//! ### Bounded Heap Cleanup
+//!
+//! To keep heap growth bounded under heavy access churn, the heap is rebuilt from the
+//! authoritative `frequencies` map once it grows beyond a fixed multiple of live entries.
+//! This drops stale entries in bulk while preserving LFU ordering.
+//!
 //! ## Comparison: Standard LFU vs. Heap LFU
 //!
 //! ```text
@@ -126,7 +132,7 @@
 //! | Method           | Complexity | Description                              |
 //! |------------------|------------|------------------------------------------|
 //! | `new(capacity)`  | O(1)       | Create cache with given capacity         |
-//! | `insert(k, v)`   | O(log n)   | Insert/update, may trigger eviction      |
+//! | `insert(k, v)`   | O(log n)   | Insert `Arc<V>`, may trigger eviction    |
 //! | `get(&k)`        | O(log n)   | Get value, increments frequency          |
 //! | `contains(&k)`   | O(1)       | Check if key exists                      |
 //! | `remove(&k)`     | O(1)       | Remove entry (lazy heap cleanup)         |
@@ -175,6 +181,7 @@
 //!
 //! ```rust,ignore
 //! use crate::storage::disk::async_disk::cache::heap_lfu::HeapLFUCache;
+//! use std::sync::Arc;
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
 //!     CoreCache, MutableCache, LFUCacheTrait,
 //! };
@@ -183,8 +190,8 @@
 //! let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(100);
 //!
 //! // Insert items (frequency starts at 1)
-//! cache.insert("key1".to_string(), 100);
-//! cache.insert("key2".to_string(), 200);
+//! cache.insert("key1".to_string(), Arc::new(100));
+//! cache.insert("key2".to_string(), Arc::new(200));
 //!
 //! // Access increments frequency (O(log n) for heap update)
 //! cache.get(&"key1".to_string()); // freq: 1 → 2
@@ -195,7 +202,7 @@
 //!
 //! // Evict LFU item (O(log n) amortized)
 //! if let Some((key, value)) = cache.pop_lfu() {
-//!     println!("Evicted: {} = {}", key, value);
+//!     println!("Evicted: {} = {}", key, value.as_ref());
 //! }
 //!
 //! // Manual frequency control
@@ -216,7 +223,7 @@
 //!        │    └──────────────── Required for HashMap
 //!        └───────────────────── Required for HashMap
 //!
-//!   V: (no constraints)
+//!   V: (no constraints, values are stored as `Arc<V>`)
 //! ```
 //!
 //! ## Thread Safety
@@ -228,6 +235,7 @@
 //! ## Implementation Notes
 //!
 //! - **Stale entries**: Accumulate in heap, cleaned lazily during `pop_lfu()`
+//! - **Bounded rebuilds**: Heap is rebuilt when size exceeds `MAX_HEAP_FACTOR * live_entries`
 //! - **peek_lfu()**: Falls back to O(n) scan (avoiding heap borrow issues)
 //! - **Memory overhead**: ~3x standard LFU due to three data structures
 //! - **Reverse wrapper**: Converts max-heap to min-heap for LFU semantics
@@ -243,12 +251,12 @@ use std::sync::Arc;
 /// Heap-based LFU Cache with O(log n) eviction.
 ///
 /// Uses a binary min-heap for efficient LFU item identification.
+/// Values are stored as `Arc<V>` to avoid cloning on eviction.
 /// See module-level documentation for details.
 #[derive(Debug)]
 pub struct HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
-    V: Clone,
 {
     store: HashMapStore<K, V>,
     frequencies: HashMap<K, u64>,
@@ -260,8 +268,9 @@ where
 impl<K, V> HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
-    V: Clone,
 {
+    const MAX_HEAP_FACTOR: usize = 4;
+
     /// Creates a new HeapLFUCache with the specified capacity.
     ///
     /// # Arguments
@@ -332,11 +341,29 @@ where
     /// Private helper to add a frequency entry to the heap.
     fn add_to_heap(&mut self, key: &K, frequency: u64) {
         self.freq_heap.push(Reverse((frequency, key.clone())));
+        self.maybe_rebuild_heap();
+    }
+
+    /// Bound the heap size by rebuilding from the authoritative frequencies map.
+    fn maybe_rebuild_heap(&mut self) {
+        let live_entries = self.store.len().max(1);
+        let max_heap_len = live_entries.saturating_mul(Self::MAX_HEAP_FACTOR);
+
+        if self.freq_heap.len() <= max_heap_len {
+            return;
+        }
+
+        self.freq_heap.clear();
+        self.freq_heap.reserve(self.frequencies.len());
+        for (key, freq) in &self.frequencies {
+            self.freq_heap.push(Reverse((*freq, key.clone())));
+        }
     }
 
     /// Private helper to remove stale entries from the front of the heap.
     /// Returns the current minimum frequency key, or None if cache is empty.
     fn pop_lfu_internal(&mut self) -> Option<(K, u64)> {
+        let mut stale_pops = 0usize;
         while let Some(Reverse((heap_freq, key))) = self.freq_heap.peek() {
             if let Some(&current_freq) = self.frequencies.get(key)
                 && *heap_freq == current_freq
@@ -348,6 +375,11 @@ where
 
             // This entry is stale (key doesn't exist or frequency changed)
             self.freq_heap.pop();
+            stale_pops += 1;
+            if stale_pops >= self.store.len().max(1) {
+                self.maybe_rebuild_heap();
+                stale_pops = 0;
+            }
         }
 
         None
@@ -355,7 +387,7 @@ where
 
     /// Private helper to ensure cache doesn't exceed capacity.
     /// Evicts the least frequently used item if necessary.
-    fn ensure_capacity(&mut self) -> Option<(K, V)> {
+    fn ensure_capacity(&mut self) -> Option<(K, Arc<V>)> {
         if self.store.len() >= self.store.capacity() {
             self.pop_lfu()
         } else {
@@ -365,27 +397,21 @@ where
 }
 
 // Implementation of CoreCache trait
-impl<K, V> CoreCache<K, V> for HeapLFUCache<K, V>
+impl<K, V> CoreCache<K, Arc<V>> for HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
-    V: Clone,
 {
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
+    fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
         // If key already exists, just update the value (don't change frequency)
         if self.store.contains(&key) {
-            return self
-                .store
-                .try_insert(key, Arc::new(value))
-                .ok()
-                .flatten()
-                .map(|arc| (*arc).clone());
+            return self.store.try_insert(key, value).ok().flatten();
         }
 
         // Ensure we have capacity (may evict LFU item)
         self.ensure_capacity();
 
         // Insert new item with frequency 1
-        if self.store.try_insert(key.clone(), Arc::new(value)).is_err() {
+        if self.store.try_insert(key.clone(), value).is_err() {
             return None;
         }
         self.frequencies.insert(key.clone(), 1);
@@ -394,7 +420,7 @@ where
         None
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
+    fn get(&mut self, key: &K) -> Option<&Arc<V>> {
         if self.store.contains(key) {
             // Increment frequency
             let new_freq = self.frequencies.get_mut(key).map(|f| {
@@ -405,7 +431,7 @@ where
             // Add new frequency entry to heap (old entry becomes stale)
             self.add_to_heap(key, new_freq);
 
-            self.store.get_ref(key).map(|value| value.as_ref())
+            self.store.get_ref(key)
         } else {
             None
         }
@@ -431,42 +457,44 @@ where
 }
 
 // Implementation of MutableCache trait for arbitrary key removal
-impl<K, V> MutableCache<K, V> for HeapLFUCache<K, V>
+impl<K, V> MutableCache<K, Arc<V>> for HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
-    V: Clone,
 {
-    fn remove(&mut self, key: &K) -> Option<V> {
+    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         // Remove from store and frequencies maps
-        let value = self.store.remove(key).map(|arc| (*arc).clone())?;
-        self.frequencies.remove(key);
+        let value = self.store.remove(key);
+        let had_frequency = self.frequencies.remove(key).is_some();
 
         // Note: We don't remove from heap immediately (lazy removal)
         // Stale entries will be filtered out during pop_lfu operations
 
-        Some(value)
+        if value.is_some() || had_frequency {
+            self.maybe_rebuild_heap();
+        }
+
+        value
     }
 }
 
 // Implementation of LFUCacheTrait for specialized LFU operations
-impl<K, V> LFUCacheTrait<K, V> for HeapLFUCache<K, V>
+impl<K, V> LFUCacheTrait<K, Arc<V>> for HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
-    V: Clone,
 {
-    fn pop_lfu(&mut self) -> Option<(K, V)> {
+    fn pop_lfu(&mut self) -> Option<(K, Arc<V>)> {
         // Find the key with minimum frequency (handling stale entries)
         let (lfu_key, _freq) = self.pop_lfu_internal()?;
 
         // Remove from all data structures
-        let value = self.store.remove(&lfu_key).map(|arc| (*arc).clone())?;
+        let value = self.store.remove(&lfu_key)?;
         self.frequencies.remove(&lfu_key);
         self.store.record_eviction();
 
         Some((lfu_key, value))
     }
 
-    fn peek_lfu(&self) -> Option<(&K, &V)> {
+    fn peek_lfu(&self) -> Option<(&K, &Arc<V>)> {
         // This is more expensive for heap-based approach since we need to
         // scan through potential stale entries. For better performance,
         // consider avoiding this operation if possible.
@@ -482,7 +510,7 @@ where
         // Find a key with the minimum frequency
         for (key, &freq) in &self.frequencies {
             if freq == min_freq {
-                return self.store.peek_ref(key).map(|value| (key, value.as_ref()));
+                return self.store.peek_ref(key).map(|value| (key, value));
             }
         }
 
@@ -530,19 +558,19 @@ mod heap_lfu_tests {
         let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(3);
 
         // Test basic insertion and retrieval
-        assert_eq!(cache.insert("key1".to_string(), 100), None);
-        assert_eq!(cache.insert("key2".to_string(), 200), None);
-        assert_eq!(cache.insert("key3".to_string(), 300), None);
+        assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
+        assert_eq!(cache.insert("key2".to_string(), Arc::new(200)), None);
+        assert_eq!(cache.insert("key3".to_string(), Arc::new(300)), None);
 
         assert_eq!(cache.len(), 3);
         assert_eq!(cache.capacity(), 3);
 
         // Test retrieval and frequency tracking
-        assert_eq!(cache.get(&"key1".to_string()), Some(&100));
+        assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&100));
         assert_eq!(cache.frequency(&"key1".to_string()), Some(2)); // 1 + 1 from get
 
-        assert_eq!(cache.get(&"key2".to_string()), Some(&200));
-        assert_eq!(cache.get(&"key2".to_string()), Some(&200)); // Access again
+        assert_eq!(cache.get(&"key2".to_string()).map(Arc::as_ref), Some(&200));
+        assert_eq!(cache.get(&"key2".to_string()).map(Arc::as_ref), Some(&200)); // Access again
         assert_eq!(cache.frequency(&"key2".to_string()), Some(3)); // 1 + 2 from gets
 
         // Test contains
@@ -555,9 +583,9 @@ mod heap_lfu_tests {
         let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(3);
 
         // Fill cache to capacity
-        cache.insert("key1".to_string(), 100);
-        cache.insert("key2".to_string(), 200);
-        cache.insert("key3".to_string(), 300);
+        cache.insert("key1".to_string(), Arc::new(100));
+        cache.insert("key2".to_string(), Arc::new(200));
+        cache.insert("key3".to_string(), Arc::new(300));
 
         // Create different access patterns to establish frequency order
         // key1: frequency = 1 (no additional accesses)
@@ -573,11 +601,11 @@ mod heap_lfu_tests {
         assert_eq!(cache.frequency(&"key3".to_string()), Some(2)); // Middle
 
         // Insert new item - should evict key1 (LFU)
-        cache.insert("key4".to_string(), 400);
+        cache.insert("key4".to_string(), Arc::new(400));
 
         // Verify key1 was evicted (LFU)
         assert!(!cache.contains(&"key1".to_string()));
-        assert_eq!(cache.get(&"key1".to_string()), None);
+        assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), None);
 
         // Verify other keys still exist
         assert!(cache.contains(&"key2".to_string()));
@@ -593,9 +621,9 @@ mod heap_lfu_tests {
         let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(3);
 
         // Insert items with different frequencies
-        cache.insert("low".to_string(), 1);
-        cache.insert("med".to_string(), 2);
-        cache.insert("high".to_string(), 3);
+        cache.insert("low".to_string(), Arc::new(1));
+        cache.insert("med".to_string(), Arc::new(2));
+        cache.insert("high".to_string(), Arc::new(3));
 
         // Create frequency differences
         cache.get(&"med".to_string()); // med freq = 2
@@ -610,19 +638,19 @@ mod heap_lfu_tests {
         // Pop LFU should return "low"
         let (key, value) = cache.pop_lfu().unwrap();
         assert_eq!(key, "low".to_string());
-        assert_eq!(value, 1);
+        assert_eq!(*value, 1);
         assert_eq!(cache.len(), 2);
 
         // Pop LFU should now return "med"
         let (key, value) = cache.pop_lfu().unwrap();
         assert_eq!(key, "med".to_string());
-        assert_eq!(value, 2);
+        assert_eq!(*value, 2);
         assert_eq!(cache.len(), 1);
 
         // Pop LFU should now return "high"
         let (key, value) = cache.pop_lfu().unwrap();
         assert_eq!(key, "high".to_string());
-        assert_eq!(value, 3);
+        assert_eq!(*value, 3);
         assert_eq!(cache.len(), 0);
 
         // Pop LFU on empty cache should return None
@@ -634,9 +662,9 @@ mod heap_lfu_tests {
         let mut cache: HeapLFUCache<i32, i32> = HeapLFUCache::new(3);
 
         // Insert items
-        cache.insert(1, 10);
-        cache.insert(2, 20);
-        cache.insert(3, 30);
+        cache.insert(1, Arc::new(10));
+        cache.insert(2, Arc::new(20));
+        cache.insert(3, Arc::new(30));
 
         // Access to create heap entries
         cache.get(&1); // freq = 2
@@ -647,7 +675,7 @@ mod heap_lfu_tests {
         cache.remove(&1);
 
         // Insert new item to trigger eviction
-        cache.insert(4, 40);
+        cache.insert(4, Arc::new(40));
 
         // Should still work correctly despite stale entries
         assert!(!cache.contains(&1));
@@ -690,7 +718,7 @@ mod heap_lfu_tests {
 
         // Fill cache
         for i in 0..cache_size {
-            heap_cache.insert(i, i * 10);
+            heap_cache.insert(i, Arc::new(i * 10));
         }
 
         // Time pop_lfu operations on heap cache
