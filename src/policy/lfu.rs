@@ -125,7 +125,7 @@
 //! |------------------|----------------------------------------------------|
 //! | `LFUCache<K, V>` | Main cache struct                                  |
 //! | `index`          | `HashMap<K, usize>` to slot indices                |
-//! | `freq_lists`     | Per-frequency LRU lists                            |
+//! | `freq_buckets`   | Per-frequency LRU buckets + links                  |
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //!
 //! ## Core Operations (CoreCache + MutableCache)
@@ -133,7 +133,7 @@
 //! | Method           | Complexity | Description                              |
 //! |------------------|------------|------------------------------------------|
 //! | `new(capacity)`  | O(1)       | Create cache with given capacity         |
-//! | `insert(k, v)`   | O(1)*      | Insert/update, may trigger O(1) eviction |
+//! | `insert(k, v)`   | O(1)*      | Insert `Arc<V>`, may trigger O(1) eviction |
 //! | `get(&k)`        | O(1)       | Get value, increments frequency          |
 //! | `contains(&k)`   | O(1)       | Check if key exists                      |
 //! | `remove(&k)`     | O(1)       | Remove entry by key                      |
@@ -197,6 +197,7 @@
 //!
 //! ```rust,ignore
 //! use crate::storage::disk::async_disk::cache::lfu::LFUCache;
+//! use std::sync::Arc;
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
 //!     CoreCache, MutableCache, LFUCacheTrait,
 //! };
@@ -205,8 +206,8 @@
 //! let mut cache: LFUCache<String, i32> = LFUCache::new(100);
 //!
 //! // Insert items (frequency starts at 1)
-//! cache.insert("key1".to_string(), 100);
-//! cache.insert("key2".to_string(), 200);
+//! cache.insert("key1".to_string(), Arc::new(100));
+//! cache.insert("key2".to_string(), Arc::new(200));
 //!
 //! // Access increments frequency
 //! cache.get(&"key1".to_string()); // freq: 1 → 2
@@ -221,12 +222,12 @@
 //!
 //! // Peek at LFU candidate (O(1) bucket pop)
 //! if let Some((key, value)) = cache.peek_lfu() {
-//!     println!("Next victim: {} = {}", key, value);
+//!     println!("Next victim: {} = {}", key, value.as_ref());
 //! }
 //!
 //! // Evict LFU item (O(1) bucket pop)
 //! if let Some((key, value)) = cache.pop_lfu() {
-//!     println!("Evicted: {} = {}", key, value);
+//!     println!("Evicted: {} = {}", key, value.as_ref());
 //! }
 //!
 //! // Thread-safe usage
@@ -236,7 +237,7 @@
 //! // In thread:
 //! {
 //!     let mut cache = shared_cache.lock().unwrap();
-//!     cache.insert(page_id, page_data);
+//!     cache.insert(page_id, Arc::new(page_data));
 //! }
 //! ```
 //!
@@ -304,6 +305,13 @@ impl FreqList {
     }
 }
 
+#[derive(Debug, Default)]
+struct FreqBucket {
+    list: FreqList,
+    prev: Option<u64>,
+    next: Option<u64>,
+}
+
 /// LFU (Least Frequently Used) Cache.
 ///
 /// Evicts the item with the lowest access frequency when capacity is reached.
@@ -312,13 +320,12 @@ impl FreqList {
 pub struct LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
     store: HashMapStore<K, V>,
     slots: Vec<Slot<K>>,
     free_list: Vec<usize>,
     index: HashMap<K, usize>,
-    freq_lists: HashMap<u64, FreqList>,
+    freq_buckets: HashMap<u64, FreqBucket>,
     min_freq: u64,
     #[cfg(feature = "metrics")]
     metrics: LfuMetrics,
@@ -327,7 +334,6 @@ where
 impl<K, V> LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
     pub fn new(capacity: usize) -> Self {
         LFUCache {
@@ -335,7 +341,7 @@ where
             slots: Vec::with_capacity(capacity),
             free_list: Vec::new(),
             index: HashMap::with_capacity(capacity),
-            freq_lists: HashMap::new(),
+            freq_buckets: HashMap::new(),
             min_freq: 0,
             #[cfg(feature = "metrics")]
             metrics: LfuMetrics::default(),
@@ -405,20 +411,30 @@ where
         Some(idx)
     }
 
-    fn find_next_min_freq(freq_lists: &HashMap<u64, FreqList>, mut freq: u64) -> u64 {
-        if freq_lists.is_empty() {
-            return 0;
+    fn insert_bucket(&mut self, freq: u64, prev: Option<u64>, next: Option<u64>) {
+        self.freq_buckets.insert(
+            freq,
+            FreqBucket {
+                list: FreqList::default(),
+                prev,
+                next,
+            },
+        );
+
+        if let Some(prev_freq) = prev
+            && let Some(bucket) = self.freq_buckets.get_mut(&prev_freq)
+        {
+            bucket.next = Some(freq);
         }
-        while !freq_lists.contains_key(&freq) {
-            freq = freq.saturating_add(1);
-            if freq == u64::MAX {
-                break;
-            }
+
+        if let Some(next_freq) = next
+            && let Some(bucket) = self.freq_buckets.get_mut(&next_freq)
+        {
+            bucket.prev = Some(freq);
         }
-        if freq_lists.contains_key(&freq) {
-            freq
-        } else {
-            0
+
+        if prev.is_none() {
+            self.min_freq = freq;
         }
     }
 
@@ -434,67 +450,134 @@ where
             return;
         }
 
-        let old_list_empty = {
+        let (old_prev, old_next, old_bucket_empty) = {
             let slots = &mut self.slots;
-            if let Some(list) = self.freq_lists.get_mut(&old_freq) {
-                Self::list_remove(slots, list, idx);
-                list.is_empty()
+            if let Some(bucket) = self.freq_buckets.get_mut(&old_freq) {
+                let prev = bucket.prev;
+                let next = bucket.next;
+                Self::list_remove(slots, &mut bucket.list, idx);
+                (prev, next, bucket.list.is_empty())
             } else {
-                false
+                (None, None, false)
             }
         };
 
-        if old_list_empty {
-            self.freq_lists.remove(&old_freq);
+        if old_bucket_empty {
+            self.freq_buckets.remove(&old_freq);
+            if let Some(prev_freq) = old_prev
+                && let Some(bucket) = self.freq_buckets.get_mut(&prev_freq)
+            {
+                bucket.next = old_next;
+            }
+            if let Some(next_freq) = old_next
+                && let Some(bucket) = self.freq_buckets.get_mut(&next_freq)
+            {
+                bucket.prev = old_prev;
+            }
             if self.min_freq == old_freq {
-                self.min_freq =
-                    Self::find_next_min_freq(&self.freq_lists, old_freq.saturating_add(1));
+                self.min_freq = old_next.unwrap_or(0);
             }
         }
 
         if let Some(entry) = self.slots[idx].entry.as_mut() {
             entry.freq = new_freq;
         }
-        let list = self.freq_lists.entry(new_freq).or_default();
-        Self::list_push_front(&mut self.slots, list, idx);
+        if self.freq_buckets.contains_key(&new_freq) {
+            let bucket = self
+                .freq_buckets
+                .get_mut(&new_freq)
+                .expect("lfu bucket missing");
+            Self::list_push_front(&mut self.slots, &mut bucket.list, idx);
+        } else {
+            let (prev, next) = if new_freq == 1 {
+                (
+                    None,
+                    if self.min_freq == 0 {
+                        None
+                    } else {
+                        Some(self.min_freq)
+                    },
+                )
+            } else if new_freq > old_freq {
+                let prev = if old_bucket_empty {
+                    old_prev
+                } else {
+                    Some(old_freq)
+                };
+                let next = old_next;
+                (prev, next)
+            } else {
+                (
+                    None,
+                    if self.min_freq == 0 {
+                        None
+                    } else {
+                        Some(self.min_freq)
+                    },
+                )
+            };
+
+            self.insert_bucket(new_freq, prev, next);
+            let bucket = self
+                .freq_buckets
+                .get_mut(&new_freq)
+                .expect("lfu bucket missing");
+            Self::list_push_front(&mut self.slots, &mut bucket.list, idx);
+        }
+
         if self.min_freq == 0 || new_freq < self.min_freq {
             self.min_freq = new_freq;
         }
     }
 
-    fn evict_min_freq(&mut self) -> Option<(K, V)> {
+    fn evict_min_freq(&mut self) -> Option<(K, Arc<V>)> {
         let min_freq = self.min_freq;
         if min_freq == 0 {
             return None;
         }
 
-        let (idx, list_empty) = {
+        let (idx, next_freq, list_empty) = {
             let slots = &mut self.slots;
-            let list = self.freq_lists.get_mut(&min_freq)?;
-            let idx = Self::list_pop_back(slots, list)?;
-            (idx, list.is_empty())
+            let bucket = self.freq_buckets.get_mut(&min_freq)?;
+            let idx = Self::list_pop_back(slots, &mut bucket.list)?;
+            (idx, bucket.next, bucket.list.is_empty())
         };
 
         if list_empty {
-            self.freq_lists.remove(&min_freq);
-            self.min_freq = Self::find_next_min_freq(&self.freq_lists, min_freq.saturating_add(1));
+            let prev = self
+                .freq_buckets
+                .get(&min_freq)
+                .and_then(|bucket| bucket.prev);
+            self.freq_buckets.remove(&min_freq);
+            if let Some(prev_freq) = prev
+                && let Some(bucket) = self.freq_buckets.get_mut(&prev_freq)
+            {
+                bucket.next = next_freq;
+            }
+            if let Some(next_freq) = next_freq
+                && let Some(bucket) = self.freq_buckets.get_mut(&next_freq)
+            {
+                bucket.prev = prev;
+            }
+            if self.min_freq == min_freq {
+                self.min_freq = next_freq.unwrap_or(0);
+            }
         }
 
         let entry = self.remove_slot(idx);
         self.index.remove(&entry.key);
         self.store.record_eviction();
-        let value = self.store.remove(&entry.key).map(|arc| (*arc).clone())?;
+        let value = self.store.remove(&entry.key)?;
         Some((entry.key, value))
     }
 }
 
 // Implementation of specialized traits
-impl<K, V> CoreCache<K, V> for LFUCache<K, V>
+impl<K, V> CoreCache<K, Arc<V>> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
+    fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
@@ -502,12 +585,7 @@ where
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            return self
-                .store
-                .try_insert(key, Arc::new(value))
-                .ok()
-                .flatten()
-                .map(|arc| (*arc).clone());
+            return self.store.try_insert(key, value).ok().flatten();
         }
 
         // Handle zero capacity case - reject all new insertions
@@ -528,7 +606,7 @@ where
             }
         }
 
-        if self.store.try_insert(key.clone(), Arc::new(value)).is_err() {
+        if self.store.try_insert(key.clone(), value).is_err() {
             return None;
         }
 
@@ -538,14 +616,22 @@ where
         };
         let idx = self.allocate_slot(entry);
         self.index.insert(key, idx);
-        let list = self.freq_lists.entry(1).or_default();
-        Self::list_push_front(&mut self.slots, list, idx);
+        if !self.freq_buckets.contains_key(&1) {
+            let next = if self.min_freq == 0 {
+                None
+            } else {
+                Some(self.min_freq)
+            };
+            self.insert_bucket(1, None, next);
+        }
+        let bucket = self.freq_buckets.get_mut(&1).expect("lfu bucket missing");
+        Self::list_push_front(&mut self.slots, &mut bucket.list, idx);
         self.min_freq = 1;
 
         None
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
+    fn get(&mut self, key: &K) -> Option<&Arc<V>> {
         let idx = match self.index.get(key) {
             Some(idx) => *idx,
             None => {
@@ -567,7 +653,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        self.store.get_ref(key).map(|value| value.as_ref())
+        self.store.get_ref(key)
     }
 
     fn contains(&self, key: &K) -> bool {
@@ -587,19 +673,18 @@ where
         self.metrics.record_clear();
         self.store.clear();
         self.index.clear();
-        self.freq_lists.clear();
+        self.freq_buckets.clear();
         self.slots.clear();
         self.free_list.clear();
         self.min_freq = 0;
     }
 }
 
-impl<K, V> MutableCache<K, V> for LFUCache<K, V>
+impl<K, V> MutableCache<K, Arc<V>> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
-    fn remove(&mut self, key: &K) -> Option<V> {
+    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let idx = self.index.remove(key)?;
         let freq = self.slots[idx]
             .entry
@@ -607,31 +692,43 @@ where
             .expect("lfu entry missing")
             .freq;
 
-        let list_empty = if let Some(list) = self.freq_lists.get_mut(&freq) {
-            Self::list_remove(&mut self.slots, list, idx);
-            list.is_empty()
-        } else {
-            false
-        };
+        let (list_empty, next_freq, prev_freq) =
+            if let Some(bucket) = self.freq_buckets.get_mut(&freq) {
+                let prev = bucket.prev;
+                let next = bucket.next;
+                Self::list_remove(&mut self.slots, &mut bucket.list, idx);
+                (bucket.list.is_empty(), next, prev)
+            } else {
+                (false, None, None)
+            };
 
         if list_empty {
-            self.freq_lists.remove(&freq);
+            self.freq_buckets.remove(&freq);
+            if let Some(prev) = prev_freq
+                && let Some(bucket) = self.freq_buckets.get_mut(&prev)
+            {
+                bucket.next = next_freq;
+            }
+            if let Some(next) = next_freq
+                && let Some(bucket) = self.freq_buckets.get_mut(&next)
+            {
+                bucket.prev = prev_freq;
+            }
             if self.min_freq == freq {
-                self.min_freq = Self::find_next_min_freq(&self.freq_lists, freq.saturating_add(1));
+                self.min_freq = next_freq.unwrap_or(0);
             }
         }
 
         let entry = self.remove_slot(idx);
-        self.store.remove(&entry.key).map(|arc| (*arc).clone())
+        self.store.remove(&entry.key)
     }
 }
 
-impl<K, V> LFUCacheTrait<K, V> for LFUCache<K, V>
+impl<K, V> LFUCacheTrait<K, Arc<V>> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
-    fn pop_lfu(&mut self) -> Option<(K, V)> {
+    fn pop_lfu(&mut self) -> Option<(K, Arc<V>)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lfu_call();
 
@@ -645,19 +742,22 @@ where
         result
     }
 
-    fn peek_lfu(&self) -> Option<(&K, &V)> {
+    fn peek_lfu(&self) -> Option<(&K, &Arc<V>)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_call();
 
         let min_freq = self.min_freq;
-        let idx = self.freq_lists.get(&min_freq).and_then(|list| list.tail)?;
+        let idx = self
+            .freq_buckets
+            .get(&min_freq)
+            .and_then(|bucket| bucket.list.tail)?;
         let entry = self.slots[idx].entry.as_ref()?;
         let value = self.store.peek_ref(&entry.key)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_found();
 
-        Some((&entry.key, value.as_ref()))
+        Some((&entry.key, value))
     }
 
     fn frequency(&self, key: &K) -> Option<u64> {
@@ -720,7 +820,6 @@ where
 impl<K, V> LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
     pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
         LfuMetricsSnapshot {
@@ -752,7 +851,6 @@ where
 impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
     fn snapshot(&self) -> LfuMetricsSnapshot {
         self.metrics_snapshot()
@@ -773,14 +871,14 @@ mod tests {
             let mut cache = LFUCache::new(3);
 
             // Test insertion and basic retrieval
-            assert_eq!(cache.insert("key1".to_string(), 100), None);
-            assert_eq!(cache.insert("key2".to_string(), 200), None);
-            assert_eq!(cache.insert("key3".to_string(), 300), None);
+            assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
+            assert_eq!(cache.insert("key2".to_string(), Arc::new(200)), None);
+            assert_eq!(cache.insert("key3".to_string(), Arc::new(300)), None);
 
             // Test retrieval
-            assert_eq!(cache.get(&"key1".to_string()), Some(&100));
-            assert_eq!(cache.get(&"key2".to_string()), Some(&200));
-            assert_eq!(cache.get(&"key3".to_string()), Some(&300));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&100));
+            assert_eq!(cache.get(&"key2".to_string()).map(Arc::as_ref), Some(&200));
+            assert_eq!(cache.get(&"key3".to_string()).map(Arc::as_ref), Some(&300));
 
             // Test non-existent key
             assert_eq!(cache.get(&"nonexistent".to_string()), None);
@@ -796,9 +894,9 @@ mod tests {
             let mut cache = LFUCache::new(3);
 
             // Fill cache to capacity
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // Create different access patterns to establish frequency order
             // key1: frequency = 1 (no additional accesses)
@@ -814,11 +912,11 @@ mod tests {
             assert_eq!(cache.frequency(&"key3".to_string()), Some(2)); // Middle
 
             // Insert new item - should evict key1 (LFU)
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
 
             // Verify key1 was evicted (LFU)
             assert!(!cache.contains(&"key1".to_string()));
-            assert_eq!(cache.get(&"key1".to_string()), None);
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), None);
 
             // Verify other keys still exist
             assert!(cache.contains(&"key2".to_string()));
@@ -838,23 +936,23 @@ mod tests {
             assert_eq!(cache.capacity(), 2);
 
             // Insert first item
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(cache.len(), 1);
             assert!(cache.len() <= cache.capacity());
 
             // Insert second item (at capacity)
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key2".to_string(), Arc::new(200));
             assert_eq!(cache.len(), 2);
             assert!(cache.len() <= cache.capacity());
 
             // Insert third item (should trigger eviction)
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key3".to_string(), Arc::new(300));
             assert_eq!(cache.len(), 2); // Should still be 2
             assert!(cache.len() <= cache.capacity());
 
             // Insert many more items
             for i in 4..=10 {
-                cache.insert(format!("key{}", i), i * 100);
+                cache.insert(format!("key{}", i), Arc::new(i * 100));
                 assert!(cache.len() <= cache.capacity());
                 assert_eq!(cache.len(), 2);
             }
@@ -865,7 +963,7 @@ mod tests {
             assert_eq!(zero_cache.len(), 0);
 
             // Insert into zero capacity cache
-            zero_cache.insert("key".to_string(), 100);
+            zero_cache.insert("key".to_string(), Arc::new(100));
             assert_eq!(zero_cache.len(), 0); // Should remain 0
             assert!(zero_cache.len() <= zero_cache.capacity());
         }
@@ -875,7 +973,7 @@ mod tests {
             let mut cache = LFUCache::new(3);
 
             // Insert initial value
-            assert_eq!(cache.insert("key1".to_string(), 100), None);
+            assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
 
             // Access the key to increase frequency
@@ -884,33 +982,33 @@ mod tests {
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3));
 
             // Update the value - should preserve frequency
-            let old_value = cache.insert("key1".to_string(), 999);
-            assert_eq!(old_value, Some(100));
+            let old_value = cache.insert("key1".to_string(), Arc::new(999));
+            assert_eq!(old_value.as_deref(), Some(&100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3)); // Frequency preserved
 
             // Verify updated value
-            assert_eq!(cache.get(&"key1".to_string()), Some(&999));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&999));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(4)); // Incremented by get
 
             // Verify cache size didn't change
             assert_eq!(cache.len(), 1);
 
             // Add more items to test preservation during eviction scenarios
-            cache.insert("key2".to_string(), 200); // freq = 1
-            cache.insert("key3".to_string(), 300); // freq = 1
+            cache.insert("key2".to_string(), Arc::new(200)); // freq = 1
+            cache.insert("key3".to_string(), Arc::new(300)); // freq = 1
 
             // key1 has frequency 4, others have frequency 1
             // Update key1 again
-            cache.insert("key1".to_string(), 1999);
+            cache.insert("key1".to_string(), Arc::new(1999));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(4)); // Still preserved
 
             // Insert new item to trigger eviction - key2 or key3 should be evicted (freq 1)
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
 
             // key1 should still be there with preserved frequency
             assert!(cache.contains(&"key1".to_string()));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(4));
-            assert_eq!(cache.get(&"key1".to_string()), Some(&1999));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&1999));
         }
 
         #[test]
@@ -918,9 +1016,9 @@ mod tests {
             let mut cache = LFUCache::new(5);
 
             // Insert items with initial frequency of 1
-            cache.insert("a".to_string(), 1);
-            cache.insert("b".to_string(), 2);
-            cache.insert("c".to_string(), 3);
+            cache.insert("a".to_string(), Arc::new(1));
+            cache.insert("b".to_string(), Arc::new(2));
+            cache.insert("c".to_string(), Arc::new(3));
 
             // Verify initial frequencies
             assert_eq!(cache.frequency(&"a".to_string()), Some(1));
@@ -987,7 +1085,7 @@ mod tests {
             let values = [100, 200, 300];
 
             for (i, (&key, &value)) in keys.iter().zip(values.iter()).enumerate() {
-                cache.insert(key.to_string(), value);
+                cache.insert(key.to_string(), Arc::new(value));
 
                 // Verify len is consistent
                 assert_eq!(cache.len(), i + 1);
@@ -996,7 +1094,7 @@ mod tests {
                 assert!(cache.contains(&key.to_string()));
 
                 // Verify get is consistent with contains
-                assert_eq!(cache.get(&key.to_string()), Some(&value));
+                assert_eq!(cache.get(&key.to_string()).map(Arc::as_ref), Some(&value));
             }
 
             // Test consistency across all inserted keys
@@ -1005,7 +1103,7 @@ mod tests {
                 assert!(cache.contains(&key.to_string()));
 
                 // get should return the value
-                assert_eq!(cache.get(&key.to_string()), Some(&value));
+                assert_eq!(cache.get(&key.to_string()).map(Arc::as_ref), Some(&value));
 
                 // frequency should exist
                 assert!(cache.frequency(&key.to_string()).is_some());
@@ -1021,12 +1119,12 @@ mod tests {
             // Verify other keys are unaffected
             assert!(cache.contains(&"key1".to_string()));
             assert!(cache.contains(&"key3".to_string()));
-            assert_eq!(cache.get(&"key1".to_string()), Some(&100));
-            assert_eq!(cache.get(&"key3".to_string()), Some(&300));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&100));
+            assert_eq!(cache.get(&"key3".to_string()).map(Arc::as_ref), Some(&300));
 
             // Test eviction consistency
-            cache.insert("key4".to_string(), 400);
-            cache.insert("key5".to_string(), 500); // Should trigger eviction
+            cache.insert("key4".to_string(), Arc::new(400));
+            cache.insert("key5".to_string(), Arc::new(500)); // Should trigger eviction
 
             assert_eq!(cache.len(), 4); // Should not exceed capacity
 
@@ -1098,27 +1196,34 @@ mod tests {
             assert_eq!(cache.capacity(), 1);
 
             // Insert first item
-            assert_eq!(cache.insert("key1".to_string(), 100), None);
+            assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
             assert_eq!(cache.len(), 1);
             assert!(cache.contains(&"key1".to_string()));
-            assert_eq!(cache.get(&"key1".to_string()), Some(&100));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(2)); // 1 from insert + 1 from get
 
             // Insert second item should evict first
-            assert_eq!(cache.insert("key2".to_string(), 200), None);
+            assert_eq!(cache.insert("key2".to_string(), Arc::new(200)), None);
             assert_eq!(cache.len(), 1);
             assert!(!cache.contains(&"key1".to_string()));
             assert!(cache.contains(&"key2".to_string()));
-            assert_eq!(cache.get(&"key2".to_string()), Some(&200));
+            assert_eq!(cache.get(&"key2".to_string()).map(Arc::as_ref), Some(&200));
 
             // Update existing item should preserve it
-            assert_eq!(cache.insert("key2".to_string(), 999), Some(200));
+            let old_value = cache.insert("key2".to_string(), Arc::new(999));
+            assert_eq!(old_value.as_deref(), Some(&200));
             assert_eq!(cache.len(), 1);
-            assert_eq!(cache.get(&"key2".to_string()), Some(&999));
+            assert_eq!(cache.get(&"key2".to_string()).map(Arc::as_ref), Some(&999));
 
             // Test pop_lfu and peek_lfu
-            assert_eq!(cache.peek_lfu(), Some((&"key2".to_string(), &999)));
-            assert_eq!(cache.pop_lfu(), Some(("key2".to_string(), 999)));
+            assert_eq!(
+                cache.peek_lfu().map(|(key, value)| (key.clone(), **value)),
+                Some(("key2".to_string(), 999))
+            );
+            assert_eq!(
+                cache.pop_lfu().map(|(key, value)| (key, *value)),
+                Some(("key2".to_string(), 999))
+            );
             assert_eq!(cache.len(), 0);
             assert_eq!(cache.peek_lfu(), None);
         }
@@ -1132,8 +1237,8 @@ mod tests {
             assert_eq!(cache.capacity(), 0);
 
             // All insertions should be rejected
-            assert_eq!(cache.insert("key1".to_string(), 100), None);
-            assert_eq!(cache.insert("key2".to_string(), 200), None);
+            assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
+            assert_eq!(cache.insert("key2".to_string(), Arc::new(200)), None);
             assert_eq!(cache.len(), 0);
 
             // All queries should return negative results
@@ -1160,9 +1265,9 @@ mod tests {
             let mut cache = LFUCache::new(3);
 
             // Insert items with same initial frequency
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // All items should have frequency 1
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
@@ -1172,7 +1277,7 @@ mod tests {
             // When cache is full and we insert a new item,
             // one of the items with frequency 1 should be evicted
             let initial_keys = ["key1", "key2", "key3"];
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
             assert_eq!(cache.len(), 3);
 
             // Verify that key4 was inserted
@@ -1205,7 +1310,7 @@ mod tests {
             let mut cache = LFUCache::new(2);
 
             // Insert an item
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
 
             // Simulate approaching overflow by setting a very high frequency
@@ -1229,11 +1334,11 @@ mod tests {
             assert_eq!(freq_after, freq_before + 1);
 
             // Insert another item to test that high frequency item isn't evicted
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key2".to_string(), Arc::new(200));
             assert_eq!(cache.len(), 2);
 
             // Insert third item - key2 should be evicted (lower frequency)
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key3".to_string(), Arc::new(300));
             assert_eq!(cache.len(), 2);
             assert!(cache.contains(&"key1".to_string())); // High frequency item preserved
             assert!(!cache.contains(&"key2".to_string())); // Low frequency item evicted
@@ -1245,7 +1350,7 @@ mod tests {
             let mut cache = LFUCache::new(3);
 
             // Insert initial value
-            assert_eq!(cache.insert("key1".to_string(), 100), None);
+            assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
             assert_eq!(cache.len(), 1);
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
 
@@ -1255,29 +1360,35 @@ mod tests {
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3));
 
             // Insert same key with different value - should update value and preserve frequency
-            assert_eq!(cache.insert("key1".to_string(), 999), Some(100));
+            assert_eq!(
+                cache.insert("key1".to_string(), Arc::new(999)).as_deref(),
+                Some(&100)
+            );
             assert_eq!(cache.len(), 1); // Length unchanged
-            assert_eq!(cache.get(&"key1".to_string()), Some(&999)); // Value updated
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&999)); // Value updated
             assert_eq!(cache.frequency(&"key1".to_string()), Some(4)); // Frequency preserved + 1 for get
 
             // Insert again with another value
-            assert_eq!(cache.insert("key1".to_string(), 777), Some(999));
+            assert_eq!(
+                cache.insert("key1".to_string(), Arc::new(777)).as_deref(),
+                Some(&999)
+            );
             assert_eq!(cache.len(), 1);
-            assert_eq!(cache.get(&"key1".to_string()), Some(&777));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&777));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(5)); // Frequency continues to track
 
             // Add other items to fill cache
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
             assert_eq!(cache.len(), 3);
 
             // Insert fourth item - key1 should not be evicted due to high frequency
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
             assert_eq!(cache.len(), 3);
             assert!(cache.contains(&"key1".to_string())); // High frequency item preserved
 
             // Verify key1 still has the correct value and frequency
-            assert_eq!(cache.get(&"key1".to_string()), Some(&777));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&777));
 
             // One of key2 or key3 should be evicted (both have frequency 1)
             let key2_exists = cache.contains(&"key2".to_string());
@@ -1298,7 +1409,7 @@ mod tests {
             // Insert many items
             for i in 0..capacity {
                 let key = format!("key_{}", i);
-                assert_eq!(cache.insert(key, i), None);
+                assert_eq!(cache.insert(key, Arc::new(i)), None);
             }
 
             // Cache should be at capacity
@@ -1308,13 +1419,13 @@ mod tests {
             for i in 0..capacity {
                 let key = format!("key_{}", i);
                 assert!(cache.contains(&key));
-                assert_eq!(cache.get(&key), Some(&i));
+                assert_eq!(cache.get(&key).map(Arc::as_ref), Some(&i));
                 assert_eq!(cache.frequency(&key), Some(2)); // 1 from insert + 1 from get
             }
 
             // Test that additional insertion triggers eviction
             let new_key = "new_key".to_string();
-            assert_eq!(cache.insert(new_key.clone(), 99999), None);
+            assert_eq!(cache.insert(new_key.clone(), Arc::new(99999)), None);
             assert_eq!(cache.len(), capacity); // Size should remain the same
             assert!(cache.contains(&new_key)); // New item should be present
 
@@ -1331,7 +1442,7 @@ mod tests {
             assert!(!cache.contains(&new_key));
 
             // Test that we can insert after clear
-            cache.insert("after_clear".to_string(), 42);
+            cache.insert("after_clear".to_string(), Arc::new(42));
             assert_eq!(cache.len(), 1);
             assert!(cache.contains(&"after_clear".to_string()));
         }
@@ -1346,9 +1457,9 @@ mod tests {
             let mut cache = LFUCache::new(4);
 
             // Insert items with different access patterns
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // Create different frequencies:
             // key1: freq = 1 (no additional access)
@@ -1366,20 +1477,20 @@ mod tests {
             // Pop LFU should remove key1 (lowest frequency)
             let (key, value) = cache.pop_lfu().unwrap();
             assert_eq!(key, "key1".to_string());
-            assert_eq!(value, 100);
+            assert_eq!(*value, 100);
             assert_eq!(cache.len(), 2);
             assert!(!cache.contains(&"key1".to_string()));
 
             // Next pop should remove key3 (next lowest frequency)
             let (key, value) = cache.pop_lfu().unwrap();
             assert_eq!(key, "key3".to_string());
-            assert_eq!(value, 300);
+            assert_eq!(*value, 300);
             assert_eq!(cache.len(), 1);
 
             // Final pop should remove key2
             let (key, value) = cache.pop_lfu().unwrap();
             assert_eq!(key, "key2".to_string());
-            assert_eq!(value, 200);
+            assert_eq!(*value, 200);
             assert_eq!(cache.len(), 0);
         }
 
@@ -1388,9 +1499,9 @@ mod tests {
             let mut cache = LFUCache::new(4);
 
             // Insert items with different access patterns
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // Create different frequencies:
             // key1: freq = 1 (no additional access)
@@ -1403,27 +1514,27 @@ mod tests {
             // Peek LFU should return key1 (lowest frequency) without removing it
             let (key, value) = cache.peek_lfu().unwrap();
             assert_eq!(key, &"key1".to_string());
-            assert_eq!(value, &100);
+            assert_eq!(value.as_ref(), &100);
             assert_eq!(cache.len(), 3); // Cache size unchanged
             assert!(cache.contains(&"key1".to_string())); // Item still present
 
             // Multiple peeks should return the same result
             let (key2, value2) = cache.peek_lfu().unwrap();
             assert_eq!(key2, &"key1".to_string());
-            assert_eq!(value2, &100);
+            assert_eq!(value2.as_ref(), &100);
 
             // After removing key1, peek should return key3 (next lowest)
             cache.remove(&"key1".to_string());
             let (key, value) = cache.peek_lfu().unwrap();
             assert_eq!(key, &"key3".to_string());
-            assert_eq!(value, &300);
+            assert_eq!(value.as_ref(), &300);
             assert_eq!(cache.len(), 2);
 
             // After removing key3, peek should return key2
             cache.remove(&"key3".to_string());
             let (key, value) = cache.peek_lfu().unwrap();
             assert_eq!(key, &"key2".to_string());
-            assert_eq!(value, &200);
+            assert_eq!(value.as_ref(), &200);
             assert_eq!(cache.len(), 1);
         }
 
@@ -1435,7 +1546,7 @@ mod tests {
             assert_eq!(cache.frequency(&"nonexistent".to_string()), None);
 
             // Insert a key and check initial frequency
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
 
             // Access the key and verify frequency increments
@@ -1446,7 +1557,7 @@ mod tests {
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3));
 
             // Insert another key
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key2".to_string(), Arc::new(200));
             assert_eq!(cache.frequency(&"key2".to_string()), Some(1));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3)); // Unchanged
 
@@ -1457,7 +1568,7 @@ mod tests {
             assert_eq!(cache.frequency(&"key2".to_string()), Some(6)); // 1 + 5
 
             // Update existing key - should preserve frequency
-            cache.insert("key1".to_string(), 999);
+            cache.insert("key1".to_string(), Arc::new(999));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3)); // Preserved
 
             // Remove key and verify frequency is gone
@@ -1474,7 +1585,7 @@ mod tests {
             assert_eq!(cache.reset_frequency(&"nonexistent".to_string()), None);
 
             // Insert a key and increase its frequency
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             cache.get(&"key1".to_string());
             cache.get(&"key1".to_string());
             cache.get(&"key1".to_string());
@@ -1491,7 +1602,7 @@ mod tests {
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
 
             // Insert another key with high frequency
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key2".to_string(), Arc::new(200));
             for _ in 0..10 {
                 cache.get(&"key2".to_string());
             }
@@ -1506,11 +1617,11 @@ mod tests {
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
 
             // Test that cache still works correctly after resets
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key3".to_string(), Arc::new(300));
             assert_eq!(cache.len(), 3);
 
             // All items now have frequency 1, so eviction should be deterministic
-            cache.insert("key4".to_string(), 400); // Should evict one of the items
+            cache.insert("key4".to_string(), Arc::new(400)); // Should evict one of the items
             assert_eq!(cache.len(), 3);
         }
 
@@ -1522,7 +1633,7 @@ mod tests {
             assert_eq!(cache.increment_frequency(&"nonexistent".to_string()), None);
 
             // Insert a key and test increment
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
 
             // Increment frequency manually
@@ -1538,7 +1649,7 @@ mod tests {
             }
 
             // Insert another key
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key2".to_string(), Arc::new(200));
             assert_eq!(cache.frequency(&"key2".to_string()), Some(1));
 
             // Increment key2
@@ -1549,7 +1660,7 @@ mod tests {
             assert_eq!(cache.frequency(&"key1".to_string()), Some(7));
 
             // Test that increment affects LFU ordering
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key3".to_string(), Arc::new(300));
             assert_eq!(cache.frequency(&"key3".to_string()), Some(1));
 
             // key3 should be LFU (freq=1), then key2 (freq=2), then key1 (freq=7)
@@ -1575,21 +1686,21 @@ mod tests {
             assert_eq!(cache.len(), 0);
 
             // Insert and remove to empty the cache again
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(cache.len(), 1);
 
             let (key, value) = cache.pop_lfu().unwrap();
             assert_eq!(key, "key1".to_string());
-            assert_eq!(value, 100);
+            assert_eq!(*value, 100);
             assert_eq!(cache.len(), 0);
 
             // Test pop_lfu on empty cache again
             assert_eq!(cache.pop_lfu(), None);
 
             // Insert multiple items and pop all
-            cache.insert("a".to_string(), 1);
-            cache.insert("b".to_string(), 2);
-            cache.insert("c".to_string(), 3);
+            cache.insert("a".to_string(), Arc::new(1));
+            cache.insert("b".to_string(), Arc::new(2));
+            cache.insert("c".to_string(), Arc::new(3));
             assert_eq!(cache.len(), 3);
 
             // Pop all items
@@ -1622,7 +1733,7 @@ mod tests {
 
             // Test after creating and emptying cache
             let mut cache2 = LFUCache::new(3);
-            cache2.insert("temp".to_string(), 999);
+            cache2.insert("temp".to_string(), Arc::new(999));
             assert!(cache2.peek_lfu().is_some());
 
             cache2.clear();
@@ -1631,8 +1742,8 @@ mod tests {
 
             // Test after removing all items
             let mut cache3 = LFUCache::new(2);
-            cache3.insert("a".to_string(), 1);
-            cache3.insert("b".to_string(), 2);
+            cache3.insert("a".to_string(), Arc::new(1));
+            cache3.insert("b".to_string(), Arc::new(2));
             assert!(cache3.peek_lfu().is_some());
 
             cache3.remove(&"a".to_string());
@@ -1646,10 +1757,10 @@ mod tests {
             let mut cache = LFUCache::new(5);
 
             // Insert items and create different frequency levels
-            cache.insert("low1".to_string(), 1); // will have freq = 1
-            cache.insert("low2".to_string(), 2); // will have freq = 1
-            cache.insert("medium".to_string(), 3); // will have freq = 2
-            cache.insert("high".to_string(), 4); // will have freq = 3
+            cache.insert("low1".to_string(), Arc::new(1)); // will have freq = 1
+            cache.insert("low2".to_string(), Arc::new(2)); // will have freq = 1
+            cache.insert("medium".to_string(), Arc::new(3)); // will have freq = 2
+            cache.insert("high".to_string(), Arc::new(4)); // will have freq = 3
 
             // Create frequency differences
             cache.get(&"medium".to_string()); // medium: freq = 2
@@ -1665,11 +1776,11 @@ mod tests {
             // Test consistent tie-breaking: peek and pop should return same item
             let (peek_key, peek_value) = cache.peek_lfu().unwrap();
             let peek_key_owned = peek_key.clone();
-            let peek_value_owned = *peek_value;
+            let peek_value_owned = **peek_value;
 
             let (pop_key, pop_value) = cache.pop_lfu().unwrap();
             assert_eq!(peek_key_owned, pop_key);
-            assert_eq!(peek_value_owned, pop_value);
+            assert_eq!(peek_value_owned, *pop_value);
 
             // The popped item should be one of the low frequency items
             assert!(pop_key == "low1" || pop_key == "low2");
@@ -1684,19 +1795,19 @@ mod tests {
             // Next should be medium frequency item
             let (third_key, third_value) = cache.pop_lfu().unwrap();
             assert_eq!(third_key, "medium".to_string());
-            assert_eq!(third_value, 3);
+            assert_eq!(*third_value, 3);
             assert_eq!(cache.len(), 1);
 
             // Finally the high frequency item
             let (last_key, last_value) = cache.pop_lfu().unwrap();
             assert_eq!(last_key, "high".to_string());
-            assert_eq!(last_value, 4);
+            assert_eq!(*last_value, 4);
             assert_eq!(cache.len(), 0);
 
             // Test with all same frequency
-            cache.insert("a".to_string(), 1);
-            cache.insert("b".to_string(), 2);
-            cache.insert("c".to_string(), 3);
+            cache.insert("a".to_string(), Arc::new(1));
+            cache.insert("b".to_string(), Arc::new(2));
+            cache.insert("c".to_string(), Arc::new(3));
 
             // All should have frequency 1
             assert_eq!(cache.frequency(&"a".to_string()), Some(1));
@@ -1723,9 +1834,9 @@ mod tests {
             let mut cache = LFUCache::new(5);
 
             // Insert items and build up frequencies
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // Increase frequencies
             for _ in 0..5 {
@@ -1743,7 +1854,7 @@ mod tests {
 
             // Remove key1 and verify its frequency is gone
             let removed_value = cache.remove(&"key1".to_string());
-            assert_eq!(removed_value, Some(100));
+            assert_eq!(removed_value.as_deref(), Some(&100));
             assert_eq!(cache.frequency(&"key1".to_string()), None);
             assert_eq!(cache.len(), 2);
 
@@ -1758,7 +1869,7 @@ mod tests {
             // Remove via pop_lfu
             let (popped_key, popped_value) = cache.pop_lfu().unwrap();
             assert_eq!(popped_key, "key3".to_string());
-            assert_eq!(popped_value, 300);
+            assert_eq!(*popped_value, 300);
             assert_eq!(cache.frequency(&"key3".to_string()), None);
             assert_eq!(cache.len(), 1);
 
@@ -1776,7 +1887,7 @@ mod tests {
             assert_eq!(cache.pop_lfu(), None);
 
             // Test re-inserting with same keys creates fresh frequencies
-            cache.insert("key1".to_string(), 999);
+            cache.insert("key1".to_string(), Arc::new(999));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1)); // Fresh start
         }
 
@@ -1785,9 +1896,9 @@ mod tests {
             let mut cache = LFUCache::new(5);
 
             // Insert items and build up frequencies
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // Increase frequencies significantly
             for _ in 0..10 {
@@ -1825,8 +1936,8 @@ mod tests {
             assert!(!cache.contains(&"key3".to_string()));
 
             // Test that we can insert fresh items after clear
-            cache.insert("key1".to_string(), 999);
-            cache.insert("new_key".to_string(), 888);
+            cache.insert("key1".to_string(), Arc::new(999));
+            cache.insert("new_key".to_string(), Arc::new(888));
 
             // Frequencies should start fresh
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
@@ -1861,9 +1972,9 @@ mod tests {
             assert_eq!(cache.len(), 0);
 
             // Insert items and verify frequency consistency
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // All items should have initial frequency of 1
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
@@ -1881,7 +1992,7 @@ mod tests {
             assert_eq!(cache.frequency(&"key3".to_string()), Some(1));
 
             // Test update preserves frequency
-            cache.insert("key1".to_string(), 999);
+            cache.insert("key1".to_string(), Arc::new(999));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3)); // Should be preserved
 
             // Test manual frequency operations
@@ -1911,25 +2022,25 @@ mod tests {
             assert_eq!(cache.len(), 0);
 
             // Test incremental insertions
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(cache.len(), 1);
 
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key2".to_string(), Arc::new(200));
             assert_eq!(cache.len(), 2);
 
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key3".to_string(), Arc::new(300));
             assert_eq!(cache.len(), 3);
 
             // Test updating existing key doesn't change length
-            cache.insert("key1".to_string(), 999);
+            cache.insert("key1".to_string(), Arc::new(999));
             assert_eq!(cache.len(), 3);
 
             // Test insert at capacity (should increase length)
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
             assert_eq!(cache.len(), 4);
 
             // Test insert beyond capacity (should evict and maintain length)
-            cache.insert("key5".to_string(), 500);
+            cache.insert("key5".to_string(), Arc::new(500));
             assert_eq!(cache.len(), 4); // Should remain at capacity
 
             // Test manual removals
@@ -1962,16 +2073,16 @@ mod tests {
             assert_eq!(cache.len(), 0);
 
             // Test clear operation
-            cache.insert("test1".to_string(), 1);
-            cache.insert("test2".to_string(), 2);
+            cache.insert("test1".to_string(), Arc::new(1));
+            cache.insert("test2".to_string(), Arc::new(2));
             assert_eq!(cache.len(), 2);
 
             cache.clear();
             assert_eq!(cache.len(), 0);
 
             // Test that get operations don't affect length
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
             assert_eq!(cache.len(), 2);
 
             cache.get(&"key1".to_string());
@@ -1995,14 +2106,14 @@ mod tests {
                 if capacity > 0 {
                     // Insert items up to capacity
                     for i in 0..capacity {
-                        cache.insert(format!("key{}", i), i as i32);
+                        cache.insert(format!("key{}", i), Arc::new(i as i32));
                         assert_eq!(cache.capacity(), capacity); // Should never change
                         assert!(cache.len() <= capacity); // Should never exceed capacity
                     }
 
                     // Insert beyond capacity
                     for i in capacity..(capacity + 5) {
-                        cache.insert(format!("key{}", i), i as i32);
+                        cache.insert(format!("key{}", i), Arc::new(i as i32));
                         assert_eq!(cache.capacity(), capacity); // Should never change
                         assert_eq!(cache.len(), capacity); // Should stay at capacity
                     }
@@ -2022,7 +2133,7 @@ mod tests {
                 } else {
                     // Test zero capacity case
                     assert_eq!(cache.capacity(), 0);
-                    cache.insert("key1".to_string(), 100);
+                    cache.insert("key1".to_string(), Arc::new(100));
                     assert_eq!(cache.len(), 0); // Should remain empty
                     assert_eq!(cache.capacity(), 0); // Should remain 0
                 }
@@ -2036,7 +2147,7 @@ mod tests {
             for i in 0..100 {
                 match i % 4 {
                     0 => {
-                        cache.insert(format!("key{}", i % 10), i);
+                        cache.insert(format!("key{}", i % 10), Arc::new(i));
                     },
                     1 => {
                         cache.get(&format!("key{}", i % 10));
@@ -2061,11 +2172,11 @@ mod tests {
             let mut cache = LFUCache::new(5);
 
             // Populate cache with data and complex state
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
-            cache.insert("key4".to_string(), 400);
-            cache.insert("key5".to_string(), 500);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
+            cache.insert("key4".to_string(), Arc::new(400));
+            cache.insert("key5".to_string(), Arc::new(500));
 
             // Create complex frequency patterns
             for _ in 0..10 {
@@ -2118,10 +2229,13 @@ mod tests {
             assert_eq!(cache.peek_lfu(), None);
 
             // Verify cache is ready for fresh use
-            cache.insert("new_key".to_string(), 999);
+            cache.insert("new_key".to_string(), Arc::new(999));
             assert_eq!(cache.len(), 1);
             assert_eq!(cache.frequency(&"new_key".to_string()), Some(1));
-            assert_eq!(cache.get(&"new_key".to_string()), Some(&999));
+            assert_eq!(
+                cache.get(&"new_key".to_string()).map(Arc::as_ref),
+                Some(&999)
+            );
 
             // Test multiple clears are safe
             cache.clear();
@@ -2132,8 +2246,8 @@ mod tests {
             assert_eq!(cache.capacity(), 5); // Capacity still preserved
 
             // Test clear after partial population
-            cache.insert("test1".to_string(), 1);
-            cache.insert("test2".to_string(), 2);
+            cache.insert("test1".to_string(), Arc::new(1));
+            cache.insert("test2".to_string(), Arc::new(2));
             assert_eq!(cache.len(), 2);
 
             cache.clear();
@@ -2147,10 +2261,10 @@ mod tests {
             let mut cache = LFUCache::new(5);
 
             // Setup cache with various frequencies
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
+            cache.insert("key4".to_string(), Arc::new(400));
 
             // Create different frequency patterns
             cache.get(&"key1".to_string()); // key1: freq = 2
@@ -2163,7 +2277,7 @@ mod tests {
 
             // Test successful removal
             let removed_value = cache.remove(&"key2".to_string());
-            assert_eq!(removed_value, Some(200));
+            assert_eq!(removed_value.as_deref(), Some(&200));
             assert_eq!(cache.len(), 3);
 
             // Verify key is completely gone
@@ -2186,24 +2300,24 @@ mod tests {
 
             // Test removal of key with highest frequency
             let removed_high_freq = cache.remove(&"key1".to_string());
-            assert_eq!(removed_high_freq, Some(100));
+            assert_eq!(removed_high_freq.as_deref(), Some(&100));
             assert_eq!(cache.len(), 2);
             assert_eq!(cache.frequency(&"key1".to_string()), None);
 
             // Test removal of key with lowest frequency
             let removed_low_freq = cache.remove(&"key4".to_string());
-            assert_eq!(removed_low_freq, Some(400));
+            assert_eq!(removed_low_freq.as_deref(), Some(&400));
             assert_eq!(cache.len(), 1);
             assert_eq!(cache.frequency(&"key4".to_string()), None);
 
             // Verify LFU operations still work correctly after removals
             let (lfu_key, lfu_value) = cache.peek_lfu().unwrap();
             assert_eq!(lfu_key, &"key3".to_string());
-            assert_eq!(lfu_value, &300);
+            assert_eq!(lfu_value.as_ref(), &300);
 
             // Test removing the last item
             let removed_last = cache.remove(&"key3".to_string());
-            assert_eq!(removed_last, Some(300));
+            assert_eq!(removed_last.as_deref(), Some(&300));
             assert_eq!(cache.len(), 0);
 
             // Verify empty cache state
@@ -2216,7 +2330,7 @@ mod tests {
             assert_eq!(cache.len(), 0);
 
             // Test cache functionality after complete emptying via removals
-            cache.insert("new_key".to_string(), 999);
+            cache.insert("new_key".to_string(), Arc::new(999));
             assert_eq!(cache.len(), 1);
             assert_eq!(cache.frequency(&"new_key".to_string()), Some(1));
 
@@ -2224,10 +2338,13 @@ mod tests {
             cache.remove(&"new_key".to_string());
             assert_eq!(cache.len(), 0);
 
-            cache.insert("new_key".to_string(), 888);
+            cache.insert("new_key".to_string(), Arc::new(888));
             assert_eq!(cache.len(), 1);
             assert_eq!(cache.frequency(&"new_key".to_string()), Some(1)); // Fresh frequency
-            assert_eq!(cache.get(&"new_key".to_string()), Some(&888));
+            assert_eq!(
+                cache.get(&"new_key".to_string()).map(Arc::as_ref),
+                Some(&888)
+            );
         }
 
         #[test]
@@ -2235,9 +2352,9 @@ mod tests {
             let mut cache = LFUCache::new(3);
 
             // Fill cache to capacity
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
             assert_eq!(cache.len(), 3);
 
             // Create frequency differences
@@ -2247,7 +2364,7 @@ mod tests {
             // key3: freq = 1 (lowest)
 
             // Insert beyond capacity - should evict key3 (LFU)
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
             assert_eq!(cache.len(), 3); // Should remain at capacity
 
             // Verify eviction occurred correctly
@@ -2263,7 +2380,7 @@ mod tests {
             assert_eq!(cache.frequency(&"key4".to_string()), Some(1)); // New item
 
             // Test eviction with tie-breaking
-            cache.insert("key5".to_string(), 500);
+            cache.insert("key5".to_string(), Arc::new(500));
             assert_eq!(cache.len(), 3);
 
             // Either key4 or key5 should be evicted (both have freq=1)
@@ -2277,8 +2394,8 @@ mod tests {
             assert!(cache.contains(&"key2".to_string()));
 
             // Test multiple evictions
-            cache.insert("key6".to_string(), 600);
-            cache.insert("key7".to_string(), 700);
+            cache.insert("key6".to_string(), Arc::new(600));
+            cache.insert("key7".to_string(), Arc::new(700));
             assert_eq!(cache.len(), 3); // Should still be at capacity
 
             // key1 and key2 should still be there due to higher frequency
@@ -2301,7 +2418,7 @@ mod tests {
 
             // Test eviction with zero capacity
             let mut zero_cache = LFUCache::<String, i32>::new(0);
-            zero_cache.insert("key1".to_string(), 100);
+            zero_cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(zero_cache.len(), 0); // Should reject insertion
             assert!(!zero_cache.contains(&"key1".to_string()));
 
@@ -2309,8 +2426,8 @@ mod tests {
             let mut test_cache = LFUCache::new(2);
 
             // Insert items with known frequencies
-            test_cache.insert("low".to_string(), 1);
-            test_cache.insert("high".to_string(), 2);
+            test_cache.insert("low".to_string(), Arc::new(1));
+            test_cache.insert("high".to_string(), Arc::new(2));
 
             // Make high frequency item
             for _ in 0..5 {
@@ -2318,7 +2435,7 @@ mod tests {
             }
 
             // Insert new item - should evict "low"
-            test_cache.insert("new".to_string(), 3);
+            test_cache.insert("new".to_string(), Arc::new(3));
             assert_eq!(test_cache.len(), 2);
             assert!(!test_cache.contains(&"low".to_string()));
             assert!(test_cache.contains(&"high".to_string()));
@@ -2335,9 +2452,9 @@ mod tests {
             let mut cache = LFUCache::new(5);
 
             // Insert items with initial frequency of 1
-            cache.insert("key1".to_string(), 100);
-            cache.insert("key2".to_string(), 200);
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key1".to_string(), Arc::new(100));
+            cache.insert("key2".to_string(), Arc::new(200));
+            cache.insert("key3".to_string(), Arc::new(300));
 
             // Verify initial frequencies
             assert_eq!(cache.frequency(&"key1".to_string()), Some(1));
@@ -2345,17 +2462,17 @@ mod tests {
             assert_eq!(cache.frequency(&"key3".to_string()), Some(1));
 
             // Test single get operations
-            assert_eq!(cache.get(&"key1".to_string()), Some(&100));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(2));
 
-            assert_eq!(cache.get(&"key2".to_string()), Some(&200));
+            assert_eq!(cache.get(&"key2".to_string()).map(Arc::as_ref), Some(&200));
             assert_eq!(cache.frequency(&"key2".to_string()), Some(2));
 
             // Test multiple get operations on same key
-            assert_eq!(cache.get(&"key1".to_string()), Some(&100));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(3));
 
-            assert_eq!(cache.get(&"key1".to_string()), Some(&100));
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&100));
             assert_eq!(cache.frequency(&"key1".to_string()), Some(4));
 
             // Test get on non-existent key doesn't create entry
@@ -2376,13 +2493,13 @@ mod tests {
             assert_eq!(cache.frequency(&"key3".to_string()), Some(6)); // 1 + 5
 
             // Test get after insert update preserves frequency
-            cache.insert("key1".to_string(), 999); // Update value
+            cache.insert("key1".to_string(), Arc::new(999)); // Update value
             assert_eq!(cache.frequency(&"key1".to_string()), Some(4)); // Frequency preserved
-            assert_eq!(cache.get(&"key1".to_string()), Some(&999)); // New value
+            assert_eq!(cache.get(&"key1".to_string()).map(Arc::as_ref), Some(&999)); // New value
             assert_eq!(cache.frequency(&"key1".to_string()), Some(5)); // Frequency incremented
 
             // Test frequency increments affect LFU ordering
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
             assert_eq!(cache.frequency(&"key4".to_string()), Some(1)); // New item
 
             // key4 should be LFU now
@@ -2395,7 +2512,7 @@ mod tests {
             assert_eq!(cache.frequency(&"key4".to_string()), Some(3));
 
             // Insert a new item that will become the new LFU
-            cache.insert("key5".to_string(), 500);
+            cache.insert("key5".to_string(), Arc::new(500));
             assert_eq!(cache.frequency(&"key5".to_string()), Some(1));
 
             // Now key5 should be LFU (frequency = 1)
@@ -2467,16 +2584,16 @@ mod tests {
             verify_invariants(&cache);
 
             // Test invariants after insertions
-            cache.insert("key1".to_string(), 100);
+            cache.insert("key1".to_string(), Arc::new(100));
             verify_invariants(&cache);
 
-            cache.insert("key2".to_string(), 200);
+            cache.insert("key2".to_string(), Arc::new(200));
             verify_invariants(&cache);
 
-            cache.insert("key3".to_string(), 300);
+            cache.insert("key3".to_string(), Arc::new(300));
             verify_invariants(&cache);
 
-            cache.insert("key4".to_string(), 400);
+            cache.insert("key4".to_string(), Arc::new(400));
             verify_invariants(&cache);
 
             // Test invariants after gets (frequency changes)
@@ -2488,14 +2605,14 @@ mod tests {
             verify_invariants(&cache);
 
             // Test invariants after capacity overflow (eviction)
-            cache.insert("key5".to_string(), 500);
+            cache.insert("key5".to_string(), Arc::new(500));
             verify_invariants(&cache);
 
             // Test invariants after multiple operations
             for i in 0..20 {
                 match i % 5 {
                     0 => {
-                        cache.insert(format!("temp{}", i), i);
+                        cache.insert(format!("temp{}", i), Arc::new(i));
                     },
                     1 => {
                         cache.get(&"key1".to_string());
@@ -2535,8 +2652,8 @@ mod tests {
             }
 
             // Test invariants after clear
-            cache.insert("test1".to_string(), 1);
-            cache.insert("test2".to_string(), 2);
+            cache.insert("test1".to_string(), Arc::new(1));
+            cache.insert("test2".to_string(), Arc::new(2));
             verify_invariants(&cache);
 
             cache.clear();
@@ -2547,24 +2664,24 @@ mod tests {
             // Zero capacity cache
             let mut zero_cache = LFUCache::<String, i32>::new(0);
             verify_invariants(&zero_cache);
-            zero_cache.insert("test".to_string(), 1);
+            zero_cache.insert("test".to_string(), Arc::new(1));
             verify_invariants(&zero_cache);
 
             // Single capacity cache
             let mut single_cache = LFUCache::new(1);
             verify_invariants(&single_cache);
 
-            single_cache.insert("only".to_string(), 1);
+            single_cache.insert("only".to_string(), Arc::new(1));
             verify_invariants(&single_cache);
 
-            single_cache.insert("replace".to_string(), 2);
+            single_cache.insert("replace".to_string(), Arc::new(2));
             verify_invariants(&single_cache);
 
             // Test with complex frequency patterns
             let mut complex_cache = LFUCache::new(3);
-            complex_cache.insert("a".to_string(), 1);
-            complex_cache.insert("b".to_string(), 2);
-            complex_cache.insert("c".to_string(), 3);
+            complex_cache.insert("a".to_string(), Arc::new(1));
+            complex_cache.insert("b".to_string(), Arc::new(2));
+            complex_cache.insert("c".to_string(), Arc::new(3));
 
             // Create Fibonacci-like frequency pattern
             for i in 1..=10 {

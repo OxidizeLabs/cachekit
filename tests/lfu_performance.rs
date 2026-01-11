@@ -1,6 +1,7 @@
 // ==============================================
 // LFU PERFORMANCE TESTS (integration)
 // ==============================================
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod lookup_performance {
@@ -19,7 +20,7 @@ mod lookup_performance {
 
         // Setup: Fill cache with items
         for i in 0..cache_size {
-            cache.insert(format!("key_{}", i), i);
+            cache.insert(format!("key_{}", i), Arc::new(i));
         }
 
         // Test 1: Uniform frequency distribution (all items accessed equally)
@@ -102,7 +103,7 @@ mod lookup_performance {
 
         // Setup: Fill cache with items
         for i in 0..cache_size {
-            cache.insert(format!("item_{}", i), i);
+            cache.insert(format!("item_{}", i), Arc::new(i));
         }
 
         // Test 1: Contains performance for existing keys
@@ -178,7 +179,7 @@ mod lookup_performance {
         let mut large_cache = LFUCache::new(large_cache_size);
 
         for i in 0..large_cache_size {
-            large_cache.insert(format!("large_{}", i), i);
+            large_cache.insert(format!("large_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
@@ -206,7 +207,7 @@ mod lookup_performance {
 
         // Setup: Fill cache and create varied frequency distributions
         for i in 0..cache_size {
-            cache.insert(format!("freq_{}", i), i);
+            cache.insert(format!("freq_{}", i), Arc::new(i));
         }
 
         // Create different frequency patterns
@@ -349,7 +350,7 @@ mod lookup_performance {
         let mut small_cache = LFUCache::new(small_cache_size);
 
         for i in 0..small_cache_size {
-            small_cache.insert(format!("small_{}", i), i);
+            small_cache.insert(format!("small_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
@@ -363,7 +364,7 @@ mod lookup_performance {
         let mut medium_cache = LFUCache::new(medium_cache_size);
 
         for i in 0..medium_cache_size {
-            medium_cache.insert(format!("medium_{}", i), i);
+            medium_cache.insert(format!("medium_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
@@ -377,7 +378,7 @@ mod lookup_performance {
         let mut large_cache = LFUCache::new(large_cache_size);
 
         for i in 0..large_cache_size {
-            large_cache.insert(format!("large_{}", i), i);
+            large_cache.insert(format!("large_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
@@ -391,7 +392,7 @@ mod lookup_performance {
 
         // Insert items with intentionally varied frequencies
         for i in 0..50000 {
-            varied_cache.insert(format!("varied_{}", i), i);
+            varied_cache.insert(format!("varied_{}", i), Arc::new(i));
         }
 
         // Create frequency distribution: some high, some medium, many low
@@ -427,7 +428,7 @@ mod lookup_performance {
         // Test 5: Performance when LFU changes frequently
         let mut dynamic_cache = LFUCache::new(5000);
         for i in 0..5000 {
-            dynamic_cache.insert(format!("dynamic_{}", i), i);
+            dynamic_cache.insert(format!("dynamic_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
@@ -491,7 +492,7 @@ mod lookup_performance {
         // Test 6: Performance consistency across multiple operations
         let mut consistency_cache = LFUCache::new(20000);
         for i in 0..20000 {
-            consistency_cache.insert(format!("consistency_{}", i), i);
+            consistency_cache.insert(format!("consistency_{}", i), Arc::new(i));
         }
 
         let mut durations = Vec::new();
@@ -526,7 +527,7 @@ mod lookup_performance {
 
         // Setup: Fill cache with items
         for i in 0..cache_size {
-            cache.insert(format!("hit_{}", i), i);
+            cache.insert(format!("hit_{}", i), Arc::new(i));
         }
 
         // Test 1: Pure cache hits performance
@@ -751,7 +752,7 @@ mod insertion_performance {
         // Phase 1: Fill cache to capacity without eviction
         let start = Instant::now();
         for i in 0..cache_capacity {
-            cache.insert(format!("initial_{}", i), i);
+            cache.insert(format!("initial_{}", i), Arc::new(i));
         }
         let fill_duration = start.elapsed();
         assert_eq!(cache.len(), cache_capacity);
@@ -760,7 +761,7 @@ mod insertion_performance {
         let eviction_count = 2000;
         let start = Instant::now();
         for i in 0..eviction_count {
-            cache.insert(format!("evict_{}", i), i + cache_capacity);
+            cache.insert(format!("evict_{}", i), Arc::new(i + cache_capacity));
         }
         let eviction_duration = start.elapsed();
         assert_eq!(cache.len(), cache_capacity); // Should still be at capacity
@@ -793,7 +794,7 @@ mod insertion_performance {
 
         // Fill cache
         for i in 0..1000 {
-            cache_with_access.insert(format!("access_{}", i), i);
+            cache_with_access.insert(format!("access_{}", i), Arc::new(i));
         }
 
         // Create frequency distribution by accessing some items
@@ -806,7 +807,7 @@ mod insertion_performance {
         // Now test eviction with mixed frequency items
         let start = Instant::now();
         for i in 0..500 {
-            cache_with_access.insert(format!("new_evict_{}", i), i + 2000);
+            cache_with_access.insert(format!("new_evict_{}", i), Arc::new(i + 2000));
         }
         let mixed_eviction_duration = start.elapsed();
 
@@ -829,13 +830,13 @@ mod insertion_performance {
 
             // Fill to capacity
             for i in 0..size {
-                test_cache.insert(format!("scale_{}", i), i);
+                test_cache.insert(format!("scale_{}", i), Arc::new(i));
             }
 
             // Measure eviction performance
             let start = Instant::now();
             for i in 0..100 {
-                test_cache.insert(format!("evict_scale_{}", i), i + size);
+                test_cache.insert(format!("evict_scale_{}", i), Arc::new(i + size));
             }
             let duration = start.elapsed();
             eviction_times.push(duration);
@@ -868,7 +869,7 @@ mod insertion_performance {
         for &batch_size in &batch_sizes {
             let start = Instant::now();
             for i in 0..batch_size {
-                small_cache.insert(format!("small_batch_{}_{}", batch_size, i), i);
+                small_cache.insert(format!("small_batch_{}_{}", batch_size, i), Arc::new(i));
             }
             small_batch_times.push(start.elapsed());
         }
@@ -889,7 +890,7 @@ mod insertion_performance {
 
         let start = Instant::now();
         for i in 0..large_cache_size {
-            large_cache.insert(format!("large_{}", i), i);
+            large_cache.insert(format!("large_{}", i), Arc::new(i));
         }
         let large_batch_duration = start.elapsed();
 
@@ -905,14 +906,14 @@ mod insertion_performance {
         // Small values (integers)
         let start = Instant::now();
         for i in 0..1000 {
-            value_size_cache.insert(format!("int_{}", i), i);
+            value_size_cache.insert(format!("int_{}", i), Arc::new(i));
         }
         let small_value_duration = start.elapsed();
 
         // Large values (also integers for consistency, but simulating larger data)
         let start = Instant::now();
         for i in 0..1000 {
-            value_size_cache.insert(format!("large_{}", i), i * 1000000);
+            value_size_cache.insert(format!("large_{}", i), Arc::new(i * 1000000));
         }
         let large_value_duration = start.elapsed();
 
@@ -934,7 +935,7 @@ mod insertion_performance {
         let start = Instant::now();
         for i in 0..1000 {
             // Insert
-            mixed_cache.insert(format!("mixed_{}", i), i);
+            mixed_cache.insert(format!("mixed_{}", i), Arc::new(i));
 
             // Occasionally read to create frequency variance
             if i % 10 == 0 && i > 0 {
@@ -960,7 +961,7 @@ mod insertion_performance {
 
         let start = Instant::now();
         for i in 0..throughput_cache_size {
-            throughput_cache.insert(format!("throughput_{}", i), i);
+            throughput_cache.insert(format!("throughput_{}", i), Arc::new(i));
         }
         let throughput_duration = start.elapsed();
 
@@ -992,7 +993,7 @@ mod insertion_performance {
 
             let start = Instant::now();
             for i in 0..size {
-                allocation_cache.insert(format!("prog_{}_{}", size, i), i);
+                allocation_cache.insert(format!("prog_{}_{}", size, i), Arc::new(i));
             }
             progressive_times.push(start.elapsed());
         }
@@ -1022,7 +1023,7 @@ mod insertion_performance {
         // Phase 1: Initial population with new insertions
         let start = Instant::now();
         for i in 0..cache_size {
-            cache.insert(format!("new_{}", i), i);
+            cache.insert(format!("new_{}", i), Arc::new(i));
         }
         let new_insertion_duration = start.elapsed();
         assert_eq!(cache.len(), cache_size);
@@ -1032,7 +1033,7 @@ mod insertion_performance {
         let start = Instant::now();
         for i in 0..update_count {
             let key = format!("new_{}", i % cache_size);
-            cache.insert(key, i + 10000);
+            cache.insert(key, Arc::new(i + 10000));
         }
         let update_duration = start.elapsed();
         assert_eq!(cache.len(), cache_size); // Length shouldn't change
@@ -1065,7 +1066,7 @@ mod insertion_performance {
 
         // Pre-populate half the cache
         for i in 0..1500 {
-            mixed_cache.insert(format!("mixed_{}", i), i);
+            mixed_cache.insert(format!("mixed_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
@@ -1073,10 +1074,10 @@ mod insertion_performance {
             if i % 2 == 0 {
                 // Update existing key
                 let key = format!("mixed_{}", i % 1500);
-                mixed_cache.insert(key, i + 5000);
+                mixed_cache.insert(key, Arc::new(i + 5000));
             } else {
                 // Insert new key (might trigger eviction)
-                mixed_cache.insert(format!("new_mixed_{}", i), i);
+                mixed_cache.insert(format!("new_mixed_{}", i), Arc::new(i));
             }
         }
         let mixed_duration = start.elapsed();
@@ -1092,7 +1093,7 @@ mod insertion_performance {
 
         // Create items with different frequencies
         for i in 0..2000 {
-            freq_cache.insert(format!("freq_{}", i), i);
+            freq_cache.insert(format!("freq_{}", i), Arc::new(i));
         }
 
         // Create frequency distribution
@@ -1112,19 +1113,19 @@ mod insertion_performance {
         // Test updating items with different frequencies
         let start = Instant::now();
         for i in 0..100 {
-            freq_cache.insert(format!("freq_{}", i), i + 10000); // High freq
+            freq_cache.insert(format!("freq_{}", i), Arc::new(i + 10000)); // High freq
         }
         let high_freq_update_duration = start.elapsed();
 
         let start = Instant::now();
         for i in 200..300 {
-            freq_cache.insert(format!("freq_{}", i), i + 10000); // Medium freq
+            freq_cache.insert(format!("freq_{}", i), Arc::new(i + 10000)); // Medium freq
         }
         let medium_freq_update_duration = start.elapsed();
 
         let start = Instant::now();
         for i in 1800..1900 {
-            freq_cache.insert(format!("freq_{}", i), i + 10000); // Low freq
+            freq_cache.insert(format!("freq_{}", i), Arc::new(i + 10000)); // Low freq
         }
         let low_freq_update_duration = start.elapsed();
 
@@ -1150,20 +1151,20 @@ mod insertion_performance {
 
         // Fill to capacity
         for i in 0..1000 {
-            full_cache.insert(format!("full_{}", i), i);
+            full_cache.insert(format!("full_{}", i), Arc::new(i));
         }
 
         // Test updates on full cache
         let start = Instant::now();
         for i in 0..500 {
-            full_cache.insert(format!("full_{}", i), i + 2000);
+            full_cache.insert(format!("full_{}", i), Arc::new(i + 2000));
         }
         let full_update_duration = start.elapsed();
 
         // Test new insertions on full cache (triggers eviction)
         let start = Instant::now();
         for i in 0..500 {
-            full_cache.insert(format!("new_full_{}", i), i + 3000);
+            full_cache.insert(format!("new_full_{}", i), Arc::new(i + 3000));
         }
         let full_new_duration = start.elapsed();
 
@@ -1184,7 +1185,7 @@ mod insertion_performance {
 
         // Initial population
         for i in 0..5000 {
-            batch_cache.insert(format!("batch_{}", i), i);
+            batch_cache.insert(format!("batch_{}", i), Arc::new(i));
         }
 
         // Batch updates
@@ -1194,7 +1195,7 @@ mod insertion_performance {
         for &batch_size in &batch_sizes {
             let start = Instant::now();
             for i in 0..batch_size {
-                batch_cache.insert(format!("batch_{}", i), i + 20000);
+                batch_cache.insert(format!("batch_{}", i), Arc::new(i + 20000));
             }
             batch_update_times.push(start.elapsed());
         }
@@ -1236,7 +1237,10 @@ mod insertion_performance {
 
         // Verify functional correctness after performance tests
         assert!(batch_cache.contains(&"batch_0".to_string()));
-        assert_eq!(batch_cache.get(&"batch_0".to_string()), Some(&20000));
+        assert_eq!(
+            batch_cache.get(&"batch_0".to_string()).map(Arc::as_ref),
+            Some(&20000)
+        );
         assert_eq!(batch_cache.len(), 5000);
     }
 
@@ -1253,7 +1257,7 @@ mod insertion_performance {
         // Measure pure insertion time (frequency tracking included)
         let start = Instant::now();
         for i in 0..cache_size {
-            cache.insert(format!("track_{}", i), i);
+            cache.insert(format!("track_{}", i), Arc::new(i));
         }
         let insertion_with_tracking_duration = start.elapsed();
 
@@ -1273,13 +1277,13 @@ mod insertion_performance {
 
         // Initial population
         for i in 0..5000 {
-            tracking_cache.insert(format!("freq_track_{}", i), i);
+            tracking_cache.insert(format!("freq_track_{}", i), Arc::new(i));
         }
 
         // Measure update performance (should preserve frequency)
         let start = Instant::now();
         for i in 0..1000 {
-            tracking_cache.insert(format!("freq_track_{}", i), i + 10000);
+            tracking_cache.insert(format!("freq_track_{}", i), Arc::new(i + 10000));
         }
         let update_tracking_duration = start.elapsed();
 
@@ -1302,7 +1306,7 @@ mod insertion_performance {
 
         // Fill cache
         for i in 0..2000 {
-            eviction_cache.insert(format!("evict_track_{}", i), i);
+            eviction_cache.insert(format!("evict_track_{}", i), Arc::new(i));
         }
 
         // Create frequency variance
@@ -1315,7 +1319,7 @@ mod insertion_performance {
         // Now measure eviction with frequency consideration
         let start = Instant::now();
         for i in 0..1000 {
-            eviction_cache.insert(format!("new_evict_track_{}", i), i + 5000);
+            eviction_cache.insert(format!("new_evict_track_{}", i), Arc::new(i + 5000));
         }
         let eviction_tracking_duration = start.elapsed();
 
@@ -1334,7 +1338,7 @@ mod insertion_performance {
 
         // Insert items
         for i in 0..3000 {
-            accuracy_cache.insert(format!("accuracy_{}", i), i);
+            accuracy_cache.insert(format!("accuracy_{}", i), Arc::new(i));
         }
 
         // Create complex frequency patterns
@@ -1379,7 +1383,7 @@ mod insertion_performance {
         // Insert large number of items and verify each has correct frequency
         let start = Instant::now();
         for i in 0..20000 {
-            memory_test_cache.insert(format!("memory_test_{}", i), i);
+            memory_test_cache.insert(format!("memory_test_{}", i), Arc::new(i));
 
             // Verify frequency tracking for every 1000th item
             if i % 1000 == 0 {
@@ -1402,17 +1406,17 @@ mod insertion_performance {
 
         // Populate cache
         for i in 0..5000 {
-            mixed_freq_cache.insert(format!("mixed_freq_{}", i), i);
+            mixed_freq_cache.insert(format!("mixed_freq_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
         for i in 0..10000 {
             if i % 3 == 0 {
                 // Insert new (might evict)
-                mixed_freq_cache.insert(format!("new_mixed_{}", i), i);
+                mixed_freq_cache.insert(format!("new_mixed_{}", i), Arc::new(i));
             } else if i % 3 == 1 {
                 // Update existing
-                mixed_freq_cache.insert(format!("mixed_freq_{}", i % 5000), i + 20000);
+                mixed_freq_cache.insert(format!("mixed_freq_{}", i % 5000), Arc::new(i + 20000));
             } else {
                 // Access existing (increment frequency)
                 mixed_freq_cache.get(&format!("mixed_freq_{}", i % 5000));
@@ -1431,7 +1435,7 @@ mod insertion_performance {
 
         let start = Instant::now();
         for i in 0..5000 {
-            rapid_cache.insert(format!("rapid_{}", i), i);
+            rapid_cache.insert(format!("rapid_{}", i), Arc::new(i));
 
             // Verify frequency tracking works under rapid insertion
             if i < 1000 && i % 100 == 0 {
@@ -1454,7 +1458,7 @@ mod insertion_performance {
 
         // Insert and access to create very high frequencies
         for i in 0..100 {
-            bounds_cache.insert(format!("bounds_{}", i), i);
+            bounds_cache.insert(format!("bounds_{}", i), Arc::new(i));
         }
 
         // Create extremely high frequency for one item
@@ -1501,7 +1505,7 @@ mod eviction_performance {
 
         // Fill cache to capacity
         for i in 0..1000 {
-            cache.insert(format!("key_{}", i), i);
+            cache.insert(format!("key_{}", i), Arc::new(i));
         }
 
         // Create frequency distribution to establish clear LFU items
@@ -1521,7 +1525,7 @@ mod eviction_performance {
         // Test eviction performance
         let start = Instant::now();
         for i in 1000..1500 {
-            cache.insert(format!("new_key_{}", i), i);
+            cache.insert(format!("new_key_{}", i), Arc::new(i));
         }
         let eviction_duration = start.elapsed();
 
@@ -1547,7 +1551,7 @@ mod eviction_performance {
 
             // Fill cache
             for i in 0..size {
-                test_cache.insert(format!("scale_{}", i), i);
+                test_cache.insert(format!("scale_{}", i), Arc::new(i));
             }
 
             // Create some frequency variance
@@ -1558,7 +1562,7 @@ mod eviction_performance {
             // Measure eviction performance
             let start = Instant::now();
             for i in 0..100 {
-                test_cache.insert(format!("evict_{}", i), i + size);
+                test_cache.insert(format!("evict_{}", i), Arc::new(i + size));
             }
             let duration = start.elapsed();
             eviction_times.push(duration);
@@ -1579,13 +1583,13 @@ mod eviction_performance {
 
         // Fill cache with uniform frequency
         for i in 0..500 {
-            uniform_cache.insert(format!("uniform_{}", i), i);
+            uniform_cache.insert(format!("uniform_{}", i), Arc::new(i));
             uniform_cache.get(&format!("uniform_{}", i)); // All have frequency 2
         }
 
         let start = Instant::now();
         for i in 0..200 {
-            uniform_cache.insert(format!("uniform_new_{}", i), i + 1000);
+            uniform_cache.insert(format!("uniform_new_{}", i), Arc::new(i + 1000));
         }
         let uniform_eviction_duration = start.elapsed();
 
@@ -1600,7 +1604,7 @@ mod eviction_performance {
 
         // Fill cache
         for i in 0..1000 {
-            skewed_cache.insert(format!("skewed_{}", i), i);
+            skewed_cache.insert(format!("skewed_{}", i), Arc::new(i));
         }
 
         // Create highly skewed distribution
@@ -1610,7 +1614,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 0..500 {
-            skewed_cache.insert(format!("skewed_new_{}", i), i + 2000);
+            skewed_cache.insert(format!("skewed_new_{}", i), Arc::new(i + 2000));
         }
         let skewed_eviction_duration = start.elapsed();
 
@@ -1629,14 +1633,15 @@ mod eviction_performance {
 
         // Fill cache initially
         for i in 0..100 {
-            consistent_cache.insert(format!("consistent_{}", i), i);
+            consistent_cache.insert(format!("consistent_{}", i), Arc::new(i));
         }
 
         // Perform multiple rounds of eviction
         for round in 0..10 {
             let start = Instant::now();
             for i in 0..20 {
-                consistent_cache.insert(format!("round_{}_{}", round, i), round * 100 + i);
+                consistent_cache
+                    .insert(format!("round_{}_{}", round, i), Arc::new(round * 100 + i));
             }
             eviction_durations.push(start.elapsed());
         }
@@ -1673,7 +1678,7 @@ mod eviction_performance {
 
         // Fill cache with items
         for i in 0..2000 {
-            cache.insert(format!("pop_{}", i), i);
+            cache.insert(format!("pop_{}", i), Arc::new(i));
         }
 
         // Create frequency distribution
@@ -1727,7 +1732,7 @@ mod eviction_performance {
 
             // Fill cache
             for i in 0..size {
-                test_cache.insert(format!("size_{}", i), i);
+                test_cache.insert(format!("size_{}", i), Arc::new(i));
             }
 
             // Create some frequency variance
@@ -1764,7 +1769,7 @@ mod eviction_performance {
 
         // Fill cache with uniform frequency
         for i in 0..300 {
-            uniform_cache.insert(format!("uniform_{}", i), i);
+            uniform_cache.insert(format!("uniform_{}", i), Arc::new(i));
             uniform_cache.get(&format!("uniform_{}", i)); // All have frequency 2
         }
 
@@ -1794,7 +1799,7 @@ mod eviction_performance {
 
         // Fill cache
         for i in 0..100 {
-            empty_cache.insert(format!("empty_{}", i), i);
+            empty_cache.insert(format!("empty_{}", i), Arc::new(i));
         }
 
         let start = Instant::now();
@@ -1817,7 +1822,7 @@ mod eviction_performance {
 
         // Fill cache
         for i in 0..1000 {
-            skewed_cache.insert(format!("skewed_{}", i), i);
+            skewed_cache.insert(format!("skewed_{}", i), Arc::new(i));
         }
 
         // Create very skewed distribution
@@ -1856,14 +1861,15 @@ mod eviction_performance {
 
         // Fill cache
         for i in 0..200 {
-            consistency_cache.insert(format!("consistency_{}", i), i);
+            consistency_cache.insert(format!("consistency_{}", i), Arc::new(i));
         }
 
         // Perform multiple rounds of pop operations
         for round in 0..5 {
             // Add some new items to maintain cache size
             for i in 0..10 {
-                consistency_cache.insert(format!("round_{}_{}", round, i), round * 100 + i);
+                consistency_cache
+                    .insert(format!("round_{}_{}", round, i), Arc::new(round * 100 + i));
             }
 
             let start = Instant::now();
@@ -1919,7 +1925,7 @@ mod eviction_performance {
 
         // Fill cache where all items have frequency 1
         for i in 0..1000 {
-            cache.insert(format!("same_freq_{}", i), i);
+            cache.insert(format!("same_freq_{}", i), Arc::new(i));
         }
 
         // All items should have frequency 1
@@ -1930,7 +1936,7 @@ mod eviction_performance {
         // Test eviction performance with same frequency items
         let start = Instant::now();
         for i in 1000..1500 {
-            cache.insert(format!("new_same_{}", i), i);
+            cache.insert(format!("new_same_{}", i), Arc::new(i));
         }
         let same_freq_duration = start.elapsed();
 
@@ -1946,19 +1952,19 @@ mod eviction_performance {
 
         // Group 1: frequency 1 (400 items)
         for i in 0..400 {
-            grouped_cache.insert(format!("group1_{}", i), i);
+            grouped_cache.insert(format!("group1_{}", i), Arc::new(i));
         }
 
         // Group 2: frequency 3 (400 items)
         for i in 400..800 {
-            grouped_cache.insert(format!("group2_{}", i), i);
+            grouped_cache.insert(format!("group2_{}", i), Arc::new(i));
             grouped_cache.get(&format!("group2_{}", i));
             grouped_cache.get(&format!("group2_{}", i));
         }
 
         // Group 3: frequency 5 (400 items)
         for i in 800..1200 {
-            grouped_cache.insert(format!("group3_{}", i), i);
+            grouped_cache.insert(format!("group3_{}", i), Arc::new(i));
             for _ in 0..4 {
                 grouped_cache.get(&format!("group3_{}", i));
             }
@@ -1967,7 +1973,7 @@ mod eviction_performance {
         // Force eviction of group 1 (frequency 1)
         let start = Instant::now();
         for i in 1200..1600 {
-            grouped_cache.insert(format!("new_group_{}", i), i);
+            grouped_cache.insert(format!("new_group_{}", i), Arc::new(i));
         }
         let grouped_eviction_duration = start.elapsed();
 
@@ -2037,7 +2043,7 @@ mod eviction_performance {
 
         // Fill cache and make all items have frequency 3
         for i in 0..2000 {
-            identical_cache.insert(format!("identical_{}", i), i);
+            identical_cache.insert(format!("identical_{}", i), Arc::new(i));
             identical_cache.get(&format!("identical_{}", i));
             identical_cache.get(&format!("identical_{}", i));
         }
@@ -2053,7 +2059,7 @@ mod eviction_performance {
         // Test eviction performance with identical frequencies
         let start = Instant::now();
         for i in 2000..2500 {
-            identical_cache.insert(format!("new_identical_{}", i), i);
+            identical_cache.insert(format!("new_identical_{}", i), Arc::new(i));
         }
         let identical_duration = start.elapsed();
 
@@ -2074,7 +2080,7 @@ mod eviction_performance {
 
             // Fill cache
             for i in 0..500 {
-                ratio_cache.insert(format!("ratio_{}", i), i);
+                ratio_cache.insert(format!("ratio_{}", i), Arc::new(i));
             }
 
             // Make some items have frequency 2, others keep frequency 1
@@ -2092,7 +2098,7 @@ mod eviction_performance {
             // Test eviction performance
             let start = Instant::now();
             for i in 500..600 {
-                ratio_cache.insert(format!("new_ratio_{}", i), i);
+                ratio_cache.insert(format!("new_ratio_{}", i), Arc::new(i));
             }
             let duration = start.elapsed();
             ratio_times.push(duration);
@@ -2113,7 +2119,7 @@ mod eviction_performance {
 
         // Create alternating frequency pattern
         for i in 0..300 {
-            pattern_cache.insert(format!("pattern_{}", i), i);
+            pattern_cache.insert(format!("pattern_{}", i), Arc::new(i));
             if i % 2 == 0 {
                 pattern_cache.get(&format!("pattern_{}", i)); // Even indices: freq 2
             }
@@ -2139,7 +2145,7 @@ mod eviction_performance {
         // Force eviction of freq 1 items
         let start = Instant::now();
         for i in 300..450 {
-            pattern_cache.insert(format!("new_pattern_{}", i), i);
+            pattern_cache.insert(format!("new_pattern_{}", i), Arc::new(i));
         }
         let pattern_duration = start.elapsed();
 
@@ -2177,7 +2183,7 @@ mod eviction_performance {
 
         // Fill and access all items once to make them frequency 2
         for i in 0..500 {
-            worst_case_cache.insert(format!("worst_{}", i), i);
+            worst_case_cache.insert(format!("worst_{}", i), Arc::new(i));
             worst_case_cache.get(&format!("worst_{}", i));
         }
 
@@ -2188,7 +2194,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 500..750 {
-            worst_case_cache.insert(format!("worst_new_{}", i), i);
+            worst_case_cache.insert(format!("worst_new_{}", i), Arc::new(i));
         }
         let worst_case_duration = start.elapsed();
 
@@ -2219,7 +2225,7 @@ mod eviction_performance {
 
         // Create uniform frequency distribution (all items frequency 3)
         for i in 0..1000 {
-            uniform_cache.insert(format!("uniform_{}", i), i);
+            uniform_cache.insert(format!("uniform_{}", i), Arc::new(i));
             uniform_cache.get(&format!("uniform_{}", i));
             uniform_cache.get(&format!("uniform_{}", i));
         }
@@ -2231,7 +2237,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 1000..1200 {
-            uniform_cache.insert(format!("new_uniform_{}", i), i);
+            uniform_cache.insert(format!("new_uniform_{}", i), Arc::new(i));
         }
         let uniform_duration = start.elapsed();
 
@@ -2247,7 +2253,7 @@ mod eviction_performance {
 
         // Create normal distribution of frequencies (center items higher frequency)
         for i in 0..1000 {
-            normal_cache.insert(format!("normal_{}", i), i);
+            normal_cache.insert(format!("normal_{}", i), Arc::new(i));
         }
 
         // Create bell curve frequency pattern
@@ -2261,7 +2267,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 1000..1200 {
-            normal_cache.insert(format!("new_normal_{}", i), i);
+            normal_cache.insert(format!("new_normal_{}", i), Arc::new(i));
         }
         let normal_duration = start.elapsed();
 
@@ -2282,7 +2288,7 @@ mod eviction_performance {
 
         // Create exponential frequency distribution
         for i in 0..1000 {
-            exponential_cache.insert(format!("exp_{}", i), i);
+            exponential_cache.insert(format!("exp_{}", i), Arc::new(i));
         }
 
         // Create exponential decay pattern
@@ -2295,7 +2301,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 1000..1300 {
-            exponential_cache.insert(format!("new_exp_{}", i), i);
+            exponential_cache.insert(format!("new_exp_{}", i), Arc::new(i));
         }
         let exponential_duration = start.elapsed();
 
@@ -2316,7 +2322,7 @@ mod eviction_performance {
 
         // Create Zipf distribution (80/20 rule)
         for i in 0..1000 {
-            zipf_cache.insert(format!("zipf_{}", i), i);
+            zipf_cache.insert(format!("zipf_{}", i), Arc::new(i));
         }
 
         // Top 20% get 80% of accesses
@@ -2338,7 +2344,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 1000..1400 {
-            zipf_cache.insert(format!("new_zipf_{}", i), i);
+            zipf_cache.insert(format!("new_zipf_{}", i), Arc::new(i));
         }
         let zipf_duration = start.elapsed();
 
@@ -2359,7 +2365,7 @@ mod eviction_performance {
 
         // Create bimodal distribution (two peaks)
         for i in 0..1000 {
-            bimodal_cache.insert(format!("bimodal_{}", i), i);
+            bimodal_cache.insert(format!("bimodal_{}", i), Arc::new(i));
         }
 
         // Peak 1: items 200-300 (high frequency)
@@ -2389,7 +2395,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 1000..1300 {
-            bimodal_cache.insert(format!("new_bimodal_{}", i), i);
+            bimodal_cache.insert(format!("new_bimodal_{}", i), Arc::new(i));
         }
         let bimodal_duration = start.elapsed();
 
@@ -2429,7 +2435,7 @@ mod eviction_performance {
 
         // Fill cache initially
         for i in 0..500 {
-            dynamic_cache.insert(format!("dynamic_{}", i), i);
+            dynamic_cache.insert(format!("dynamic_{}", i), Arc::new(i));
         }
 
         // Phase 1: Create initial distribution (linear)
@@ -2448,7 +2454,7 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 500..650 {
-            dynamic_cache.insert(format!("new_dynamic_{}", i), i);
+            dynamic_cache.insert(format!("new_dynamic_{}", i), Arc::new(i));
         }
         let dynamic_duration = start.elapsed();
 
@@ -2465,7 +2471,7 @@ mod eviction_performance {
 
         // Sparse: frequencies 1, 10, 20, 30 (big gaps)
         for i in 0..400 {
-            sparse_cache.insert(format!("sparse_{}", i), i);
+            sparse_cache.insert(format!("sparse_{}", i), Arc::new(i));
             let freq_group = i / 100;
             let target_freq = match freq_group {
                 0 => 1,
@@ -2480,7 +2486,7 @@ mod eviction_performance {
 
         // Dense: frequencies 1, 2, 3, 4 (small gaps)
         for i in 0..400 {
-            dense_cache.insert(format!("dense_{}", i), i);
+            dense_cache.insert(format!("dense_{}", i), Arc::new(i));
             let freq_group = i / 100;
             let target_freq = freq_group + 1;
             for _ in 1..target_freq {
@@ -2490,13 +2496,13 @@ mod eviction_performance {
 
         let start = Instant::now();
         for i in 400..500 {
-            sparse_cache.insert(format!("new_sparse_{}", i), i);
+            sparse_cache.insert(format!("new_sparse_{}", i), Arc::new(i));
         }
         let sparse_eviction_duration = start.elapsed();
 
         let start = Instant::now();
         for i in 400..500 {
-            dense_cache.insert(format!("new_dense_{}", i), i);
+            dense_cache.insert(format!("new_dense_{}", i), Arc::new(i));
         }
         let dense_eviction_duration = start.elapsed();
 
@@ -2566,6 +2572,7 @@ mod complexity {
     use cachekit::policy::lfu::LFUCache;
     use cachekit::traits::{CoreCache, LFUCacheTrait, MutableCache};
     use std::collections::HashMap;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// Helper function to measure execution time of a closure
@@ -2607,7 +2614,7 @@ mod complexity {
             // Measure time to fill cache to capacity
             let (_, insert_time) = measure_time(|| {
                 for (key, value) in test_data {
-                    cache.insert(key, value);
+                    cache.insert(key, Arc::new(value));
                 }
             });
 
@@ -2655,7 +2662,7 @@ mod complexity {
 
             // Pre-populate cache
             for i in 0..cache_size {
-                cache.insert(format!("key_{}", i), i);
+                cache.insert(format!("key_{}", i), Arc::new(i));
             }
 
             // Measure random access time
@@ -2712,7 +2719,7 @@ mod complexity {
 
             // Pre-populate cache with different frequencies
             for i in 0..cache_size {
-                cache.insert(format!("key_{}", i), i);
+                cache.insert(format!("key_{}", i), Arc::new(i));
                 // Create frequency differences
                 for _ in 0..(i % 5) {
                     cache.get(&format!("key_{}", i));
@@ -2772,7 +2779,7 @@ mod complexity {
 
             // Pre-populate cache
             for i in 0..cache_size {
-                cache.insert(format!("key_{}", i), i);
+                cache.insert(format!("key_{}", i), Arc::new(i));
                 // Create varied frequency distribution
                 for _ in 0..(i % 7) {
                     cache.get(&format!("key_{}", i));
@@ -2827,7 +2834,7 @@ mod complexity {
 
             // Pre-populate cache
             for i in 0..cache_size {
-                cache.insert(format!("key_{}", i), i);
+                cache.insert(format!("key_{}", i), Arc::new(i));
             }
 
             let test_keys: Vec<String> = (0..1000)
@@ -2904,7 +2911,7 @@ mod complexity {
 
             // Fill cache to capacity
             for i in 0..cache_size {
-                cache.insert(format!("test_key_{:08}", i), i);
+                cache.insert(format!("test_key_{:08}", i), Arc::new(i));
             }
 
             // Verify cache respects capacity constraints
@@ -2913,7 +2920,7 @@ mod complexity {
 
             // Test overfill behavior
             let pre_overfill_len = cache.len();
-            cache.insert("overflow_key".to_string(), usize::MAX);
+            cache.insert("overflow_key".to_string(), Arc::new(usize::MAX));
 
             // Should maintain capacity by evicting LFU item
             assert_eq!(cache.len(), cache_size);
@@ -2966,7 +2973,7 @@ mod complexity {
 
         // Fill cache and verify it doesn't use excessive memory
         for i in 0..cache_size {
-            cache.insert(format!("key_{:06}", i), i);
+            cache.insert(format!("key_{:06}", i), Arc::new(i));
         }
 
         assert_eq!(cache.len(), cache_size);
@@ -2985,7 +2992,7 @@ mod complexity {
             match i % 8 {
                 0 => {
                     // Insert new items (should evict LFU)
-                    cache.insert(format!("temp_key_{}", i), i);
+                    cache.insert(format!("temp_key_{}", i), Arc::new(i));
                 },
                 1 => {
                     // Access existing items (increments frequency)
@@ -3084,7 +3091,7 @@ mod complexity {
             // Refill with new data
             for i in 0..cache_size {
                 if cache.len() < cache_size {
-                    cache.insert(format!("frag_{}_{}", cycle, i), cycle * 1000 + i);
+                    cache.insert(format!("frag_{}_{}", cycle, i), Arc::new(cycle * 1000 + i));
                 }
             }
 
@@ -3117,7 +3124,7 @@ mod complexity {
             // Fill with variable-sized keys
             for i in 0..100 {
                 let key = format!("{}{:03}", base_key, i);
-                test_cache.insert(key, i);
+                test_cache.insert(key, Arc::new(i));
             }
 
             assert_eq!(test_cache.len(), 100);
@@ -3165,9 +3172,12 @@ mod complexity {
         );
 
         // Test that we can still use the cache after clearing
-        cache.insert("post_clear_key".to_string(), 42);
+        cache.insert("post_clear_key".to_string(), Arc::new(42));
         assert_eq!(cache.len(), 1);
-        assert_eq!(cache.get(&"post_clear_key".to_string()), Some(&42));
+        assert_eq!(
+            cache.get(&"post_clear_key".to_string()).map(Arc::as_ref),
+            Some(&42)
+        );
 
         log::info!(
             "  Memory cleanup test passed: cleared {} items, cache functional",
@@ -3186,14 +3196,14 @@ mod complexity {
 
         // Fill exactly to capacity
         for i in 0..boundary_cache_size {
-            boundary_cache.insert(format!("boundary_{}", i), i);
+            boundary_cache.insert(format!("boundary_{}", i), Arc::new(i));
         }
         assert_eq!(boundary_cache.len(), boundary_cache_size);
 
         // Test overflow behavior (should evict LFU items)
         let overflow_items = 20;
         for i in 0..overflow_items {
-            boundary_cache.insert(format!("overflow_{}", i), 100 + i);
+            boundary_cache.insert(format!("overflow_{}", i), Arc::new(100 + i));
             // Should maintain capacity
             assert_eq!(boundary_cache.len(), boundary_cache_size);
         }
@@ -3256,7 +3266,7 @@ mod complexity {
             let (_, insert_time) = measure_time(|| {
                 for i in 0..cache_size {
                     let key = format!("{}{:06}", long_key, i);
-                    cache.insert(key, i);
+                    cache.insert(key, Arc::new(i));
                 }
             });
 
@@ -3297,7 +3307,7 @@ mod complexity {
 
         // Pre-populate
         for i in 0..cache_size {
-            cache.insert(format!("key_{}", i), i);
+            cache.insert(format!("key_{}", i), Arc::new(i));
         }
 
         // Mixed workload performance test
@@ -3316,7 +3326,7 @@ mod complexity {
                     },
                     6..=7 => {
                         // 20% inserts
-                        cache.insert(format!("new_key_{}", i), i);
+                        cache.insert(format!("new_key_{}", i), Arc::new(i));
                         *results.entry("inserts").or_insert(0) += 1;
                     },
                     8 => {
@@ -3371,7 +3381,7 @@ mod complexity {
 
         // Worst case: all items have the same frequency
         for i in 0..cache_size {
-            cache.insert(format!("key_{:06}", i), i);
+            cache.insert(format!("key_{:06}", i), Arc::new(i));
         }
 
         // All items now have frequency 1 (worst case for LFU operations)
@@ -3399,7 +3409,7 @@ mod complexity {
 
         // Refill and test peek_lfu worst case
         for i in 0..100 {
-            cache.insert(format!("refill_key_{}", i), i);
+            cache.insert(format!("refill_key_{}", i), Arc::new(i));
         }
 
         let peek_count = 1000;

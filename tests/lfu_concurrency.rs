@@ -30,7 +30,7 @@ mod thread_safety {
                     let key = format!("thread_{}_{}", thread_id, i);
                     let value = (thread_id * items_per_thread + i) as i32;
 
-                    cache_clone.lock().unwrap().insert(key, value);
+                    cache_clone.lock().unwrap().insert(key, Arc::new(value));
                 }
             });
             handles.push(handle);
@@ -50,7 +50,7 @@ mod thread_safety {
             for i in 0..items_per_thread {
                 let key = format!("thread_{}_{}", thread_id, i);
                 let expected_value = (thread_id * items_per_thread + i) as i32;
-                assert_eq!(cache.get(&key), Some(&expected_value));
+                assert_eq!(cache.get(&key).map(Arc::as_ref), Some(&expected_value));
                 assert_eq!(cache.frequency(&key), Some(2)); // 1 from insert, 1 from get
             }
         }
@@ -64,7 +64,7 @@ mod thread_safety {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..500 {
-                cache_guard.insert(format!("key_{}", i), i);
+                cache_guard.insert(format!("key_{}", i), Arc::new(i));
             }
         }
 
@@ -125,7 +125,7 @@ mod thread_safety {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..100 {
-                cache_guard.insert(format!("freq_key_{}", i), i);
+                cache_guard.insert(format!("freq_key_{}", i), Arc::new(i));
             }
         }
 
@@ -207,7 +207,7 @@ mod thread_safety {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..200 {
-                cache_guard.insert(format!("lfu_key_{}", i), i);
+                cache_guard.insert(format!("lfu_key_{}", i), Arc::new(i));
             }
 
             // Create frequency differences - some items will be more frequent
@@ -321,7 +321,7 @@ mod thread_safety {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..150 {
-                cache_guard.insert(format!("initial_{}", i), i);
+                cache_guard.insert(format!("initial_{}", i), Arc::new(i));
             }
         }
 
@@ -339,7 +339,7 @@ mod thread_safety {
                             // Insert operations (25% of operations)
                             let key = format!("mixed_{}_{}", thread_id, i);
                             let value = thread_id * 1000 + i;
-                            cache_clone.lock().unwrap().insert(key, value);
+                            cache_clone.lock().unwrap().insert(key, Arc::new(value));
                             counts_clone.lock().unwrap().0 += 1;
                         },
                         2..=4 => {
@@ -407,8 +407,13 @@ mod thread_safety {
         assert_eq!(total_operations, num_threads * operations_per_thread);
 
         // Verify cache operations still work correctly
-        cache.insert("test_after_concurrent".to_string(), 999);
-        assert_eq!(cache.get(&"test_after_concurrent".to_string()), Some(&999));
+        cache.insert("test_after_concurrent".to_string(), Arc::new(999));
+        assert_eq!(
+            cache
+                .get(&"test_after_concurrent".to_string())
+                .map(Arc::as_ref),
+            Some(&999)
+        );
         assert!(cache.contains(&"test_after_concurrent".to_string()));
 
         // Verify LFU operations still work
@@ -439,7 +444,7 @@ mod thread_safety {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..100 {
-                cache_guard.insert(format!("base_{}", i), i);
+                cache_guard.insert(format!("base_{}", i), Arc::new(i));
             }
 
             // Create frequency differences to establish clear LFU candidates
@@ -465,7 +470,7 @@ mod thread_safety {
                 for i in 0..inserts_per_thread {
                     let key = format!("evict_trigger_{}_{}", thread_id, i);
                     let value = thread_id * 1000 + i;
-                    cache_clone.lock().unwrap().insert(key, value);
+                    cache_clone.lock().unwrap().insert(key, Arc::new(value));
 
                     // Small delay to increase thread interleaving
                     thread::sleep(std::time::Duration::from_nanos(100));
@@ -585,7 +590,7 @@ mod thread_safety {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..100 {
-                cache_guard.insert(format!("fair_{}", i), i);
+                cache_guard.insert(format!("fair_{}", i), Arc::new(i));
             }
         }
 
@@ -606,7 +611,7 @@ mod thread_safety {
                             // Insert operation
                             let key = format!("thread_{}_insert_{}", thread_id, i);
                             let value = (thread_id * 10000 + i) as i32;
-                            cache_clone.lock().unwrap().insert(key, value);
+                            cache_clone.lock().unwrap().insert(key, Arc::new(value));
                             operation_successful = true;
                         },
                         1 => {
@@ -737,7 +742,7 @@ mod stress_testing {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..hot_keys {
-                cache_guard.insert(format!("hot_key_{}", i), i);
+                cache_guard.insert(format!("hot_key_{}", i), Arc::new(i));
             }
         }
 
@@ -780,7 +785,7 @@ mod stress_testing {
                             // Insert operation (creates most contention)
                             let new_key = format!("thread_{}_{}", thread_id, i);
                             if let Ok(mut cache) = cache_clone.try_lock() {
-                                cache.insert(new_key, thread_id);
+                                cache.insert(new_key, Arc::new(thread_id));
                                 success_count_clone.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 conflict_count_clone.fetch_add(1, Ordering::Relaxed);
@@ -876,7 +881,7 @@ mod stress_testing {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..capacity {
                 let data = vec![i as u8; data_size];
-                cache_guard.insert(format!("initial_{}", i), data);
+                cache_guard.insert(format!("initial_{}", i), Arc::new(data));
             }
         }
 
@@ -894,7 +899,7 @@ mod stress_testing {
                     let mut cache = cache_clone.lock().unwrap();
                     let old_len = cache.len();
 
-                    cache.insert(key, data);
+                    cache.insert(key, Arc::new(data));
                     successful_insertions_clone.fetch_add(1, Ordering::Relaxed);
 
                     // Check if eviction occurred
@@ -997,7 +1002,7 @@ mod stress_testing {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..100 {
-                cache_guard.insert(format!("baseline_{}", i), i);
+                cache_guard.insert(format!("baseline_{}", i), Arc::new(i));
             }
         }
 
@@ -1032,7 +1037,7 @@ mod stress_testing {
                             let key = format!("long_run_{}_{}", thread_id, cycle);
                             match cache_clone.lock() {
                                 Ok(mut cache) => {
-                                    cache.insert(key, (thread_id as i64) * 1000 + cycle);
+                                    cache.insert(key, Arc::new((thread_id as i64) * 1000 + cycle));
                                     local_operations += 1;
                                 },
                                 Err(_) => {
@@ -1059,7 +1064,7 @@ mod stress_testing {
                                 2 => {
                                     let key = format!("mixed_{}_{}", thread_id, cycle);
                                     if let Ok(mut cache) = cache_clone.lock() {
-                                        cache.insert(key, cycle);
+                                        cache.insert(key, Arc::new(cycle));
                                         local_operations += 1;
                                     }
                                 },
@@ -1182,7 +1187,7 @@ mod stress_testing {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..700 {
                 let data = vec![i as u8; large_data_size];
-                cache_guard.insert(format!("large_data_{}", i), data);
+                cache_guard.insert(format!("large_data_{}", i), Arc::new(data));
                 memory_allocated.fetch_add(large_data_size, Ordering::Relaxed);
             }
         }
@@ -1203,7 +1208,7 @@ mod stress_testing {
 
                             let mut cache = cache_clone.lock().unwrap();
                             let old_len = cache.len();
-                            cache.insert(key, large_data);
+                            cache.insert(key, Arc::new(large_data));
 
                             // Track memory if cache grew
                             if cache.len() > old_len {
@@ -1339,7 +1344,7 @@ mod stress_testing {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..50 {
-                cache_guard.insert(format!("persistent_{}", i), i);
+                cache_guard.insert(format!("persistent_{}", i), Arc::new(i));
                 // Access each item multiple times to build initial frequency
                 for _ in 0..5 {
                     cache_guard.get(&format!("persistent_{}", i));
@@ -1377,7 +1382,7 @@ mod stress_testing {
                                 cache_clone
                                     .lock()
                                     .unwrap()
-                                    .insert(key, wave * 100 + thread_id);
+                                    .insert(key, Arc::new(wave * 100 + thread_id));
                                 local_ops += 1;
                             },
                             3 => {
@@ -1476,7 +1481,7 @@ mod stress_testing {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..75 {
-                cache_guard.insert(format!("baseline_{}", i), i);
+                cache_guard.insert(format!("baseline_{}", i), Arc::new(i));
             }
         }
 
@@ -1505,7 +1510,7 @@ mod stress_testing {
                             cache_clone
                                 .lock()
                                 .unwrap()
-                                .insert(key, (thread_id * 1000 + ops) as i32);
+                                .insert(key, Arc::new((thread_id * 1000 + ops) as i32));
                         },
                         2 => {
                             // Check frequency
@@ -1548,7 +1553,7 @@ mod stress_testing {
                                 cache_clone
                                     .lock()
                                     .unwrap()
-                                    .insert(key, thread_id * 10000 + i);
+                                    .insert(key, Arc::new(thread_id * 10000 + i));
                                 ops += 1;
                                 // Immediate access bumps frequency to improve survival chances.
                                 let key = format!("burst_{}_{}", thread_id, i);
@@ -1675,7 +1680,7 @@ mod stress_testing {
         {
             let mut cache_guard = cache.lock().unwrap();
             for i in 0..50 {
-                cache_guard.insert(format!("initial_{}", i), i);
+                cache_guard.insert(format!("initial_{}", i), Arc::new(i));
             }
         }
 
@@ -1716,7 +1721,7 @@ mod stress_testing {
                                 );
                                 cache_clone.lock().unwrap().insert(
                                     key,
-                                    (phase * 1000 + thread_id * 100 + local_ops) as i32,
+                                    Arc::new((phase * 1000 + thread_id * 100 + local_ops) as i32),
                                 );
                             },
                             2 => {
@@ -1888,7 +1893,7 @@ mod stress_testing {
 
                 // Pre-populate with base data
                 for i in 0..100 {
-                    cache_guard.insert(format!("base_{}", i), i);
+                    cache_guard.insert(format!("base_{}", i), Arc::new(i));
                 }
             }
 
@@ -1954,7 +1959,7 @@ mod stress_testing {
                                 cache_clone
                                     .lock()
                                     .unwrap()
-                                    .insert(new_key, thread_id * 1000 + i);
+                                    .insert(new_key, Arc::new(thread_id * 1000 + i));
                                 local_ops += 1;
                             },
                             6 => {
@@ -2176,7 +2181,7 @@ mod stress_testing {
 
             // Tier 1: Very high frequency (should never be evicted)
             for i in 0..10 {
-                cache_guard.insert(format!("tier1_{}", i), i);
+                cache_guard.insert(format!("tier1_{}", i), Arc::new(i));
                 // Access many times to build very high frequency
                 for _ in 0..50 {
                     cache_guard.get(&format!("tier1_{}", i));
@@ -2185,7 +2190,7 @@ mod stress_testing {
 
             // Tier 2: Medium frequency
             for i in 0..20 {
-                cache_guard.insert(format!("tier2_{}", i), i + 100);
+                cache_guard.insert(format!("tier2_{}", i), Arc::new(i + 100));
                 for _ in 0..15 {
                     cache_guard.get(&format!("tier2_{}", i));
                 }
@@ -2194,13 +2199,13 @@ mod stress_testing {
             // Tier 3: Same frequency as stress items (direct competition)
             for i in 0..15 {
                 // Reduced count: fewer tier 3 items to defend
-                cache_guard.insert(format!("tier3_{}", i), i + 200);
+                cache_guard.insert(format!("tier3_{}", i), Arc::new(i + 200));
                 // No additional access - frequency will be 1 (same as filler/stress)
             }
 
             // Fill to exact capacity to force immediate evictions
             for i in 0..55 {
-                cache_guard.insert(format!("filler_{}", i), i + 300);
+                cache_guard.insert(format!("filler_{}", i), Arc::new(i + 300));
             }
             // Cache now has 10 + 20 + 15 + 55 = 100 items, at full capacity
         }
@@ -2263,7 +2268,7 @@ mod stress_testing {
                                 }
                             }
 
-                            cache.insert(key, thread_id * 10000 + i);
+                            cache.insert(key, Arc::new(thread_id * 10000 + i));
                             local_ops += 1;
                         },
                         7 => {

@@ -749,7 +749,7 @@ mod heap_lfu_tests {
 
         // Fill cache
         for i in 0..cache_size {
-            std_cache.insert(i, i * 10);
+            std_cache.insert(i, Arc::new(i * 10));
         }
 
         // Time pop_lfu operations on standard cache
