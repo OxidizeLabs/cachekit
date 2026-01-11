@@ -11,7 +11,7 @@
 //!   │                          LFUCache<K, V>                                  │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  HashMap<K, usize> + Slot<K> (freq + list links)                   │ │
+//!   │   │  FrequencyBuckets<K> (freq + LRU order per bucket)                 │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────┬───────────────────────────────────────────────────┐   │ │
 //!   │   │  │   Key   │  (Frequency)                                      │   │ │
@@ -124,8 +124,7 @@
 //! | Component        | Description                                        |
 //! |------------------|----------------------------------------------------|
 //! | `LFUCache<K, V>` | Main cache struct                                  |
-//! | `index`          | `HashMap<K, usize>` to slot indices                |
-//! | `freq_buckets`   | Per-frequency LRU buckets + links                  |
+//! | `buckets`        | `FrequencyBuckets` for per-frequency LRU buckets   |
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //!
 //! ## Core Operations (CoreCache + MutableCache)
@@ -155,12 +154,12 @@
 //!
 //! | Operation              | Time       | Notes                              |
 //! |------------------------|------------|------------------------------------|
-//! | `get`                  | O(1)       | Index lookup + freq increment      |
-//! | `insert` (no eviction) | O(1)       | Index insert + store insert        |
+//! | `get`                  | O(1)       | Bucket lookup + freq increment     |
+//! | `insert` (no eviction) | O(1)       | Bucket insert + store insert       |
 //! | `insert` (eviction)    | O(1)       | Bucket pop via min_freq            |
 //! | `pop_lfu`              | O(1)       | Bucket pop via min_freq            |
 //! | `peek_lfu`             | O(1)       | Tail lookup in min_freq bucket     |
-//! | Per-entry overhead     | ~24 bytes  | Key + freq + index + store entry   |
+//! | Per-entry overhead     | ~24 bytes  | Key + freq + bucket links + store  |
 //!
 //! ## Trade-offs
 //!
@@ -168,7 +167,7 @@
 //! |------------------|-----------------------------------|---------------------------------|
 //! | Hot Item Retain  | Keeps frequently accessed items   | Cold start problem              |
 //! | Eviction Quality | Good for stable access patterns   | O(1) eviction                    |
-//! | Memory           | Store + index, simple structure   | No frequency decay/aging        |
+//! | Memory           | Store + buckets, simple structure | No frequency decay/aging        |
 //! | Simplicity       | Easy to understand and debug      | Non-deterministic tie-breaking  |
 //!
 //! ## Limitations
@@ -261,12 +260,12 @@
 //! - **Key Clone Requirement**: Keys must be `Clone` for O(1) indexing
 //! - **Zero Capacity**: Supported - rejects all insertions
 //! - **Frequency Overflow**: Theoretically possible at `usize::MAX` accesses
-//! - **Store + Index**: Values live in the store; slots track frequency and order
+//! - **Store + Buckets**: Values live in the store; buckets track frequency and order
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
+use crate::ds::FrequencyBuckets;
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LfuMetrics;
 #[cfg(feature = "metrics")]
@@ -279,39 +278,6 @@ use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 
-#[derive(Debug)]
-struct Entry<K> {
-    key: K,
-    freq: u64,
-}
-
-#[derive(Debug)]
-struct Slot<K> {
-    entry: Option<Entry<K>>,
-    prev: Option<usize>,
-    next: Option<usize>,
-}
-
-#[derive(Debug, Default)]
-struct FreqList {
-    head: Option<usize>,
-    tail: Option<usize>,
-    len: usize,
-}
-
-impl FreqList {
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-#[derive(Debug, Default)]
-struct FreqBucket {
-    list: FreqList,
-    prev: Option<u64>,
-    next: Option<u64>,
-}
-
 /// LFU (Least Frequently Used) Cache.
 ///
 /// Evicts the item with the lowest access frequency when capacity is reached.
@@ -322,11 +288,7 @@ where
     K: Eq + Hash + Clone,
 {
     store: HashMapStore<K, V>,
-    slots: Vec<Slot<K>>,
-    free_list: Vec<usize>,
-    index: HashMap<K, usize>,
-    freq_buckets: HashMap<u64, FreqBucket>,
-    min_freq: u64,
+    buckets: FrequencyBuckets<K>,
     #[cfg(feature = "metrics")]
     metrics: LfuMetrics,
 }
@@ -338,237 +300,17 @@ where
     pub fn new(capacity: usize) -> Self {
         LFUCache {
             store: HashMapStore::new(capacity),
-            slots: Vec::with_capacity(capacity),
-            free_list: Vec::new(),
-            index: HashMap::with_capacity(capacity),
-            freq_buckets: HashMap::new(),
-            min_freq: 0,
+            buckets: FrequencyBuckets::new(),
             #[cfg(feature = "metrics")]
             metrics: LfuMetrics::default(),
         }
     }
 
-    fn allocate_slot(&mut self, entry: Entry<K>) -> usize {
-        if let Some(idx) = self.free_list.pop() {
-            self.slots[idx] = Slot {
-                entry: Some(entry),
-                prev: None,
-                next: None,
-            };
-            idx
-        } else {
-            self.slots.push(Slot {
-                entry: Some(entry),
-                prev: None,
-                next: None,
-            });
-            self.slots.len() - 1
-        }
-    }
-
-    fn remove_slot(&mut self, idx: usize) -> Entry<K> {
-        let entry = self.slots[idx].entry.take().expect("lfu entry missing");
-        self.slots[idx].prev = None;
-        self.slots[idx].next = None;
-        self.free_list.push(idx);
-        entry
-    }
-
-    fn list_push_front(slots: &mut [Slot<K>], list: &mut FreqList, idx: usize) {
-        let old_head = list.head;
-        slots[idx].prev = None;
-        slots[idx].next = old_head;
-        if let Some(head_idx) = old_head {
-            slots[head_idx].prev = Some(idx);
-        } else {
-            list.tail = Some(idx);
-        }
-        list.head = Some(idx);
-        list.len += 1;
-    }
-
-    fn list_remove(slots: &mut [Slot<K>], list: &mut FreqList, idx: usize) {
-        let prev = slots[idx].prev;
-        let next = slots[idx].next;
-        if let Some(prev_idx) = prev {
-            slots[prev_idx].next = next;
-        } else {
-            list.head = next;
-        }
-        if let Some(next_idx) = next {
-            slots[next_idx].prev = prev;
-        } else {
-            list.tail = prev;
-        }
-        slots[idx].prev = None;
-        slots[idx].next = None;
-        list.len = list.len.saturating_sub(1);
-    }
-
-    fn list_pop_back(slots: &mut [Slot<K>], list: &mut FreqList) -> Option<usize> {
-        let idx = list.tail?;
-        Self::list_remove(slots, list, idx);
-        Some(idx)
-    }
-
-    fn insert_bucket(&mut self, freq: u64, prev: Option<u64>, next: Option<u64>) {
-        self.freq_buckets.insert(
-            freq,
-            FreqBucket {
-                list: FreqList::default(),
-                prev,
-                next,
-            },
-        );
-
-        if let Some(prev_freq) = prev
-            && let Some(bucket) = self.freq_buckets.get_mut(&prev_freq)
-        {
-            bucket.next = Some(freq);
-        }
-
-        if let Some(next_freq) = next
-            && let Some(bucket) = self.freq_buckets.get_mut(&next_freq)
-        {
-            bucket.prev = Some(freq);
-        }
-
-        if prev.is_none() {
-            self.min_freq = freq;
-        }
-    }
-
-    fn move_to_freq(&mut self, idx: usize, new_freq: u64) {
-        let old_freq = self
-            .slots
-            .get(idx)
-            .and_then(|slot| slot.entry.as_ref())
-            .expect("lfu entry missing")
-            .freq;
-
-        if old_freq == new_freq {
-            return;
-        }
-
-        let (old_prev, old_next, old_bucket_empty) = {
-            let slots = &mut self.slots;
-            if let Some(bucket) = self.freq_buckets.get_mut(&old_freq) {
-                let prev = bucket.prev;
-                let next = bucket.next;
-                Self::list_remove(slots, &mut bucket.list, idx);
-                (prev, next, bucket.list.is_empty())
-            } else {
-                (None, None, false)
-            }
-        };
-
-        if old_bucket_empty {
-            self.freq_buckets.remove(&old_freq);
-            if let Some(prev_freq) = old_prev
-                && let Some(bucket) = self.freq_buckets.get_mut(&prev_freq)
-            {
-                bucket.next = old_next;
-            }
-            if let Some(next_freq) = old_next
-                && let Some(bucket) = self.freq_buckets.get_mut(&next_freq)
-            {
-                bucket.prev = old_prev;
-            }
-            if self.min_freq == old_freq {
-                self.min_freq = old_next.unwrap_or(0);
-            }
-        }
-
-        if let Some(entry) = self.slots[idx].entry.as_mut() {
-            entry.freq = new_freq;
-        }
-        if self.freq_buckets.contains_key(&new_freq) {
-            let bucket = self
-                .freq_buckets
-                .get_mut(&new_freq)
-                .expect("lfu bucket missing");
-            Self::list_push_front(&mut self.slots, &mut bucket.list, idx);
-        } else {
-            let (prev, next) = if new_freq == 1 {
-                (
-                    None,
-                    if self.min_freq == 0 {
-                        None
-                    } else {
-                        Some(self.min_freq)
-                    },
-                )
-            } else if new_freq > old_freq {
-                let prev = if old_bucket_empty {
-                    old_prev
-                } else {
-                    Some(old_freq)
-                };
-                let next = old_next;
-                (prev, next)
-            } else {
-                (
-                    None,
-                    if self.min_freq == 0 {
-                        None
-                    } else {
-                        Some(self.min_freq)
-                    },
-                )
-            };
-
-            self.insert_bucket(new_freq, prev, next);
-            let bucket = self
-                .freq_buckets
-                .get_mut(&new_freq)
-                .expect("lfu bucket missing");
-            Self::list_push_front(&mut self.slots, &mut bucket.list, idx);
-        }
-
-        if self.min_freq == 0 || new_freq < self.min_freq {
-            self.min_freq = new_freq;
-        }
-    }
-
     fn evict_min_freq(&mut self) -> Option<(K, Arc<V>)> {
-        let min_freq = self.min_freq;
-        if min_freq == 0 {
-            return None;
-        }
-
-        let (idx, next_freq, list_empty) = {
-            let slots = &mut self.slots;
-            let bucket = self.freq_buckets.get_mut(&min_freq)?;
-            let idx = Self::list_pop_back(slots, &mut bucket.list)?;
-            (idx, bucket.next, bucket.list.is_empty())
-        };
-
-        if list_empty {
-            let prev = self
-                .freq_buckets
-                .get(&min_freq)
-                .and_then(|bucket| bucket.prev);
-            self.freq_buckets.remove(&min_freq);
-            if let Some(prev_freq) = prev
-                && let Some(bucket) = self.freq_buckets.get_mut(&prev_freq)
-            {
-                bucket.next = next_freq;
-            }
-            if let Some(next_freq) = next_freq
-                && let Some(bucket) = self.freq_buckets.get_mut(&next_freq)
-            {
-                bucket.prev = prev;
-            }
-            if self.min_freq == min_freq {
-                self.min_freq = next_freq.unwrap_or(0);
-            }
-        }
-
-        let entry = self.remove_slot(idx);
-        self.index.remove(&entry.key);
+        let (key, _freq) = self.buckets.pop_min()?;
         self.store.record_eviction();
-        let value = self.store.remove(&entry.key)?;
-        Some((entry.key, value))
+        let value = self.store.remove(&key)?;
+        Some((key, value))
     }
 }
 
@@ -581,7 +323,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        if self.index.contains_key(&key) {
+        if self.buckets.contains(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
@@ -596,7 +338,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_new();
 
-        if self.index.len() >= self.store.capacity() {
+        if self.buckets.len() >= self.store.capacity() {
             #[cfg(feature = "metrics")]
             self.metrics.record_evict_call();
 
@@ -610,45 +352,20 @@ where
             return None;
         }
 
-        let entry = Entry {
-            key: key.clone(),
-            freq: 1,
-        };
-        let idx = self.allocate_slot(entry);
-        self.index.insert(key, idx);
-        if !self.freq_buckets.contains_key(&1) {
-            let next = if self.min_freq == 0 {
-                None
-            } else {
-                Some(self.min_freq)
-            };
-            self.insert_bucket(1, None, next);
-        }
-        let bucket = self.freq_buckets.get_mut(&1).expect("lfu bucket missing");
-        Self::list_push_front(&mut self.slots, &mut bucket.list, idx);
-        self.min_freq = 1;
+        self.buckets.insert(key);
 
         None
     }
 
     fn get(&mut self, key: &K) -> Option<&Arc<V>> {
-        let idx = match self.index.get(key) {
-            Some(idx) => *idx,
-            None => {
-                #[cfg(feature = "metrics")]
-                self.metrics.record_get_miss();
-                let _ = self.store.get_ref(key);
-                return None;
-            },
-        };
+        if !self.buckets.contains(key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
+            let _ = self.store.get_ref(key);
+            return None;
+        }
 
-        let new_freq = self.slots[idx]
-            .entry
-            .as_ref()
-            .expect("lfu entry missing")
-            .freq
-            .saturating_add(1);
-        self.move_to_freq(idx, new_freq);
+        let _ = self.buckets.touch(key);
 
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
@@ -672,11 +389,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
         self.store.clear();
-        self.index.clear();
-        self.freq_buckets.clear();
-        self.slots.clear();
-        self.free_list.clear();
-        self.min_freq = 0;
+        self.buckets.clear();
     }
 }
 
@@ -685,42 +398,8 @@ where
     K: Eq + Hash + Clone,
 {
     fn remove(&mut self, key: &K) -> Option<Arc<V>> {
-        let idx = self.index.remove(key)?;
-        let freq = self.slots[idx]
-            .entry
-            .as_ref()
-            .expect("lfu entry missing")
-            .freq;
-
-        let (list_empty, next_freq, prev_freq) =
-            if let Some(bucket) = self.freq_buckets.get_mut(&freq) {
-                let prev = bucket.prev;
-                let next = bucket.next;
-                Self::list_remove(&mut self.slots, &mut bucket.list, idx);
-                (bucket.list.is_empty(), next, prev)
-            } else {
-                (false, None, None)
-            };
-
-        if list_empty {
-            self.freq_buckets.remove(&freq);
-            if let Some(prev) = prev_freq
-                && let Some(bucket) = self.freq_buckets.get_mut(&prev)
-            {
-                bucket.next = next_freq;
-            }
-            if let Some(next) = next_freq
-                && let Some(bucket) = self.freq_buckets.get_mut(&next)
-            {
-                bucket.prev = prev_freq;
-            }
-            if self.min_freq == freq {
-                self.min_freq = next_freq.unwrap_or(0);
-            }
-        }
-
-        let entry = self.remove_slot(idx);
-        self.store.remove(&entry.key)
+        let _ = self.buckets.remove(key)?;
+        self.store.remove(key)
     }
 }
 
@@ -746,29 +425,20 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_call();
 
-        let min_freq = self.min_freq;
-        let idx = self
-            .freq_buckets
-            .get(&min_freq)
-            .and_then(|bucket| bucket.list.tail)?;
-        let entry = self.slots[idx].entry.as_ref()?;
-        let value = self.store.peek_ref(&entry.key)?;
+        let (key, _freq) = self.buckets.peek_min()?;
+        let value = self.store.peek_ref(key)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_found();
 
-        Some((&entry.key, value))
+        Some((key, value))
     }
 
     fn frequency(&self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_frequency_call();
 
-        let result = self
-            .index
-            .get(key)
-            .and_then(|idx| self.slots[*idx].entry.as_ref())
-            .map(|entry| entry.freq);
+        let result = self.buckets.frequency(key);
 
         #[cfg(feature = "metrics")]
         if result.is_some() {
@@ -782,13 +452,8 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_reset_frequency_call();
 
-        let idx = *self.index.get(key)?;
-        let previous_freq = self.slots[idx]
-            .entry
-            .as_ref()
-            .expect("lfu entry missing")
-            .freq;
-        self.move_to_freq(idx, 1);
+        let previous_freq = self.buckets.remove(key)?;
+        self.buckets.insert(key.clone());
 
         #[cfg(feature = "metrics")]
         self.metrics.record_reset_frequency_found();
@@ -800,14 +465,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_increment_frequency_call();
 
-        let idx = *self.index.get(key)?;
-        let new_freq = self.slots[idx]
-            .entry
-            .as_ref()
-            .expect("lfu entry missing")
-            .freq
-            .saturating_add(1);
-        self.move_to_freq(idx, new_freq);
+        let new_freq = self.buckets.touch(key)?;
 
         #[cfg(feature = "metrics")]
         self.metrics.record_increment_frequency_found();
@@ -850,45 +508,8 @@ where
     #[cfg(test)]
     pub(crate) fn debug_validate_invariants(&self) {
         assert!(self.len() <= self.capacity());
-        assert_eq!(self.len(), self.index.len());
-
-        if self.len() == 0 {
-            assert_eq!(self.min_freq, 0);
-            assert!(self.freq_buckets.is_empty());
-            return;
-        }
-
-        assert!(self.min_freq > 0);
-        assert!(self.freq_buckets.contains_key(&self.min_freq));
-
-        for (&freq, bucket) in &self.freq_buckets {
-            assert!(!bucket.list.is_empty());
-            if let Some(prev) = bucket.prev {
-                assert!(self.freq_buckets.contains_key(&prev));
-                assert_eq!(self.freq_buckets[&prev].next, Some(freq));
-            } else {
-                assert_eq!(self.min_freq, freq);
-            }
-            if let Some(next) = bucket.next {
-                assert!(self.freq_buckets.contains_key(&next));
-                assert_eq!(self.freq_buckets[&next].prev, Some(freq));
-            }
-
-            let mut current = bucket.list.head;
-            let mut last = None;
-            let mut count = 0usize;
-            while let Some(idx) = current {
-                let slot = self.slots.get(idx).expect("lfu slot missing");
-                let entry = slot.entry.as_ref().expect("lfu entry missing");
-                assert_eq!(entry.freq, freq);
-                assert_eq!(slot.prev, last);
-                last = Some(idx);
-                current = slot.next;
-                count += 1;
-            }
-            assert_eq!(bucket.list.tail, last);
-            assert_eq!(bucket.list.len, count);
-        }
+        assert_eq!(self.len(), self.buckets.len());
+        self.buckets.debug_validate_invariants();
     }
 }
 

@@ -2,6 +2,7 @@
 //!
 //! See `docs/design.md` for internal architecture and invariants.
 
+pub mod ds;
 pub mod manager;
 pub mod policy;
 pub mod store;

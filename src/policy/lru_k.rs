@@ -264,6 +264,7 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::Arc;
 
+use crate::ds::{IntrusiveList, SlotArena, SlotId};
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LruKMetrics;
 #[cfg(feature = "metrics")]
@@ -288,26 +289,7 @@ struct Entry<K> {
     key: K,
     history: VecDeque<u64>,
     segment: Segment,
-}
-
-#[derive(Debug)]
-struct Slot<K> {
-    entry: Option<Entry<K>>,
-    prev: Option<usize>,
-    next: Option<usize>,
-}
-
-#[derive(Debug, Default)]
-struct LruList {
-    head: Option<usize>,
-    tail: Option<usize>,
-    len: usize,
-}
-
-impl LruList {
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
+    list_node: Option<SlotId>,
 }
 
 /// LRU-K Cache implementation.
@@ -320,11 +302,10 @@ where
 {
     k: usize,
     store: HashMapStore<K, V>,
-    slots: Vec<Slot<K>>,
-    free_list: Vec<usize>,
-    index: HashMap<K, usize>,
-    cold: LruList,
-    hot: LruList,
+    entries: SlotArena<Entry<K>>,
+    index: HashMap<K, SlotId>,
+    cold: IntrusiveList<SlotId>,
+    hot: IntrusiveList<SlotId>,
     tick: u64,
     #[cfg(feature = "metrics")]
     metrics: LruKMetrics,
@@ -346,83 +327,19 @@ where
         LRUKCache {
             k,
             store: HashMapStore::new(capacity),
-            slots: Vec::with_capacity(capacity),
-            free_list: Vec::new(),
+            entries: SlotArena::with_capacity(capacity),
             index: HashMap::with_capacity(capacity),
-            cold: LruList::default(),
-            hot: LruList::default(),
+            cold: IntrusiveList::with_capacity(capacity),
+            hot: IntrusiveList::with_capacity(capacity),
             tick: 0,
             #[cfg(feature = "metrics")]
             metrics: LruKMetrics::default(),
         }
     }
 
-    fn allocate_slot(&mut self, entry: Entry<K>) -> usize {
-        if let Some(idx) = self.free_list.pop() {
-            self.slots[idx] = Slot {
-                entry: Some(entry),
-                prev: None,
-                next: None,
-            };
-            idx
-        } else {
-            self.slots.push(Slot {
-                entry: Some(entry),
-                prev: None,
-                next: None,
-            });
-            self.slots.len() - 1
-        }
-    }
-
-    fn remove_slot(&mut self, idx: usize) -> Entry<K> {
-        let entry = self.slots[idx].entry.take().expect("lru-k entry missing");
-        self.slots[idx].prev = None;
-        self.slots[idx].next = None;
-        self.free_list.push(idx);
-        entry
-    }
-
-    fn list_push_front(slots: &mut [Slot<K>], list: &mut LruList, idx: usize) {
-        let old_head = list.head;
-        slots[idx].prev = None;
-        slots[idx].next = old_head;
-        if let Some(head_idx) = old_head {
-            slots[head_idx].prev = Some(idx);
-        } else {
-            list.tail = Some(idx);
-        }
-        list.head = Some(idx);
-        list.len += 1;
-    }
-
-    fn list_remove(slots: &mut [Slot<K>], list: &mut LruList, idx: usize) {
-        let prev = slots[idx].prev;
-        let next = slots[idx].next;
-        if let Some(prev_idx) = prev {
-            slots[prev_idx].next = next;
-        } else {
-            list.head = next;
-        }
-        if let Some(next_idx) = next {
-            slots[next_idx].prev = prev;
-        } else {
-            list.tail = prev;
-        }
-        slots[idx].prev = None;
-        slots[idx].next = None;
-        list.len = list.len.saturating_sub(1);
-    }
-
-    fn list_pop_back(slots: &mut [Slot<K>], list: &mut LruList) -> Option<usize> {
-        let idx = list.tail?;
-        Self::list_remove(slots, list, idx);
-        Some(idx)
-    }
-
-    fn record_access(&mut self, idx: usize) -> usize {
+    fn record_access(&mut self, id: SlotId) -> usize {
         self.tick = self.tick.saturating_add(1);
-        let entry = self.slots[idx].entry.as_mut().expect("lru-k entry missing");
+        let entry = self.entries.get_mut(id).expect("lru-k entry missing");
         entry.history.push_back(self.tick);
         if entry.history.len() > self.k {
             entry.history.pop_front();
@@ -430,61 +347,97 @@ where
         entry.history.len()
     }
 
-    fn promote_if_needed(&mut self, idx: usize) {
+    fn move_hot_to_front(&mut self, id: SlotId) {
+        let is_hot = self
+            .entries
+            .get(id)
+            .map(|entry| entry.segment == Segment::Hot)
+            .unwrap_or(false);
+        if !is_hot {
+            return;
+        }
+
+        let node_id = match self.entries.get(id).and_then(|entry| entry.list_node) {
+            Some(node_id) => node_id,
+            None => return,
+        };
+        self.hot.move_to_front(node_id);
+    }
+
+    fn promote_if_needed(&mut self, id: SlotId) {
         let promote = self
-            .slots
-            .get(idx)
-            .and_then(|slot| slot.entry.as_ref())
+            .entries
+            .get(id)
             .map(|entry| entry.segment == Segment::Cold && entry.history.len() >= self.k)
             .unwrap_or(false);
         if !promote {
             return;
         }
 
-        let slots = &mut self.slots;
-        Self::list_remove(slots, &mut self.cold, idx);
-
-        if let Some(entry) = slots[idx].entry.as_mut() {
-            entry.segment = Segment::Hot;
+        if let Some(node_id) = self.entries.get(id).and_then(|entry| entry.list_node) {
+            let _ = self.cold.remove(node_id);
         }
-        Self::list_push_front(slots, &mut self.hot, idx);
+
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.segment = Segment::Hot;
+            entry.list_node = None;
+        }
+
+        let node_id = self.hot.push_front(id);
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.list_node = Some(node_id);
+        }
     }
 
-    fn move_hot_to_front(&mut self, idx: usize) {
-        let is_hot = self
-            .slots
-            .get(idx)
-            .and_then(|slot| slot.entry.as_ref())
-            .map(|entry| entry.segment == Segment::Hot)
-            .unwrap_or(false);
-        if !is_hot {
-            return;
+    fn attach_to_list(
+        entries: &mut SlotArena<Entry<K>>,
+        list: &mut IntrusiveList<SlotId>,
+        id: SlotId,
+    ) {
+        let node_id = list.push_front(id);
+        if let Some(entry) = entries.get_mut(id) {
+            entry.list_node = Some(node_id);
         }
-        let slots = &mut self.slots;
-        Self::list_remove(slots, &mut self.hot, idx);
-        Self::list_push_front(slots, &mut self.hot, idx);
+    }
+
+    fn detach_from_list(
+        entries: &mut SlotArena<Entry<K>>,
+        list: &mut IntrusiveList<SlotId>,
+        id: SlotId,
+    ) {
+        let node_id = match entries.get(id).and_then(|entry| entry.list_node) {
+            Some(node_id) => node_id,
+            None => return,
+        };
+        let _ = list.remove(node_id);
+        if let Some(entry) = entries.get_mut(id) {
+            entry.list_node = None;
+        }
     }
 
     fn evict_candidate(&mut self) -> Option<(K, V)> {
-        let slots = &mut self.slots;
-        let idx = if !self.cold.is_empty() {
-            Self::list_pop_back(slots, &mut self.cold)?
+        let id = if !self.cold.is_empty() {
+            self.cold.pop_back()?
         } else {
-            Self::list_pop_back(slots, &mut self.hot)?
+            self.hot.pop_back()?
         };
 
-        let entry = self.remove_slot(idx);
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.list_node = None;
+        }
+
+        let entry = self.entries.remove(id).expect("lru-k entry missing");
         self.index.remove(&entry.key);
         self.store.record_eviction();
         let value = self.store.remove(&entry.key).map(|arc| (*arc).clone())?;
         Some((entry.key, value))
     }
 
-    fn peek_candidate(&self) -> Option<usize> {
+    fn peek_candidate(&self) -> Option<SlotId> {
         if !self.cold.is_empty() {
-            self.cold.tail
+            self.cold.back().copied()
         } else {
-            self.hot.tail
+            self.hot.back().copied()
         }
     }
 }
@@ -545,10 +498,11 @@ where
             key: key.clone(),
             history,
             segment: Segment::Cold,
+            list_node: None,
         };
-        let idx = self.allocate_slot(entry);
-        self.index.insert(key, idx);
-        Self::list_push_front(&mut self.slots, &mut self.cold, idx);
+        let id = self.entries.insert(entry);
+        self.index.insert(key, id);
+        Self::attach_to_list(&mut self.entries, &mut self.cold, id);
 
         None
     }
@@ -591,10 +545,9 @@ where
         self.metrics.record_clear();
         self.store.clear();
         self.index.clear();
-        self.slots.clear();
-        self.free_list.clear();
-        self.cold = LruList::default();
-        self.hot = LruList::default();
+        self.entries.clear();
+        self.cold.clear();
+        self.hot.clear();
         self.tick = 0;
     }
 }
@@ -605,18 +558,14 @@ where
     V: Clone,
 {
     fn remove(&mut self, key: &K) -> Option<V> {
-        let idx = self.index.remove(key)?;
-        let segment = self.slots[idx]
-            .entry
-            .as_ref()
-            .expect("lru-k entry missing")
-            .segment;
+        let id = self.index.remove(key)?;
+        let segment = self.entries.get(id).expect("lru-k entry missing").segment;
         if segment == Segment::Cold {
-            Self::list_remove(&mut self.slots, &mut self.cold, idx);
+            Self::detach_from_list(&mut self.entries, &mut self.cold, id);
         } else {
-            Self::list_remove(&mut self.slots, &mut self.hot, idx);
+            Self::detach_from_list(&mut self.entries, &mut self.hot, id);
         }
-        let entry = self.remove_slot(idx);
+        let entry = self.entries.remove(id).expect("lru-k entry missing");
         self.store.remove(&entry.key).map(|arc| (*arc).clone())
     }
 }
@@ -645,7 +594,7 @@ where
         (&self.metrics).record_peek_lru_k_call();
 
         let idx = self.peek_candidate()?;
-        let entry = self.slots[idx].entry.as_ref()?;
+        let entry = self.entries.get(idx)?;
         let value = self.store.peek_ref(&entry.key)?;
 
         #[cfg(feature = "metrics")]
@@ -659,18 +608,15 @@ where
     }
 
     fn access_history(&self, key: &K) -> Option<Vec<u64>> {
-        let idx = self.index.get(key)?;
-        self.slots[*idx].entry.as_ref().map(|entry| {
+        let id = self.index.get(key)?;
+        self.entries.get(*id).map(|entry| {
             entry.history.iter().rev().copied().collect() // Most recent first
         })
     }
 
     fn access_count(&self, key: &K) -> Option<usize> {
-        let idx = self.index.get(key)?;
-        self.slots[*idx]
-            .entry
-            .as_ref()
-            .map(|entry| entry.history.len())
+        let id = self.index.get(key)?;
+        self.entries.get(*id).map(|entry| entry.history.len())
     }
 
     fn k_distance(&self, key: &K) -> Option<u64> {
@@ -680,7 +626,7 @@ where
         let result = self
             .index
             .get(key)
-            .and_then(|idx| self.slots[*idx].entry.as_ref())
+            .and_then(|id| self.entries.get(*id))
             .and_then(|entry| {
                 if entry.history.len() >= self.k {
                     entry.history.front().copied()
@@ -725,11 +671,7 @@ where
         let mut items_with_distances: Vec<(bool, u64)> = Vec::new();
 
         for idx in self.index.values() {
-            let history = &self.slots[*idx]
-                .entry
-                .as_ref()
-                .expect("lru-k entry missing")
-                .history;
+            let history = &self.entries.get(*idx).expect("lru-k entry missing").history;
             #[cfg(feature = "metrics")]
             (&self.metrics).record_k_distance_rank_scan_step();
 
@@ -759,9 +701,9 @@ where
 
         // Find the rank of the target key
         let target_idx = *self.index.get(key)?;
-        let target_history = &self.slots[target_idx]
-            .entry
-            .as_ref()
+        let target_history = &self
+            .entries
+            .get(target_idx)
             .expect("lru-k entry missing")
             .history;
         let target_num_accesses = target_history.len();
