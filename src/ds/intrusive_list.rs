@@ -38,6 +38,7 @@ struct Node<T> {
     value: T,
     prev: Option<SlotId>,
     next: Option<SlotId>,
+    epoch: u64,
 }
 
 #[derive(Debug)]
@@ -140,10 +141,16 @@ impl<T> IntrusiveList<T> {
 
     /// Inserts a new node at the front and returns its `SlotId`.
     pub fn push_front(&mut self, value: T) -> SlotId {
+        self.push_front_with_epoch(value, 0)
+    }
+
+    /// Inserts a new node at the front with an epoch and returns its `SlotId`.
+    pub fn push_front_with_epoch(&mut self, value: T, epoch: u64) -> SlotId {
         let id = self.arena.insert(Node {
             value,
             prev: None,
             next: self.head,
+            epoch,
         });
         if let Some(head) = self.head {
             if let Some(node) = self.arena.get_mut(head) {
@@ -158,10 +165,16 @@ impl<T> IntrusiveList<T> {
 
     /// Inserts a new node at the back and returns its `SlotId`.
     pub fn push_back(&mut self, value: T) -> SlotId {
+        self.push_back_with_epoch(value, 0)
+    }
+
+    /// Inserts a new node at the back with an epoch and returns its `SlotId`.
+    pub fn push_back_with_epoch(&mut self, value: T, epoch: u64) -> SlotId {
         let id = self.arena.insert(Node {
             value,
             prev: self.tail,
             next: None,
+            epoch,
         });
         if let Some(tail) = self.tail {
             if let Some(node) = self.arena.get_mut(tail) {
@@ -172,6 +185,21 @@ impl<T> IntrusiveList<T> {
         }
         self.tail = Some(id);
         id
+    }
+
+    /// Returns the epoch recorded for `id`, if present.
+    pub fn epoch(&self, id: SlotId) -> Option<u64> {
+        self.arena.get(id).map(|node| node.epoch)
+    }
+
+    /// Sets the epoch for `id`; returns `false` if `id` is not present.
+    pub fn set_epoch(&mut self, id: SlotId, epoch: u64) -> bool {
+        if let Some(node) = self.arena.get_mut(id) {
+            node.epoch = epoch;
+            true
+        } else {
+            false
+        }
     }
 
     /// Removes and returns the front value.
@@ -227,10 +255,29 @@ impl<T> IntrusiveList<T> {
         self.tail = None;
     }
 
+    /// Clears the list and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.clear();
+        self.arena.shrink_to_fit();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.arena.approx_bytes()
+    }
+
     #[cfg(any(test, debug_assertions))]
     /// Returns the list order as SlotIds from head to tail.
     pub fn debug_snapshot_ids(&self) -> Vec<SlotId> {
         self.iter_ids().collect()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns SlotIds sorted by index for deterministic snapshots.
+    pub fn debug_snapshot_ids_sorted(&self) -> Vec<SlotId> {
+        let mut ids: Vec<_> = self.iter_ids().collect();
+        ids.sort_by_key(|id| id.index());
+        ids
     }
 
     fn detach(&mut self, id: SlotId) -> Option<()> {
@@ -438,10 +485,46 @@ impl<T> ConcurrentIntrusiveList<T> {
         list.push_front(value)
     }
 
+    /// Tries to insert a value at the front without blocking.
+    pub fn try_push_front(&self, value: T) -> Option<SlotId> {
+        let mut list = self.inner.try_write()?;
+        Some(list.push_front(value))
+    }
+
+    /// Inserts a value at the front with an epoch and returns its `SlotId`.
+    pub fn push_front_with_epoch(&self, value: T, epoch: u64) -> SlotId {
+        let mut list = self.inner.write();
+        list.push_front_with_epoch(value, epoch)
+    }
+
+    /// Tries to insert a value at the front with an epoch without blocking.
+    pub fn try_push_front_with_epoch(&self, value: T, epoch: u64) -> Option<SlotId> {
+        let mut list = self.inner.try_write()?;
+        Some(list.push_front_with_epoch(value, epoch))
+    }
+
     /// Inserts a value at the back and returns its `SlotId`.
     pub fn push_back(&self, value: T) -> SlotId {
         let mut list = self.inner.write();
         list.push_back(value)
+    }
+
+    /// Tries to insert a value at the back without blocking.
+    pub fn try_push_back(&self, value: T) -> Option<SlotId> {
+        let mut list = self.inner.try_write()?;
+        Some(list.push_back(value))
+    }
+
+    /// Inserts a value at the back with an epoch and returns its `SlotId`.
+    pub fn push_back_with_epoch(&self, value: T, epoch: u64) -> SlotId {
+        let mut list = self.inner.write();
+        list.push_back_with_epoch(value, epoch)
+    }
+
+    /// Tries to insert a value at the back with an epoch without blocking.
+    pub fn try_push_back_with_epoch(&self, value: T, epoch: u64) -> Option<SlotId> {
+        let mut list = self.inner.try_write()?;
+        Some(list.push_back_with_epoch(value, epoch))
     }
 
     /// Removes and returns the front value.
@@ -450,10 +533,22 @@ impl<T> ConcurrentIntrusiveList<T> {
         list.pop_front()
     }
 
+    /// Tries to remove and return the front value without blocking.
+    pub fn try_pop_front(&self) -> Option<Option<T>> {
+        let mut list = self.inner.try_write()?;
+        Some(list.pop_front())
+    }
+
     /// Removes and returns the back value.
     pub fn pop_back(&self) -> Option<T> {
         let mut list = self.inner.write();
         list.pop_back()
+    }
+
+    /// Tries to remove and return the back value without blocking.
+    pub fn try_pop_back(&self) -> Option<Option<T>> {
+        let mut list = self.inner.try_write()?;
+        Some(list.pop_back())
     }
 
     /// Removes the node `id` and returns its value, if present.
@@ -462,10 +557,22 @@ impl<T> ConcurrentIntrusiveList<T> {
         list.remove(id)
     }
 
+    /// Tries to remove the node `id` without blocking.
+    pub fn try_remove(&self, id: SlotId) -> Option<Option<T>> {
+        let mut list = self.inner.try_write()?;
+        Some(list.remove(id))
+    }
+
     /// Moves an existing node to the front; returns `false` if not present.
     pub fn move_to_front(&self, id: SlotId) -> bool {
         let mut list = self.inner.write();
         list.move_to_front(id)
+    }
+
+    /// Tries to move a node to the front without blocking.
+    pub fn try_move_to_front(&self, id: SlotId) -> Option<bool> {
+        let mut list = self.inner.try_write()?;
+        Some(list.move_to_front(id))
     }
 
     /// Moves an existing node to the back; returns `false` if not present.
@@ -474,9 +581,21 @@ impl<T> ConcurrentIntrusiveList<T> {
         list.move_to_back(id)
     }
 
+    /// Tries to move a node to the back without blocking.
+    pub fn try_move_to_back(&self, id: SlotId) -> Option<bool> {
+        let mut list = self.inner.try_write()?;
+        Some(list.move_to_back(id))
+    }
+
     /// Runs `f` on a shared reference to the value at `id`, if present.
     pub fn get_with<R>(&self, id: SlotId, f: impl FnOnce(&T) -> R) -> Option<R> {
         let list = self.inner.read();
+        list.get(id).map(f)
+    }
+
+    /// Tries to run `f` on a shared reference to the value at `id` without blocking.
+    pub fn try_get_with<R>(&self, id: SlotId, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let list = self.inner.try_read()?;
         list.get(id).map(f)
     }
 
@@ -486,9 +605,21 @@ impl<T> ConcurrentIntrusiveList<T> {
         list.get_mut(id).map(f)
     }
 
+    /// Tries to run `f` on a mutable reference to the value at `id` without blocking.
+    pub fn try_get_mut_with<R>(&self, id: SlotId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let mut list = self.inner.try_write()?;
+        list.get_mut(id).map(f)
+    }
+
     /// Runs `f` on a shared reference to the front value, if present.
     pub fn front_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
         let list = self.inner.read();
+        list.front().map(f)
+    }
+
+    /// Tries to run `f` on a shared reference to the front value without blocking.
+    pub fn try_front_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let list = self.inner.try_read()?;
         list.front().map(f)
     }
 
@@ -498,10 +629,72 @@ impl<T> ConcurrentIntrusiveList<T> {
         list.back().map(f)
     }
 
+    /// Tries to run `f` on a shared reference to the back value without blocking.
+    pub fn try_back_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let list = self.inner.try_read()?;
+        list.back().map(f)
+    }
+
+    /// Returns the epoch recorded for `id`, if present.
+    pub fn epoch(&self, id: SlotId) -> Option<u64> {
+        let list = self.inner.read();
+        list.epoch(id)
+    }
+
+    /// Tries to read the epoch for `id` without blocking.
+    pub fn try_epoch(&self, id: SlotId) -> Option<Option<u64>> {
+        let list = self.inner.try_read()?;
+        Some(list.epoch(id))
+    }
+
+    /// Sets the epoch for `id`; returns `false` if `id` is not present.
+    pub fn set_epoch(&self, id: SlotId, epoch: u64) -> bool {
+        let mut list = self.inner.write();
+        list.set_epoch(id, epoch)
+    }
+
+    /// Tries to set the epoch for `id` without blocking.
+    pub fn try_set_epoch(&self, id: SlotId, epoch: u64) -> Option<bool> {
+        let mut list = self.inner.try_write()?;
+        Some(list.set_epoch(id, epoch))
+    }
+
     /// Clears the list.
     pub fn clear(&self) {
         let mut list = self.inner.write();
         list.clear();
+    }
+
+    /// Tries to clear the list without blocking.
+    pub fn try_clear(&self) -> bool {
+        if let Some(mut list) = self.inner.try_write() {
+            list.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clears the list and shrinks internal storage.
+    pub fn clear_shrink(&self) {
+        let mut list = self.inner.write();
+        list.clear_shrink();
+    }
+
+    /// Tries to clear and shrink without blocking.
+    pub fn try_clear_shrink(&self) -> bool {
+        if let Some(mut list) = self.inner.try_write() {
+            list.clear_shrink();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        let list = self.inner.read();
+        list.approx_bytes()
     }
 }
 
@@ -652,12 +845,30 @@ mod tests {
     }
 
     #[test]
+    fn intrusive_list_epoch_tracking() {
+        let mut list = IntrusiveList::new();
+        let a = list.push_front_with_epoch("a", 7);
+        let b = list.push_back("b");
+
+        assert_eq!(list.epoch(a), Some(7));
+        assert_eq!(list.epoch(b), Some(0));
+
+        assert!(list.set_epoch(b, 9));
+        assert_eq!(list.epoch(b), Some(9));
+
+        list.remove(b);
+        assert_eq!(list.epoch(b), None);
+        assert!(!list.set_epoch(b, 3));
+    }
+
+    #[test]
     fn intrusive_list_debug_snapshot_ids() {
         let mut list = IntrusiveList::new();
         let a = list.push_back(1);
         let b = list.push_back(2);
         let c = list.push_back(3);
         assert_eq!(list.debug_snapshot_ids(), vec![a, b, c]);
+        assert_eq!(list.debug_snapshot_ids_sorted(), vec![a, b, c]);
     }
 
     #[test]
@@ -677,6 +888,36 @@ mod tests {
         assert_eq!(list.back_with(|v| *v), None);
         assert!(!list.contains(a));
         assert!(!list.contains(b));
+    }
+
+    #[test]
+    fn concurrent_intrusive_list_try_ops() {
+        let list = ConcurrentIntrusiveList::new();
+        let a = list.try_push_front(1).unwrap();
+        let b = list.try_push_back(2).unwrap();
+        assert_eq!(list.try_get_with(a, |v| *v), Some(1));
+        assert_eq!(list.try_get_with(b, |v| *v), Some(2));
+        assert_eq!(list.try_front_with(|v| *v), Some(1));
+        assert!(list.try_move_to_back(a).unwrap());
+        assert_eq!(list.try_pop_front().unwrap(), Some(2));
+        assert!(list.try_clear());
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn concurrent_intrusive_list_epoch_ops() {
+        let list = ConcurrentIntrusiveList::new();
+        let a = list.push_front_with_epoch(1, 11);
+        let b = list.push_back(2);
+
+        assert_eq!(list.epoch(a), Some(11));
+        assert_eq!(list.epoch(b), Some(0));
+        assert!(list.set_epoch(b, 15));
+        assert_eq!(list.epoch(b), Some(15));
+
+        assert_eq!(list.try_epoch(a).unwrap(), Some(11));
+        assert!(list.try_set_epoch(a, 20).unwrap());
+        assert_eq!(list.epoch(a), Some(20));
     }
 
     #[test]

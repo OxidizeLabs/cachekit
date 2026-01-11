@@ -55,6 +55,21 @@ where
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
+
+    /// Clears all interned keys and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.index.clear();
+        self.keys.clear();
+        self.index.shrink_to_fit();
+        self.keys.shrink_to_fit();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.index.capacity() * std::mem::size_of::<(K, u64)>()
+            + self.keys.capacity() * std::mem::size_of::<K>()
+    }
 }
 
 #[cfg(test)]

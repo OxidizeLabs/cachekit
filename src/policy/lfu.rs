@@ -369,6 +369,47 @@ where
         }
     }
 
+    /// Inserts a batch of entries; returns number of entries inserted/updated.
+    pub fn insert_batch<I>(&mut self, entries: I) -> usize
+    where
+        I: IntoIterator<Item = (K, Arc<V>)>,
+    {
+        let mut count = 0;
+        for (key, value) in entries {
+            let _ = self.insert(key, value);
+            count += 1;
+        }
+        count
+    }
+
+    /// Removes a batch of keys; returns number of keys removed.
+    pub fn remove_batch<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut removed = 0;
+        for key in keys {
+            if self.remove(&key).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// Touches a batch of keys; returns number of keys found.
+    pub fn touch_batch<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut touched = 0;
+        for key in keys {
+            if self.increment_frequency(&key).is_some() {
+                touched += 1;
+            }
+        }
+        touched
+    }
+
     fn evict_min_freq(&mut self) -> Option<(K, Arc<V>)> {
         let (key, _freq) = self.buckets.pop_min()?;
         self.store.record_eviction();
@@ -388,6 +429,47 @@ where
             #[cfg(feature = "metrics")]
             metrics: LfuMetrics::default(),
         }
+    }
+
+    /// Inserts a batch of entries; returns number of entries inserted/updated.
+    pub fn insert_batch<I>(&mut self, entries: I) -> usize
+    where
+        I: IntoIterator<Item = (H, Arc<V>)>,
+    {
+        let mut count = 0;
+        for (handle, value) in entries {
+            let _ = self.insert(handle, value);
+            count += 1;
+        }
+        count
+    }
+
+    /// Removes a batch of handles; returns number of handles removed.
+    pub fn remove_batch<I>(&mut self, handles: I) -> usize
+    where
+        I: IntoIterator<Item = H>,
+    {
+        let mut removed = 0;
+        for handle in handles {
+            if self.remove(&handle).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// Touches a batch of handles; returns number of handles found.
+    pub fn touch_batch<I>(&mut self, handles: I) -> usize
+    where
+        I: IntoIterator<Item = H>,
+    {
+        let mut touched = 0;
+        for handle in handles {
+            if self.increment_frequency(&handle).is_some() {
+                touched += 1;
+            }
+        }
+        touched
     }
 
     fn evict_min_freq(&mut self) -> Option<(H, Arc<V>)> {
@@ -882,6 +964,29 @@ mod tests {
             cache.insert(3, Arc::new(30));
             assert_eq!(cache.len(), 2);
             cache.debug_validate_invariants();
+        }
+
+        #[test]
+        fn test_lfu_batch_ops() {
+            let mut cache: LFUCache<String, i32> = LFUCache::new(3);
+            let inserted = cache.insert_batch([
+                ("a".to_string(), Arc::new(1)),
+                ("b".to_string(), Arc::new(2)),
+            ]);
+            assert_eq!(inserted, 2);
+            assert_eq!(cache.touch_batch(["a".to_string(), "z".to_string()]), 1);
+            assert_eq!(cache.remove_batch(["b".to_string(), "z".to_string()]), 1);
+            assert_eq!(cache.len(), 1);
+        }
+
+        #[test]
+        fn test_handle_lfu_batch_ops() {
+            let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(3);
+            let inserted = cache.insert_batch([(1, Arc::new(1)), (2, Arc::new(2))]);
+            assert_eq!(inserted, 2);
+            assert_eq!(cache.touch_batch([1, 3]), 1);
+            assert_eq!(cache.remove_batch([2, 3]), 1);
+            assert_eq!(cache.len(), 1);
         }
 
         #[test]

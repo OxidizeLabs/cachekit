@@ -1,6 +1,7 @@
 pub use crate::ds::{
-    ClockRing, ConcurrentIntrusiveList, ConcurrentSlotArena, FixedHistory, FrequencyBuckets,
-    FrequencyBucketsHandle, GhostList, IntrusiveList, KeyInterner, LazyMinHeap,
+    ClockRing, ConcurrentClockRing, ConcurrentIntrusiveList, ConcurrentSlotArena, FixedHistory,
+    FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle, GhostList, IntrusiveList,
+    KeyInterner, LazyMinHeap, ShardSelector, ShardedFrequencyBucketEntryMeta,
     ShardedFrequencyBuckets, ShardedSlotArena, ShardedSlotId, SlotArena, SlotId,
 };
 pub use crate::policy::fifo::FIFOCache;

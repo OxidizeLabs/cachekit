@@ -141,6 +141,12 @@ impl<T> SlotArena<T> {
         self.free_list.shrink_to_fit();
     }
 
+    /// Clears all entries and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.clear();
+        self.shrink_to_fit();
+    }
+
     /// Removes all entries and resets internal state.
     pub fn clear(&mut self) {
         self.slots.clear();
@@ -167,12 +173,23 @@ impl<T> SlotArena<T> {
     #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of arena internals.
     pub fn debug_snapshot(&self) -> SlotArenaSnapshot {
+        let mut free_list = self.free_list.clone();
+        free_list.sort_unstable();
+        let mut live_ids: Vec<_> = self.iter_ids().collect();
+        live_ids.sort_by_key(|id| id.index());
         SlotArenaSnapshot {
             len: self.len,
             slots_len: self.slots.len(),
-            free_list: self.free_list.clone(),
-            live_ids: self.iter_ids().collect(),
+            free_list,
+            live_ids,
         }
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.slots.capacity() * std::mem::size_of::<Option<T>>()
+            + self.free_list.capacity() * std::mem::size_of::<usize>()
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -224,6 +241,7 @@ impl ShardedSlotId {
 /// SlotArena sharded by a fixed number of `RwLock`-protected arenas.
 pub struct ShardedSlotArena<T> {
     shards: Vec<parking_lot::RwLock<SlotArena<T>>>,
+    selector: crate::ds::ShardSelector,
     next_shard: std::sync::atomic::AtomicUsize,
 }
 
@@ -237,6 +255,7 @@ impl<T> ShardedSlotArena<T> {
         }
         Self {
             shards: arenas,
+            selector: crate::ds::ShardSelector::new(shards, 0),
             next_shard: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -250,8 +269,35 @@ impl<T> ShardedSlotArena<T> {
         }
         Self {
             shards: arenas,
+            selector: crate::ds::ShardSelector::new(shards, 0),
             next_shard: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Creates a sharded arena with `shards`, each pre-allocated to `capacity_per_shard`.
+    pub fn with_shards(shards: usize, capacity_per_shard: usize) -> Self {
+        Self::with_capacity(shards, capacity_per_shard)
+    }
+
+    /// Creates a sharded arena with `shards`, `capacity_per_shard`, and a hash seed.
+    pub fn with_shards_seed(shards: usize, capacity_per_shard: usize, seed: u64) -> Self {
+        let shards = shards.max(1);
+        let mut arenas = Vec::with_capacity(shards);
+        for _ in 0..shards {
+            arenas.push(parking_lot::RwLock::new(SlotArena::with_capacity(
+                capacity_per_shard,
+            )));
+        }
+        Self {
+            shards: arenas,
+            selector: crate::ds::ShardSelector::new(shards, seed),
+            next_shard: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Returns the shard index for `key` using the configured selector.
+    pub fn shard_for_key<K: std::hash::Hash>(&self, key: &K) -> usize {
+        self.selector.shard_for_key(key)
     }
 
     /// Returns the number of shards.
@@ -318,6 +364,21 @@ impl<T> ShardedSlotArena<T> {
         for arena in &self.shards {
             arena.write().shrink_to_fit();
         }
+    }
+
+    /// Clears all shards and shrinks internal storage.
+    pub fn clear_shrink(&self) {
+        for arena in &self.shards {
+            arena.write().clear_shrink();
+        }
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|arena| arena.read().approx_bytes())
+            .sum()
     }
 }
 
@@ -420,10 +481,22 @@ impl<T> ConcurrentSlotArena<T> {
         arena.shrink_to_fit();
     }
 
+    /// Clears all entries and shrinks internal storage.
+    pub fn clear_shrink(&self) {
+        let mut arena = self.inner.write();
+        arena.clear_shrink();
+    }
+
     /// Clears all entries.
     pub fn clear(&self) {
         let mut arena = self.inner.write();
         arena.clear();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        let arena = self.inner.read();
+        arena.approx_bytes()
     }
 }
 
@@ -573,6 +646,20 @@ mod tests {
         assert_eq!(arena.remove(b), Some(2));
         assert!(!arena.contains(b));
         assert_eq!(arena.len(), 1);
+    }
+
+    #[test]
+    fn sharded_slot_arena_shard_for_key() {
+        let arena: ShardedSlotArena<i32> = ShardedSlotArena::new(4);
+        let shard = arena.shard_for_key(&"alpha");
+        assert!(shard < arena.shard_count());
+    }
+
+    #[test]
+    fn sharded_slot_arena_with_seed() {
+        let arena: ShardedSlotArena<i32> = ShardedSlotArena::with_shards_seed(4, 0, 99);
+        let shard = arena.shard_for_key(&"alpha");
+        assert!(shard < arena.shard_count());
     }
 
     #[test]

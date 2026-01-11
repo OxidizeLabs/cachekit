@@ -44,7 +44,6 @@
 //! `debug_validate_invariants()` is available in debug/test builds.
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::hash::Hasher;
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
@@ -52,6 +51,7 @@ use crate::ds::slot_arena::{SlotArena, SlotId};
 struct Entry<K> {
     key: K,
     freq: u64,
+    last_epoch: u64,
     prev: Option<SlotId>,
     next: Option<SlotId>,
 }
@@ -71,12 +71,48 @@ pub struct FrequencyBuckets<K> {
     index: HashMap<K, SlotId>,
     buckets: HashMap<u64, Bucket>,
     min_freq: u64,
+    epoch: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Read-only view of a frequency bucket entry.
+pub struct FrequencyBucketEntryMeta<'a, K> {
+    pub key: &'a K,
+    pub freq: u64,
+    pub last_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Owned view of a frequency bucket entry for sharded readers.
+pub struct ShardedFrequencyBucketEntryMeta<K> {
+    pub key: K,
+    pub freq: u64,
+    pub last_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Debug view of a bucket entry for snapshots.
+pub struct FrequencyBucketEntryDebug<K> {
+    pub id: SlotId,
+    pub key: K,
+    pub freq: u64,
+    pub last_epoch: u64,
 }
 
 impl<K> FrequencyBuckets<K>
 where
     K: Eq + Hash + Clone,
 {
+    /// Creates an empty tracker with reserved capacity for entries and index.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: SlotArena::with_capacity(capacity),
+            index: HashMap::with_capacity(capacity),
+            buckets: HashMap::new(),
+            min_freq: 0,
+            epoch: 0,
+        }
+    }
     /// Creates an empty tracker.
     pub fn new() -> Self {
         Self {
@@ -84,6 +120,7 @@ where
             index: HashMap::new(),
             buckets: HashMap::new(),
             min_freq: 0,
+            epoch: 0,
         }
     }
 
@@ -102,8 +139,62 @@ where
         self.index.contains_key(key)
     }
 
+    /// Returns the current epoch.
+    pub fn current_epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Advances the epoch counter and returns the new value.
+    pub fn advance_epoch(&mut self) -> u64 {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.epoch
+    }
+
+    /// Sets the epoch counter.
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+    }
+
     /// Returns the current frequency for `key`, if present.
     pub fn frequency(&self, key: &K) -> Option<u64> {
+        let id = *self.index.get(key)?;
+        self.entries.get(id).map(|entry| entry.freq)
+    }
+
+    /// Returns the last epoch recorded for `key`.
+    pub fn entry_epoch(&self, key: &K) -> Option<u64> {
+        let id = *self.index.get(key)?;
+        self.entries.get(id).map(|entry| entry.last_epoch)
+    }
+
+    /// Sets the last epoch for `key`; returns `false` if missing.
+    pub fn set_entry_epoch(&mut self, key: &K, epoch: u64) -> bool {
+        let id = match self.index.get(key) {
+            Some(id) => *id,
+            None => return false,
+        };
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.last_epoch = epoch;
+            return true;
+        }
+        false
+    }
+
+    /// Returns `true` if a borrowed key is present (avoids cloning).
+    pub fn contains_borrowed<Q>(&self, key: &Q) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.index.contains_key(key)
+    }
+
+    /// Returns the frequency for a borrowed key if present (avoids cloning).
+    pub fn frequency_borrowed<Q>(&self, key: &Q) -> Option<u64>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let id = *self.index.get(key)?;
         self.entries.get(id).map(|entry| entry.freq)
     }
@@ -153,6 +244,29 @@ where
         }
     }
 
+    /// Returns an iterator of `(SlotId, meta)` for a given frequency.
+    pub fn iter_bucket_entries(&self, freq: u64) -> FrequencyBucketEntryIter<'_, K> {
+        let head = self.buckets.get(&freq).and_then(|bucket| bucket.head);
+        FrequencyBucketEntryIter {
+            buckets: self,
+            current: head,
+        }
+    }
+
+    /// Returns an iterator over all `(SlotId, meta)` entries.
+    pub fn iter_entries(&self) -> impl Iterator<Item = (SlotId, FrequencyBucketEntryMeta<'_, K>)> {
+        self.entries.iter().map(|(id, entry)| {
+            (
+                id,
+                FrequencyBucketEntryMeta {
+                    key: &entry.key,
+                    freq: entry.freq,
+                    last_epoch: entry.last_epoch,
+                },
+            )
+        })
+    }
+
     /// Inserts a new key with frequency 1.
     ///
     /// Returns `false` if the key already exists.
@@ -164,6 +278,7 @@ where
         let id = self.entries.insert(Entry {
             key: key.clone(),
             freq: 1,
+            last_epoch: self.epoch,
             prev: None,
             next: None,
         });
@@ -185,6 +300,20 @@ where
         true
     }
 
+    /// Inserts a batch of keys; returns number of newly inserted keys.
+    pub fn insert_batch<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut inserted = 0;
+        for key in keys {
+            if self.insert(key) {
+                inserted += 1;
+            }
+        }
+        inserted
+    }
+
     /// Increments frequency for `key` and returns the new frequency.
     ///
     /// Returns `None` if `key` is missing. Within each frequency bucket,
@@ -195,6 +324,9 @@ where
         if current_freq == u64::MAX {
             self.list_remove(current_freq, id)?;
             self.list_push_front(current_freq, id);
+            if let Some(entry) = self.entries.get_mut(id) {
+                entry.last_epoch = self.epoch;
+            }
             return Some(current_freq);
         }
         let next_freq = current_freq + 1;
@@ -226,6 +358,7 @@ where
 
         if let Some(entry) = self.entries.get_mut(id) {
             entry.freq = next_freq;
+            entry.last_epoch = self.epoch;
         }
         self.list_push_front(next_freq, id);
         if self.min_freq == 0 || next_freq < self.min_freq {
@@ -233,6 +366,20 @@ where
         }
 
         Some(next_freq)
+    }
+
+    /// Touches a batch of keys; returns number of keys found.
+    pub fn touch_batch<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut touched = 0;
+        for key in keys {
+            if self.touch(&key).is_some() {
+                touched += 1;
+            }
+        }
+        touched
     }
 
     /// Increments frequency for `key`, clamping at `max_freq`.
@@ -246,6 +393,9 @@ where
         if current_freq >= max_freq {
             self.list_remove(current_freq, id)?;
             self.list_push_front(current_freq, id);
+            if let Some(entry) = self.entries.get_mut(id) {
+                entry.last_epoch = self.epoch;
+            }
             return Some(current_freq);
         }
 
@@ -277,6 +427,7 @@ where
 
         if let Some(entry) = self.entries.get_mut(id) {
             entry.freq = next_freq;
+            entry.last_epoch = self.epoch;
         }
         self.list_push_front(next_freq, id);
         if self.min_freq == 0 || next_freq < self.min_freq {
@@ -329,6 +480,20 @@ where
         self.entries.remove(id).map(|entry| entry.freq)
     }
 
+    /// Removes a batch of keys; returns number of keys removed.
+    pub fn remove_batch<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut removed = 0;
+        for key in keys {
+            if self.remove(&key).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Removes and returns the eviction candidate `(key, freq)`.
     ///
     /// Eviction is O(1) using `min_freq` and the tail of that bucket.
@@ -364,6 +529,23 @@ where
         self.index.clear();
         self.buckets.clear();
         self.min_freq = 0;
+        self.epoch = 0;
+    }
+
+    /// Clears all state and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.clear();
+        self.entries.shrink_to_fit();
+        self.index.shrink_to_fit();
+        self.buckets.shrink_to_fit();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.entries.approx_bytes()
+            + self.index.capacity() * std::mem::size_of::<(K, SlotId)>()
+            + self.buckets.capacity() * std::mem::size_of::<(u64, Bucket)>()
     }
 
     fn ensure_bucket(&mut self, freq: u64) {
@@ -388,6 +570,7 @@ where
         let id = self.entries.insert(Entry {
             key: key.clone(),
             freq,
+            last_epoch: self.epoch,
             prev: None,
             next: None,
         });
@@ -420,19 +603,50 @@ where
 
     #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of bucket chains.
-    pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot {
+    pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot<K> {
         let mut buckets: Vec<(u64, Vec<SlotId>)> = self
             .buckets
             .keys()
             .copied()
             .map(|freq| (freq, self.iter_bucket_ids(freq).collect()))
             .collect();
+        for (_, ids) in &mut buckets {
+            ids.sort_by_key(|id| id.index());
+        }
         buckets.sort_by_key(|(freq, _)| *freq);
+        let mut bucket_entries: Vec<(u64, Vec<FrequencyBucketEntryDebug<K>>)> = self
+            .buckets
+            .keys()
+            .copied()
+            .map(|freq| {
+                let mut entries: Vec<_> = self
+                    .iter_bucket_entries(freq)
+                    .map(|(id, meta)| FrequencyBucketEntryDebug {
+                        id,
+                        key: meta.key.clone(),
+                        freq: meta.freq,
+                        last_epoch: meta.last_epoch,
+                    })
+                    .collect();
+                entries.sort_by_key(|entry| entry.id.index());
+                (freq, entries)
+            })
+            .collect();
+        bucket_entries.sort_by_key(|(freq, _)| *freq);
+        let mut entry_epochs: Vec<(SlotId, u64)> = self
+            .entries
+            .iter()
+            .map(|(id, entry)| (id, entry.last_epoch))
+            .collect();
+        entry_epochs.sort_by_key(|(id, _)| id.index());
         FrequencyBucketsSnapshot {
             min_freq: self.min_freq(),
             entries_len: self.entries.len(),
             index_len: self.index.len(),
             buckets,
+            epoch: self.epoch,
+            entry_epochs,
+            bucket_entries,
         }
     }
 
@@ -573,17 +787,21 @@ where
 
 #[cfg(any(test, debug_assertions))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrequencyBucketsSnapshot {
+pub struct FrequencyBucketsSnapshot<K> {
     pub min_freq: Option<u64>,
     pub entries_len: usize,
     pub index_len: usize,
     pub buckets: Vec<(u64, Vec<SlotId>)>,
+    pub epoch: u64,
+    pub entry_epochs: Vec<(SlotId, u64)>,
+    pub bucket_entries: Vec<(u64, Vec<FrequencyBucketEntryDebug<K>>)>,
 }
 
 #[derive(Debug)]
 /// Sharded frequency buckets for reduced contention.
 pub struct ShardedFrequencyBuckets<K> {
     shards: Vec<parking_lot::RwLock<FrequencyBuckets<K>>>,
+    selector: crate::ds::ShardSelector,
 }
 
 impl<K> ShardedFrequencyBuckets<K>
@@ -597,7 +815,40 @@ where
         for _ in 0..shards {
             vec.push(parking_lot::RwLock::new(FrequencyBuckets::new()));
         }
-        Self { shards: vec }
+        Self {
+            shards: vec,
+            selector: crate::ds::ShardSelector::new(shards, 0),
+        }
+    }
+
+    /// Creates a sharded tracker with `shards` and `capacity_per_shard`.
+    pub fn with_shards(shards: usize, capacity_per_shard: usize) -> Self {
+        let shards = shards.max(1);
+        let mut vec = Vec::with_capacity(shards);
+        for _ in 0..shards {
+            vec.push(parking_lot::RwLock::new(FrequencyBuckets::with_capacity(
+                capacity_per_shard,
+            )));
+        }
+        Self {
+            shards: vec,
+            selector: crate::ds::ShardSelector::new(shards, 0),
+        }
+    }
+
+    /// Creates a sharded tracker with `shards`, `capacity_per_shard`, and a hash seed.
+    pub fn with_shards_seed(shards: usize, capacity_per_shard: usize, seed: u64) -> Self {
+        let shards = shards.max(1);
+        let mut vec = Vec::with_capacity(shards);
+        for _ in 0..shards {
+            vec.push(parking_lot::RwLock::new(FrequencyBuckets::with_capacity(
+                capacity_per_shard,
+            )));
+        }
+        Self {
+            shards: vec,
+            selector: crate::ds::ShardSelector::new(shards, seed),
+        }
     }
 
     /// Returns the number of shards.
@@ -606,9 +857,12 @@ where
     }
 
     fn shard_for(&self, key: &K) -> usize {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
-        (hasher.finish() as usize) % self.shards.len()
+        self.selector.shard_for_key(key)
+    }
+
+    /// Returns the shard index for `key` using the configured selector.
+    pub fn shard_for_key(&self, key: &K) -> usize {
+        self.selector.shard_for_key(key)
     }
 
     /// Inserts a key into its shard.
@@ -661,6 +915,107 @@ where
         for shard in &self.shards {
             shard.write().clear();
         }
+    }
+
+    /// Clears all shards and shrinks internal storage.
+    pub fn clear_shrink(&self) {
+        for shard in &self.shards {
+            shard.write().clear_shrink();
+        }
+    }
+
+    /// Returns an iterator-like snapshot of `(SlotId, meta)` for a given frequency.
+    pub fn iter_bucket_entries(
+        &self,
+        freq: u64,
+    ) -> Vec<(SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
+        let mut entries = Vec::new();
+        for shard in &self.shards {
+            let buckets = shard.read();
+            entries.extend(buckets.iter_bucket_entries(freq).map(|(id, meta)| {
+                (
+                    id,
+                    ShardedFrequencyBucketEntryMeta {
+                        key: meta.key.clone(),
+                        freq: meta.freq,
+                        last_epoch: meta.last_epoch,
+                    },
+                )
+            }));
+        }
+        entries
+    }
+
+    /// Returns an iterator-like snapshot of all `(SlotId, meta)` entries.
+    pub fn iter_entries(&self) -> Vec<(SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
+        let mut entries = Vec::new();
+        for shard in &self.shards {
+            let buckets = shard.read();
+            entries.extend(buckets.iter_entries().map(|(id, meta)| {
+                (
+                    id,
+                    ShardedFrequencyBucketEntryMeta {
+                        key: meta.key.clone(),
+                        freq: meta.freq,
+                        last_epoch: meta.last_epoch,
+                    },
+                )
+            }));
+        }
+        entries
+    }
+
+    /// Returns a snapshot of `(shard_idx, SlotId, meta)` for a given frequency.
+    pub fn iter_bucket_entries_with_shard(
+        &self,
+        freq: u64,
+    ) -> Vec<(usize, SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
+        let mut entries = Vec::new();
+        for (idx, shard) in self.shards.iter().enumerate() {
+            let buckets = shard.read();
+            entries.extend(buckets.iter_bucket_entries(freq).map(|(id, meta)| {
+                (
+                    idx,
+                    id,
+                    ShardedFrequencyBucketEntryMeta {
+                        key: meta.key.clone(),
+                        freq: meta.freq,
+                        last_epoch: meta.last_epoch,
+                    },
+                )
+            }));
+        }
+        entries
+    }
+
+    /// Returns a snapshot of all `(shard_idx, SlotId, meta)` entries.
+    pub fn iter_entries_with_shard(
+        &self,
+    ) -> Vec<(usize, SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
+        let mut entries = Vec::new();
+        for (idx, shard) in self.shards.iter().enumerate() {
+            let buckets = shard.read();
+            entries.extend(buckets.iter_entries().map(|(id, meta)| {
+                (
+                    idx,
+                    id,
+                    ShardedFrequencyBucketEntryMeta {
+                        key: meta.key.clone(),
+                        freq: meta.freq,
+                        last_epoch: meta.last_epoch,
+                    },
+                )
+            }));
+        }
+        entries
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| shard.read().approx_bytes())
+            .sum()
     }
 
     /// Peeks the global min across shards by cloning the candidate.
@@ -733,6 +1088,31 @@ where
         self.inner.frequency(handle)
     }
 
+    /// Returns the current epoch.
+    pub fn current_epoch(&self) -> u64 {
+        self.inner.current_epoch()
+    }
+
+    /// Advances the epoch counter and returns the new value.
+    pub fn advance_epoch(&mut self) -> u64 {
+        self.inner.advance_epoch()
+    }
+
+    /// Sets the epoch counter.
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.inner.set_epoch(epoch);
+    }
+
+    /// Returns the last epoch recorded for `handle`.
+    pub fn entry_epoch(&self, handle: &H) -> Option<u64> {
+        self.inner.entry_epoch(handle)
+    }
+
+    /// Sets the last epoch for `handle`; returns `false` if missing.
+    pub fn set_entry_epoch(&mut self, handle: &H, epoch: u64) -> bool {
+        self.inner.set_entry_epoch(handle, epoch)
+    }
+
     /// Returns the minimum frequency currently present.
     pub fn min_freq(&self) -> Option<u64> {
         self.inner.min_freq()
@@ -746,6 +1126,21 @@ where
     /// Peeks the eviction candidate by reference `(handle, freq)`.
     pub fn peek_min_ref(&self) -> Option<(&H, u64)> {
         self.inner.peek_min()
+    }
+
+    /// Returns an iterator of SlotIds for a given frequency, from head to tail.
+    pub fn iter_bucket_ids(&self, freq: u64) -> FrequencyBucketIdIter<'_, H> {
+        self.inner.iter_bucket_ids(freq)
+    }
+
+    /// Returns an iterator of `(SlotId, meta)` for a given frequency.
+    pub fn iter_bucket_entries(&self, freq: u64) -> FrequencyBucketEntryIter<'_, H> {
+        self.inner.iter_bucket_entries(freq)
+    }
+
+    /// Returns an iterator over all `(SlotId, meta)` entries.
+    pub fn iter_entries(&self) -> impl Iterator<Item = (SlotId, FrequencyBucketEntryMeta<'_, H>)> {
+        self.inner.iter_entries()
     }
 
     /// Inserts a new handle with frequency 1.
@@ -788,9 +1183,19 @@ where
         self.inner.clear();
     }
 
+    /// Clears all state and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.inner.clear_shrink();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        self.inner.approx_bytes()
+    }
+
     #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of bucket chains.
-    pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot {
+    pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot<H> {
         self.inner.debug_snapshot()
     }
 
@@ -824,6 +1229,30 @@ impl<'a, K> Iterator for FrequencyBucketIdIter<'a, K> {
         let entry = self.buckets.entries.get(id)?;
         self.current = entry.next;
         Some(id)
+    }
+}
+
+/// Iterator over `(SlotId, meta)` for a given frequency bucket.
+pub struct FrequencyBucketEntryIter<'a, K> {
+    buckets: &'a FrequencyBuckets<K>,
+    current: Option<SlotId>,
+}
+
+impl<'a, K> Iterator for FrequencyBucketEntryIter<'a, K> {
+    type Item = (SlotId, FrequencyBucketEntryMeta<'a, K>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.current?;
+        let entry = self.buckets.entries.get(id)?;
+        self.current = entry.next;
+        Some((
+            id,
+            FrequencyBucketEntryMeta {
+                key: &entry.key,
+                freq: entry.freq,
+                last_epoch: entry.last_epoch,
+            },
+        ))
     }
 }
 
@@ -998,6 +1427,40 @@ mod tests {
     }
 
     #[test]
+    fn frequency_buckets_iter_bucket_entries_meta() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.touch(&"a");
+
+        let entries: Vec<_> = buckets.iter_bucket_entries(1).collect();
+        assert_eq!(entries.len(), 1);
+        let (id, meta) = entries[0];
+        assert_eq!(meta.key, &"b");
+        assert_eq!(meta.freq, 1);
+        assert_eq!(meta.last_epoch, 0);
+        assert_eq!(buckets.entries.get(id).unwrap().freq, 1);
+    }
+
+    #[test]
+    fn frequency_buckets_iter_entries_meta() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.touch(&"a");
+        buckets.insert("b");
+
+        let mut entries: Vec<_> = buckets.iter_entries().collect();
+        entries.sort_by_key(|(id, _)| id.index());
+        assert_eq!(entries.len(), 2);
+        let metas: Vec<_> = entries
+            .into_iter()
+            .map(|(_, meta)| (meta.key, meta.freq))
+            .collect();
+        assert!(metas.contains(&(&"a", 2)));
+        assert!(metas.contains(&(&"b", 1)));
+    }
+
+    #[test]
     fn frequency_buckets_debug_snapshot() {
         let mut buckets = FrequencyBuckets::new();
         buckets.insert("a");
@@ -1008,6 +1471,33 @@ mod tests {
         assert_eq!(snapshot.entries_len, 2);
         assert_eq!(snapshot.index_len, 2);
         assert_eq!(snapshot.buckets.len(), 2);
+        assert_eq!(snapshot.epoch, 0);
+        assert_eq!(snapshot.entry_epochs.len(), 2);
+        assert!(snapshot.entry_epochs.iter().all(|(_, epoch)| *epoch == 0));
+        assert_eq!(snapshot.bucket_entries.len(), 2);
+        let first_bucket = &snapshot.bucket_entries[0].1;
+        assert_eq!(first_bucket.len(), 1);
+        assert_eq!(first_bucket[0].freq, 1);
+        assert!(matches!(first_bucket[0].key, "a" | "b"));
+    }
+
+    #[test]
+    fn frequency_buckets_borrowed_key_lookups() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("alpha".to_string());
+        buckets.touch(&"alpha".to_string());
+
+        assert!(buckets.contains_borrowed("alpha"));
+        assert_eq!(buckets.frequency_borrowed("alpha"), Some(2));
+    }
+
+    #[test]
+    fn frequency_buckets_batch_ops() {
+        let mut buckets = FrequencyBuckets::new();
+        assert_eq!(buckets.insert_batch(["a", "b", "c"]), 3);
+        assert_eq!(buckets.touch_batch(["a", "b", "z"]), 2);
+        assert_eq!(buckets.remove_batch(["b", "c", "z"]), 2);
+        assert_eq!(buckets.len(), 1);
     }
 
     #[test]
@@ -1060,6 +1550,57 @@ mod tests {
         let popped = buckets.pop_min();
         assert!(matches!(popped, Some(("a", 2)) | Some(("b", 1))));
         assert_eq!(buckets.len(), 1);
+    }
+
+    #[test]
+    fn sharded_frequency_buckets_shard_for_key() {
+        let buckets: ShardedFrequencyBuckets<&str> = ShardedFrequencyBuckets::new(4);
+        let shard = buckets.shard_for_key(&"alpha");
+        assert!(shard < buckets.shard_count());
+    }
+
+    #[test]
+    fn sharded_frequency_buckets_with_seed() {
+        let buckets: ShardedFrequencyBuckets<&str> =
+            ShardedFrequencyBuckets::with_shards_seed(4, 0, 99);
+        let shard = buckets.shard_for_key(&"alpha");
+        assert!(shard < buckets.shard_count());
+    }
+
+    #[test]
+    fn sharded_frequency_buckets_iter_entries() {
+        let buckets = ShardedFrequencyBuckets::new(2);
+        assert!(buckets.insert("a"));
+        assert!(buckets.insert("b"));
+        assert_eq!(buckets.touch(&"a"), Some(2));
+
+        let mut entries = buckets.iter_entries();
+        entries.sort_by_key(|(_, meta)| meta.key);
+        let metas: Vec<_> = entries
+            .into_iter()
+            .map(|(_, meta)| (meta.key, meta.freq, meta.last_epoch))
+            .collect();
+        assert!(metas.contains(&("a", 2, 0)));
+        assert!(metas.contains(&("b", 1, 0)));
+
+        let mut bucket_entries = buckets.iter_bucket_entries(1);
+        bucket_entries.sort_by_key(|(_, meta)| meta.key);
+        assert_eq!(bucket_entries.len(), 1);
+        assert_eq!(bucket_entries[0].1.key, "b");
+
+        let mut shard_entries = buckets.iter_entries_with_shard();
+        shard_entries.sort_by_key(|(_, _, meta)| meta.key);
+        assert_eq!(shard_entries.len(), 2);
+        assert!(
+            shard_entries
+                .iter()
+                .all(|(idx, _, _)| *idx < buckets.shard_count())
+        );
+
+        let mut shard_bucket_entries = buckets.iter_bucket_entries_with_shard(1);
+        shard_bucket_entries.sort_by_key(|(_, _, meta)| meta.key);
+        assert_eq!(shard_bucket_entries.len(), 1);
+        assert_eq!(shard_bucket_entries[0].2.key, "b");
     }
 
     #[test]

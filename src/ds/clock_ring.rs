@@ -69,6 +69,7 @@
 //! ## Notes
 //! - Slots are reused in place; keys map directly to slot indices.
 //! - `debug_validate_invariants()` is available in debug/test builds.
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::Hash;
 
@@ -88,6 +89,151 @@ pub struct ClockRing<K, V> {
     len: usize,
 }
 
+/// Thread-safe wrapper around `ClockRing` using a `parking_lot::RwLock`.
+#[derive(Debug)]
+pub struct ConcurrentClockRing<K, V> {
+    inner: RwLock<ClockRing<K, V>>,
+}
+
+impl<K, V> ConcurrentClockRing<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    /// Creates a new ring with `capacity` slots.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: RwLock::new(ClockRing::new(capacity)),
+        }
+    }
+
+    /// Returns the configured capacity (number of slots).
+    pub fn capacity(&self) -> usize {
+        let ring = self.inner.read();
+        ring.capacity()
+    }
+
+    /// Returns the number of occupied slots.
+    pub fn len(&self) -> usize {
+        let ring = self.inner.read();
+        ring.len()
+    }
+
+    /// Returns `true` if there are no entries.
+    pub fn is_empty(&self) -> bool {
+        let ring = self.inner.read();
+        ring.is_empty()
+    }
+
+    /// Returns `true` if `key` is present.
+    pub fn contains(&self, key: &K) -> bool {
+        let ring = self.inner.read();
+        ring.contains(key)
+    }
+
+    /// Returns a shared reference to `key`'s value without setting the reference bit.
+    pub fn peek_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<R> {
+        let ring = self.inner.read();
+        ring.peek(key).map(f)
+    }
+
+    /// Returns a shared reference to `key`'s value and sets the reference bit.
+    pub fn get_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<R> {
+        let mut ring = self.inner.write();
+        ring.get(key).map(f)
+    }
+
+    /// Sets the reference bit for `key`; returns `false` if missing.
+    pub fn touch(&self, key: &K) -> bool {
+        let mut ring = self.inner.write();
+        ring.touch(key)
+    }
+
+    /// Inserts or updates `key`.
+    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
+        let mut ring = self.inner.write();
+        ring.insert(key, value)
+    }
+
+    /// Removes `key` and returns its value, if present.
+    pub fn remove(&self, key: &K) -> Option<V> {
+        let mut ring = self.inner.write();
+        ring.remove(key)
+    }
+
+    /// Peeks the next eviction candidate without modifying state.
+    pub fn peek_victim_with<R>(&self, f: impl FnOnce(&K, &V) -> R) -> Option<R> {
+        let ring = self.inner.read();
+        ring.peek_victim().map(|(key, value)| f(key, value))
+    }
+
+    /// Evicts the next candidate and returns it.
+    pub fn pop_victim(&self) -> Option<(K, V)> {
+        let mut ring = self.inner.write();
+        ring.pop_victim()
+    }
+
+    /// Tries to insert without blocking.
+    pub fn try_insert(&self, key: K, value: V) -> Option<Option<(K, V)>> {
+        let mut ring = self.inner.try_write()?;
+        Some(ring.insert(key, value))
+    }
+
+    /// Tries to remove without blocking.
+    pub fn try_remove(&self, key: &K) -> Option<Option<V>> {
+        let mut ring = self.inner.try_write()?;
+        Some(ring.remove(key))
+    }
+
+    /// Tries to touch without blocking.
+    pub fn try_touch(&self, key: &K) -> Option<bool> {
+        let mut ring = self.inner.try_write()?;
+        Some(ring.touch(key))
+    }
+
+    /// Tries to peek without blocking.
+    pub fn try_peek_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<Option<R>> {
+        let ring = self.inner.try_read()?;
+        Some(ring.peek(key).map(f))
+    }
+
+    /// Tries to get without blocking.
+    pub fn try_get_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<Option<R>> {
+        let mut ring = self.inner.try_write()?;
+        Some(ring.get(key).map(f))
+    }
+
+    /// Tries to peek without blocking.
+    pub fn try_peek_victim_with<R>(&self, f: impl FnOnce(&K, &V) -> R) -> Option<Option<R>> {
+        let ring = self.inner.try_read()?;
+        Some(ring.peek_victim().map(|(key, value)| f(key, value)))
+    }
+
+    /// Tries to pop a victim without blocking.
+    pub fn try_pop_victim(&self) -> Option<Option<(K, V)>> {
+        let mut ring = self.inner.try_write()?;
+        Some(ring.pop_victim())
+    }
+
+    /// Tries to clear the ring without blocking.
+    pub fn try_clear(&self) -> bool {
+        if let Some(mut ring) = self.inner.try_write() {
+            ring.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Tries to clear and shrink without blocking.
+    pub fn try_clear_shrink(&self) -> bool {
+        if let Some(mut ring) = self.inner.try_write() {
+            ring.clear_shrink();
+            true
+        } else {
+            false
+        }
+    }
+}
 impl<K, V> ClockRing<K, V>
 where
     K: Eq + Hash + Clone,
@@ -118,6 +264,30 @@ where
     pub fn shrink_to_fit(&mut self) {
         self.index.shrink_to_fit();
         self.slots.shrink_to_fit();
+    }
+
+    /// Clears all entries without releasing capacity.
+    pub fn clear(&mut self) {
+        self.index.clear();
+        for slot in &mut self.slots {
+            *slot = None;
+        }
+        self.len = 0;
+        self.hand = 0;
+    }
+
+    /// Clears all entries and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.clear();
+        self.index.shrink_to_fit();
+        self.slots.shrink_to_fit();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.index.capacity() * std::mem::size_of::<(K, usize)>()
+            + self.slots.capacity() * std::mem::size_of::<Option<Entry<K, V>>>()
     }
 
     /// Returns the number of occupied slots.
@@ -507,5 +677,16 @@ mod tests {
                 .iter()
                 .any(|slot| matches!(slot, &Some((&"a", true))))
         );
+    }
+
+    #[test]
+    fn concurrent_clock_ring_try_ops() {
+        let ring = ConcurrentClockRing::new(2);
+        assert_eq!(ring.try_insert("a", 1), Some(None));
+        assert_eq!(ring.try_peek_with(&"a", |v| *v), Some(Some(1)));
+        assert_eq!(ring.try_get_with(&"a", |v| *v), Some(Some(1)));
+        assert_eq!(ring.try_touch(&"a"), Some(true));
+        assert!(ring.try_clear());
+        assert!(ring.is_empty());
     }
 }

@@ -90,6 +90,19 @@ where
         self.index.insert(key, id);
     }
 
+    /// Records a batch of keys; returns number of keys processed.
+    pub fn record_batch<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut count = 0;
+        for key in keys {
+            self.record(key);
+            count += 1;
+        }
+        count
+    }
+
     /// Removes `key` from the ghost list; returns `true` if it was present.
     pub fn remove(&mut self, key: &K) -> bool {
         let id = match self.index.remove(key) {
@@ -100,10 +113,38 @@ where
         true
     }
 
+    /// Removes a batch of keys; returns number of keys removed.
+    pub fn remove_batch<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut removed = 0;
+        for key in keys {
+            if self.remove(&key) {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Clears all tracked keys.
     pub fn clear(&mut self) {
         self.list.clear();
         self.index.clear();
+    }
+
+    /// Clears all tracked keys and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.clear();
+        self.list.clear_shrink();
+        self.index.shrink_to_fit();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.list.approx_bytes()
+            + self.index.capacity() * std::mem::size_of::<(K, SlotId)>()
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -122,6 +163,27 @@ where
     /// Returns SlotIds in MRU -> LRU order.
     pub fn debug_snapshot_ids(&self) -> Vec<SlotId> {
         self.list.iter_ids().collect()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns SlotIds sorted by index for deterministic snapshots.
+    pub fn debug_snapshot_ids_sorted(&self) -> Vec<SlotId> {
+        let mut ids: Vec<_> = self.list.iter_ids().collect();
+        ids.sort_by_key(|id| id.index());
+        ids
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns keys ordered by SlotId index for deterministic snapshots.
+    pub fn debug_snapshot_keys_sorted(&self) -> Vec<K>
+    where
+        K: Clone,
+    {
+        let mut ids: Vec<_> = self.list.iter_ids().collect();
+        ids.sort_by_key(|id| id.index());
+        ids.into_iter()
+            .filter_map(|id| self.list.get(id).cloned())
+            .collect()
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -231,5 +293,17 @@ mod tests {
         let ids = ghost.debug_snapshot_ids();
         assert_eq!(keys.len(), 2);
         assert_eq!(ids.len(), 2);
+        assert_eq!(ghost.debug_snapshot_ids_sorted().len(), 2);
+        assert_eq!(ghost.debug_snapshot_keys_sorted().len(), 2);
+    }
+
+    #[test]
+    fn ghost_list_batch_ops() {
+        let mut ghost = GhostList::new(3);
+        assert_eq!(ghost.record_batch(["a", "b", "c"]), 3);
+        assert_eq!(ghost.remove_batch(["b", "d"]), 1);
+        assert!(ghost.contains(&"a"));
+        assert!(ghost.contains(&"c"));
+        assert!(!ghost.contains(&"b"));
     }
 }

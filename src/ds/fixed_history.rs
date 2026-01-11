@@ -93,6 +93,22 @@ impl<const K: usize> FixedHistory<K> {
             .collect()
     }
 
+    /// Clears the history and resets cursor/length.
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.cursor = 0;
+    }
+
+    /// Clears the history (no heap allocations to shrink).
+    pub fn clear_shrink(&mut self) {
+        self.clear();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
     #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of the history in MRU order.
     pub fn debug_snapshot_mru(&self) -> Vec<u64> {

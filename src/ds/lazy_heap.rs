@@ -115,6 +115,14 @@ where
         self.heap.shrink_to_fit();
     }
 
+    /// Clears all entries and shrinks internal storage.
+    pub fn clear_shrink(&mut self) {
+        self.scores.clear();
+        self.heap.clear();
+        self.scores.shrink_to_fit();
+        self.heap.shrink_to_fit();
+    }
+
     /// Returns the number of live keys.
     pub fn len(&self) -> usize {
         self.scores.len()
@@ -193,6 +201,13 @@ where
             len: self.len(),
             heap_len: self.heap_len(),
         }
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    pub fn approx_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.scores.capacity() * std::mem::size_of::<(K, S)>()
+            + self.heap.capacity() * std::mem::size_of::<std::cmp::Reverse<HeapEntry<K, S>>>()
     }
 
     #[cfg(any(test, debug_assertions))]
