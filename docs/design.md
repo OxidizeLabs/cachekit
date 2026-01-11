@@ -1,0 +1,212 @@
+Designing high-performance caches for a DBMS in Rust is a multi-disciplinary problem: data structures, memory layout, concurrency, workload modeling, and systems-level performance all matter. The points below reflect what moves the needle in practice.
+
+## 1. Workload First, Policy Second
+
+Cache policy only matters relative to workload.
+
+Identify access patterns:
+- OLTP: skewed, hot keys, high churn.
+- OLAP: scans, large working sets, weak locality.
+- Mixed: bursts of hot data over large cold sets.
+
+Measure:
+- Reuse distance / stack distance.
+- Read/write ratio.
+- Temporal vs spatial locality.
+
+Choose policies accordingly:
+- LRU: good for temporal locality, bad for scans.
+- LRU-K / 2Q: better at filtering one-off accesses.
+- Clock / ARC: lower overhead, more adaptive.
+
+Never design a "general purpose" cache first, design for the workload you expect.
+
+## 2. Memory Layout Matters More Than Algorithms
+
+In a DBMS cache, memory layout often dominates policy.
+
+Prefer:
+- Contiguous storage (Vec, slabs, arenas).
+- Index-based indirection over pointer chasing.
+
+Avoid:
+- Excessive Box, Arc, linked lists.
+- HashMap lookups in hot paths if avoidable.
+
+Techniques:
+- Store metadata (recency, freq, flags) in tightly packed structs.
+- Separate hot metadata from cold payloads.
+- Use slab allocators for fixed-size entries.
+
+Cache misses caused by your own data structure are as bad as disk misses.
+
+## 3. Concurrency Strategy Is Core Design, Not a Wrapper
+
+Locking strategy shapes everything.
+
+Options:
+- Global lock: simple, often fast enough for small cores, dies under high contention.
+- Sharded caches: hash key -> shard, each shard independently locked.
+- Lock-free or mostly-lock-free: hard in Rust, only worth it if contention dominates.
+
+Rust-specific notes:
+- Prefer parking_lot locks over std.
+- Avoid Arc<Mutex<...>> in hot paths.
+- Consider per-thread caches with periodic merge.
+- Consider RCU-style read paths for read-heavy caches.
+
+## 4. Avoid Per-Operation Allocation
+
+Allocations kill throughput.
+
+Pre-allocate:
+- Entry pools.
+- Node arrays.
+
+Reuse:
+- Free lists.
+- Slabs.
+
+Use:
+- Vec with capacity management.
+- Custom allocators if necessary.
+
+Avoid:
+- Creating new Arc, String, Vec per lookup.
+
+If malloc shows up in your flamegraph, your cache is already slow.
+
+## 5. Eviction Must Be Predictable and Cheap
+
+Eviction is the critical slow path.
+
+O(1) eviction is mandatory.
+
+No tree walks, no scanning.
+
+Maintain:
+- Direct pointers/indices to eviction candidates.
+- Eviction lists or clock hands.
+
+Be careful with:
+- Background eviction threads (synchronization overhead).
+- Lazy cleanup that grows unbounded.
+
+Eviction cost must be comparable to lookup cost, not orders of magnitude higher.
+
+## 6. Metrics Are Not Optional
+
+You cannot tune what you do not measure.
+
+Track at least:
+- Hit / miss rate.
+- Eviction count and reason.
+- Insert/update rate.
+- Scan pollution rate.
+- Lock contention or wait time.
+
+Expose:
+- Lightweight counters in hot path.
+- Optional detailed metrics behind feature flags.
+
+Metrics should guide design decisions, not justify them afterward.
+
+## 7. Separate Policy From Storage
+
+Design in layers:
+- Storage layer: how entries live in memory, allocation, layout, indexing.
+- Policy layer: LRU, FIFO, Clock, ARC, etc; only manipulates metadata and ordering.
+- Integration layer: ties DB pages, tuples, or segments into cache entries.
+
+This makes:
+- Benchmarking easier.
+- Policy experimentation cheap.
+- Reasoning about performance clearer.
+
+## 8. Beware of "Nice" Rust APIs in Hot Paths
+
+Ergonomics often cost performance.
+
+Avoid in critical loops:
+- Heavy generics causing code bloat.
+- Trait objects for hot dispatch.
+- Closures capturing state.
+- Iterator chains instead of simple loops.
+
+Prefer:
+- Explicit loops.
+- Concrete types.
+- Monomorphized fast paths.
+
+You can wrap fast internals in nice APIs at the edges.
+
+## 9. Scans Are the Enemy of Caches
+
+In DBMS workloads:
+
+Large table scans destroy LRU-style caches.
+
+Solutions:
+- Scan-resistant policies (2Q, LRU-K, ARC).
+- Explicit "scan mode" hints from query planner.
+- Bypass cache for known one-shot reads.
+
+If you ignore scans, your cache will look great in microbenchmarks and terrible in production.
+
+## 10. Benchmark Like a Database, Not a Library
+
+Do not rely on random key benchmarks.
+
+Use:
+- Zipfian distributions.
+- Mixed read/write workloads.
+- Scan + point lookup mixtures.
+- Time-varying hot sets.
+
+Measure:
+- Throughput.
+- Tail latency.
+- Memory overhead.
+- Eviction cost.
+
+A cache that is 5% faster on random keys but 50% worse under scans is a bad cache.
+
+## 11. Rust-Specific Pitfalls
+
+Arc is expensive in hot paths.
+
+Borrow checker can push you toward indirection—fight it with:
+- Index-based access.
+- Interior mutability only where unavoidable.
+
+Beware of:
+- Hidden clones.
+- Trait object dispatch.
+- Over-generic designs.
+
+Rust can be as fast as C, but only if you design like a systems programmer, not a library author.
+
+## 12. Design for Failure Modes
+
+Ask:
+- What happens under memory pressure?
+- What happens when eviction cannot keep up?
+- What happens under pathological access patterns?
+
+Add:
+- Backpressure or rejection when full.
+- Bypass modes.
+- Emergency eviction strategies.
+
+A cache that collapses under stress is worse than no cache.
+
+## Bottom Line
+
+High-performance DBMS caches are not about clever algorithms—they are about:
+- Memory layout.
+- Allocation discipline.
+- Contention control.
+- Eviction predictability.
+- Workload realism.
+
+In Rust, your main enemy is not safety—it is abstraction overhead and accidental allocation. Design from the metal upward, then wrap it in something pleasant to use.
