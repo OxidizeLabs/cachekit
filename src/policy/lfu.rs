@@ -845,6 +845,51 @@ where
             capacity: self.store.capacity(),
         }
     }
+
+    #[cfg(debug_assertions)]
+    #[cfg(test)]
+    pub(crate) fn debug_validate_invariants(&self) {
+        assert!(self.len() <= self.capacity());
+        assert_eq!(self.len(), self.index.len());
+
+        if self.len() == 0 {
+            assert_eq!(self.min_freq, 0);
+            assert!(self.freq_buckets.is_empty());
+            return;
+        }
+
+        assert!(self.min_freq > 0);
+        assert!(self.freq_buckets.contains_key(&self.min_freq));
+
+        for (&freq, bucket) in &self.freq_buckets {
+            assert!(!bucket.list.is_empty());
+            if let Some(prev) = bucket.prev {
+                assert!(self.freq_buckets.contains_key(&prev));
+                assert_eq!(self.freq_buckets[&prev].next, Some(freq));
+            } else {
+                assert_eq!(self.min_freq, freq);
+            }
+            if let Some(next) = bucket.next {
+                assert!(self.freq_buckets.contains_key(&next));
+                assert_eq!(self.freq_buckets[&next].prev, Some(freq));
+            }
+
+            let mut current = bucket.list.head;
+            let mut last = None;
+            let mut count = 0usize;
+            while let Some(idx) = current {
+                let slot = self.slots.get(idx).expect("lfu slot missing");
+                let entry = slot.entry.as_ref().expect("lfu entry missing");
+                assert_eq!(entry.freq, freq);
+                assert_eq!(slot.prev, last);
+                last = Some(idx);
+                current = slot.next;
+                count += 1;
+            }
+            assert_eq!(bucket.list.tail, last);
+            assert_eq!(bucket.list.len, count);
+        }
+    }
 }
 
 #[cfg(feature = "metrics")]
@@ -1057,7 +1102,7 @@ mod tests {
 
             // Test LFU identification
             let (lfu_key, _) = cache.peek_lfu().unwrap();
-            // Both 'a' and 'c' have frequency 1, but 'c' was inserted first
+            // Both 'a' and 'c' have frequency 1, so any is valid
             assert!(lfu_key == &"a".to_string() || lfu_key == &"c".to_string());
 
             // Verify frequency tracking after removal
@@ -1958,6 +2003,30 @@ mod tests {
             cache.clear(); // Should be safe to clear empty cache
             assert_eq!(cache.len(), 0);
         }
+
+        #[test]
+        fn test_bucket_link_updates_on_middle_removal() {
+            let mut cache = LFUCache::new(4);
+
+            cache.insert("low".to_string(), Arc::new(1));
+            cache.insert("mid".to_string(), Arc::new(2));
+            cache.insert("high".to_string(), Arc::new(3));
+
+            cache.get(&"mid".to_string()); // mid: freq = 2
+            cache.get(&"high".to_string());
+            cache.get(&"high".to_string()); // high: freq = 3
+
+            #[cfg(debug_assertions)]
+            cache.debug_validate_invariants();
+
+            cache.remove(&"mid".to_string());
+
+            #[cfg(debug_assertions)]
+            cache.debug_validate_invariants();
+
+            let (lfu_key, _) = cache.peek_lfu().unwrap();
+            assert_eq!(lfu_key, &"low".to_string());
+        }
     }
 
     // State Consistency Tests
@@ -2403,18 +2472,8 @@ mod tests {
             assert!(cache.contains(&"key2".to_string()));
 
             // Test eviction doesn't break LFU ordering
-            let (lfu_key, _) = cache.peek_lfu().unwrap();
-            let lfu_freq = cache.frequency(lfu_key).unwrap();
-
-            // LFU frequency should be minimal among current items
-            for idx in cache.index.values() {
-                let freq = cache.slots[*idx]
-                    .entry
-                    .as_ref()
-                    .expect("lfu entry missing")
-                    .freq;
-                assert!(freq >= lfu_freq);
-            }
+            #[cfg(debug_assertions)]
+            cache.debug_validate_invariants();
 
             // Test eviction with zero capacity
             let mut zero_cache = LFUCache::<String, i32>::new(0);
@@ -2545,68 +2604,51 @@ mod tests {
             let mut cache = LFUCache::new(4);
 
             // Helper function to verify all invariants
-            let verify_invariants = |cache: &LFUCache<String, i32>| {
-                // Invariant 1: len() never exceeds capacity()
-                assert!(cache.len() <= cache.capacity());
-
-                // Invariant 2: All keys in cache have corresponding frequencies > 0
-                for key in cache.index.keys() {
-                    let freq = cache.frequency(key);
-                    assert!(freq.is_some() && freq.unwrap() > 0);
-                }
-
-                // Invariant 3: If cache is not empty, peek_lfu() returns Some
+            let verify_invariants = |cache: &mut LFUCache<String, i32>| {
                 if cache.len() > 0 {
                     assert!(cache.peek_lfu().is_some());
                 } else {
                     assert!(cache.peek_lfu().is_none());
                 }
 
-                // Invariant 4: LFU item has minimum frequency among all items
-                if let Some((lfu_key, _)) = cache.peek_lfu() {
-                    let lfu_freq = cache.frequency(lfu_key).unwrap();
-                    for key in cache.index.keys() {
-                        let freq = cache.frequency(key).unwrap();
-                        assert!(freq >= lfu_freq);
-                    }
-                }
-
-                // Invariant 5: contains() is consistent with get()
-                let test_keys = vec!["key1", "key2", "key3", "key4", "key5", "nonexistent"];
+                let test_keys = ["key1", "key2", "key3", "key4", "key5", "nonexistent"];
                 for key in test_keys {
                     let contains_result = cache.contains(&key.to_string());
-                    let get_result = cache.index.contains_key(key);
+                    let get_result = cache.get(&key.to_string()).is_some();
                     assert_eq!(contains_result, get_result);
                 }
+
+                #[cfg(debug_assertions)]
+                cache.debug_validate_invariants();
             };
 
             // Test invariants after initial state
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             // Test invariants after insertions
             cache.insert("key1".to_string(), Arc::new(100));
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             cache.insert("key2".to_string(), Arc::new(200));
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             cache.insert("key3".to_string(), Arc::new(300));
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             cache.insert("key4".to_string(), Arc::new(400));
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             // Test invariants after gets (frequency changes)
             cache.get(&"key1".to_string());
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             cache.get(&"key1".to_string());
             cache.get(&"key2".to_string());
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             // Test invariants after capacity overflow (eviction)
             cache.insert("key5".to_string(), Arc::new(500));
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             // Test invariants after multiple operations
             for i in 0..20 {
@@ -2628,54 +2670,55 @@ mod tests {
                     },
                     _ => unreachable!(),
                 }
-                verify_invariants(&cache);
+                verify_invariants(&mut cache);
             }
 
             // Test invariants after frequency manipulations
             cache.reset_frequency(&"key1".to_string());
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             cache.increment_frequency(&"key2".to_string());
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             // Test invariants after removals
-            let keys_to_remove: Vec<_> = cache.index.keys().take(2).cloned().collect();
-            for key in keys_to_remove {
-                cache.remove(&key);
-                verify_invariants(&cache);
+            for candidate in ["key1", "key2", "key3", "key4"] {
+                if cache.contains(&candidate.to_string()) {
+                    cache.remove(&candidate.to_string());
+                    verify_invariants(&mut cache);
+                }
             }
 
             // Test invariants after pop_lfu operations
             while cache.len() > 0 {
                 cache.pop_lfu();
-                verify_invariants(&cache);
+                verify_invariants(&mut cache);
             }
 
             // Test invariants after clear
             cache.insert("test1".to_string(), Arc::new(1));
             cache.insert("test2".to_string(), Arc::new(2));
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             cache.clear();
-            verify_invariants(&cache);
+            verify_invariants(&mut cache);
 
             // Test invariants with edge cases
 
             // Zero capacity cache
             let mut zero_cache = LFUCache::<String, i32>::new(0);
-            verify_invariants(&zero_cache);
+            verify_invariants(&mut zero_cache);
             zero_cache.insert("test".to_string(), Arc::new(1));
-            verify_invariants(&zero_cache);
+            verify_invariants(&mut zero_cache);
 
             // Single capacity cache
             let mut single_cache = LFUCache::new(1);
-            verify_invariants(&single_cache);
+            verify_invariants(&mut single_cache);
 
             single_cache.insert("only".to_string(), Arc::new(1));
-            verify_invariants(&single_cache);
+            verify_invariants(&mut single_cache);
 
             single_cache.insert("replace".to_string(), Arc::new(2));
-            verify_invariants(&single_cache);
+            verify_invariants(&mut single_cache);
 
             // Test with complex frequency patterns
             let mut complex_cache = LFUCache::new(3);
@@ -2691,7 +2734,7 @@ mod tests {
                 for _ in 0..(i / 2) {
                     complex_cache.get(&"b".to_string());
                 }
-                verify_invariants(&complex_cache);
+                verify_invariants(&mut complex_cache);
             }
         }
     }
