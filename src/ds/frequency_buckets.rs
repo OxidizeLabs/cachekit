@@ -57,6 +57,7 @@ struct Bucket {
 }
 
 #[derive(Debug)]
+/// O(1) LFU metadata tracker with FIFO tie-breaking within a frequency.
 pub struct FrequencyBuckets<K> {
     entries: SlotArena<Entry<K>>,
     index: HashMap<K, SlotId>,
@@ -68,6 +69,7 @@ impl<K> FrequencyBuckets<K>
 where
     K: Eq + Hash + Clone,
 {
+    /// Creates an empty tracker.
     pub fn new() -> Self {
         Self {
             entries: SlotArena::new(),
@@ -77,23 +79,28 @@ where
         }
     }
 
+    /// Returns the number of tracked keys.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// Returns `true` if there are no tracked keys.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// Returns `true` if `key` is present.
     pub fn contains(&self, key: &K) -> bool {
         self.index.contains_key(key)
     }
 
+    /// Returns the current frequency for `key`, if present.
     pub fn frequency(&self, key: &K) -> Option<u64> {
         let id = *self.index.get(key)?;
         self.entries.get(id).map(|entry| entry.freq)
     }
 
+    /// Returns the minimum frequency currently present.
     pub fn min_freq(&self) -> Option<u64> {
         if self.min_freq == 0 {
             None
@@ -102,6 +109,7 @@ where
         }
     }
 
+    /// Peeks the eviction candidate `(key, freq)` (tail of the min-frequency bucket).
     pub fn peek_min(&self) -> Option<(&K, u64)> {
         if self.min_freq == 0 {
             return None;
@@ -113,6 +121,9 @@ where
         Some((&entry.key, entry.freq))
     }
 
+    /// Inserts a new key with frequency 1.
+    ///
+    /// Returns `false` if the key already exists.
     pub fn insert(&mut self, key: K) -> bool {
         if self.index.contains_key(&key) {
             return false;
@@ -142,6 +153,10 @@ where
         true
     }
 
+    /// Increments frequency for `key` and returns the new frequency.
+    ///
+    /// Returns `None` if `key` is missing. Within each frequency bucket,
+    /// the key is treated as MRU by being pushed to the front.
     pub fn touch(&mut self, key: &K) -> Option<u64> {
         let id = *self.index.get(key)?;
         let current_freq = self.entries.get(id)?.freq;
@@ -188,6 +203,7 @@ where
         Some(next_freq)
     }
 
+    /// Removes `key` from tracking and returns its previous frequency.
     pub fn remove(&mut self, key: &K) -> Option<u64> {
         let id = self.index.remove(key)?;
         let freq = self.entries.get(id)?.freq;
@@ -209,6 +225,9 @@ where
         self.entries.remove(id).map(|entry| entry.freq)
     }
 
+    /// Removes and returns the eviction candidate `(key, freq)`.
+    ///
+    /// Eviction is O(1) using `min_freq` and the tail of that bucket.
     pub fn pop_min(&mut self) -> Option<(K, u64)> {
         let freq = self.min_freq;
         if freq == 0 {
@@ -235,6 +254,7 @@ where
         Some((entry.key, entry.freq))
     }
 
+    /// Clears all state.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.index.clear();

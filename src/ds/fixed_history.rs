@@ -28,6 +28,7 @@
 //!
 //! `debug_validate_invariants()` is available in debug/test builds.
 #[derive(Debug, Clone)]
+/// Fixed-size ring buffer of the last `K` timestamps.
 pub struct FixedHistory<const K: usize> {
     data: [u64; K],
     len: usize,
@@ -35,6 +36,7 @@ pub struct FixedHistory<const K: usize> {
 }
 
 impl<const K: usize> FixedHistory<K> {
+    /// Creates an empty history.
     pub fn new() -> Self {
         Self {
             data: [0; K],
@@ -43,18 +45,22 @@ impl<const K: usize> FixedHistory<K> {
         }
     }
 
+    /// Returns the maximum number of timestamps retained.
     pub fn capacity(&self) -> usize {
         K
     }
 
+    /// Returns the number of timestamps currently stored (<= `K`).
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns `true` if there are no timestamps recorded.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Records a timestamp, overwriting the oldest if the history is full.
     pub fn record(&mut self, timestamp: u64) {
         if K == 0 {
             return;
@@ -66,10 +72,12 @@ impl<const K: usize> FixedHistory<K> {
         }
     }
 
+    /// Returns the most recently recorded timestamp.
     pub fn most_recent(&self) -> Option<u64> {
         self.kth_most_recent(1)
     }
 
+    /// Returns the k-th most recent timestamp (`k = 1` is most recent).
     pub fn kth_most_recent(&self, k: usize) -> Option<u64> {
         if K == 0 || k == 0 || k > self.len {
             return None;
@@ -78,6 +86,7 @@ impl<const K: usize> FixedHistory<K> {
         Some(self.data[idx])
     }
 
+    /// Returns timestamps from most-recent to least-recent.
     pub fn to_vec_mru(&self) -> Vec<u64> {
         (1..=self.len)
             .filter_map(|k| self.kth_most_recent(k))

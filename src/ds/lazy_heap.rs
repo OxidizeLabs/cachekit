@@ -73,6 +73,7 @@ where
 }
 
 #[derive(Debug)]
+/// Min-heap that supports cheap updates via lazy deletion.
 pub struct LazyMinHeap<K, S> {
     scores: HashMap<K, S>,
     heap: BinaryHeap<Reverse<HeapEntry<K, S>>>,
@@ -84,6 +85,7 @@ where
     K: Eq + Hash + Clone,
     S: Ord + Clone,
 {
+    /// Creates an empty heap.
     pub fn new() -> Self {
         Self {
             scores: HashMap::new(),
@@ -92,6 +94,7 @@ where
         }
     }
 
+    /// Creates an empty heap with reserved capacity for map + heap.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             scores: HashMap::with_capacity(capacity),
@@ -100,32 +103,43 @@ where
         }
     }
 
+    /// Returns the number of live keys.
     pub fn len(&self) -> usize {
         self.scores.len()
     }
 
+    /// Returns `true` if there are no live keys.
     pub fn is_empty(&self) -> bool {
         self.scores.is_empty()
     }
 
+    /// Returns the underlying heap length (may exceed `len()` due to stale entries).
     pub fn heap_len(&self) -> usize {
         self.heap.len()
     }
 
+    /// Returns the current score for `key`, if present.
     pub fn score_of(&self, key: &K) -> Option<&S> {
         self.scores.get(key)
     }
 
+    /// Updates `key`'s score and returns the previous score, if any.
+    ///
+    /// Pushes a new heap entry; old entries become stale and are ignored by `pop_best`.
     pub fn update(&mut self, key: K, score: S) -> Option<S> {
         let previous = self.scores.insert(key.clone(), score.clone());
         self.push_entry(key, score);
         previous
     }
 
+    /// Removes `key` and returns its score, if present.
+    ///
+    /// This does not remove any stale heap entries; they will be skipped by `pop_best`.
     pub fn remove(&mut self, key: &K) -> Option<S> {
         self.scores.remove(key)
     }
 
+    /// Pops and returns the current minimum `(key, score)`, skipping stale entries.
     pub fn pop_best(&mut self) -> Option<(K, S)> {
         loop {
             let Reverse(entry) = self.heap.pop()?;
@@ -139,6 +153,7 @@ where
         }
     }
 
+    /// Rebuilds the heap from the authoritative `scores` map.
     pub fn rebuild(&mut self) {
         self.heap.clear();
         let entries: Vec<(K, S)> = self
@@ -151,6 +166,7 @@ where
         }
     }
 
+    /// Rebuilds if the heap has grown too stale relative to the map size.
     pub fn maybe_rebuild(&mut self, factor: usize) {
         let factor = factor.max(1);
         if self.heap.len() > self.scores.len().saturating_mul(factor) {

@@ -27,15 +27,21 @@
 //!
 //! `debug_validate_invariants()` is available in debug/test builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Stable handle into a `SlotArena`.
+///
+/// `SlotId` values remain valid until the referenced slot is removed; after
+/// removal, the numeric index may be reused by a later `insert`.
 pub struct SlotId(pub(crate) usize);
 
 impl SlotId {
+    /// Returns the underlying slot index.
     pub fn index(self) -> usize {
         self.0
     }
 }
 
 #[derive(Debug)]
+/// Arena that stores values in reusable slots and returns stable `SlotId`s.
 pub struct SlotArena<T> {
     slots: Vec<Option<T>>,
     free_list: Vec<usize>,
@@ -43,6 +49,7 @@ pub struct SlotArena<T> {
 }
 
 impl<T> SlotArena<T> {
+    /// Creates an empty arena.
     pub fn new() -> Self {
         Self {
             slots: Vec::new(),
@@ -51,6 +58,7 @@ impl<T> SlotArena<T> {
         }
     }
 
+    /// Creates an empty arena with reserved capacity for slots.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
@@ -59,6 +67,7 @@ impl<T> SlotArena<T> {
         }
     }
 
+    /// Inserts a value and returns its `SlotId`.
     pub fn insert(&mut self, value: T) -> SlotId {
         let idx = if let Some(idx) = self.free_list.pop() {
             self.slots[idx] = Some(value);
@@ -71,6 +80,7 @@ impl<T> SlotArena<T> {
         SlotId(idx)
     }
 
+    /// Removes the value at `id` and returns it, or `None` if empty/out of bounds.
     pub fn remove(&mut self, id: SlotId) -> Option<T> {
         let slot = self.slots.get_mut(id.0)?;
         let value = slot.take()?;
@@ -79,14 +89,17 @@ impl<T> SlotArena<T> {
         Some(value)
     }
 
+    /// Returns a shared reference to the value at `id`, if present.
     pub fn get(&self, id: SlotId) -> Option<&T> {
         self.slots.get(id.0).and_then(|slot| slot.as_ref())
     }
 
+    /// Returns a mutable reference to the value at `id`, if present.
     pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
         self.slots.get_mut(id.0).and_then(|slot| slot.as_mut())
     }
 
+    /// Returns `true` if `id` currently refers to a live slot.
     pub fn contains(&self, id: SlotId) -> bool {
         self.slots
             .get(id.0)
@@ -94,24 +107,29 @@ impl<T> SlotArena<T> {
             .unwrap_or(false)
     }
 
+    /// Returns the number of live entries.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns `true` if the arena has no live entries.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Returns the backing vector capacity (number of slots that can be held without realloc).
     pub fn capacity(&self) -> usize {
         self.slots.capacity()
     }
 
+    /// Removes all entries and resets internal state.
     pub fn clear(&mut self) {
         self.slots.clear();
         self.free_list.clear();
         self.len = 0;
     }
 
+    /// Iterates over live `(SlotId, &T)` pairs.
     pub fn iter(&self) -> impl Iterator<Item = (SlotId, &T)> {
         self.slots
             .iter()
@@ -143,63 +161,75 @@ impl<T> Default for SlotArena<T> {
 }
 
 #[derive(Debug)]
+/// Thread-safe wrapper around `SlotArena` using a `parking_lot::RwLock`.
 pub struct ConcurrentSlotArena<T> {
     inner: parking_lot::RwLock<SlotArena<T>>,
 }
 
 impl<T> ConcurrentSlotArena<T> {
+    /// Creates an empty concurrent arena.
     pub fn new() -> Self {
         Self {
             inner: parking_lot::RwLock::new(SlotArena::new()),
         }
     }
 
+    /// Creates an empty concurrent arena with reserved slot capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: parking_lot::RwLock::new(SlotArena::with_capacity(capacity)),
         }
     }
 
+    /// Inserts a value and returns its `SlotId`.
     pub fn insert(&self, value: T) -> SlotId {
         let mut arena = self.inner.write();
         arena.insert(value)
     }
 
+    /// Removes the value at `id` and returns it, if present.
     pub fn remove(&self, id: SlotId) -> Option<T> {
         let mut arena = self.inner.write();
         arena.remove(id)
     }
 
+    /// Runs `f` on a shared reference to the value at `id`, if present.
     pub fn get_with<R>(&self, id: SlotId, f: impl FnOnce(&T) -> R) -> Option<R> {
         let arena = self.inner.read();
         arena.get(id).map(f)
     }
 
+    /// Runs `f` on a mutable reference to the value at `id`, if present.
     pub fn get_mut_with<R>(&self, id: SlotId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let mut arena = self.inner.write();
         arena.get_mut(id).map(f)
     }
 
+    /// Returns `true` if `id` currently refers to a live slot.
     pub fn contains(&self, id: SlotId) -> bool {
         let arena = self.inner.read();
         arena.contains(id)
     }
 
+    /// Returns the number of live entries.
     pub fn len(&self) -> usize {
         let arena = self.inner.read();
         arena.len()
     }
 
+    /// Returns `true` if there are no live entries.
     pub fn is_empty(&self) -> bool {
         let arena = self.inner.read();
         arena.is_empty()
     }
 
+    /// Returns the backing vector capacity.
     pub fn capacity(&self) -> usize {
         let arena = self.inner.read();
         arena.capacity()
     }
 
+    /// Clears all entries.
     pub fn clear(&self) {
         let mut arena = self.inner.write();
         arena.clear();

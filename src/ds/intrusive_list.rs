@@ -41,6 +41,7 @@ struct Node<T> {
 }
 
 #[derive(Debug)]
+/// Intrusive list that stores nodes in a `SlotArena` and links them via `SlotId`.
 pub struct IntrusiveList<T> {
     arena: SlotArena<Node<T>>,
     head: Option<SlotId>,
@@ -48,6 +49,7 @@ pub struct IntrusiveList<T> {
 }
 
 impl<T> IntrusiveList<T> {
+    /// Creates an empty list.
     pub fn new() -> Self {
         Self {
             arena: SlotArena::new(),
@@ -56,6 +58,7 @@ impl<T> IntrusiveList<T> {
         }
     }
 
+    /// Creates an empty list with reserved node capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             arena: SlotArena::with_capacity(capacity),
@@ -64,28 +67,34 @@ impl<T> IntrusiveList<T> {
         }
     }
 
+    /// Returns the number of nodes in the list.
     pub fn len(&self) -> usize {
         self.arena.len()
     }
 
+    /// Returns `true` if the list is empty.
     pub fn is_empty(&self) -> bool {
         self.arena.is_empty()
     }
 
+    /// Returns `true` if `id` is currently a node in this list.
     pub fn contains(&self, id: SlotId) -> bool {
         self.arena.contains(id)
     }
 
+    /// Returns the value at the front (MRU) of the list.
     pub fn front(&self) -> Option<&T> {
         self.head
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
     }
 
+    /// Returns the value at the back (LRU) of the list.
     pub fn back(&self) -> Option<&T> {
         self.tail
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
     }
 
+    /// Returns an iterator from front to back.
     pub fn iter(&self) -> IntrusiveListIter<'_, T> {
         IntrusiveListIter {
             list: self,
@@ -93,14 +102,17 @@ impl<T> IntrusiveList<T> {
         }
     }
 
+    /// Returns the value for a node id, if present.
     pub fn get(&self, id: SlotId) -> Option<&T> {
         self.arena.get(id).map(|node| &node.value)
     }
 
+    /// Returns a mutable reference to a node value, if present.
     pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
         self.arena.get_mut(id).map(|node| &mut node.value)
     }
 
+    /// Inserts a new node at the front and returns its `SlotId`.
     pub fn push_front(&mut self, value: T) -> SlotId {
         let id = self.arena.insert(Node {
             value,
@@ -118,6 +130,7 @@ impl<T> IntrusiveList<T> {
         id
     }
 
+    /// Inserts a new node at the back and returns its `SlotId`.
     pub fn push_back(&mut self, value: T) -> SlotId {
         let id = self.arena.insert(Node {
             value,
@@ -135,23 +148,27 @@ impl<T> IntrusiveList<T> {
         id
     }
 
+    /// Removes and returns the front value.
     pub fn pop_front(&mut self) -> Option<T> {
         let id = self.head?;
         self.detach(id)?;
         self.arena.remove(id).map(|node| node.value)
     }
 
+    /// Removes and returns the back value.
     pub fn pop_back(&mut self) -> Option<T> {
         let id = self.tail?;
         self.detach(id)?;
         self.arena.remove(id).map(|node| node.value)
     }
 
+    /// Removes the node `id` from the list and returns its value.
     pub fn remove(&mut self, id: SlotId) -> Option<T> {
         self.detach(id)?;
         self.arena.remove(id).map(|node| node.value)
     }
 
+    /// Moves an existing node to the front; returns `false` if `id` is not present.
     pub fn move_to_front(&mut self, id: SlotId) -> bool {
         if !self.arena.contains(id) {
             return false;
@@ -164,6 +181,7 @@ impl<T> IntrusiveList<T> {
         true
     }
 
+    /// Moves an existing node to the back; returns `false` if `id` is not present.
     pub fn move_to_back(&mut self, id: SlotId) -> bool {
         if !self.arena.contains(id) {
             return false;
@@ -176,6 +194,7 @@ impl<T> IntrusiveList<T> {
         true
     }
 
+    /// Clears the list and frees all nodes.
     pub fn clear(&mut self) {
         self.arena.clear();
         self.head = None;
@@ -309,93 +328,111 @@ impl<T> Default for IntrusiveList<T> {
 }
 
 #[derive(Debug)]
+/// Thread-safe wrapper around `IntrusiveList` using a `parking_lot::RwLock`.
 pub struct ConcurrentIntrusiveList<T> {
     inner: RwLock<IntrusiveList<T>>,
 }
 
 impl<T> ConcurrentIntrusiveList<T> {
+    /// Creates an empty concurrent list.
     pub fn new() -> Self {
         Self {
             inner: RwLock::new(IntrusiveList::new()),
         }
     }
 
+    /// Creates an empty concurrent list with reserved node capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: RwLock::new(IntrusiveList::with_capacity(capacity)),
         }
     }
 
+    /// Returns the number of nodes in the list.
     pub fn len(&self) -> usize {
         let list = self.inner.read();
         list.len()
     }
 
+    /// Returns `true` if the list is empty.
     pub fn is_empty(&self) -> bool {
         let list = self.inner.read();
         list.is_empty()
     }
 
+    /// Returns `true` if `id` is currently a node in this list.
     pub fn contains(&self, id: SlotId) -> bool {
         let list = self.inner.read();
         list.contains(id)
     }
 
+    /// Inserts a value at the front and returns its `SlotId`.
     pub fn push_front(&self, value: T) -> SlotId {
         let mut list = self.inner.write();
         list.push_front(value)
     }
 
+    /// Inserts a value at the back and returns its `SlotId`.
     pub fn push_back(&self, value: T) -> SlotId {
         let mut list = self.inner.write();
         list.push_back(value)
     }
 
+    /// Removes and returns the front value.
     pub fn pop_front(&self) -> Option<T> {
         let mut list = self.inner.write();
         list.pop_front()
     }
 
+    /// Removes and returns the back value.
     pub fn pop_back(&self) -> Option<T> {
         let mut list = self.inner.write();
         list.pop_back()
     }
 
+    /// Removes the node `id` and returns its value, if present.
     pub fn remove(&self, id: SlotId) -> Option<T> {
         let mut list = self.inner.write();
         list.remove(id)
     }
 
+    /// Moves an existing node to the front; returns `false` if not present.
     pub fn move_to_front(&self, id: SlotId) -> bool {
         let mut list = self.inner.write();
         list.move_to_front(id)
     }
 
+    /// Moves an existing node to the back; returns `false` if not present.
     pub fn move_to_back(&self, id: SlotId) -> bool {
         let mut list = self.inner.write();
         list.move_to_back(id)
     }
 
+    /// Runs `f` on a shared reference to the value at `id`, if present.
     pub fn get_with<R>(&self, id: SlotId, f: impl FnOnce(&T) -> R) -> Option<R> {
         let list = self.inner.read();
         list.get(id).map(f)
     }
 
+    /// Runs `f` on a mutable reference to the value at `id`, if present.
     pub fn get_mut_with<R>(&self, id: SlotId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let mut list = self.inner.write();
         list.get_mut(id).map(f)
     }
 
+    /// Runs `f` on a shared reference to the front value, if present.
     pub fn front_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
         let list = self.inner.read();
         list.front().map(f)
     }
 
+    /// Runs `f` on a shared reference to the back value, if present.
     pub fn back_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
         let list = self.inner.read();
         list.back().map(f)
     }
 
+    /// Clears the list.
     pub fn clear(&self) {
         let mut list = self.inner.write();
         list.clear();

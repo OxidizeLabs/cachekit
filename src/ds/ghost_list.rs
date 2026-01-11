@@ -29,6 +29,7 @@ use crate::ds::intrusive_list::IntrusiveList;
 use crate::ds::slot_arena::SlotId;
 
 #[derive(Debug)]
+/// Bounded recency list of keys (no values), typically for ARC-style ghost tracking.
 pub struct GhostList<K> {
     list: IntrusiveList<K>,
     index: HashMap<K, SlotId>,
@@ -39,6 +40,7 @@ impl<K> GhostList<K>
 where
     K: Eq + Hash + Clone,
 {
+    /// Creates a new ghost list with a maximum of `capacity` keys.
     pub fn new(capacity: usize) -> Self {
         Self {
             list: IntrusiveList::with_capacity(capacity),
@@ -47,22 +49,27 @@ where
         }
     }
 
+    /// Returns the configured capacity.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Returns the number of keys currently tracked.
     pub fn len(&self) -> usize {
         self.list.len()
     }
 
+    /// Returns `true` if there are no keys tracked.
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
     }
 
+    /// Returns `true` if `key` is present.
     pub fn contains(&self, key: &K) -> bool {
         self.index.contains_key(key)
     }
 
+    /// Records `key` as most-recently-seen, evicting the least recent if needed.
     pub fn record(&mut self, key: K) {
         if self.capacity == 0 {
             return;
@@ -83,6 +90,7 @@ where
         self.index.insert(key, id);
     }
 
+    /// Removes `key` from the ghost list; returns `true` if it was present.
     pub fn remove(&mut self, key: &K) -> bool {
         let id = match self.index.remove(key) {
             Some(id) => id,
@@ -92,6 +100,7 @@ where
         true
     }
 
+    /// Clears all tracked keys.
     pub fn clear(&mut self) {
         self.list.clear();
         self.index.clear();

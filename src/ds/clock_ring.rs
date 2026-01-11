@@ -80,6 +80,7 @@ struct Entry<K, V> {
 }
 
 #[derive(Debug)]
+/// Fixed-size ring implementing the CLOCK (second-chance) eviction algorithm.
 pub struct ClockRing<K, V> {
     slots: Vec<Option<Entry<K, V>>>,
     index: HashMap<K, usize>,
@@ -91,6 +92,7 @@ impl<K, V> ClockRing<K, V>
 where
     K: Eq + Hash + Clone,
 {
+    /// Creates a new ring with `capacity` slots.
     pub fn new(capacity: usize) -> Self {
         let mut slots = Vec::with_capacity(capacity);
         slots.resize_with(capacity, || None);
@@ -102,27 +104,33 @@ where
         }
     }
 
+    /// Returns the configured capacity (number of slots).
     pub fn capacity(&self) -> usize {
         self.slots.len()
     }
 
+    /// Returns the number of occupied slots.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns `true` if there are no entries.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Returns `true` if `key` is present.
     pub fn contains(&self, key: &K) -> bool {
         self.index.contains_key(key)
     }
 
+    /// Returns a shared reference to `key`'s value without setting the reference bit.
     pub fn peek(&self, key: &K) -> Option<&V> {
         let idx = *self.index.get(key)?;
         self.slots.get(idx)?.as_ref().map(|entry| &entry.value)
     }
 
+    /// Returns a shared reference to `key`'s value and sets the reference bit.
     pub fn get(&mut self, key: &K) -> Option<&V> {
         let idx = *self.index.get(key)?;
         let entry = self.slots.get_mut(idx)?.as_mut()?;
@@ -130,6 +138,7 @@ where
         Some(&entry.value)
     }
 
+    /// Sets the reference bit for `key`; returns `false` if missing.
     pub fn touch(&mut self, key: &K) -> bool {
         let idx = match self.index.get(key) {
             Some(idx) => *idx,
@@ -142,6 +151,9 @@ where
         false
     }
 
+    /// Inserts or updates `key`.
+    ///
+    /// If inserting into a full ring, evicts and returns `(evicted_key, evicted_value)`.
     pub fn insert(&mut self, key: K, value: V) -> Option<(K, V)> {
         if self.capacity() == 0 {
             return None;
@@ -191,6 +203,7 @@ where
         }
     }
 
+    /// Removes `key` and returns its value, if present.
     pub fn remove(&mut self, key: &K) -> Option<V> {
         let idx = self.index.remove(key)?;
         let entry = self.slots.get_mut(idx)?.take()?;
