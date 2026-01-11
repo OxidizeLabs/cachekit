@@ -690,6 +690,54 @@ mod heap_lfu_tests {
     }
 
     #[test]
+    fn test_remove_clears_stale_frequency_entries() {
+        let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(2);
+
+        cache.insert("key1".to_string(), Arc::new(10));
+        cache.insert("key2".to_string(), Arc::new(20));
+
+        for _ in 0..10 {
+            cache.increment_frequency(&"key1".to_string());
+        }
+
+        let _ = cache.store.remove(&"key1".to_string());
+        assert!(cache.frequency(&"key1".to_string()).is_some());
+
+        cache.remove(&"key1".to_string());
+        assert!(cache.frequency(&"key1".to_string()).is_none());
+
+        let has_key1_in_heap = cache
+            .freq_heap
+            .iter()
+            .any(|Reverse((_, key))| key == "key1");
+        assert!(!has_key1_in_heap);
+    }
+
+    #[test]
+    fn test_pop_lfu_internal_rebuilds_after_stale_pops() {
+        let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(2);
+
+        cache.insert("key1".to_string(), Arc::new(10));
+        cache.insert("key2".to_string(), Arc::new(20));
+
+        for _ in 0..10 {
+            cache.increment_frequency(&"key1".to_string());
+        }
+
+        for _ in 0..4 {
+            cache.increment_frequency(&"key2".to_string());
+        }
+
+        let heap_len_before = cache.freq_heap.len();
+        let (lfu_key, lfu_freq) = cache.pop_lfu_internal().unwrap();
+
+        assert_eq!(lfu_key, "key2".to_string());
+        assert_eq!(lfu_freq, 5);
+        assert!(cache.freq_heap.len() < heap_len_before);
+        assert_eq!(cache.freq_heap.len(), 1);
+    }
+
+    #[test]
     fn test_heap_lfu_performance_comparison() {
         use std::time::Instant;
 
