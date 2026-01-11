@@ -1,3 +1,32 @@
+//! Lazy min-heap with stale entry skipping.
+//!
+//! Maintains a `BinaryHeap` of `(score, seq)` plus a `scores` map for the
+//! latest value. Updates push new heap entries; `pop_best` skips stale ones.
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   scores (authoritative)
+//!   ┌─────────┬──────┐
+//!   │  key A  │  10  │
+//!   │  key B  │   3  │
+//!   └─────────┴──────┘
+//!
+//!   heap (may contain stale entries)
+//!   min: (B,3,seq=5), (A,10,seq=2), (A,12,seq=1 stale)
+//! ```
+//!
+//! ## Operations
+//! - `update(k, s)`: updates map and pushes a heap entry
+//! - `pop_best()`: pops until top matches current score
+//! - `rebuild()`: rebuilds heap from authoritative map
+//!
+//! ## Performance
+//! - `update` / `remove`: O(1) average
+//! - `pop_best`: amortized O(log n)
+//! - `rebuild`: O(n) when heap grows too stale
+//!
+//! `debug_validate_invariants()` is available in debug/test builds.
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;

@@ -1,3 +1,31 @@
+//! Slot arena with stable `SlotId` handles.
+//!
+//! Stores elements in a `Vec<Option<T>>` and reuses freed slots via a free list.
+//! This keeps indices stable and avoids per-operation allocation.
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   slots: Vec<Option<T>>
+//!   free_list: Vec<usize>
+//!
+//!   index: 0     1     2     3
+//!          [T]  [ ]   [T]   [ ]
+//!                 ^         ^
+//!                 |         |
+//!             free_list = [1, 3]
+//! ```
+//!
+//! ## Operations
+//! - `insert(value)`: uses a free slot if available, otherwise grows `slots`
+//! - `remove(id)`: clears slot and pushes index to `free_list`
+//! - `get(id)`: returns `None` if slot is empty or out of bounds
+//!
+//! ## Performance
+//! - `insert` / `remove` / `get`: O(1) average
+//! - `iter`: O(n) over slots
+//!
+//! `debug_validate_invariants()` is available in debug/test builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SlotId(pub(crate) usize);
 

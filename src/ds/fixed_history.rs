@@ -1,3 +1,32 @@
+//! Fixed-size access history ring.
+//!
+//! Stores the last `K` timestamps in a ring buffer, providing O(1) record
+//! and O(1) access to the k-th most recent entry.
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   data: [u64; K]     cursor: write index
+//!   len: number of valid entries (<= K)
+//!
+//!   data  = [10, 20, 30]
+//!   cursor = 0   (next write overwrites oldest)
+//!
+//!   most_recent (k=1) => data[(cursor + K - 1) % K]
+//!   kth_most_recent(k) => data[(cursor + K - k) % K]
+//! ```
+//!
+//! ## Behavior
+//! - `record(ts)`: writes at cursor, overwriting oldest when full
+//! - `most_recent` / `kth_most_recent`: read from ring
+//! - `to_vec_mru`: returns values from most-recent → least-recent
+//!
+//! ## Performance
+//! - `record`: O(1)
+//! - `kth_most_recent`: O(1)
+//! - `to_vec_mru`: O(K)
+//!
+//! `debug_validate_invariants()` is available in debug/test builds.
 #[derive(Debug, Clone)]
 pub struct FixedHistory<const K: usize> {
     data: [u64; K],

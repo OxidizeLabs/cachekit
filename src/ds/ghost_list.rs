@@ -1,3 +1,27 @@
+//! Bounded recency list for ghost entries.
+//!
+//! Used by adaptive policies (ARC/2Q-style) to track recently evicted keys
+//! without storing values. Implemented as an `IntrusiveList` plus an index.
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   index: HashMap<K, SlotId>          list: IntrusiveList<K>
+//!   ┌─────────┬─────────┐              head ─► [A] ◄──► [B] ◄──► [C] ◄── tail
+//!   │  key A  │  id_1   │                 MRU                       LRU
+//!   │  key B  │  id_2   │
+//!   └─────────┴─────────┘
+//! ```
+//!
+//! ## Behavior
+//! - `record(k)`: moves key to MRU, evicts LRU if at capacity
+//! - `remove(k)`: deletes from list and index
+//! - `clear()`: resets both list and index
+//!
+//! ## Performance
+//! - `record` / `remove` / `contains`: O(1) average
+//!
+//! `debug_validate_invariants()` is available in debug/test builds.
 use std::collections::HashMap;
 use std::hash::Hash;
 

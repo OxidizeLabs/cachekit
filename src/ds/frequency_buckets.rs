@@ -1,3 +1,40 @@
+//! Frequency buckets for O(1) LFU tracking.
+//!
+//! Maintains:
+//! - `HashMap<K, SlotId>` index for key lookup
+//! - `SlotArena<Entry<K>>` for per-key frequency + links
+//! - `HashMap<u64, Bucket>` for per-frequency FIFO lists
+//! - `min_freq` pointer for O(1) eviction
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   index (key -> SlotId)          entries (SlotArena<Entry<K>>)
+//!   ┌─────────┬─────────┐          ┌───────────────────────────────┐
+//!   │  key A  │  id_7   │          │ Entry { key: A, freq: 2, ... }│
+//!   │  key B  │  id_3   │  ──────► │ Entry { key: B, freq: 1, ... }│
+//!   └─────────┴─────────┘          └───────────────────────────────┘
+//!
+//!   buckets (freq -> list of SlotId)
+//!   freq=1: head ─► [id_3] ◄──► [id_9] ◄── tail  (FIFO within bucket)
+//!   freq=2: head ─► [id_7] ◄── tail
+//!   min_freq → 1
+//! ```
+//!
+//! ## Eviction Flow
+//!
+//! ```text
+//!   pop_min():
+//!     1. Use min_freq to find lowest bucket
+//!     2. Pop tail SlotId (oldest in that bucket)
+//!     3. Remove entry + update min_freq if bucket empties
+//! ```
+//!
+//! ## Performance
+//! - `insert` / `touch` / `remove` / `pop_min`: O(1) average
+//! - FIFO tie-breaking within a frequency bucket
+//!
+//! `debug_validate_invariants()` is available in debug/test builds.
 use std::collections::HashMap;
 use std::hash::Hash;
 

@@ -1,3 +1,35 @@
+//! Intrusive doubly linked list backed by `SlotArena`.
+//!
+//! Stores list nodes in a `SlotArena` and links them by `SlotId`, enabling
+//! stable handles and O(1) splice/move operations without pointer chasing.
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   arena (SlotArena<Node<T>>)
+//!   ┌────────┬─────────────────────────────────────────────┐
+//!   │ SlotId │ Node { value, prev, next }                  │
+//!   ├────────┼─────────────────────────────────────────────┤
+//!   │ id_1   │ { value: A, prev: None, next: Some(id_2) }  │
+//!   │ id_2   │ { value: B, prev: Some(id_1), next: id_3 }  │
+//!   │ id_3   │ { value: C, prev: Some(id_2), next: None }  │
+//!   └────────┴─────────────────────────────────────────────┘
+//!
+//!   head ─► [id_1] ◄──► [id_2] ◄──► [id_3] ◄── tail
+//! ```
+//!
+//! ## Operations
+//! - `move_to_front(id)`: detach + attach to head
+//! - `move_to_back(id)`: detach + attach to tail
+//! - `remove(id)`: detach + free slot in arena
+//!
+//! ## Performance
+//! - `push_front` / `push_back`: O(1)
+//! - `pop_front` / `pop_back`: O(1)
+//! - `move_to_front` / `move_to_back`: O(1)
+//! - `iter`: O(n)
+//!
+//! `debug_validate_invariants()` is available in debug/test builds.
 use crate::ds::slot_arena::{SlotArena, SlotId};
 use parking_lot::RwLock;
 

@@ -11,18 +11,21 @@
 //!   │                          LFUCache<K, V>                                  │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  FrequencyBuckets<K> (freq + LRU order per bucket)                 │ │
+//!   │   │  FrequencyBuckets<K>                                               │ │
 //!   │   │                                                                    │ │
-//!   │   │  ┌─────────┬───────────────────────────────────────────────────┐   │ │
-//!   │   │  │   Key   │  (Frequency)                                      │   │ │
-//!   │   │  ├─────────┼───────────────────────────────────────────────────┤   │ │
-//!   │   │  │ page_1  │  15  ← Hot: accessed frequently                   │   │ │
-//!   │   │  │ page_2  │   3  ← Warm: moderate accesses                    │   │ │
-//!   │   │  │ page_3  │   1  ← Cold: single access (LFU victim)           │   │ │
-//!   │   │  │ page_4  │   7  ← Warm: moderate accesses                    │   │ │
-//!   │   │  └─────────┴───────────────────────────────────────────────────┘   │ │
+//!   │   │  HashMap<K, SlotId> (index)                                        │ │
+//!   │   │  ┌─────────┬───────────────────────────────────────────────┐       │ │
+//!   │   │  │   Key   │ SlotId (Entry<K> in SlotArena)                │       │ │
+//!   │   │  ├─────────┼───────────────────────────────────────────────┤       │ │
+//!   │   │  │ page_1  │ id_7                                           │       │ │
+//!   │   │  │ page_2  │ id_3                                           │       │ │
+//!   │   │  └─────────┴───────────────────────────────────────────────┘       │ │
 //!   │   │                                                                    │ │
-//!   │   │  Eviction: O(1) bucket pop using min_freq                           │ │
+//!   │   │  Buckets (freq -> linked list of SlotId)                            │ │
+//!   │   │  freq=1: head ─► [id_3] ◄──► [id_9] ◄── tail  (LRU within bucket)   │ │
+//!   │   │  freq=2: head ─► [id_7] ◄── tail                                    │ │
+//!   │   │                                                                    │ │
+//!   │   │  min_freq → 1  (eviction pops tail of lowest bucket)                │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
@@ -83,11 +86,28 @@
 //!   │ LFU Eviction (O(1)):                                                   │
 //!   │                                                                        │
 //!   │   1. Use min_freq to select the lowest bucket                          │
-//!   │   2. Pop the LRU entry in that bucket                                  │
+//!   │   2. Pop the LRU entry in that bucket (tail SlotId)                    │
 //!   │   3. Insert new entry with frequency = 1                               │
 //!   │                                                                        │
-//!   │   Tie-breaking: LRU order within the lowest-frequency bucket           │
+//!   │   Tie-breaking: FIFO within the lowest-frequency bucket                │
 //!   └────────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Entry & Bucket Structure
+//!
+//! ```text
+//!   Entry<K>
+//!   ┌───────────────────────────────┐
+//!   │ key: K                        │
+//!   │ freq: u64                     │
+//!   │ prev/next: SlotId links       │
+//!   └───────────────────────────────┘
+//!
+//!   Bucket
+//!   ┌───────────────────────────────┐
+//!   │ head/tail: SlotId             │
+//!   │ prev/next: frequency links    │
+//!   └───────────────────────────────┘
 //! ```
 //!
 //! ## Frequency Lifecycle
@@ -126,6 +146,8 @@
 //! | `LFUCache<K, V>` | Main cache struct                                  |
 //! | `buckets`        | `FrequencyBuckets` for per-frequency LRU buckets   |
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
+//! | `Entry<K>`       | SlotArena entry with key + freq + bucket links     |
+//! | `Bucket`         | Per-frequency list with head/tail SlotId           |
 //!
 //! ## Core Operations (CoreCache + MutableCache)
 //!
@@ -160,6 +182,7 @@
 //! | `pop_lfu`              | O(1)       | Bucket pop via min_freq            |
 //! | `peek_lfu`             | O(1)       | Tail lookup in min_freq bucket     |
 //! | Per-entry overhead     | ~24 bytes  | Key + freq + bucket links + store  |
+//! | Tie-breaking           | O(1)       | FIFO within same-frequency bucket  |
 //!
 //! ## Trade-offs
 //!
@@ -175,7 +198,7 @@
 //! 1. **Bucketed LFU**: `pop_lfu()` and `peek_lfu()` use the min_freq bucket
 //! 2. **Cold Start Problem**: New items have frequency 1, easily evicted
 //! 3. **No Aging**: Old frequent items stay forever unless manually reset
-//! 4. **Tie-Breaking**: Non-deterministic when multiple items have same frequency
+//! 4. **Tie-Breaking**: FIFO within a frequency bucket, not global recency
 //! 5. **Not Thread-Safe**: Requires external synchronization
 //!
 //! ## When to Use

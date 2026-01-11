@@ -1,3 +1,74 @@
+//! Clock-sweep ring for second-chance eviction.
+//!
+//! Uses a fixed-size slot array and a hand pointer to evict the first
+//! unreferenced entry encountered. Accesses set a referenced bit that
+//! grants a second chance before eviction.
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   ┌──────────────────────────────────────────────────────────────────────┐
+//!   │                         ClockRing<K, V>                               │
+//!   │                                                                       │
+//!   │   slots: Vec<Option<Entry<K,V>>>                                      │
+//!   │   hand ──────────────────────────────────────────────┐                │
+//!   │                                                      │                │
+//!   │   index: HashMap<K, usize> (key -> slot index)        │                │
+//!   │   ┌─────────┬─────────┐                               ▼                │
+//!   │   │  key A  │   0     │   slot[0] = Entry { ref:1 }  [A]               │
+//!   │   │  key B  │   1     │   slot[1] = Entry { ref:0 }  [B]               │
+//!   │   │  key C  │   2     │   slot[2] = Entry { ref:1 }  [C]               │
+//!   │   └─────────┴─────────┘   slot[3] = None              [ ]               │
+//!   │                                                                       │
+//!   │   Eviction scan (hand moves forward):                                 │
+//!   │   [A ref=1] -> clear ref, advance                                     │
+//!   │   [B ref=0] -> evict B, insert new entry here                         │
+//!   └──────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Eviction Flow
+//!
+//! ```text
+//!   insert(key, value)
+//!        │
+//!        ▼
+//!   ┌──────────────────────────────────────────────────────────────────────┐
+//!   │ Key exists?                                                          │
+//!   │   YES → update value, set ref=1                                       │
+//!   │   NO  → scan from hand until ref=0 slot found                         │
+//!   └──────────────────────────────────────────────────────────────────────┘
+//!        │
+//!        ▼
+//!   ┌──────────────────────────────────────────────────────────────────────┐
+//!   │ At each slot:                                                        │
+//!   │   ref=1 → clear ref, advance hand                                    │
+//!   │   ref=0 → evict entry, replace slot, advance hand                    │
+//!   └──────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Entry Structure
+//!
+//! ```text
+//!   Entry<K, V>
+//!   ┌───────────────────────────────┐
+//!   │ key: K                        │
+//!   │ value: V                      │
+//!   │ referenced: bool              │
+//!   └───────────────────────────────┘
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! | Operation  | Time        | Notes                                   |
+//! |-----------|-------------|-----------------------------------------|
+//! | `insert`  | O(1) amort. | Bounded scan with reference clearing     |
+//! | `get`     | O(1)        | Sets reference bit                       |
+//! | `touch`   | O(1)        | Sets reference bit                       |
+//! | `remove`  | O(1)        | Clears slot + index entry                |
+//!
+//! ## Notes
+//! - Slots are reused in place; keys map directly to slot indices.
+//! - `debug_validate_invariants()` is available in debug/test builds.
 use std::collections::HashMap;
 use std::hash::Hash;
 
