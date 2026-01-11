@@ -18,7 +18,7 @@
 //!   │   │                         LRUCore<K, V>                              │ │
 //!   │   │                                                                    │ │
 //!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
-//!   │   │   │  HashMap<K, NonNull<Node<K, V>>>                             │ │ │
+//!   │   │   │  HashMap<K, NonNull<Node<K>>>                               │ │ │
 //!   │   │   │                                                              │ │ │
 //!   │   │   │  ┌─────────┬────────────────────────────────────────────┐    │ │ │
 //!   │   │   │  │   Key   │  NonNull<Node>                             │    │ │ │
@@ -35,10 +35,14 @@
 //!   │   │   │  head ──► ┌──────┐ ◄──► ┌──────┐ ◄──► ┌──────┐ ◄── tail      │ │ │
 //!   │   │   │    (MRU)  │ Node │      │ Node │      │ Node │   (LRU)       │ │ │
 //!   │   │   │           │page_1│      │page_2│      │page_3│               │ │ │
-//!   │   │   │           │Arc<V>│      │Arc<V>│      │Arc<V>│               │ │ │
 //!   │   │   │           └──────┘      └──────┘      └──────┘               │ │ │
 //!   │   │   │                                                              │ │ │
 //!   │   │   │  Most Recently Used ────────────────► Least Recently Used    │ │ │
+//!   │   │   └──────────────────────────────────────────────────────────────┘ │ │
+//!   │   │                                                                    │ │
+//!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
+//!   │   │   │  HashMapStore<K, V> (values live here)                       │ │ │
+//!   │   │   │  K -> Arc<V>                                                 │ │ │
 //!   │   │   └──────────────────────────────────────────────────────────────┘ │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   └──────────────────────────────────────────────────────────────────────────┘
@@ -48,9 +52,10 @@
 //!
 //! | Component              | Description                                        |
 //! |------------------------|----------------------------------------------------|
-//! | `LRUCore<K, V>`        | Single-threaded core with HashMap + linked list    |
+//! | `LRUCore<K, V>`        | Single-threaded core with list + index + store     |
 //! | `ConcurrentLRUCache`   | Thread-safe wrapper with `parking_lot::RwLock`     |
-//! | `Node<K, V>`           | Intrusive list node with key, `Arc<V>`, prev/next  |
+//! | `Node<K>`              | Intrusive list node with key, prev/next             |
+//! | `HashMapStore<K, V>`   | Store for key -> `Arc<V>` ownership                |
 //! | `BufferPoolCache<V>`   | Type alias for `ConcurrentLRUCache<u32, V>`        |
 //! | `PageCache<K, V>`      | Type alias for generic page caching                |
 //! | `LRUCache<K, V>`       | Type alias for `LRUCore` (single-threaded usage)   |
@@ -96,7 +101,7 @@
 //!
 //!   peek(C):
 //!     1. Find [C] in HashMap: O(1)
-//!     2. Return Arc::clone without modifying list
+//!     2. Return Arc::clone from the store without modifying list
 //!
 //!   Order unchanged: head ──► [A] ◄──► [B] ◄──► [C] ◄── tail
 //! ```
@@ -105,11 +110,9 @@
 //!
 //! ```text
 //!   ┌────────────────────────────────────────────┐
-//!   │                 Node<K, V>                 │
+//!   │                 Node<K>                    │
 //!   ├────────────────────────────────────────────┤
 //!   │  key: K (Copy)         │  Owned, cheap     │
-//!   ├────────────────────────┼───────────────────┤
-//!   │  value: Arc<V>         │  Zero-copy share  │
 //!   ├────────────────────────┼───────────────────┤
 //!   │  prev: Option<NonNull> │  Previous node    │
 //!   ├────────────────────────┼───────────────────┤
@@ -163,19 +166,19 @@
 //!
 //! | Operation        | Time       | Space       | Notes                        |
 //! |------------------|------------|-------------|------------------------------|
-//! | `insert`         | O(1) avg   | O(1)        | Amortized by HashMap         |
-//! | `get`            | O(1) avg   | O(1)        | HashMap lookup + list move   |
-//! | `peek`           | O(1) avg   | O(1)        | HashMap lookup only          |
-//! | `remove`         | O(1) avg   | O(1)        | HashMap remove + list unlink |
+//! | `insert`         | O(1) avg   | O(1)        | Index update + list update   |
+//! | `get`            | O(1) avg   | O(1)        | Index lookup + list move     |
+//! | `peek`           | O(1) avg   | O(1)        | Index lookup only            |
+//! | `remove`         | O(1) avg   | O(1)        | Index remove + list unlink   |
 //! | `pop_lru`        | O(1)       | O(1)        | Direct tail pointer access   |
-//! | Per-entry        | -          | ~56 bytes   | 2 ptrs + Arc + HashMap entry |
+//! | Per-entry        | -          | ~56 bytes   | 2 ptrs + index + store entry |
 //!
 //! ## Design Rationale
 //!
 //! This custom implementation was chosen over standard crates (like `lru` or `cached`) for:
 //!
-//! - **Arc-based Value Storage**: Database pages are heavy objects. `Arc<V>` allows
-//!   consumers to hold references even after eviction (e.g., during writeback).
+//! - **Store-backed Value Storage**: Values are held in the store as `Arc<V>`,
+//!   so callers can keep references even after eviction (e.g., during writeback).
 //! - **Internal Visibility**: Buffer managers need precise eviction control
 //!   (pinning, touching without retrieval).
 //! - **Pointer Stability**: `NonNull` nodes ensure stable memory locations for
@@ -300,7 +303,7 @@
 //! - `LRUCore`: **NOT thread-safe** - single-threaded only
 //! - `ConcurrentLRUCache`: **Thread-safe** via `parking_lot::RwLock`
 //! - `Node`: Manually implements `Send + Sync` (protected by outer lock)
-//! - Values: `Arc<V>` enables safe sharing across threads
+//! - Values: `Arc<V>` in the store enables safe sharing across threads
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -318,28 +321,28 @@ use crate::metrics::snapshot::LruMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, LruMetricsReadRecorder, LruMetricsRecorder, MetricsSnapshotProvider,
 };
+use crate::store::hashmap::HashMapStore;
+use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{CoreCache, LRUCacheTrait, MutableCache};
 
 /// Node in the doubly-linked list for LRU tracking
-/// Zero-copy design: Keys are Copy types, Values are Arc-wrapped for sharing
-struct Node<K, V>
+/// Zero-copy design: Keys are Copy types; values live in the store.
+struct Node<K>
 where
     K: Copy,
 {
-    key: K,        // Owned key (Copy types like PageId)
-    value: Arc<V>, // Shared value reference (zero-copy)
-    prev: Option<NonNull<Node<K, V>>>,
-    next: Option<NonNull<Node<K, V>>>,
+    key: K, // Owned key (Copy types like PageId)
+    prev: Option<NonNull<Node<K>>>,
+    next: Option<NonNull<Node<K>>>,
 }
 
-impl<K, V> Node<K, V>
+impl<K> Node<K>
 where
     K: Copy,
 {
-    fn new(key: K, value: Arc<V>) -> Self {
+    fn new(key: K) -> Self {
         Node {
             key,
-            value,
             prev: None,
             next: None,
         }
@@ -349,33 +352,23 @@ where
 // SAFETY: Node only moves across threads while protected by the outer RwLock
 // inside ConcurrentLRUCache. The contained key/value types must themselves
 // be Send + Sync to avoid interior unsafety.
-unsafe impl<K, V> Send for Node<K, V>
-where
-    K: Copy + Send + Sync,
-    V: Send + Sync,
-{
-}
+unsafe impl<K> Send for Node<K> where K: Copy + Send + Sync {}
 
-unsafe impl<K, V> Sync for Node<K, V>
-where
-    K: Copy + Send + Sync,
-    V: Send + Sync,
-{
-}
+unsafe impl<K> Sync for Node<K> where K: Copy + Send + Sync {}
 
 /// High-performance LRU Cache Core using HashMap + Doubly-Linked List
 ///
 /// # Zero-Copy Design Philosophy
 ///
 /// This implementation achieves zero-copy semantics through:
-/// - Keys: Copy types (like PageId) - cheap to copy, owned in HashMap
-/// - Values: `Arc<V>` - zero-copy sharing via reference counting
+/// - Keys: Copy types (like PageId) - cheap to copy, owned in index/list
+/// - Values: `Arc<V>` stored in the store for zero-copy sharing
 ///
 /// ## Memory Safety Guarantees:
 /// - All nodes are allocated via Box::leak and deallocated via Box::from_raw
 /// - NonNull ensures no null pointer dereferences
 /// - Doubly-linked list invariants are maintained at all operation boundaries
-/// - `Arc<V>` provides thread-safe reference counting
+/// - `Arc<V>` provides thread-safe reference counting in the store
 ///
 /// ## Performance Characteristics:
 /// - All operations are O(1): insert, get, remove, eviction
@@ -385,15 +378,15 @@ where
 /// ## Thread Safety:
 /// - Core is single-threaded for maximum performance
 /// - Thread safety provided by wrapper (ConcurrentLRUCache)
-/// - Values are thread-safe via `Arc<V>`
+/// - Values are thread-safe via `Arc<V>` stored in the store
 pub struct LRUCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    capacity: usize,
-    map: HashMap<K, NonNull<Node<K, V>>>,
-    head: Option<NonNull<Node<K, V>>>, // Most recently used
-    tail: Option<NonNull<Node<K, V>>>, // Least recently used
+    store: HashMapStore<K, V>,
+    map: HashMap<K, NonNull<Node<K>>>,
+    head: Option<NonNull<Node<K>>>, // Most recently used
+    tail: Option<NonNull<Node<K>>>, // Least recently used
     #[cfg(feature = "metrics")]
     metrics: LruMetrics,
     _phantom: PhantomData<(K, V)>,
@@ -433,7 +426,7 @@ where
     /// ```
     pub fn new(capacity: usize) -> Self {
         LRUCore {
-            capacity,
+            store: HashMapStore::new(capacity),
             map: HashMap::with_capacity(capacity),
             head: None,
             tail: None,
@@ -448,10 +441,10 @@ where
     /// # Safety
     /// The returned pointer is guaranteed to be:
     /// - Non-null and valid
-    /// - Properly aligned for Node<K, V>
+    /// - Properly aligned for Node<K>
     /// - Allocated via Box, so must be deallocated via Box::from_raw
-    fn allocate_node(&self, key: K, value: Arc<V>) -> NonNull<Node<K, V>> {
-        let boxed = Box::new(Node::new(key, value));
+    fn allocate_node(&self, key: K) -> NonNull<Node<K>> {
+        let boxed = Box::new(Node::new(key));
         NonNull::from(Box::leak(boxed))
     }
 
@@ -463,7 +456,7 @@ where
     /// - `node` is not referenced anywhere else
     /// - `node` has been removed from the doubly-linked list
     /// - This function is called exactly once per allocation
-    unsafe fn deallocate_node(&self, node: NonNull<Node<K, V>>) {
+    unsafe fn deallocate_node(&self, node: NonNull<Node<K>>) {
         unsafe {
             // SAFETY: node was allocated via Box::leak in allocate_node
             let _ = Box::from_raw(node.as_ptr());
@@ -480,7 +473,7 @@ where
     ///
     /// # Performance
     /// O(1) - constant time regardless of cache size
-    unsafe fn move_to_head(&mut self, node: NonNull<Node<K, V>>) {
+    unsafe fn move_to_head(&mut self, node: NonNull<Node<K>>) {
         unsafe {
             // SAFETY: Caller guarantees node is valid and linked
             self.remove_from_list(node);
@@ -495,7 +488,7 @@ where
     /// - `node` points to a valid, allocated node
     /// - `node` is not currently in any linked list
     /// - The cache's head/tail pointers are valid
-    unsafe fn add_to_head(&mut self, node: NonNull<Node<K, V>>) {
+    unsafe fn add_to_head(&mut self, node: NonNull<Node<K>>) {
         unsafe {
             match self.head {
                 Some(old_head) => {
@@ -529,7 +522,7 @@ where
     /// - Doubly-linked list remains properly connected
     /// - Head/tail pointers are updated correctly
     /// - Removed node's pointers are NOT cleared (caller responsibility)
-    unsafe fn remove_from_list(&mut self, node: NonNull<Node<K, V>>) {
+    unsafe fn remove_from_list(&mut self, node: NonNull<Node<K>>) {
         unsafe {
             // SAFETY: Caller guarantees node is valid and in our list
             let node_ref = &*node.as_ptr();
@@ -573,7 +566,7 @@ where
     /// # Returns
     /// - `Some(node)` if cache is not empty
     /// - `None` if cache is empty
-    unsafe fn remove_tail(&mut self) -> Option<NonNull<Node<K, V>>> {
+    unsafe fn remove_tail(&mut self) -> Option<NonNull<Node<K>>> {
         self.tail.inspect(|&tail_node| {
             unsafe {
                 // SAFETY: tail_node is valid (our tail pointer)
@@ -592,6 +585,7 @@ where
     fn validate_invariants(&self) {
         if self.map.is_empty() {
             debug_assert!(self.head.is_none() && self.tail.is_none());
+            debug_assert!(self.store.is_empty());
             return;
         }
 
@@ -610,6 +604,7 @@ where
 
                 // Check that this node exists in the HashMap
                 debug_assert!(self.map.contains_key(&node_ref.key));
+                debug_assert!(self.store.contains(&node_ref.key));
 
                 prev_node = Some(node);
                 current = node_ref.next;
@@ -618,6 +613,7 @@ where
 
         // Verify counts match
         debug_assert_eq!(count, self.map.len());
+        debug_assert_eq!(count, self.store.len());
 
         // Verify tail is correct
         debug_assert_eq!(prev_node, self.tail);
@@ -638,12 +634,7 @@ where
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            // Update existing node - O(1) - zero-copy value replacement
-            let old_value = unsafe {
-                // SAFETY: existing_node is from our HashMap, so it's valid
-                let node_ref = &mut *existing_node.as_ptr();
-                std::mem::replace(&mut node_ref.value, value)
-            };
+            let previous = self.store.try_insert(key, value).unwrap_or_default();
 
             // Move to head (mark as most recently used) - O(1)
             unsafe {
@@ -654,91 +645,105 @@ where
             #[cfg(debug_assertions)]
             self.validate_invariants();
 
-            Some(old_value)
-        } else {
-            // Insert new node
-            // For zero capacity, never insert anything
-            if self.capacity == 0 {
-                return None;
-            }
-
-            #[cfg(feature = "metrics")]
-            self.metrics.record_insert_new();
-
-            if self.map.len() >= self.capacity {
-                // Evict LRU item - O(1) - zero copy eviction
-                #[cfg(feature = "metrics")]
-                self.metrics.record_evict_call();
-
-                if let Some(tail_node) = unsafe { self.remove_tail() } {
-                    // Extract key and value by taking ownership (no clone!)
-                    let (tail_key, _tail_value) = unsafe {
-                        // SAFETY: tail_node was just removed from our list, still valid
-                        let node_ptr = tail_node.as_ptr();
-                        let node = Box::from_raw(node_ptr);
-                        (node.key, node.value) // Move out - Arc is moved, not cloned
-                    };
-                    // Remove from map using the copied key (Copy trait - cheap)
-                    self.map.remove(&tail_key);
-                    #[cfg(feature = "metrics")]
-                    self.metrics.record_evicted_entry();
-                    // Node is already deallocated by Box::from_raw above
-                }
-            }
-
-            // Allocate and insert new node - O(1) - key copied, value moved
-            let new_node = self.allocate_node(key, value);
-
-            // HashMap insert with key copy (Copy trait makes this cheap)
-            self.map.insert(key, new_node);
-
-            unsafe {
-                // SAFETY: new_node is freshly allocated and not in any list
-                self.add_to_head(new_node);
-            }
-
-            #[cfg(debug_assertions)]
-            self.validate_invariants();
-
-            None
+            return previous;
         }
+
+        // Insert new node
+        // For zero capacity, never insert anything
+        if self.store.capacity() == 0 {
+            return None;
+        }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
+        if self.store.len() >= self.store.capacity() {
+            // Evict LRU item - O(1)
+            #[cfg(feature = "metrics")]
+            self.metrics.record_evict_call();
+
+            if let Some(tail_node) = unsafe { self.remove_tail() } {
+                let tail_key = unsafe {
+                    // SAFETY: tail_node was just removed from our list, still valid
+                    let node_ptr = tail_node.as_ptr();
+                    let node = Box::from_raw(node_ptr);
+                    node.key
+                };
+                // Remove from map using the copied key (Copy trait - cheap)
+                self.map.remove(&tail_key);
+                let _ = self.store.remove(&tail_key);
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
+                self.store.record_eviction();
+                // Node is already deallocated by Box::from_raw above
+            }
+        }
+
+        if self.store.try_insert(key, value).is_err() {
+            return None;
+        }
+
+        // Allocate and insert new node - O(1) - key copied
+        let new_node = self.allocate_node(key);
+
+        // HashMap insert with key copy (Copy trait makes this cheap)
+        self.map.insert(key, new_node);
+
+        unsafe {
+            // SAFETY: new_node is freshly allocated and not in any list
+            self.add_to_head(new_node);
+        }
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+
+        None
     }
 
     /// Zero-copy get: returns `Arc<V>` clone (O(1) atomic increment)
     fn get(&mut self, key: &K) -> Option<&Arc<V>> {
-        if let Some(&node) = self.map.get(key) {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_hit();
+        let node = match self.map.get(key) {
+            Some(node) => *node,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                let _ = self.store.get_ref(key);
+                return None;
+            },
+        };
 
-            // Move to head (mark as most recently used) - O(1)
-            unsafe {
-                // SAFETY: node is from our HashMap, so it's valid and in our list
-                self.move_to_head(node);
-                // SAFETY: node is valid and we have exclusive access
-                Some(&(*node.as_ptr()).value)
-            }
-        } else {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_miss();
-            None
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
+
+        // Move to head (mark as most recently used) - O(1)
+        unsafe {
+            // SAFETY: node is from our HashMap, so it's valid and in our list
+            self.move_to_head(node);
         }
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+
+        self.store.get_ref(key)
     }
 
     fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
+        self.store.contains(key)
     }
 
     fn len(&self) -> usize {
-        self.map.len()
+        self.store.len()
     }
 
     fn capacity(&self) -> usize {
-        self.capacity
+        self.store.capacity()
     }
 
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
+
+        self.store.clear();
 
         // Collect all nodes first to avoid borrow checker issues
         let nodes: Vec<_> = self.map.drain().map(|(_, node)| node).collect();
@@ -768,17 +773,14 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
-        if let Some(&node) = self.map.get(key) {
-            unsafe {
-                // SAFETY: node is from our HashMap, so it's valid
-                let value = &(*node.as_ptr()).value;
-                #[cfg(feature = "metrics")]
-                (&self.metrics).record_peek_lru_found();
-                Some(Arc::clone(value)) // O(1) atomic increment
-            }
-        } else {
-            None
+        if self.map.contains_key(key)
+            && let Some(value) = self.store.peek_ref(key)
+        {
+            #[cfg(feature = "metrics")]
+            (&self.metrics).record_peek_lru_found();
+            return Some(Arc::clone(value));
         }
+        None
     }
 }
 
@@ -794,16 +796,16 @@ where
                 // First remove from list while node is still valid
                 self.remove_from_list(node);
 
-                // Then extract value by taking ownership (move, not clone)
-                let node_box = Box::from_raw(node.as_ptr());
-                let value = node_box.value;
-                // Node is deallocated when node_box goes out of scope
-
-                #[cfg(debug_assertions)]
-                self.validate_invariants();
-
-                Some(value)
+                // Then deallocate node
+                let _ = Box::from_raw(node.as_ptr());
             }
+
+            let value = self.store.remove(key);
+
+            #[cfg(debug_assertions)]
+            self.validate_invariants();
+
+            value
         } else {
             None
         }
@@ -830,18 +832,19 @@ where
             // Remove from list while node is still valid
             self.remove_from_list(tail_node);
 
-            // Then extract value by taking ownership (move, not clone)
-            let node_box = Box::from_raw(tail_node.as_ptr());
-            let value = node_box.value;
-            // Node is deallocated when node_box goes out of scope
+            // Then deallocate node
+            let _ = Box::from_raw(tail_node.as_ptr());
+
+            let value = self.store.remove(&key);
 
             #[cfg(debug_assertions)]
             self.validate_invariants();
 
             #[cfg(feature = "metrics")]
             self.metrics.record_pop_lru_found();
+            self.store.record_eviction();
 
-            (key, value)
+            (key, value.expect("lru entry missing from store"))
         })
     }
 
@@ -855,7 +858,11 @@ where
             let node_ref = &*tail_node.as_ptr();
             #[cfg(feature = "metrics")]
             (&self.metrics).record_peek_lru_found();
-            (&node_ref.key, &node_ref.value)
+            let value = self
+                .store
+                .peek_ref(&node_ref.key)
+                .expect("lru entry missing from store");
+            (&node_ref.key, value)
         })
     }
 
@@ -934,8 +941,8 @@ where
             recency_rank_calls: self.metrics.recency_rank_calls.get(),
             recency_rank_found: self.metrics.recency_rank_found.get(),
             recency_rank_scan_steps: self.metrics.recency_rank_scan_steps.get(),
-            cache_len: self.map.len(),
-            capacity: self.capacity,
+            cache_len: self.store.len(),
+            capacity: self.store.capacity(),
         }
     }
 }
@@ -5118,7 +5125,7 @@ mod tests {
 
                 // Validate manually
                 let mut current = cache.head;
-                let mut prev: Option<NonNull<Node<i32, i32>>> = None;
+                let mut prev: Option<NonNull<Node<i32>>> = None;
 
                 while let Some(node_ptr) = current {
                     unsafe {
@@ -5302,7 +5309,7 @@ mod tests {
 
             #[test]
             fn test_key_value_mapping_consistency() {
-                // Test that keys in HashMap correctly map to their values in nodes
+                // Test that keys in the list map to values in the store
                 let mut cache = LRUCore::new(5);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i * 10));
@@ -5313,7 +5320,8 @@ mod tests {
                     unsafe {
                         let node = node_ptr.as_ref();
                         assert_eq!(node.key, i);
-                        assert_eq!(*node.value, i * 10);
+                        let value = cache.store.peek_ref(&i).unwrap();
+                        assert_eq!(**value, i * 10);
                     }
                 }
             }
@@ -5618,14 +5626,14 @@ mod tests {
 
             #[test]
             fn test_value_consistency_across_structures() {
-                // Test that values are consistent between HashMap and list nodes
+                // Test that values are consistent between store and list nodes
                 let mut cache = LRUCore::new(5);
                 cache.insert(1, Arc::new(10));
 
-                let map_val = cache.get(&1).unwrap().clone();
+                let map_val = cache.store.peek_ref(&1).unwrap().clone();
                 unsafe {
-                    let node_val = &cache.head.unwrap().as_ref().value;
-                    assert_eq!(&map_val, node_val);
+                    let head_key = cache.head.unwrap().as_ref().key;
+                    assert_eq!(head_key, 1);
                     assert_eq!(*map_val, 10);
                 }
             }
@@ -6267,7 +6275,7 @@ mod tests {
         fn test_memory_alignment_safety() {
             use std::mem;
             // Ensure Node alignment is respected
-            assert!(mem::align_of::<Node<u32, u32>>() >= mem::align_of::<u32>());
+            assert!(mem::align_of::<Node<u32>>() >= mem::align_of::<u32>());
 
             let mut cache = LRUCore::new(1);
             cache.insert(1, Arc::new(1u64)); // u64 has stricter alignment
