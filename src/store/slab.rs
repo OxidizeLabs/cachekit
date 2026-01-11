@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::store::traits::{StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut};
@@ -12,7 +13,76 @@ pub struct EntryId(usize);
 #[derive(Debug)]
 struct Entry<K, V> {
     key: K,
-    value: Arc<V>,
+    value: V,
+}
+
+pub trait ValueModel<V> {
+    type Stored;
+    type Output<'a>
+    where
+        V: 'a;
+    type Removed;
+
+    fn store(value: V) -> Self::Stored;
+    fn output(stored: &Self::Stored) -> Self::Output<'_>;
+    fn replace(stored: &mut Self::Stored, value: Self::Stored) -> Self::Removed;
+    fn remove(stored: Self::Stored) -> Self::Removed;
+}
+
+#[derive(Debug, Default)]
+pub struct SharedValue;
+
+impl<V> ValueModel<V> for SharedValue {
+    type Stored = Arc<V>;
+    type Output<'a>
+        = Arc<V>
+    where
+        V: 'a;
+    type Removed = Arc<V>;
+
+    fn store(value: V) -> Self::Stored {
+        Arc::new(value)
+    }
+
+    fn output(stored: &Self::Stored) -> Self::Output<'_> {
+        Arc::clone(stored)
+    }
+
+    fn replace(stored: &mut Self::Stored, value: Self::Stored) -> Self::Removed {
+        std::mem::replace(stored, value)
+    }
+
+    fn remove(stored: Self::Stored) -> Self::Removed {
+        stored
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct OwnedValue;
+
+impl<V> ValueModel<V> for OwnedValue {
+    type Stored = V;
+    type Output<'a>
+        = &'a V
+    where
+        V: 'a;
+    type Removed = V;
+
+    fn store(value: V) -> Self::Stored {
+        value
+    }
+
+    fn output(stored: &Self::Stored) -> Self::Output<'_> {
+        stored
+    }
+
+    fn replace(stored: &mut Self::Stored, value: Self::Stored) -> Self::Removed {
+        std::mem::replace(stored, value)
+    }
+
+    fn remove(stored: Self::Stored) -> Self::Removed {
+        stored
+    }
 }
 
 #[derive(Debug, Default)]
@@ -62,19 +132,27 @@ impl StoreCounters {
     }
 }
 
+pub type SharedSlabStore<K, V> = SlabStore<K, V, SharedValue>;
+pub type OwnedSlabStore<K, V> = SlabStore<K, V, OwnedValue>;
+
 /// Slab-backed store with EntryId indirection.
 #[derive(Debug)]
-pub struct SlabStore<K, V> {
-    entries: Vec<Option<Entry<K, V>>>,
+pub struct SlabStore<K, V, M = SharedValue>
+where
+    M: ValueModel<V>,
+{
+    entries: Vec<Option<Entry<K, M::Stored>>>,
     free_list: Vec<usize>,
     index: HashMap<K, EntryId>,
     capacity: usize,
     metrics: StoreCounters,
+    _marker: PhantomData<M>,
 }
 
-impl<K, V> SlabStore<K, V>
+impl<K, V, M> SlabStore<K, V, M>
 where
     K: Eq + Hash,
+    M: ValueModel<V>,
 {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -83,6 +161,7 @@ where
             index: HashMap::with_capacity(capacity),
             capacity,
             metrics: StoreCounters::default(),
+            _marker: PhantomData,
         }
     }
 
@@ -92,10 +171,10 @@ where
     }
 
     /// Fetch a value by EntryId.
-    pub fn get_by_id(&self, id: EntryId) -> Option<Arc<V>> {
+    pub fn get_by_id(&self, id: EntryId) -> Option<M::Output<'_>> {
         self.entries
             .get(id.0)
-            .and_then(|slot| slot.as_ref().map(|entry| entry.value.clone()))
+            .and_then(|slot| slot.as_ref().map(|entry| M::output(&entry.value)))
     }
 
     /// Fetch a key by EntryId.
@@ -113,9 +192,54 @@ where
             self.entries.len() - 1
         }
     }
+
+    pub fn try_insert_value(&mut self, key: K, value: V) -> Result<Option<M::Removed>, StoreFull>
+    where
+        K: Clone,
+    {
+        let stored = M::store(value);
+        self.try_insert_stored(key, stored)
+    }
+
+    pub fn remove_value(&mut self, key: &K) -> Option<M::Removed> {
+        let id = self.index.remove(key)?;
+        let entry = self.entries[id.0].take()?;
+        self.free_list.push(id.0);
+        self.metrics.inc_remove();
+        Some(M::remove(entry.value))
+    }
+
+    fn try_insert_stored(
+        &mut self,
+        key: K,
+        value: M::Stored,
+    ) -> Result<Option<M::Removed>, StoreFull>
+    where
+        K: Clone,
+    {
+        if let Some(id) = self.index.get(&key).copied() {
+            let entry = self.entries[id.0].as_mut().expect("slab entry missing");
+            let previous = M::replace(&mut entry.value, value);
+            self.metrics.inc_update();
+            return Ok(Some(previous));
+        }
+
+        if self.index.len() >= self.capacity {
+            return Err(StoreFull);
+        }
+
+        let idx = self.allocate_slot();
+        self.entries[idx] = Some(Entry {
+            key: key.clone(),
+            value,
+        });
+        self.index.insert(key, EntryId(idx));
+        self.metrics.inc_insert();
+        Ok(None)
+    }
 }
 
-impl<K, V> StoreCore<K, V> for SlabStore<K, V>
+impl<K, V> StoreCore<K, V> for SlabStore<K, V, SharedValue>
 where
     K: Eq + Hash,
 {
@@ -153,38 +277,16 @@ where
     }
 }
 
-impl<K, V> StoreMut<K, V> for SlabStore<K, V>
+impl<K, V> StoreMut<K, V> for SlabStore<K, V, SharedValue>
 where
     K: Eq + Hash + Clone,
 {
     fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
-        if let Some(id) = self.index.get(&key).copied() {
-            let entry = self.entries[id.0].as_mut().expect("slab entry missing");
-            let previous = std::mem::replace(&mut entry.value, value);
-            self.metrics.inc_update();
-            return Ok(Some(previous));
-        }
-
-        if self.index.len() >= self.capacity {
-            return Err(StoreFull);
-        }
-
-        let idx = self.allocate_slot();
-        self.entries[idx] = Some(Entry {
-            key: key.clone(),
-            value,
-        });
-        self.index.insert(key, EntryId(idx));
-        self.metrics.inc_insert();
-        Ok(None)
+        self.try_insert_stored(key, value)
     }
 
     fn remove(&mut self, key: &K) -> Option<Arc<V>> {
-        let id = self.index.remove(key)?;
-        let entry = self.entries[id.0].take()?;
-        self.free_list.push(id.0);
-        self.metrics.inc_remove();
-        Some(entry.value)
+        self.remove_value(key)
     }
 
     fn clear(&mut self) {
@@ -194,11 +296,11 @@ where
     }
 }
 
-impl<K, V> StoreFactory<K, V> for SlabStore<K, V>
+impl<K, V> StoreFactory<K, V> for SlabStore<K, V, SharedValue>
 where
     K: Eq + Hash + Send,
 {
-    type Store = SlabStore<K, V>;
+    type Store = SlabStore<K, V, SharedValue>;
 
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
@@ -248,5 +350,14 @@ mod tests {
         assert_eq!(store.try_insert("k1", Arc::new("v1".to_string())), Ok(None));
         let id = store.entry_id(&"k1").expect("missing entry id");
         assert_eq!(store.key_by_id(id), Some(&"k1"));
+    }
+
+    #[test]
+    fn slab_store_owned_value_mode() {
+        let mut store: OwnedSlabStore<&'static str, String> = SlabStore::new(2);
+        assert_eq!(store.try_insert_value("k1", "v1".to_string()), Ok(None));
+        let id = store.entry_id(&"k1").expect("missing entry id");
+        assert_eq!(store.get_by_id(id).map(|value| value.as_str()), Some("v1"));
+        assert_eq!(store.remove_value(&"k1"), Some("v1".to_string()));
     }
 }
