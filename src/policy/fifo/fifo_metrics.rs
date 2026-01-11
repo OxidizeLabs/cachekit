@@ -11,10 +11,10 @@
 //!   │                          FIFOCache<K, V>                                 │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  cache: HashMap<Arc<K>, Arc<V>>                                    │ │
+//!   │   │  cache: HashMap<K, Arc<V>>                                    │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────────┬────────────────────────────────────────────────┐  │ │
-//!   │   │  │   Arc<K>    │  Arc<V>                                        │  │ │
+//!   │   │  │   K    │  Arc<V>                                        │  │ │
 //!   │   │  ├─────────────┼────────────────────────────────────────────────┤  │ │
 //!   │   │  │  Arc(key1)  │  Arc(value1)                                   │  │ │
 //!   │   │  │  Arc(key2)  │  Arc(value2)                                   │  │ │
@@ -25,7 +25,7 @@
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  insertion_order: VecDeque<Arc<K>>                                 │ │
+//!   │   │  insertion_order: VecDeque<K>                                 │ │
 //!   │   │                                                                    │ │
 //!   │   │  front ──► [Arc(key1)] ─ [Arc(key2)] ─ [Arc(key3)] ◄── back        │ │
 //!   │   │            (oldest)                      (newest)                  │ │
@@ -63,7 +63,7 @@
 //!   ┌────────────────────────────────────────────────────────────────────────┐
 //!   │ FIFO Eviction:                                                         │
 //!   │                                                                        │
-//!   │   1. pop_front() from VecDeque → oldest Arc<K>                         │
+//!   │   1. pop_front() from VecDeque → oldest K                         │
 //!   │   2. Skip if stale (key not in HashMap)                                │
 //!   │   3. Remove from HashMap                                               │
 //!   │   4. Add new entry: HashMap.insert + VecDeque.push_back                │
@@ -123,8 +123,8 @@
 //!
 //! | Component         | Type                     | Purpose                       |
 //! |-------------------|--------------------------|-------------------------------|
-//! | `cache`           | `HashMap<Arc<K>,Arc<V>>` | O(1) key-value storage        |
-//! | `insertion_order` | `VecDeque<Arc<K>>`       | Tracks insertion order        |
+//! | `cache`           | `HashMap<K,Arc<V>>` | O(1) key-value storage        |
+//! | `insertion_order` | `VecDeque<K>`       | Tracks insertion order        |
 //! | `capacity`        | `usize`                  | Maximum entries               |
 //!
 //! ## Core Operations (CoreCache)
@@ -266,8 +266,8 @@
 //!
 //! ## Implementation Notes
 //!
-//! - **Arc Sharing**: Keys and values wrapped in `Arc` for zero-copy sharing
-//! - **Stale Entries**: VecDeque may contain entries not in HashMap (lazy cleanup)
+//! - **Arc Sharing**: Values are stored as `Arc<V>` inside the store for zero-copy sharing
+//! - **Stale Entries**: VecDeque may contain entries not in the store (lazy cleanup)
 //! - **Update Semantics**: Updating existing key preserves insertion position
 //! - **Zero Capacity**: Supported - rejects all insertions
 
@@ -276,9 +276,11 @@ use crate::metrics::snapshot::CacheMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, FifoMetricsReadRecorder, FifoMetricsRecorder, MetricsSnapshotProvider,
 };
+use crate::store::hashmap::HashMapStore;
+use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{ConcurrentCache, CoreCache, FIFOCacheTrait};
 use parking_lot::RwLock;
-use std::collections::{HashMap, VecDeque, hash_map};
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -290,7 +292,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct FIFOCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     inner: FIFOCacheInner<K, V>,
     metrics: CacheMetrics,
@@ -299,21 +301,19 @@ where
 #[derive(Debug)]
 pub struct FIFOCacheInner<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
-    capacity: usize,
-    cache: HashMap<Arc<K>, Arc<V>>,
-    insertion_order: VecDeque<Arc<K>>, // Tracks the order of insertion
+    store: HashMapStore<K, V>,
+    insertion_order: VecDeque<K>, // Tracks the order of insertion
 }
 
 impl<K, V> FIFOCacheInner<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     fn new(capacity: usize) -> Self {
         Self {
-            capacity,
-            cache: HashMap::with_capacity(capacity),
+            store: HashMapStore::new(capacity),
             insertion_order: VecDeque::with_capacity(capacity),
         }
     }
@@ -321,7 +321,7 @@ where
 
 impl<K, V> FIFOCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
     V: Debug,
 {
     /// Creates a new FIFO cache with the given capacity
@@ -335,7 +335,7 @@ where
     /// Returns the number of items currently in the cache.
     /// This is a duplicate of the CoreCache::len() method but provides direct access.
     pub fn current_size(&self) -> usize {
-        self.inner.cache.len()
+        self.inner.store.len()
     }
 
     /// Returns the insertion order length (may include stale entries).
@@ -344,15 +344,15 @@ where
         self.inner.insertion_order.len()
     }
 
-    /// Checks if the internal cache HashMap contains a specific `Arc<K>`.
+    /// Checks if the internal store contains a specific key.
     /// This is primarily for testing stale entry behavior.
-    pub fn cache_contains_key(&self, key: &Arc<K>) -> bool {
-        self.inner.cache.contains_key(key)
+    pub fn cache_contains_key(&self, key: &K) -> bool {
+        self.inner.store.contains(key)
     }
 
     /// Returns an iterator over the insertion order keys.
     /// This is primarily for testing and debugging purposes.
-    pub fn insertion_order_iter(&self) -> impl Iterator<Item = &Arc<K>> {
+    pub fn insertion_order_iter(&self) -> impl Iterator<Item = &K> {
         self.inner.insertion_order.iter()
     }
 
@@ -378,31 +378,24 @@ where
             age_rank_calls: self.metrics.age_rank_calls.get(),
             age_rank_found: self.metrics.age_rank_found.get(),
             age_rank_scan_steps: self.metrics.age_rank_scan_steps.get(),
-            cache_len: self.inner.cache.len(),
+            cache_len: self.inner.store.len(),
             insertion_order_len: self.inner.insertion_order.len(),
-            capacity: self.inner.capacity,
+            capacity: self.inner.store.capacity(),
         }
     }
 
-    /// Manually removes a key from the cache HashMap only (for testing stale entries).
+    /// Manually removes a key from the store only (for testing stale entries).
     /// This is only for testing purposes to simulate stale entry conditions.
-    /// Accepts a raw key and finds the corresponding Arc<K> to remove.
+    /// Accepts a raw key and removes the corresponding entry from the store.
     #[cfg(test)]
     pub fn remove_from_cache_only(&mut self, key: &K) -> Option<Arc<V>> {
-        // Find the Arc<K> that matches this key
-        let arc_key = self.inner.cache.keys().find(|k| k.as_ref() == key).cloned();
-
-        if let Some(arc_key) = arc_key {
-            self.inner.cache.remove(&arc_key)
-        } else {
-            None
-        }
+        self.inner.store.remove(key)
     }
 
-    /// Returns the current cache HashMap capacity (for testing memory usage).
+    /// Returns the current store HashMap capacity (for testing memory usage).
     #[cfg(test)]
     pub fn cache_capacity(&self) -> usize {
-        self.inner.cache.capacity()
+        self.inner.store.map_capacity()
     }
 
     /// Returns the current insertion order VecDeque capacity (for testing memory usage).
@@ -419,10 +412,11 @@ where
         while let Some(oldest_key) = self.inner.insertion_order.pop_front() {
             self.metrics.record_evict_scan_step();
 
-            if self.inner.cache.contains_key(&oldest_key) {
+            if self.inner.store.contains(&oldest_key) {
                 // Found a valid key, remove it and stop
-                self.inner.cache.remove(&oldest_key);
+                self.inner.store.remove(&oldest_key);
                 self.metrics.record_evicted_entry();
+                self.inner.store.record_eviction();
                 break;
             }
             // Skip stale entries (keys that were already removed from the cache)
@@ -435,14 +429,14 @@ where
 #[derive(Clone, Debug)]
 pub struct ConcurrentFIFOCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     inner: Arc<RwLock<FIFOCache<K, V>>>,
 }
 
 impl<K, V> ConcurrentFIFOCache<K, V>
 where
-    K: Eq + Hash + Debug,
+    K: Eq + Hash + Clone + Debug,
     V: Debug,
 {
     pub fn new(capacity: usize) -> Self {
@@ -521,14 +515,14 @@ where
 
 impl<K, V> ConcurrentCache for ConcurrentFIFOCache<K, V>
 where
-    K: Eq + Hash + Debug + Send + Sync,
+    K: Eq + Hash + Clone + Debug + Send + Sync,
     V: Debug + Send + Sync,
 {
 }
 
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FIFOCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
     V: Debug,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
@@ -538,7 +532,7 @@ where
 
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFIFOCache<K, V>
 where
-    K: Eq + Hash + Debug,
+    K: Eq + Hash + Clone + Debug,
     V: Debug,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
@@ -548,7 +542,7 @@ where
 
 impl<K, V> CoreCache<K, V> for FIFOCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
     V: Debug,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -556,44 +550,41 @@ where
         self.metrics.record_insert_call();
 
         // If capacity is 0, cannot store anything
-        if self.inner.capacity == 0 {
+        if self.inner.store.capacity() == 0 {
             return None;
         }
 
-        let key_arc = Arc::new(key);
-        let value_arc = Arc::new(value);
-
-        // If the key already exists, update the value
-        if let hash_map::Entry::Occupied(mut e) = self.inner.cache.entry(key_arc.clone()) {
+        if self.inner.store.contains(&key) {
             self.metrics.record_insert_update();
-
-            return Some(e.insert(value_arc)).map(|old_value_arc| {
-                Arc::try_unwrap(old_value_arc).expect("external Arc<V> references detected")
-            });
+            if let Ok(previous) = self.inner.store.try_insert(key, Arc::new(value)) {
+                return previous.map(|old_value_arc| {
+                    Arc::try_unwrap(old_value_arc).expect("external Arc<V> references detected")
+                });
+            }
+            return None;
         }
 
         self.metrics.record_insert_new();
 
         // If the cache is at capacity, remove the oldest valid item (FIFO)
-        if self.inner.cache.len() >= self.inner.capacity {
+        if self.inner.store.len() >= self.inner.store.capacity() {
             self.evict_oldest();
         }
 
         // Add the new key to the insertion order and cache
-        // Only the Arc pointers are cloned (8 bytes each), not the actual data
-        self.inner.insertion_order.push_back(key_arc.clone());
-        self.inner.cache.insert(key_arc, value_arc);
+        let key_for_queue = key.clone();
+        if self.inner.store.try_insert(key, Arc::new(value)).is_ok() {
+            self.inner.insertion_order.push_back(key_for_queue);
+        }
         None
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
         // In FIFO, getting an item doesn't change its position
-        // Use HashMap's O(1) lookup by leveraging Borrow trait
-        // HashMap<Arc<K>, V> supports lookups with &K when K implements Borrow
-        match self.inner.cache.get(key) {
-            Some(v) => {
+        match self.inner.store.get_ref(key) {
+            Some(value) => {
                 self.metrics.record_get_hit();
-                Some(v.as_ref())
+                Some(value.as_ref())
             },
             None => {
                 self.metrics.record_get_miss();
@@ -603,46 +594,42 @@ where
     }
 
     fn contains(&self, key: &K) -> bool {
-        // Use HashMap's O(1) lookup by leveraging Borrow trait
-        // HashMap<Arc<K>, V> supports lookups with &K when K implements Borrow
-        self.inner.cache.contains_key(key)
+        self.inner.store.contains(key)
     }
 
     fn len(&self) -> usize {
-        self.inner.cache.len()
+        self.inner.store.len()
     }
 
     fn capacity(&self) -> usize {
-        self.inner.capacity
+        self.inner.store.capacity()
     }
 
     fn clear(&mut self) {
-        self.inner.cache.clear();
+        self.inner.store.clear();
         self.inner.insertion_order.clear();
     }
 }
 
 impl<K, V> FIFOCacheTrait<K, V> for FIFOCache<K, V>
 where
-    K: Eq + Hash + Debug,
+    K: Eq + Hash + Clone + Debug,
     V: Debug,
 {
     fn pop_oldest(&mut self) -> Option<(K, V)> {
         self.metrics.record_pop_oldest_call();
 
         // Use the existing evict_oldest logic but return the key-value pair
-        while let Some(oldest_key_arc) = self.inner.insertion_order.pop_front() {
-            if let Some(value_arc) = self.inner.cache.remove(&oldest_key_arc) {
+        while let Some(oldest_key) = self.inner.insertion_order.pop_front() {
+            if let Some(value_arc) = self.inner.store.remove(&oldest_key) {
                 self.metrics.record_pop_oldest_found();
+                self.inner.store.record_eviction();
 
                 // Try to unwrap both Arcs to get the original key and value
-                // This should succeed since we just removed them from the cache
-                let key =
-                    Arc::try_unwrap(oldest_key_arc).expect("external Arc<K> references detected");
                 let value =
                     Arc::try_unwrap(value_arc).expect("external Arc<V> references detected");
 
-                return Some((key, value));
+                return Some((oldest_key, value));
             }
             // Skip stale entries (keys that were already removed from the cache)
         }
@@ -654,10 +641,10 @@ where
         (&self.metrics).record_peek_oldest_call();
 
         // Find the first valid entry in the insertion order
-        for key_arc in &self.inner.insertion_order {
-            if let Some(value_arc) = self.inner.cache.get(key_arc) {
+        for key in &self.inner.insertion_order {
+            if let Some(value_arc) = self.inner.store.peek_ref(key) {
                 (&self.metrics).record_peek_oldest_found();
-                return Some((key_arc.as_ref(), value_arc.as_ref()));
+                return Some((key, value_arc.as_ref()));
             }
         }
         None
@@ -679,10 +666,10 @@ where
         (&self.metrics).record_age_rank_call();
         // Find position in insertion order, accounting for stale entries
         let mut rank = 0;
-        for insertion_key_arc in &self.inner.insertion_order {
+        for insertion_key in &self.inner.insertion_order {
             (&self.metrics).record_age_rank_scan_step();
-            if self.inner.cache.contains_key(insertion_key_arc) {
-                if insertion_key_arc.as_ref() == key {
+            if self.inner.store.contains(insertion_key) {
+                if insertion_key == key {
                     (&self.metrics).record_age_rank_found();
                     return Some(rank);
                 }
