@@ -1,4 +1,4 @@
-You are working in a Rust cache library optimized for DBMS workloads.
+You are working in a Rust cache library.
 
 Goals
 - Optimize for expected workload patterns before choosing a policy.
