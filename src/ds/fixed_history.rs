@@ -94,6 +94,12 @@ impl<const K: usize> FixedHistory<K> {
     }
 
     #[cfg(any(test, debug_assertions))]
+    /// Returns a debug snapshot of the history in MRU order.
+    pub fn debug_snapshot_mru(&self) -> Vec<u64> {
+        self.to_vec_mru()
+    }
+
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_validate_invariants(&self) {
         assert!(self.len <= K);
         if K == 0 {
@@ -182,5 +188,14 @@ mod tests {
         history.record(2);
         history.record(3);
         history.debug_validate_invariants();
+    }
+
+    #[test]
+    fn fixed_history_debug_snapshot_mru() {
+        let mut history = FixedHistory::<3>::new();
+        history.record(10);
+        history.record(20);
+        history.record(30);
+        assert_eq!(history.debug_snapshot_mru(), vec![30, 20, 10]);
     }
 }

@@ -103,6 +103,18 @@ where
         }
     }
 
+    /// Reserves capacity for at least `additional` more entries.
+    pub fn reserve(&mut self, additional: usize) {
+        self.scores.reserve(additional);
+        self.heap.reserve(additional);
+    }
+
+    /// Shrinks internal storage to fit current contents.
+    pub fn shrink_to_fit(&mut self) {
+        self.scores.shrink_to_fit();
+        self.heap.shrink_to_fit();
+    }
+
     /// Returns the number of live keys.
     pub fn len(&self) -> usize {
         self.scores.len()
@@ -175,6 +187,28 @@ where
     }
 
     #[cfg(any(test, debug_assertions))]
+    /// Returns a debug snapshot of heap/map sizes.
+    pub fn debug_snapshot(&self) -> LazyHeapSnapshot {
+        LazyHeapSnapshot {
+            len: self.len(),
+            heap_len: self.heap_len(),
+        }
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns a cloned view of scores for debugging.
+    pub fn debug_snapshot_scores(&self) -> Vec<(K, S)>
+    where
+        K: Clone,
+        S: Clone,
+    {
+        self.scores
+            .iter()
+            .map(|(key, score)| (key.clone(), score.clone()))
+            .collect()
+    }
+
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_validate_invariants(&self) {
         assert_eq!(self.len(), self.scores.len());
         if self.is_empty() {
@@ -191,6 +225,13 @@ where
         self.seq = self.seq.wrapping_add(1);
         self.heap.push(Reverse(entry));
     }
+}
+
+#[cfg(any(test, debug_assertions))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LazyHeapSnapshot {
+    pub len: usize,
+    pub heap_len: usize,
 }
 
 impl<K, S> Default for LazyMinHeap<K, S>
@@ -311,5 +352,18 @@ mod tests {
         heap.update("b", 1);
         heap.remove(&"b");
         heap.debug_validate_invariants();
+    }
+
+    #[test]
+    fn lazy_heap_debug_snapshots() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 2);
+        heap.update("b", 1);
+        let snapshot = heap.debug_snapshot();
+        assert_eq!(snapshot.len, 2);
+        assert!(snapshot.heap_len >= snapshot.len);
+
+        let scores = heap.debug_snapshot_scores();
+        assert_eq!(scores.len(), 2);
     }
 }

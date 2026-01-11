@@ -109,6 +109,17 @@ where
         self.slots.len()
     }
 
+    /// Reserves capacity for at least `additional` more index entries.
+    pub fn reserve_index(&mut self, additional: usize) {
+        self.index.reserve(additional);
+    }
+
+    /// Shrinks internal storage to fit current contents.
+    pub fn shrink_to_fit(&mut self) {
+        self.index.shrink_to_fit();
+        self.slots.shrink_to_fit();
+    }
+
     /// Returns the number of occupied slots.
     pub fn len(&self) -> usize {
         self.len
@@ -201,6 +212,58 @@ where
             self.advance_hand();
             return None;
         }
+    }
+
+    /// Peeks the next eviction candidate without modifying state.
+    pub fn peek_victim(&self) -> Option<(&K, &V)> {
+        if self.capacity() == 0 || self.len == 0 {
+            return None;
+        }
+        let cap = self.capacity();
+        for offset in 0..cap {
+            let idx = (self.hand + offset) % cap;
+            if let Some(entry) = self.slots.get(idx).and_then(|slot| slot.as_ref())
+                && !entry.referenced
+            {
+                return Some((&entry.key, &entry.value));
+            }
+        }
+        None
+    }
+
+    /// Evicts the next candidate (first unreferenced slot) and returns it.
+    pub fn pop_victim(&mut self) -> Option<(K, V)> {
+        if self.capacity() == 0 || self.len == 0 {
+            return None;
+        }
+        let cap = self.capacity();
+        for _ in 0..cap {
+            let idx = self.hand;
+            if let Some(entry) = self.slots.get_mut(idx).and_then(|slot| slot.as_mut()) {
+                if entry.referenced {
+                    entry.referenced = false;
+                    self.advance_hand();
+                    continue;
+                }
+
+                let evicted = self.slots[idx].take().expect("occupied slot missing");
+                self.index.remove(&evicted.key);
+                self.len -= 1;
+                self.advance_hand();
+                return Some((evicted.key, evicted.value));
+            }
+            self.advance_hand();
+        }
+        None
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns a debug snapshot of slot occupancy in ring order.
+    pub fn debug_snapshot_slots(&self) -> Vec<Option<(&K, bool)>> {
+        self.slots
+            .iter()
+            .map(|slot| slot.as_ref().map(|entry| (&entry.key, entry.referenced)))
+            .collect()
     }
 
     /// Removes `key` and returns its value, if present.
@@ -376,5 +439,73 @@ mod tests {
         ring.insert("c", 3);
         ring.remove(&"b");
         ring.debug_validate_invariants();
+    }
+
+    #[test]
+    fn clock_ring_peek_and_pop_victim() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+
+        // All entries are inserted unreferenced; any is a valid victim.
+        let peeked = ring.peek_victim();
+        assert!(matches!(
+            peeked,
+            Some((&"a", &1)) | Some((&"b", &2)) | Some((&"c", &3))
+        ));
+
+        let evicted = ring.pop_victim();
+        assert!(matches!(
+            evicted,
+            Some(("a", 1)) | Some(("b", 2)) | Some(("c", 3))
+        ));
+        assert_eq!(ring.len(), 2);
+        ring.debug_validate_invariants();
+    }
+
+    #[test]
+    fn clock_ring_peek_skips_referenced_entries() {
+        let mut ring = ClockRing::new(2);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.touch(&"a");
+
+        let peeked = ring.peek_victim();
+        assert_eq!(peeked, Some((&"b", &2)));
+    }
+
+    #[test]
+    fn clock_ring_pop_victim_clears_referenced_then_eviction() {
+        let mut ring = ClockRing::new(2);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.touch(&"a");
+        ring.touch(&"b");
+
+        let first = ring.pop_victim();
+        if first.is_none() {
+            let second = ring.pop_victim();
+            assert!(matches!(second, Some(("a", 1)) | Some(("b", 2))));
+            assert_eq!(ring.len(), 1);
+        } else {
+            assert!(matches!(first, Some(("a", 1)) | Some(("b", 2))));
+            assert_eq!(ring.len(), 1);
+        }
+    }
+
+    #[test]
+    fn clock_ring_debug_snapshot_slots() {
+        let mut ring = ClockRing::new(2);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.touch(&"a");
+        let snapshot = ring.debug_snapshot_slots();
+        assert_eq!(snapshot.len(), 2);
+        assert!(
+            snapshot
+                .iter()
+                .any(|slot| matches!(slot, &Some((&"a", true))))
+        );
     }
 }

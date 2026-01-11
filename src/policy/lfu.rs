@@ -263,6 +263,30 @@
 //! }
 //! ```
 //!
+//! ## Example: Handle-Based LFU with an Interner
+//!
+//! ```rust,ignore
+//! use crate::ds::KeyInterner;
+//! use crate::policy::lfu::LFUHandleCache;
+//! use crate::traits::{CoreCache, LFUCacheTrait};
+//! use std::sync::Arc;
+//!
+//! let mut interner = KeyInterner::new();
+//! let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(2);
+//!
+//! let key_a = "page_a".to_string();
+//! let key_b = "page_b".to_string();
+//!
+//! let h_a = interner.intern(&key_a);
+//! let h_b = interner.intern(&key_b);
+//!
+//! cache.insert(h_a, Arc::new(10));
+//! cache.insert(h_b, Arc::new(20));
+//!
+//! cache.get(&h_a);
+//! assert_eq!(cache.frequency(&h_a), Some(2));
+//! ```
+//!
 //! ## Comparison with Other Policies
 //!
 //! | Policy   | Eviction Basis | Eviction Time | Best For                  |
@@ -281,6 +305,7 @@
 //! ## Implementation Notes
 //!
 //! - **Key Clone Requirement**: Keys must be `Clone` for O(1) indexing
+//! - **Handle Variant**: `LFUHandleCache<H, V>` uses interned handles to avoid key clones
 //! - **Zero Capacity**: Supported - rejects all insertions
 //! - **Frequency Overflow**: Theoretically possible at `usize::MAX` accesses
 //! - **Store + Buckets**: Values live in the store; buckets track frequency and order
@@ -288,7 +313,7 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
-use crate::ds::FrequencyBuckets;
+use crate::ds::{FrequencyBuckets, FrequencyBucketsHandle};
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LfuMetrics;
 #[cfg(feature = "metrics")]
@@ -316,6 +341,21 @@ where
     metrics: LfuMetrics,
 }
 
+/// LFU cache variant keyed by compact handles (interned keys).
+///
+/// Use this when you already have a stable handle (e.g., interner id) and want
+/// to avoid cloning large keys on the hot path.
+#[derive(Debug)]
+pub struct LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    store: HashMapStore<H, V>,
+    buckets: FrequencyBucketsHandle<H>,
+    #[cfg(feature = "metrics")]
+    metrics: LfuMetrics,
+}
+
 impl<K, V> LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -334,6 +374,27 @@ where
         self.store.record_eviction();
         let value = self.store.remove(&key)?;
         Some((key, value))
+    }
+}
+
+impl<H, V> LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    pub fn new(capacity: usize) -> Self {
+        LFUHandleCache {
+            store: HashMapStore::new(capacity),
+            buckets: FrequencyBucketsHandle::new(),
+            #[cfg(feature = "metrics")]
+            metrics: LfuMetrics::default(),
+        }
+    }
+
+    fn evict_min_freq(&mut self) -> Option<(H, Arc<V>)> {
+        let (handle, _freq) = self.buckets.pop_min()?;
+        self.store.record_eviction();
+        let value = self.store.remove(&handle)?;
+        Some((handle, value))
     }
 }
 
@@ -416,6 +477,83 @@ where
     }
 }
 
+impl<H, V> CoreCache<H, Arc<V>> for LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    fn insert(&mut self, handle: H, value: Arc<V>) -> Option<Arc<V>> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
+        if self.buckets.contains(&handle) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
+            return self.store.try_insert(handle, value).ok().flatten();
+        }
+
+        if self.store.capacity() == 0 {
+            return None;
+        }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
+        if self.buckets.len() >= self.store.capacity() {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_evict_call();
+
+            if let Some((_handle, _value)) = self.evict_min_freq() {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
+            }
+        }
+
+        if self.store.try_insert(handle, value).is_err() {
+            return None;
+        }
+
+        self.buckets.insert(handle);
+
+        None
+    }
+
+    fn get(&mut self, handle: &H) -> Option<&Arc<V>> {
+        if !self.buckets.contains(handle) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
+            let _ = self.store.get_ref(handle);
+            return None;
+        }
+
+        let _ = self.buckets.touch(handle);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
+
+        self.store.get_ref(handle)
+    }
+
+    fn contains(&self, handle: &H) -> bool {
+        self.store.contains(handle)
+    }
+
+    fn len(&self) -> usize {
+        self.store.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.store.capacity()
+    }
+
+    fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+        self.store.clear();
+        self.buckets.clear();
+    }
+}
+
 impl<K, V> MutableCache<K, Arc<V>> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -423,6 +561,16 @@ where
     fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let _ = self.buckets.remove(key)?;
         self.store.remove(key)
+    }
+}
+
+impl<H, V> MutableCache<H, Arc<V>> for LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    fn remove(&mut self, handle: &H) -> Option<Arc<V>> {
+        let _ = self.buckets.remove(handle)?;
+        self.store.remove(handle)
     }
 }
 
@@ -497,10 +645,120 @@ where
     }
 }
 
+impl<H, V> LFUCacheTrait<H, Arc<V>> for LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    fn pop_lfu(&mut self) -> Option<(H, Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lfu_call();
+
+        let result = self.evict_min_freq();
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            self.metrics.record_pop_lfu_found();
+        }
+
+        result
+    }
+
+    fn peek_lfu(&self) -> Option<(&H, &Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_call();
+
+        let (handle, _freq) = self.buckets.peek_min_ref()?;
+        let value = self.store.peek_ref(handle)?;
+
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_found();
+
+        Some((handle, value))
+    }
+
+    fn frequency(&self, handle: &H) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_frequency_call();
+
+        let result = self.buckets.frequency(handle);
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_frequency_found();
+        }
+
+        result
+    }
+
+    fn reset_frequency(&mut self, handle: &H) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_call();
+
+        let previous_freq = self.buckets.remove(handle)?;
+        self.buckets.insert(*handle);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_found();
+
+        Some(previous_freq)
+    }
+
+    fn increment_frequency(&mut self, handle: &H) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_call();
+
+        let new_freq = self.buckets.touch(handle)?;
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_found();
+
+        Some(new_freq)
+    }
+}
+
 #[cfg(feature = "metrics")]
 impl<K, V> LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+{
+    pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
+        LfuMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            pop_lfu_calls: self.metrics.pop_lfu_calls,
+            pop_lfu_found: self.metrics.pop_lfu_found,
+            peek_lfu_calls: self.metrics.peek_lfu_calls.get(),
+            peek_lfu_found: self.metrics.peek_lfu_found.get(),
+            frequency_calls: self.metrics.frequency_calls.get(),
+            frequency_found: self.metrics.frequency_found.get(),
+            reset_frequency_calls: self.metrics.reset_frequency_calls,
+            reset_frequency_found: self.metrics.reset_frequency_found,
+            increment_frequency_calls: self.metrics.increment_frequency_calls,
+            increment_frequency_found: self.metrics.increment_frequency_found,
+            cache_len: self.store.len(),
+            capacity: self.store.capacity(),
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[cfg(test)]
+    pub(crate) fn debug_validate_invariants(&self) {
+        assert!(self.len() <= self.capacity());
+        assert_eq!(self.len(), self.buckets.len());
+        self.buckets.debug_validate_invariants();
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<H, V> LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
 {
     pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
         LfuMetricsSnapshot {
@@ -549,10 +807,33 @@ where
     }
 }
 
+#[cfg(all(test, not(feature = "metrics")))]
+impl<H, V> LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_validate_invariants(&self) {
+        assert!(self.len() <= self.capacity());
+        assert_eq!(self.len(), self.buckets.len());
+        self.buckets.debug_validate_invariants();
+    }
+}
+
 #[cfg(feature = "metrics")]
 impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+{
+    fn snapshot(&self) -> LfuMetricsSnapshot {
+        self.metrics_snapshot()
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<H, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
 {
     fn snapshot(&self) -> LfuMetricsSnapshot {
         self.metrics_snapshot()
@@ -589,6 +870,18 @@ mod tests {
             assert_eq!(cache.frequency(&"key1".to_string()), Some(2)); // 1 + 1 from get
             assert_eq!(cache.frequency(&"key2".to_string()), Some(2)); // 1 + 1 from get
             assert_eq!(cache.frequency(&"key3".to_string()), Some(2)); // 1 + 1 from get
+        }
+
+        #[test]
+        fn test_handle_lfu_basic_flow() {
+            let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(2);
+            assert_eq!(cache.insert(1, Arc::new(10)), None);
+            assert_eq!(cache.insert(2, Arc::new(20)), None);
+            assert_eq!(cache.get(&1).map(Arc::as_ref), Some(&10));
+            assert_eq!(cache.frequency(&1), Some(2));
+            cache.insert(3, Arc::new(30));
+            assert_eq!(cache.len(), 2);
+            cache.debug_validate_invariants();
         }
 
         #[test]

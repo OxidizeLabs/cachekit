@@ -107,6 +107,24 @@ where
     }
 
     #[cfg(any(test, debug_assertions))]
+    /// Returns keys in MRU -> LRU order (requires `K: Clone`).
+    pub fn debug_snapshot_keys(&self) -> Vec<K>
+    where
+        K: Clone,
+    {
+        self.list
+            .iter_entries()
+            .map(|(_, key)| key.clone())
+            .collect()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns SlotIds in MRU -> LRU order.
+    pub fn debug_snapshot_ids(&self) -> Vec<SlotId> {
+        self.list.iter_ids().collect()
+    }
+
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_validate_invariants(&self) {
         assert_eq!(self.list.len(), self.index.len());
         assert!(self.list.len() <= self.capacity);
@@ -202,5 +220,16 @@ mod tests {
         ghost.record("b");
         ghost.record("a");
         ghost.debug_validate_invariants();
+    }
+
+    #[test]
+    fn ghost_list_debug_snapshots() {
+        let mut ghost = GhostList::new(2);
+        ghost.record("a");
+        ghost.record("b");
+        let keys = ghost.debug_snapshot_keys();
+        let ids = ghost.debug_snapshot_ids();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(ids.len(), 2);
     }
 }

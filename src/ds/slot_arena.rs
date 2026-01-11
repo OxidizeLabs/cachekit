@@ -107,6 +107,14 @@ impl<T> SlotArena<T> {
             .unwrap_or(false)
     }
 
+    /// Returns `true` if the slot at `index` is in bounds and occupied.
+    pub fn contains_index(&self, index: usize) -> bool {
+        self.slots
+            .get(index)
+            .map(|slot| slot.is_some())
+            .unwrap_or(false)
+    }
+
     /// Returns the number of live entries.
     pub fn len(&self) -> usize {
         self.len
@@ -120,6 +128,17 @@ impl<T> SlotArena<T> {
     /// Returns the backing vector capacity (number of slots that can be held without realloc).
     pub fn capacity(&self) -> usize {
         self.slots.capacity()
+    }
+
+    /// Reserves capacity for at least `additional` more slots.
+    pub fn reserve_slots(&mut self, additional: usize) {
+        self.slots.reserve(additional);
+    }
+
+    /// Shrinks internal storage to fit the current length.
+    pub fn shrink_to_fit(&mut self) {
+        self.slots.shrink_to_fit();
+        self.free_list.shrink_to_fit();
     }
 
     /// Removes all entries and resets internal state.
@@ -137,6 +156,25 @@ impl<T> SlotArena<T> {
             .filter_map(|(idx, slot)| slot.as_ref().map(|value| (SlotId(idx), value)))
     }
 
+    /// Iterates over live SlotIds.
+    pub fn iter_ids(&self) -> impl Iterator<Item = SlotId> + '_ {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.as_ref().map(|_| SlotId(idx)))
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns a debug snapshot of arena internals.
+    pub fn debug_snapshot(&self) -> SlotArenaSnapshot {
+        SlotArenaSnapshot {
+            len: self.len,
+            slots_len: self.slots.len(),
+            free_list: self.free_list.clone(),
+            live_ids: self.iter_ids().collect(),
+        }
+    }
+
     #[cfg(any(test, debug_assertions))]
     pub fn debug_validate_invariants(&self) {
         let live_count = self.slots.iter().filter(|slot| slot.is_some()).count();
@@ -151,6 +189,135 @@ impl<T> SlotArena<T> {
         }
 
         assert_eq!(self.slots.len(), self.free_list.len() + self.len);
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotArenaSnapshot {
+    pub len: usize,
+    pub slots_len: usize,
+    pub free_list: Vec<usize>,
+    pub live_ids: Vec<SlotId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Stable handle into a `ShardedSlotArena`.
+pub struct ShardedSlotId {
+    shard: usize,
+    slot: SlotId,
+}
+
+impl ShardedSlotId {
+    /// Returns the shard index.
+    pub fn shard(self) -> usize {
+        self.shard
+    }
+
+    /// Returns the slot id within the shard.
+    pub fn slot(self) -> SlotId {
+        self.slot
+    }
+}
+
+#[derive(Debug)]
+/// SlotArena sharded by a fixed number of `RwLock`-protected arenas.
+pub struct ShardedSlotArena<T> {
+    shards: Vec<parking_lot::RwLock<SlotArena<T>>>,
+    next_shard: std::sync::atomic::AtomicUsize,
+}
+
+impl<T> ShardedSlotArena<T> {
+    /// Creates a sharded arena with `shards` shards.
+    pub fn new(shards: usize) -> Self {
+        let shards = shards.max(1);
+        let mut arenas = Vec::with_capacity(shards);
+        for _ in 0..shards {
+            arenas.push(parking_lot::RwLock::new(SlotArena::new()));
+        }
+        Self {
+            shards: arenas,
+            next_shard: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Creates a sharded arena with `shards` shards, each pre-allocated to `capacity`.
+    pub fn with_capacity(shards: usize, capacity: usize) -> Self {
+        let shards = shards.max(1);
+        let mut arenas = Vec::with_capacity(shards);
+        for _ in 0..shards {
+            arenas.push(parking_lot::RwLock::new(SlotArena::with_capacity(capacity)));
+        }
+        Self {
+            shards: arenas,
+            next_shard: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Returns the number of shards.
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// Inserts a value into a selected shard and returns its `ShardedSlotId`.
+    pub fn insert(&self, value: T) -> ShardedSlotId {
+        let shard = self
+            .next_shard
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.shards.len();
+        let mut arena = self.shards[shard].write();
+        let slot = arena.insert(value);
+        ShardedSlotId { shard, slot }
+    }
+
+    /// Removes the value at `id` and returns it, if present.
+    pub fn remove(&self, id: ShardedSlotId) -> Option<T> {
+        let mut arena = self.shards.get(id.shard)?.write();
+        arena.remove(id.slot)
+    }
+
+    /// Runs `f` on a shared reference to the value at `id`, if present.
+    pub fn get_with<R>(&self, id: ShardedSlotId, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let arena = self.shards.get(id.shard)?.read();
+        arena.get(id.slot).map(f)
+    }
+
+    /// Runs `f` on a mutable reference to the value at `id`, if present.
+    pub fn get_mut_with<R>(&self, id: ShardedSlotId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let mut arena = self.shards.get(id.shard)?.write();
+        arena.get_mut(id.slot).map(f)
+    }
+
+    /// Returns `true` if `id` currently refers to a live slot.
+    pub fn contains(&self, id: ShardedSlotId) -> bool {
+        self.shards
+            .get(id.shard)
+            .map(|arena| arena.read().contains(id.slot))
+            .unwrap_or(false)
+    }
+
+    /// Returns the number of live entries across all shards.
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|arena| arena.read().len()).sum()
+    }
+
+    /// Returns `true` if all shards are empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reserves capacity for at least `additional` more slots in each shard.
+    pub fn reserve_slots(&self, additional: usize) {
+        for arena in &self.shards {
+            arena.write().reserve_slots(additional);
+        }
+    }
+
+    /// Shrinks all shards to fit their current lengths.
+    pub fn shrink_to_fit(&self) {
+        for arena in &self.shards {
+            arena.write().shrink_to_fit();
+        }
     }
 }
 
@@ -199,9 +366,21 @@ impl<T> ConcurrentSlotArena<T> {
         arena.get(id).map(f)
     }
 
+    /// Tries to run `f` on a shared reference to the value at `id` without blocking.
+    pub fn try_get_with<R>(&self, id: SlotId, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let arena = self.inner.try_read()?;
+        arena.get(id).map(f)
+    }
+
     /// Runs `f` on a mutable reference to the value at `id`, if present.
     pub fn get_mut_with<R>(&self, id: SlotId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let mut arena = self.inner.write();
+        arena.get_mut(id).map(f)
+    }
+
+    /// Tries to run `f` on a mutable reference to the value at `id` without blocking.
+    pub fn try_get_mut_with<R>(&self, id: SlotId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let mut arena = self.inner.try_write()?;
         arena.get_mut(id).map(f)
     }
 
@@ -227,6 +406,18 @@ impl<T> ConcurrentSlotArena<T> {
     pub fn capacity(&self) -> usize {
         let arena = self.inner.read();
         arena.capacity()
+    }
+
+    /// Reserves capacity for at least `additional` more slots.
+    pub fn reserve_slots(&self, additional: usize) {
+        let mut arena = self.inner.write();
+        arena.reserve_slots(additional);
+    }
+
+    /// Shrinks internal storage to fit the current length.
+    pub fn shrink_to_fit(&self) {
+        let mut arena = self.inner.write();
+        arena.shrink_to_fit();
     }
 
     /// Clears all entries.
@@ -335,6 +526,62 @@ mod tests {
         let arena: SlotArena<i32> = SlotArena::with_capacity(16);
         assert!(arena.capacity() >= 16);
         assert_eq!(arena.len(), 0);
+    }
+
+    #[test]
+    fn slot_arena_contains_index_and_iter_ids() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert("a");
+        let b = arena.insert("b");
+        assert!(arena.contains_index(a.index()));
+        assert!(arena.contains_index(b.index()));
+        arena.remove(a);
+        assert!(!arena.contains_index(a.index()));
+
+        let ids: Vec<_> = arena.iter_ids().collect();
+        assert_eq!(ids, vec![b]);
+    }
+
+    #[test]
+    fn slot_arena_reserve_slots_grows_capacity() {
+        let mut arena: SlotArena<i32> = SlotArena::new();
+        let before = arena.capacity();
+        arena.reserve_slots(32);
+        assert!(arena.capacity() >= before + 32);
+    }
+
+    #[test]
+    fn slot_arena_debug_snapshot() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert("a");
+        let b = arena.insert("b");
+        arena.remove(a);
+        let snapshot = arena.debug_snapshot();
+        assert_eq!(snapshot.len, 1);
+        assert!(snapshot.live_ids.contains(&b));
+        assert!(snapshot.free_list.contains(&a.index()));
+    }
+
+    #[test]
+    fn sharded_slot_arena_basic_ops() {
+        let arena = ShardedSlotArena::new(2);
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+        assert!(arena.contains(a));
+        assert!(arena.contains(b));
+        assert_eq!(arena.get_with(a, |v| *v), Some(1));
+        assert_eq!(arena.remove(b), Some(2));
+        assert!(!arena.contains(b));
+        assert_eq!(arena.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_slot_arena_try_ops() {
+        let arena = ConcurrentSlotArena::new();
+        let id = arena.insert(1);
+        assert_eq!(arena.try_get_with(id, |v| *v), Some(1));
+        arena.try_get_mut_with(id, |v| *v = 2);
+        assert_eq!(arena.get_with(id, |v| *v), Some(2));
     }
 
     #[test]

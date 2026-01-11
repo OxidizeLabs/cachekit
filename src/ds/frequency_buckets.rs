@@ -33,10 +33,18 @@
 //! ## Performance
 //! - `insert` / `touch` / `remove` / `pop_min`: O(1) average
 //! - FIFO tie-breaking within a frequency bucket
+//! - `decay_halve` / `rebase_min_freq`: O(n) rebuild of bucket structure
+//!
+//! ## Handle-Based Usage
+//!
+//! For large keys, consider interning keys in a higher layer and using
+//! `FrequencyBucketsHandle<Handle>` where `Handle: Copy + Eq + Hash`.
+//! This stores the handle (not the full key) in buckets and index maps.
 //!
 //! `debug_validate_invariants()` is available in debug/test builds.
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::hash::Hasher;
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
@@ -121,6 +129,30 @@ where
         Some((&entry.key, entry.freq))
     }
 
+    /// Peeks the SlotId for the eviction candidate (tail of the min-frequency bucket).
+    pub fn peek_min_id(&self) -> Option<SlotId> {
+        if self.min_freq == 0 {
+            return None;
+        }
+        let bucket = self.buckets.get(&self.min_freq)?;
+        bucket.tail
+    }
+
+    /// Peeks the key for the eviction candidate (tail of the min-frequency bucket).
+    pub fn peek_min_key(&self) -> Option<&K> {
+        let id = self.peek_min_id()?;
+        self.entries.get(id).map(|entry| &entry.key)
+    }
+
+    /// Returns an iterator of SlotIds for a given frequency, from head to tail.
+    pub fn iter_bucket_ids(&self, freq: u64) -> FrequencyBucketIdIter<'_, K> {
+        let head = self.buckets.get(&freq).and_then(|bucket| bucket.head);
+        FrequencyBucketIdIter {
+            buckets: self,
+            current: head,
+        }
+    }
+
     /// Inserts a new key with frequency 1.
     ///
     /// Returns `false` if the key already exists.
@@ -203,6 +235,78 @@ where
         Some(next_freq)
     }
 
+    /// Increments frequency for `key`, clamping at `max_freq`.
+    ///
+    /// If the key is already at `max_freq`, it is moved to the front of its
+    /// bucket and the frequency is unchanged.
+    pub fn touch_capped(&mut self, key: &K, max_freq: u64) -> Option<u64> {
+        let max_freq = max_freq.max(1);
+        let id = *self.index.get(key)?;
+        let current_freq = self.entries.get(id)?.freq;
+        if current_freq >= max_freq {
+            self.list_remove(current_freq, id)?;
+            self.list_push_front(current_freq, id);
+            return Some(current_freq);
+        }
+
+        let next_freq = current_freq + 1;
+        let (prev_freq, next_existing) = {
+            let bucket = self.buckets.get(&current_freq)?;
+            (bucket.prev, bucket.next)
+        };
+
+        self.list_remove(current_freq, id)?;
+        let bucket_empty = self.bucket_is_empty(current_freq);
+
+        if bucket_empty {
+            self.remove_bucket(current_freq, prev_freq, next_existing);
+            if self.min_freq == current_freq {
+                self.min_freq = next_existing.unwrap_or(0);
+            }
+        }
+
+        if !self.buckets.contains_key(&next_freq) {
+            let prev = if bucket_empty {
+                prev_freq
+            } else {
+                Some(current_freq)
+            };
+            let next = next_existing;
+            self.insert_bucket(next_freq, prev, next);
+        }
+
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.freq = next_freq;
+        }
+        self.list_push_front(next_freq, id);
+        if self.min_freq == 0 || next_freq < self.min_freq {
+            self.min_freq = next_freq;
+        }
+
+        Some(next_freq)
+    }
+
+    /// Halves all frequencies (rounding down), clamping at 1.
+    ///
+    /// This is an O(n) rebuild and will reorder tie-breaks within buckets.
+    pub fn decay_halve(&mut self) {
+        if self.is_empty() {
+            return;
+        }
+        self.rebuild_with(|freq| (freq / 2).max(1));
+    }
+
+    /// Rebases frequencies so the current minimum becomes 1.
+    ///
+    /// This is an O(n) rebuild and will reorder tie-breaks within buckets.
+    pub fn rebase_min_freq(&mut self) {
+        if self.min_freq <= 1 {
+            return;
+        }
+        let delta = self.min_freq - 1;
+        self.rebuild_with(|freq| freq.saturating_sub(delta).max(1));
+    }
+
     /// Removes `key` from tracking and returns its previous frequency.
     pub fn remove(&mut self, key: &K) -> Option<u64> {
         let id = self.index.remove(key)?;
@@ -260,6 +364,76 @@ where
         self.index.clear();
         self.buckets.clear();
         self.min_freq = 0;
+    }
+
+    fn ensure_bucket(&mut self, freq: u64) {
+        if self.buckets.contains_key(&freq) {
+            return;
+        }
+        let mut prev = None;
+        let mut next = None;
+        for &f in self.buckets.keys() {
+            if f < freq && prev.is_none_or(|p| f > p) {
+                prev = Some(f);
+            }
+            if f > freq && next.is_none_or(|n| f < n) {
+                next = Some(f);
+            }
+        }
+        self.insert_bucket(freq, prev, next);
+    }
+
+    fn insert_with_freq(&mut self, key: K, freq: u64) {
+        let freq = freq.max(1);
+        let id = self.entries.insert(Entry {
+            key: key.clone(),
+            freq,
+            prev: None,
+            next: None,
+        });
+        self.index.insert(key, id);
+        self.ensure_bucket(freq);
+        self.list_push_front(freq, id);
+        if self.min_freq == 0 || freq < self.min_freq {
+            self.min_freq = freq;
+        }
+    }
+
+    fn rebuild_with<F>(&mut self, mut f: F)
+    where
+        F: FnMut(u64) -> u64,
+    {
+        let entries: Vec<(K, u64)> = self
+            .entries
+            .iter()
+            .map(|(_, entry)| (entry.key.clone(), f(entry.freq)))
+            .collect();
+        self.entries.clear();
+        self.index.clear();
+        self.buckets.clear();
+        self.min_freq = 0;
+
+        for (key, freq) in entries {
+            self.insert_with_freq(key, freq);
+        }
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns a debug snapshot of bucket chains.
+    pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot {
+        let mut buckets: Vec<(u64, Vec<SlotId>)> = self
+            .buckets
+            .keys()
+            .copied()
+            .map(|freq| (freq, self.iter_bucket_ids(freq).collect()))
+            .collect();
+        buckets.sort_by_key(|(freq, _)| *freq);
+        FrequencyBucketsSnapshot {
+            min_freq: self.min_freq(),
+            entries_len: self.entries.len(),
+            index_len: self.index.len(),
+            buckets,
+        }
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -394,6 +568,262 @@ where
         }
 
         Some(())
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrequencyBucketsSnapshot {
+    pub min_freq: Option<u64>,
+    pub entries_len: usize,
+    pub index_len: usize,
+    pub buckets: Vec<(u64, Vec<SlotId>)>,
+}
+
+#[derive(Debug)]
+/// Sharded frequency buckets for reduced contention.
+pub struct ShardedFrequencyBuckets<K> {
+    shards: Vec<parking_lot::RwLock<FrequencyBuckets<K>>>,
+}
+
+impl<K> ShardedFrequencyBuckets<K>
+where
+    K: Eq + Hash + Clone,
+{
+    /// Creates a sharded tracker with `shards` shards.
+    pub fn new(shards: usize) -> Self {
+        let shards = shards.max(1);
+        let mut vec = Vec::with_capacity(shards);
+        for _ in 0..shards {
+            vec.push(parking_lot::RwLock::new(FrequencyBuckets::new()));
+        }
+        Self { shards: vec }
+    }
+
+    /// Returns the number of shards.
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    fn shard_for(&self, key: &K) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.shards.len()
+    }
+
+    /// Inserts a key into its shard.
+    pub fn insert(&self, key: K) -> bool {
+        let shard = self.shard_for(&key);
+        let mut buckets = self.shards[shard].write();
+        buckets.insert(key)
+    }
+
+    /// Touches a key in its shard.
+    pub fn touch(&self, key: &K) -> Option<u64> {
+        let shard = self.shard_for(key);
+        let mut buckets = self.shards[shard].write();
+        buckets.touch(key)
+    }
+
+    /// Removes a key from its shard.
+    pub fn remove(&self, key: &K) -> Option<u64> {
+        let shard = self.shard_for(key);
+        let mut buckets = self.shards[shard].write();
+        buckets.remove(key)
+    }
+
+    /// Returns the frequency for a key in its shard.
+    pub fn frequency(&self, key: &K) -> Option<u64> {
+        let shard = self.shard_for(key);
+        let buckets = self.shards[shard].read();
+        buckets.frequency(key)
+    }
+
+    /// Returns `true` if the key exists in its shard.
+    pub fn contains(&self, key: &K) -> bool {
+        let shard = self.shard_for(key);
+        let buckets = self.shards[shard].read();
+        buckets.contains(key)
+    }
+
+    /// Returns the total number of keys across all shards.
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|b| b.read().len()).sum()
+    }
+
+    /// Returns `true` if all shards are empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Clears all shards.
+    pub fn clear(&self) {
+        for shard in &self.shards {
+            shard.write().clear();
+        }
+    }
+
+    /// Peeks the global min across shards by cloning the candidate.
+    pub fn peek_min(&self) -> Option<(K, u64)> {
+        let mut best: Option<(usize, u64)> = None;
+        for (idx, shard) in self.shards.iter().enumerate() {
+            let buckets = shard.read();
+            if let Some(freq) = buckets.min_freq()
+                && best.is_none_or(|(_, best_freq)| freq < best_freq)
+            {
+                best = Some((idx, freq));
+            }
+        }
+        let (idx, _) = best?;
+        let buckets = self.shards[idx].read();
+        buckets.peek_min().map(|(key, freq)| (key.clone(), freq))
+    }
+
+    /// Pops the global min across shards (scan by min_freq).
+    pub fn pop_min(&self) -> Option<(K, u64)> {
+        let mut best: Option<(usize, u64)> = None;
+        for (idx, shard) in self.shards.iter().enumerate() {
+            let buckets = shard.read();
+            if let Some(freq) = buckets.min_freq()
+                && best.is_none_or(|(_, best_freq)| freq < best_freq)
+            {
+                best = Some((idx, freq));
+            }
+        }
+        let (idx, _) = best?;
+        let mut buckets = self.shards[idx].write();
+        buckets.pop_min()
+    }
+}
+
+#[derive(Debug)]
+/// Frequency buckets keyed by a compact handle (for interned keys).
+pub struct FrequencyBucketsHandle<H> {
+    inner: FrequencyBuckets<H>,
+}
+
+impl<H> FrequencyBucketsHandle<H>
+where
+    H: Eq + Hash + Copy,
+{
+    /// Creates an empty tracker.
+    pub fn new() -> Self {
+        Self {
+            inner: FrequencyBuckets::new(),
+        }
+    }
+
+    /// Returns the number of tracked handles.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns `true` if there are no tracked handles.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Returns `true` if `handle` is present.
+    pub fn contains(&self, handle: &H) -> bool {
+        self.inner.contains(handle)
+    }
+
+    /// Returns the current frequency for `handle`, if present.
+    pub fn frequency(&self, handle: &H) -> Option<u64> {
+        self.inner.frequency(handle)
+    }
+
+    /// Returns the minimum frequency currently present.
+    pub fn min_freq(&self) -> Option<u64> {
+        self.inner.min_freq()
+    }
+
+    /// Peeks the eviction candidate `(handle, freq)`.
+    pub fn peek_min(&self) -> Option<(H, u64)> {
+        self.inner.peek_min().map(|(handle, freq)| (*handle, freq))
+    }
+
+    /// Peeks the eviction candidate by reference `(handle, freq)`.
+    pub fn peek_min_ref(&self) -> Option<(&H, u64)> {
+        self.inner.peek_min()
+    }
+
+    /// Inserts a new handle with frequency 1.
+    pub fn insert(&mut self, handle: H) -> bool {
+        self.inner.insert(handle)
+    }
+
+    /// Increments frequency for `handle` and returns the new frequency.
+    pub fn touch(&mut self, handle: &H) -> Option<u64> {
+        self.inner.touch(handle)
+    }
+
+    /// Increments frequency for `handle`, clamping at `max_freq`.
+    pub fn touch_capped(&mut self, handle: &H, max_freq: u64) -> Option<u64> {
+        self.inner.touch_capped(handle, max_freq)
+    }
+
+    /// Removes `handle` from tracking and returns its previous frequency.
+    pub fn remove(&mut self, handle: &H) -> Option<u64> {
+        self.inner.remove(handle)
+    }
+
+    /// Removes and returns the eviction candidate `(handle, freq)`.
+    pub fn pop_min(&mut self) -> Option<(H, u64)> {
+        self.inner.pop_min()
+    }
+
+    /// Halves all frequencies (rounding down), clamping at 1.
+    pub fn decay_halve(&mut self) {
+        self.inner.decay_halve();
+    }
+
+    /// Rebases frequencies so the current minimum becomes 1.
+    pub fn rebase_min_freq(&mut self) {
+        self.inner.rebase_min_freq();
+    }
+
+    /// Clears all state.
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns a debug snapshot of bucket chains.
+    pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot {
+        self.inner.debug_snapshot()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Validates internal invariants (debug/test only).
+    pub fn debug_validate_invariants(&self) {
+        self.inner.debug_validate_invariants();
+    }
+}
+
+impl<H> Default for FrequencyBucketsHandle<H>
+where
+    H: Eq + Hash + Copy,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Iterator over SlotIds for a given frequency bucket.
+pub struct FrequencyBucketIdIter<'a, K> {
+    buckets: &'a FrequencyBuckets<K>,
+    current: Option<SlotId>,
+}
+
+impl<'a, K> Iterator for FrequencyBucketIdIter<'a, K> {
+    type Item = SlotId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.current?;
+        let entry = self.buckets.entries.get(id)?;
+        self.current = entry.next;
+        Some(id)
     }
 }
 
@@ -535,5 +965,115 @@ mod tests {
         buckets.touch(&"a");
         buckets.remove(&"b");
         buckets.debug_validate_invariants();
+    }
+
+    #[test]
+    fn frequency_buckets_peek_min_id_and_key() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        let id = buckets.peek_min_id().unwrap();
+        let key = buckets.peek_min_key().unwrap();
+        assert!(matches!(key, &"a" | &"b"));
+        assert_eq!(buckets.frequency(key), Some(1));
+
+        let entry = buckets.entries.get(id).unwrap();
+        assert_eq!(&entry.key, key);
+    }
+
+    #[test]
+    fn frequency_buckets_iter_bucket_ids_order() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.insert("c");
+
+        let ids: Vec<_> = buckets.iter_bucket_ids(1).collect();
+        assert_eq!(ids.len(), 3);
+        let keys: Vec<_> = ids
+            .iter()
+            .map(|id| buckets.entries.get(*id).unwrap().key)
+            .collect();
+        assert_eq!(keys, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn frequency_buckets_debug_snapshot() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.touch(&"a");
+        let snapshot = buckets.debug_snapshot();
+        assert_eq!(snapshot.min_freq, Some(1));
+        assert_eq!(snapshot.entries_len, 2);
+        assert_eq!(snapshot.index_len, 2);
+        assert_eq!(snapshot.buckets.len(), 2);
+    }
+
+    #[test]
+    fn frequency_buckets_touch_capped() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        assert_eq!(buckets.touch_capped(&"a", 2), Some(2));
+        assert_eq!(buckets.touch_capped(&"a", 2), Some(2));
+        assert_eq!(buckets.frequency(&"a"), Some(2));
+    }
+
+    #[test]
+    fn frequency_buckets_decay_halve() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.touch(&"a");
+        buckets.touch(&"a");
+        assert_eq!(buckets.frequency(&"a"), Some(3));
+        buckets.decay_halve();
+        assert_eq!(buckets.frequency(&"a"), Some(1));
+        assert_eq!(buckets.min_freq(), Some(1));
+    }
+
+    #[test]
+    fn frequency_buckets_rebase_min_freq() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.touch(&"a");
+        buckets.touch(&"a");
+        assert_eq!(buckets.frequency(&"a"), Some(3));
+        buckets.remove(&"b");
+        assert_eq!(buckets.min_freq(), Some(3));
+        buckets.rebase_min_freq();
+        assert_eq!(buckets.frequency(&"a"), Some(1));
+        assert_eq!(buckets.min_freq(), Some(1));
+    }
+
+    #[test]
+    fn sharded_frequency_buckets_basic_ops() {
+        let buckets = ShardedFrequencyBuckets::new(2);
+        assert!(buckets.insert("a"));
+        assert!(buckets.insert("b"));
+        assert!(buckets.contains(&"a"));
+        assert_eq!(buckets.touch(&"a"), Some(2));
+        assert_eq!(buckets.frequency(&"a"), Some(2));
+        let peeked = buckets.peek_min();
+        assert!(matches!(peeked, Some(("a", 2)) | Some(("b", 1))));
+        let popped = buckets.pop_min();
+        assert!(matches!(popped, Some(("a", 2)) | Some(("b", 1))));
+        assert_eq!(buckets.len(), 1);
+    }
+
+    #[test]
+    fn frequency_buckets_handle_basic_ops() {
+        let mut buckets = FrequencyBucketsHandle::new();
+        assert!(buckets.insert(1u64));
+        assert!(buckets.insert(2u64));
+        assert!(buckets.contains(&1));
+        assert_eq!(buckets.touch(&1), Some(2));
+        assert_eq!(buckets.frequency(&1), Some(2));
+        let peeked = buckets.peek_min();
+        assert!(matches!(peeked, Some((1, 2)) | Some((2, 1))));
+        let popped = buckets.pop_min();
+        assert!(matches!(popped, Some((1, 2)) | Some((2, 1))));
+        assert_eq!(buckets.len(), 1);
     }
 }

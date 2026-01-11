@@ -88,15 +88,41 @@ impl<T> IntrusiveList<T> {
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
     }
 
+    /// Returns the SlotId at the front (MRU) of the list.
+    pub fn front_id(&self) -> Option<SlotId> {
+        self.head
+    }
+
     /// Returns the value at the back (LRU) of the list.
     pub fn back(&self) -> Option<&T> {
         self.tail
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
     }
 
+    /// Returns the SlotId at the back (LRU) of the list.
+    pub fn back_id(&self) -> Option<SlotId> {
+        self.tail
+    }
+
     /// Returns an iterator from front to back.
     pub fn iter(&self) -> IntrusiveListIter<'_, T> {
         IntrusiveListIter {
+            list: self,
+            current: self.head,
+        }
+    }
+
+    /// Returns an iterator of SlotIds from front to back.
+    pub fn iter_ids(&self) -> IntrusiveListIdIter<'_, T> {
+        IntrusiveListIdIter {
+            list: self,
+            current: self.head,
+        }
+    }
+
+    /// Returns an iterator of `(SlotId, &T)` from front to back.
+    pub fn iter_entries(&self) -> IntrusiveListEntryIter<'_, T> {
+        IntrusiveListEntryIter {
             list: self,
             current: self.head,
         }
@@ -199,6 +225,12 @@ impl<T> IntrusiveList<T> {
         self.arena.clear();
         self.head = None;
         self.tail = None;
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns the list order as SlotIds from head to tail.
+    pub fn debug_snapshot_ids(&self) -> Vec<SlotId> {
+        self.iter_ids().collect()
     }
 
     fn detach(&mut self, id: SlotId) -> Option<()> {
@@ -318,6 +350,40 @@ impl<'a, T> Iterator for IntrusiveListIter<'a, T> {
         let node = self.list.arena.get(id)?;
         self.current = node.next;
         Some(&node.value)
+    }
+}
+
+/// Iterator over SlotIds from front to back.
+pub struct IntrusiveListIdIter<'a, T> {
+    list: &'a IntrusiveList<T>,
+    current: Option<SlotId>,
+}
+
+impl<'a, T> Iterator for IntrusiveListIdIter<'a, T> {
+    type Item = SlotId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.current?;
+        let node = self.list.arena.get(id)?;
+        self.current = node.next;
+        Some(id)
+    }
+}
+
+/// Iterator over `(SlotId, &T)` pairs from front to back.
+pub struct IntrusiveListEntryIter<'a, T> {
+    list: &'a IntrusiveList<T>,
+    current: Option<SlotId>,
+}
+
+impl<'a, T> Iterator for IntrusiveListEntryIter<'a, T> {
+    type Item = (SlotId, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.current?;
+        let node = self.list.arena.get(id)?;
+        self.current = node.next;
+        Some((id, &node.value))
     }
 }
 
@@ -566,6 +632,32 @@ mod tests {
             *value = 20;
         }
         assert_eq!(list.get(id), Some(&20));
+    }
+
+    #[test]
+    fn intrusive_list_id_and_entry_iters() {
+        let mut list = IntrusiveList::new();
+        let a = list.push_back("a");
+        let b = list.push_back("b");
+        let c = list.push_back("c");
+
+        assert_eq!(list.front_id(), Some(a));
+        assert_eq!(list.back_id(), Some(c));
+
+        let ids: Vec<_> = list.iter_ids().collect();
+        assert_eq!(ids, vec![a, b, c]);
+
+        let entries: Vec<_> = list.iter_entries().map(|(id, v)| (id, *v)).collect();
+        assert_eq!(entries, vec![(a, "a"), (b, "b"), (c, "c")]);
+    }
+
+    #[test]
+    fn intrusive_list_debug_snapshot_ids() {
+        let mut list = IntrusiveList::new();
+        let a = list.push_back(1);
+        let b = list.push_back(2);
+        let c = list.push_back(3);
+        assert_eq!(list.debug_snapshot_ids(), vec![a, b, c]);
     }
 
     #[test]
