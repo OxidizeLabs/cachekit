@@ -11,18 +11,23 @@
 //!   │                          LFUCache<K, V>                                  │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  HashMap<K, (V, usize)>                                            │ │
+//!   │   │  HashMap<K, usize> + Slot<K> (freq + list links)                   │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────┬───────────────────────────────────────────────────┐   │ │
-//!   │   │  │   Key   │  (Value, Frequency)                               │   │ │
+//!   │   │  │   Key   │  (Frequency)                                      │   │ │
 //!   │   │  ├─────────┼───────────────────────────────────────────────────┤   │ │
-//!   │   │  │ page_1  │  (data, 15)  ← Hot: accessed frequently           │   │ │
-//!   │   │  │ page_2  │  (data,  3)  ← Warm: moderate accesses            │   │ │
-//!   │   │  │ page_3  │  (data,  1)  ← Cold: single access (LFU victim)   │   │ │
-//!   │   │  │ page_4  │  (data,  7)  ← Warm: moderate accesses            │   │ │
+//!   │   │  │ page_1  │  15  ← Hot: accessed frequently                   │   │ │
+//!   │   │  │ page_2  │   3  ← Warm: moderate accesses                    │   │ │
+//!   │   │  │ page_3  │   1  ← Cold: single access (LFU victim)           │   │ │
+//!   │   │  │ page_4  │   7  ← Warm: moderate accesses                    │   │ │
 //!   │   │  └─────────┴───────────────────────────────────────────────────┘   │ │
 //!   │   │                                                                    │ │
 //!   │   │  Eviction: O(1) bucket pop using min_freq                           │ │
+//!   │   └────────────────────────────────────────────────────────────────────┘ │
+//!   │                                                                          │
+//!   │   ┌────────────────────────────────────────────────────────────────────┐ │
+//!   │   │  HashMapStore<K, V> (values live here)                             │ │
+//!   │   │  K -> Arc<V>                                                       │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   capacity: usize  (maximum entries)                                     │
@@ -121,7 +126,7 @@
 //! | `LFUCache<K, V>` | Main cache struct                                  |
 //! | `index`          | `HashMap<K, usize>` to slot indices                |
 //! | `freq_lists`     | Per-frequency LRU lists                            |
-//! | `capacity`       | Maximum number of entries                          |
+//! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //!
 //! ## Core Operations (CoreCache + MutableCache)
 //!
@@ -150,12 +155,12 @@
 //!
 //! | Operation              | Time       | Notes                              |
 //! |------------------------|------------|------------------------------------|
-//! | `get`                  | O(1)       | HashMap lookup + freq increment    |
-//! | `insert` (no eviction) | O(1)       | HashMap insert                     |
+//! | `get`                  | O(1)       | Index lookup + freq increment      |
+//! | `insert` (no eviction) | O(1)       | Index insert + store insert        |
 //! | `insert` (eviction)    | O(1)       | Bucket pop via min_freq            |
 //! | `pop_lfu`              | O(1)       | Bucket pop via min_freq            |
 //! | `peek_lfu`             | O(1)       | Tail lookup in min_freq bucket     |
-//! | Per-entry overhead     | ~24 bytes  | Key + value + usize + HashMap      |
+//! | Per-entry overhead     | ~24 bytes  | Key + freq + index + store entry   |
 //!
 //! ## Trade-offs
 //!
@@ -163,7 +168,7 @@
 //! |------------------|-----------------------------------|---------------------------------|
 //! | Hot Item Retain  | Keeps frequently accessed items   | Cold start problem              |
 //! | Eviction Quality | Good for stable access patterns   | O(1) eviction                    |
-//! | Memory           | Single HashMap, simple structure  | No frequency decay/aging        |
+//! | Memory           | Store + index, simple structure   | No frequency decay/aging        |
 //! | Simplicity       | Easy to understand and debug      | Non-deterministic tie-breaking  |
 //!
 //! ## Limitations
@@ -255,10 +260,11 @@
 //! - **Key Clone Requirement**: Keys must be `Clone` for O(1) indexing
 //! - **Zero Capacity**: Supported - rejects all insertions
 //! - **Frequency Overflow**: Theoretically possible at `usize::MAX` accesses
-//! - **Single HashMap**: Reduces allocations vs. separate frequency tracking
+//! - **Store + Index**: Values live in the store; slots track frequency and order
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::Arc;
 
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LfuMetrics;
@@ -268,18 +274,19 @@ use crate::metrics::snapshot::LfuMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, LfuMetricsReadRecorder, LfuMetricsRecorder, MetricsSnapshotProvider,
 };
+use crate::store::hashmap::HashMapStore;
+use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 
 #[derive(Debug)]
-struct Entry<K, V> {
+struct Entry<K> {
     key: K,
-    value: V,
     freq: u64,
 }
 
 #[derive(Debug)]
-struct Slot<K, V> {
-    entry: Option<Entry<K, V>>,
+struct Slot<K> {
+    entry: Option<Entry<K>>,
     prev: Option<usize>,
     next: Option<usize>,
 }
@@ -305,9 +312,10 @@ impl FreqList {
 pub struct LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+    V: Clone,
 {
-    capacity: usize,
-    slots: Vec<Slot<K, V>>,
+    store: HashMapStore<K, V>,
+    slots: Vec<Slot<K>>,
     free_list: Vec<usize>,
     index: HashMap<K, usize>,
     freq_lists: HashMap<u64, FreqList>,
@@ -319,10 +327,11 @@ where
 impl<K, V> LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+    V: Clone,
 {
     pub fn new(capacity: usize) -> Self {
         LFUCache {
-            capacity,
+            store: HashMapStore::new(capacity),
             slots: Vec::with_capacity(capacity),
             free_list: Vec::new(),
             index: HashMap::with_capacity(capacity),
@@ -333,7 +342,7 @@ where
         }
     }
 
-    fn allocate_slot(&mut self, entry: Entry<K, V>) -> usize {
+    fn allocate_slot(&mut self, entry: Entry<K>) -> usize {
         if let Some(idx) = self.free_list.pop() {
             self.slots[idx] = Slot {
                 entry: Some(entry),
@@ -351,7 +360,7 @@ where
         }
     }
 
-    fn remove_slot(&mut self, idx: usize) -> Entry<K, V> {
+    fn remove_slot(&mut self, idx: usize) -> Entry<K> {
         let entry = self.slots[idx].entry.take().expect("lfu entry missing");
         self.slots[idx].prev = None;
         self.slots[idx].next = None;
@@ -359,7 +368,7 @@ where
         entry
     }
 
-    fn list_push_front(slots: &mut [Slot<K, V>], list: &mut FreqList, idx: usize) {
+    fn list_push_front(slots: &mut [Slot<K>], list: &mut FreqList, idx: usize) {
         let old_head = list.head;
         slots[idx].prev = None;
         slots[idx].next = old_head;
@@ -372,7 +381,7 @@ where
         list.len += 1;
     }
 
-    fn list_remove(slots: &mut [Slot<K, V>], list: &mut FreqList, idx: usize) {
+    fn list_remove(slots: &mut [Slot<K>], list: &mut FreqList, idx: usize) {
         let prev = slots[idx].prev;
         let next = slots[idx].next;
         if let Some(prev_idx) = prev {
@@ -390,7 +399,7 @@ where
         list.len = list.len.saturating_sub(1);
     }
 
-    fn list_pop_back(slots: &mut [Slot<K, V>], list: &mut FreqList) -> Option<usize> {
+    fn list_pop_back(slots: &mut [Slot<K>], list: &mut FreqList) -> Option<usize> {
         let idx = list.tail?;
         Self::list_remove(slots, list, idx);
         Some(idx)
@@ -473,7 +482,9 @@ where
 
         let entry = self.remove_slot(idx);
         self.index.remove(&entry.key);
-        Some((entry.key, entry.value))
+        self.store.record_eviction();
+        let value = self.store.remove(&entry.key).map(|arc| (*arc).clone())?;
+        Some((entry.key, value))
     }
 }
 
@@ -481,32 +492,33 @@ where
 impl<K, V> CoreCache<K, V> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+    V: Clone,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        if let Some(&idx) = self.index.get(&key) {
+        if self.index.contains_key(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            let entry = self
-                .slots
-                .get_mut(idx)
-                .and_then(|slot| slot.entry.as_mut())
-                .expect("lfu entry missing");
-            return Some(std::mem::replace(&mut entry.value, value));
+            return self
+                .store
+                .try_insert(key, Arc::new(value))
+                .ok()
+                .flatten()
+                .map(|arc| (*arc).clone());
         }
 
         // Handle zero capacity case - reject all new insertions
-        if self.capacity == 0 {
+        if self.store.capacity() == 0 {
             return None;
         }
 
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_new();
 
-        if self.index.len() >= self.capacity {
+        if self.index.len() >= self.store.capacity() {
             #[cfg(feature = "metrics")]
             self.metrics.record_evict_call();
 
@@ -516,9 +528,12 @@ where
             }
         }
 
+        if self.store.try_insert(key.clone(), Arc::new(value)).is_err() {
+            return None;
+        }
+
         let entry = Entry {
             key: key.clone(),
-            value,
             freq: 1,
         };
         let idx = self.allocate_slot(entry);
@@ -536,6 +551,7 @@ where
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
+                let _ = self.store.get_ref(key);
                 return None;
             },
         };
@@ -551,24 +567,25 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        self.slots[idx].entry.as_ref().map(|entry| &entry.value)
+        self.store.get_ref(key).map(|value| value.as_ref())
     }
 
     fn contains(&self, key: &K) -> bool {
-        self.index.contains_key(key)
+        self.store.contains(key)
     }
 
     fn len(&self) -> usize {
-        self.index.len()
+        self.store.len()
     }
 
     fn capacity(&self) -> usize {
-        self.capacity
+        self.store.capacity()
     }
 
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
+        self.store.clear();
         self.index.clear();
         self.freq_lists.clear();
         self.slots.clear();
@@ -580,6 +597,7 @@ where
 impl<K, V> MutableCache<K, V> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+    V: Clone,
 {
     fn remove(&mut self, key: &K) -> Option<V> {
         let idx = self.index.remove(key)?;
@@ -604,13 +622,14 @@ where
         }
 
         let entry = self.remove_slot(idx);
-        Some(entry.value)
+        self.store.remove(&entry.key).map(|arc| (*arc).clone())
     }
 }
 
 impl<K, V> LFUCacheTrait<K, V> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+    V: Clone,
 {
     fn pop_lfu(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
@@ -633,11 +652,12 @@ where
         let min_freq = self.min_freq;
         let idx = self.freq_lists.get(&min_freq).and_then(|list| list.tail)?;
         let entry = self.slots[idx].entry.as_ref()?;
+        let value = self.store.peek_ref(&entry.key)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_found();
 
-        Some((&entry.key, &entry.value))
+        Some((&entry.key, value.as_ref()))
     }
 
     fn frequency(&self, key: &K) -> Option<u64> {
@@ -700,6 +720,7 @@ where
 impl<K, V> LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+    V: Clone,
 {
     pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
         LfuMetricsSnapshot {
@@ -721,8 +742,8 @@ where
             reset_frequency_found: self.metrics.reset_frequency_found,
             increment_frequency_calls: self.metrics.increment_frequency_calls,
             increment_frequency_found: self.metrics.increment_frequency_found,
-            cache_len: self.index.len(),
-            capacity: self.capacity,
+            cache_len: self.store.len(),
+            capacity: self.store.capacity(),
         }
     }
 }
@@ -731,6 +752,7 @@ where
 impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUCache<K, V>
 where
     K: Eq + Hash + Clone,
+    V: Clone,
 {
     fn snapshot(&self) -> LfuMetricsSnapshot {
         self.metrics_snapshot()
