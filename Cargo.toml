@@ -25,3 +25,11 @@ criterion = "0.8"
 [[bench]]
 name = "fifo"
 harness = false
+
+[[bench]]
+name = "lru"
+harness = false
+
+[[bench]]
+name = "lfu"
+harness = false
