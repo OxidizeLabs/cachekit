@@ -11,17 +11,22 @@
 //!   │                          LRUKCache<K, V>                                 │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  HashMap<K, (V, VecDeque<u64>)>                                    │ │
+//!   │   │  HashMap<K, usize> + Slot<K> (history + segment)                   │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────┬───────────────────────────────────────────────────┐   │ │
-//!   │   │  │   Key   │  (Value, Access History)                          │   │ │
+//!   │   │  │   Key   │  Access History + Segment                         │   │ │
 //!   │   │  ├─────────┼───────────────────────────────────────────────────┤   │ │
-//!   │   │  │ page_1  │  (data, [t₁, t₅, t₉])  ← 3 accesses, K=3          │   │ │
-//!   │   │  │ page_2  │  (data, [t₃])          ← 1 access (< K)           │   │ │
-//!   │   │  │ page_3  │  (data, [t₂, t₇])      ← 2 accesses (< K if K=3)  │   │ │
+//!   │   │  │ page_1  │  [t₁, t₅, t₉], cold/hot                           │   │ │
+//!   │   │  │ page_2  │  [t₃], cold                                      │   │ │
+//!   │   │  │ page_3  │  [t₂, t₇], cold/hot                               │   │ │
 //!   │   │  └─────────┴───────────────────────────────────────────────────┘   │ │
 //!   │   │                                                                    │ │
 //!   │   │  VecDeque stores last K timestamps (microseconds since epoch)      │ │
+//!   │   └────────────────────────────────────────────────────────────────────┘ │
+//!   │                                                                          │
+//!   │   ┌────────────────────────────────────────────────────────────────────┐ │
+//!   │   │  HashMapStore<K, V> (values live here)                             │ │
+//!   │   │  K -> Arc<V>                                                       │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   Configuration:                                                         │
@@ -105,10 +110,10 @@
 //!
 //! | Component        | Description                                        |
 //! |------------------|----------------------------------------------------|
-//! | `LRUKCache<K,V>` | Main cache struct with capacity and K value        |
+//! | `LRUKCache<K,V>` | Main cache struct with store + K value             |
 //! | `index`          | `HashMap<K, usize>` to slot indices                |
 //! | `cold`/`hot`      | Segmented LRU lists (<K and >=K accesses)          |
-//! | `capacity`       | Maximum number of entries                          |
+//! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!
 //! ## Core Operations (CoreCache + MutableCache + LRUKCacheTrait)
@@ -142,7 +147,7 @@
 //!
 //! | Operation              | Time       | Notes                              |
 //! |------------------------|------------|------------------------------------|
-//! | `get`, `insert` (hit)  | O(1)       | HashMap lookup + VecDeque update   |
+//! | `get`, `insert` (hit)  | O(1)       | Index lookup + VecDeque update     |
 //! | `insert` (eviction)    | O(1)       | Bucketed by cold/hot lists         |
 //! | `pop_lru_k`            | O(1)       | Tail lookup on cold/hot list       |
 //! | `peek_lru_k`           | O(1)       | Tail lookup on cold/hot list       |
@@ -257,6 +262,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
+use std::sync::Arc;
 
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LruKMetrics;
@@ -267,6 +273,8 @@ use crate::metrics::traits::{
     CoreMetricsRecorder, LruKMetricsReadRecorder, LruKMetricsRecorder, LruMetricsRecorder,
     MetricsSnapshotProvider,
 };
+use crate::store::hashmap::HashMapStore;
+use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{CoreCache, LRUKCacheTrait, MutableCache};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -276,16 +284,15 @@ enum Segment {
 }
 
 #[derive(Debug)]
-struct Entry<K, V> {
+struct Entry<K> {
     key: K,
-    value: V,
     history: VecDeque<u64>,
     segment: Segment,
 }
 
 #[derive(Debug)]
-struct Slot<K, V> {
-    entry: Option<Entry<K, V>>,
+struct Slot<K> {
+    entry: Option<Entry<K>>,
     prev: Option<usize>,
     next: Option<usize>,
 }
@@ -310,11 +317,10 @@ impl LruList {
 pub struct LRUKCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Clone,
 {
-    capacity: usize,
     k: usize,
-    slots: Vec<Slot<K, V>>,
+    store: HashMapStore<K, V>,
+    slots: Vec<Slot<K>>,
     free_list: Vec<usize>,
     index: HashMap<K, usize>,
     cold: LruList,
@@ -338,8 +344,8 @@ where
     pub fn with_k(capacity: usize, k: usize) -> Self {
         let k = k.max(1);
         LRUKCache {
-            capacity,
             k,
+            store: HashMapStore::new(capacity),
             slots: Vec::with_capacity(capacity),
             free_list: Vec::new(),
             index: HashMap::with_capacity(capacity),
@@ -351,7 +357,7 @@ where
         }
     }
 
-    fn allocate_slot(&mut self, entry: Entry<K, V>) -> usize {
+    fn allocate_slot(&mut self, entry: Entry<K>) -> usize {
         if let Some(idx) = self.free_list.pop() {
             self.slots[idx] = Slot {
                 entry: Some(entry),
@@ -369,7 +375,7 @@ where
         }
     }
 
-    fn remove_slot(&mut self, idx: usize) -> Entry<K, V> {
+    fn remove_slot(&mut self, idx: usize) -> Entry<K> {
         let entry = self.slots[idx].entry.take().expect("lru-k entry missing");
         self.slots[idx].prev = None;
         self.slots[idx].next = None;
@@ -377,7 +383,7 @@ where
         entry
     }
 
-    fn list_push_front(slots: &mut [Slot<K, V>], list: &mut LruList, idx: usize) {
+    fn list_push_front(slots: &mut [Slot<K>], list: &mut LruList, idx: usize) {
         let old_head = list.head;
         slots[idx].prev = None;
         slots[idx].next = old_head;
@@ -390,7 +396,7 @@ where
         list.len += 1;
     }
 
-    fn list_remove(slots: &mut [Slot<K, V>], list: &mut LruList, idx: usize) {
+    fn list_remove(slots: &mut [Slot<K>], list: &mut LruList, idx: usize) {
         let prev = slots[idx].prev;
         let next = slots[idx].next;
         if let Some(prev_idx) = prev {
@@ -408,7 +414,7 @@ where
         list.len = list.len.saturating_sub(1);
     }
 
-    fn list_pop_back(slots: &mut [Slot<K, V>], list: &mut LruList) -> Option<usize> {
+    fn list_pop_back(slots: &mut [Slot<K>], list: &mut LruList) -> Option<usize> {
         let idx = list.tail?;
         Self::list_remove(slots, list, idx);
         Some(idx)
@@ -469,7 +475,9 @@ where
 
         let entry = self.remove_slot(idx);
         self.index.remove(&entry.key);
-        Some((entry.key, entry.value))
+        self.store.record_eviction();
+        let value = self.store.remove(&entry.key).map(|arc| (*arc).clone())?;
+        Some((entry.key, value))
     }
 
     fn peek_candidate(&self) -> Option<usize> {
@@ -491,7 +499,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        if self.capacity == 0 {
+        if self.store.capacity() == 0 {
             return None;
         }
 
@@ -499,22 +507,24 @@ where
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            let old_value = {
-                let entry = self.slots[idx].entry.as_mut().expect("lru-k entry missing");
-                std::mem::replace(&mut entry.value, value)
-            };
+            let old_value = self
+                .store
+                .try_insert(key.clone(), Arc::new(value))
+                .ok()
+                .flatten()
+                .map(|arc| (*arc).clone());
 
             self.record_access(idx);
             self.promote_if_needed(idx);
             self.move_hot_to_front(idx);
 
-            return Some(old_value);
+            return old_value;
         }
 
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_new();
 
-        if self.index.len() >= self.capacity && !self.index.is_empty() {
+        if self.index.len() >= self.store.capacity() && !self.index.is_empty() {
             #[cfg(feature = "metrics")]
             self.metrics.record_evict_call();
 
@@ -527,9 +537,12 @@ where
         self.tick = self.tick.saturating_add(1);
         let mut history = VecDeque::with_capacity(self.k);
         history.push_back(self.tick);
+        if self.store.try_insert(key.clone(), Arc::new(value)).is_err() {
+            return None;
+        }
+
         let entry = Entry {
             key: key.clone(),
-            value,
             history,
             segment: Segment::Cold,
         };
@@ -546,6 +559,7 @@ where
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
+                let _ = self.store.get_ref(key);
                 return None;
             },
         };
@@ -557,24 +571,25 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        self.slots[idx].entry.as_ref().map(|entry| &entry.value)
+        self.store.get_ref(key).map(|value| value.as_ref())
     }
 
     fn contains(&self, key: &K) -> bool {
-        self.index.contains_key(key)
+        self.store.contains(key)
     }
 
     fn len(&self) -> usize {
-        self.index.len()
+        self.store.len()
     }
 
     fn capacity(&self) -> usize {
-        self.capacity
+        self.store.capacity()
     }
 
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
+        self.store.clear();
         self.index.clear();
         self.slots.clear();
         self.free_list.clear();
@@ -602,7 +617,7 @@ where
             Self::list_remove(&mut self.slots, &mut self.hot, idx);
         }
         let entry = self.remove_slot(idx);
-        Some(entry.value)
+        self.store.remove(&entry.key).map(|arc| (*arc).clone())
     }
 }
 
@@ -631,11 +646,12 @@ where
 
         let idx = self.peek_candidate()?;
         let entry = self.slots[idx].entry.as_ref()?;
+        let value = self.store.peek_ref(&entry.key)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_k_found();
 
-        Some((&entry.key, &entry.value))
+        Some((&entry.key, value.as_ref()))
     }
 
     fn k_value(&self) -> usize {
@@ -799,8 +815,8 @@ where
             k_distance_rank_calls: self.metrics.k_distance_rank_calls.get(),
             k_distance_rank_found: self.metrics.k_distance_rank_found.get(),
             k_distance_rank_scan_steps: self.metrics.k_distance_rank_scan_steps.get(),
-            cache_len: self.index.len(),
-            capacity: self.capacity,
+            cache_len: self.store.len(),
+            capacity: self.store.capacity(),
         }
     }
 }
