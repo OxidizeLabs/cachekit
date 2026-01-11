@@ -129,6 +129,14 @@ where
         }
     }
 
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_validate_invariants(&self) {
+        assert_eq!(self.len(), self.scores.len());
+        if self.is_empty() {
+            assert!(self.scores.is_empty());
+        }
+    }
+
     fn push_entry(&mut self, key: K, score: S) {
         let entry = HeapEntry {
             score,
@@ -249,5 +257,14 @@ mod tests {
         heap.maybe_rebuild(1);
         assert_eq!(heap.heap_len(), heap.len());
         assert_eq!(heap.pop_best(), Some(("a", 1)));
+    }
+
+    #[test]
+    fn lazy_heap_debug_invariants_hold() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 2);
+        heap.update("b", 1);
+        heap.remove(&"b");
+        heap.debug_validate_invariants();
     }
 }

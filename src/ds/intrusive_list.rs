@@ -217,6 +217,41 @@ impl<T> IntrusiveList<T> {
         self.tail = Some(id);
         Some(())
     }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_validate_invariants(&self) {
+        if self.head.is_none() || self.tail.is_none() {
+            assert!(self.head.is_none());
+            assert!(self.tail.is_none());
+            assert_eq!(self.len(), 0);
+            return;
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut count = 0usize;
+        let mut current = self.head;
+        let mut prev = None;
+
+        while let Some(id) = current {
+            assert!(seen.insert(id));
+            let node = self.arena.get(id).expect("node missing");
+            assert_eq!(node.prev, prev);
+            if let Some(next_id) = node.next {
+                let next_node = self.arena.get(next_id).expect("next node missing");
+                assert_eq!(next_node.prev, Some(id));
+            } else {
+                assert_eq!(self.tail, Some(id));
+            }
+
+            prev = Some(id);
+            current = node.next;
+            count += 1;
+            assert!(count <= self.len());
+        }
+
+        assert_eq!(count, self.len());
+        assert_eq!(self.arena.len(), self.len());
+    }
 }
 
 pub struct IntrusiveListIter<'a, T> {
@@ -481,5 +516,17 @@ mod tests {
         assert_eq!(list.back_with(|v| *v), None);
         assert!(!list.contains(a));
         assert!(!list.contains(b));
+    }
+
+    #[test]
+    fn intrusive_list_debug_invariants_hold() {
+        let mut list = IntrusiveList::new();
+        let a = list.push_back(1);
+        let b = list.push_back(2);
+        let c = list.push_back(3);
+        list.move_to_front(b);
+        list.remove(a);
+        list.remove(c);
+        list.debug_validate_invariants();
     }
 }

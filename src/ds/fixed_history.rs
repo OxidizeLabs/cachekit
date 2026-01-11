@@ -54,6 +54,17 @@ impl<const K: usize> FixedHistory<K> {
             .filter_map(|k| self.kth_most_recent(k))
             .collect()
     }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_validate_invariants(&self) {
+        assert!(self.len <= K);
+        if K == 0 {
+            assert_eq!(self.len, 0);
+            assert_eq!(self.cursor, 0);
+        } else {
+            assert!(self.cursor < K);
+        }
+    }
 }
 
 impl<const K: usize> Default for FixedHistory<K> {
@@ -124,5 +135,14 @@ mod tests {
         assert_eq!(history.kth_most_recent(1), Some(6));
         assert_eq!(history.kth_most_recent(2), Some(5));
         assert_eq!(history.kth_most_recent(3), Some(4));
+    }
+
+    #[test]
+    fn fixed_history_debug_invariants_hold() {
+        let mut history = FixedHistory::<2>::new();
+        history.record(1);
+        history.record(2);
+        history.record(3);
+        history.debug_validate_invariants();
     }
 }

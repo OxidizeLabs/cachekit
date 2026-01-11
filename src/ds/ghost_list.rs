@@ -72,6 +72,18 @@ where
         self.list.clear();
         self.index.clear();
     }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_validate_invariants(&self) {
+        assert_eq!(self.list.len(), self.index.len());
+        assert!(self.list.len() <= self.capacity);
+        if self.capacity == 0 {
+            assert!(self.list.is_empty());
+        }
+        for &id in self.index.values() {
+            assert!(self.list.contains(id));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -148,5 +160,14 @@ mod tests {
         assert_eq!(ghost.len(), 0);
         assert!(!ghost.contains(&"a"));
         assert!(!ghost.contains(&"b"));
+    }
+
+    #[test]
+    fn ghost_list_debug_invariants_hold() {
+        let mut ghost = GhostList::new(2);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("a");
+        ghost.debug_validate_invariants();
     }
 }

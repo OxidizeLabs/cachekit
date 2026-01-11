@@ -135,6 +135,27 @@ where
             self.hand = (self.hand + 1) % cap;
         }
     }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_validate_invariants(&self) {
+        let slot_count = self.slots.iter().filter(|slot| slot.is_some()).count();
+        assert_eq!(self.len, slot_count);
+        assert_eq!(self.len, self.index.len());
+
+        if self.capacity() == 0 {
+            assert_eq!(self.hand, 0);
+        } else {
+            assert!(self.hand < self.capacity());
+        }
+
+        for (key, &idx) in &self.index {
+            assert!(idx < self.slots.len());
+            let entry = self.slots[idx]
+                .as_ref()
+                .expect("index points to empty slot");
+            assert!(&entry.key == key);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -260,5 +281,16 @@ mod tests {
         ));
         assert_eq!(ring.len(), 2);
         assert!(ring.contains(&"d"));
+    }
+
+    #[test]
+    fn clock_ring_debug_invariants_hold() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.get(&"a");
+        ring.insert("c", 3);
+        ring.remove(&"b");
+        ring.debug_validate_invariants();
     }
 }

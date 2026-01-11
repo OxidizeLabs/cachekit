@@ -90,6 +90,22 @@ impl<T> SlotArena<T> {
             .enumerate()
             .filter_map(|(idx, slot)| slot.as_ref().map(|value| (SlotId(idx), value)))
     }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_validate_invariants(&self) {
+        let live_count = self.slots.iter().filter(|slot| slot.is_some()).count();
+        assert_eq!(self.len, live_count);
+        assert!(self.len <= self.slots.len());
+
+        let mut seen_free = std::collections::HashSet::new();
+        for &idx in &self.free_list {
+            assert!(idx < self.slots.len());
+            assert!(self.slots[idx].is_none());
+            assert!(seen_free.insert(idx));
+        }
+
+        assert_eq!(self.slots.len(), self.free_list.len() + self.len);
+    }
 }
 
 impl<T> Default for SlotArena<T> {
@@ -284,5 +300,16 @@ mod tests {
         let id = arena.insert(5);
         arena.get_mut_with(id, |v| *v = 10);
         assert_eq!(arena.get_with(id, |v| *v), Some(10));
+    }
+
+    #[test]
+    fn slot_arena_debug_invariants_hold() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+        arena.remove(a);
+        let _ = arena.insert(3);
+        assert!(arena.contains(b));
+        arena.debug_validate_invariants();
     }
 }

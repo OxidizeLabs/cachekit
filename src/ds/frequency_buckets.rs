@@ -468,4 +468,15 @@ mod tests {
         assert_eq!(buckets.pop_min(), None);
         assert_eq!(buckets.peek_min(), None);
     }
+
+    #[test]
+    fn frequency_buckets_debug_invariants_hold() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.touch(&"a");
+        buckets.touch(&"a");
+        buckets.remove(&"b");
+        buckets.debug_validate_invariants();
+    }
 }
