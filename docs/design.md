@@ -118,6 +118,11 @@ Design in layers:
 - Policy layer: LRU, FIFO, Clock, ARC, etc; only manipulates metadata and ordering.
 - Integration layer: ties DB pages, tuples, or segments into cache entries.
 
+Related docs:
+- Policy summaries: `docs/policies.md`
+- Policy implementations: `docs/policies/README.md`
+- Policy data structures: `docs/policy-ds/README.md`
+
 This makes:
 - Benchmarking easier.
 - Policy experimentation cheap.
