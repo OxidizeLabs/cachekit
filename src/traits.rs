@@ -94,7 +94,7 @@
 //! | `LFUCacheTrait`      | `MutableCache`  | LFU-specific with frequency tracking |
 //! | `LRUKCacheTrait`     | `MutableCache`  | LRU-K with K-distance tracking       |
 //! | `ConcurrentCache`    | `Send + Sync`   | Marker for thread-safe caches        |
-//! | `CacheStats`         | -               | Hit ratio and monitoring             |
+//! | -                    | -               | -                                    |
 //! | `CacheTierManager`   | -               | Multi-tier cache management          |
 //! | `CacheFactory`       | -               | Cache instance creation              |
 //! | `AsyncCacheFuture`   | `Send + Sync`   | Future async operation support       |
@@ -141,17 +141,6 @@
 //!   │   Marker trait: Send + Sync                                             │
 //!   │   Purpose: Guarantee thread-safe cache implementations                  │
 //!   │   Usage: fn use_cache<C: CoreCache<K, V> + ConcurrentCache>(c: &C)      │
-//!   └─────────────────────────────────────────────────────────────────────────┘
-//!
-//!   ┌─────────────────────────────────────────────────────────────────────────┐
-//!   │ CacheStats                                                              │
-//!   │                                                                         │
-//!   │   hit_ratio()      → f64   (0.0 to 1.0)                                 │
-//!   │   total_gets()     → u64                                                │
-//!   │   total_hits()     → u64                                                │
-//!   │   total_misses()   → u64   (default: gets - hits)                       │
-//!   │   total_evictions()→ u64                                                │
-//!   │   reset_stats()                                                         │
 //!   └─────────────────────────────────────────────────────────────────────────┘
 //!
 //! ```
@@ -393,29 +382,6 @@ pub trait LRUKCacheTrait<K, V>: MutableCache<K, V> {
 /// Implementors guarantee thread-safe operations
 pub trait ConcurrentCache: Send + Sync {}
 
-/// Statistics and monitoring capabilities
-pub trait CacheStats {
-    /// Cache hit ratio (0.0 to 1.0)
-    fn hit_ratio(&self) -> f64;
-
-    /// Total number of get operations
-    fn total_gets(&self) -> u64;
-
-    /// Total number of cache hits
-    fn total_hits(&self) -> u64;
-
-    /// Total number of cache misses
-    fn total_misses(&self) -> u64 {
-        self.total_gets().saturating_sub(self.total_hits())
-    }
-
-    /// Total number of evictions
-    fn total_evictions(&self) -> u64;
-
-    /// Reset all statistics
-    fn reset_stats(&mut self);
-}
-
 /// High-level cache tier management
 pub trait CacheTierManager<K, V> {
     type HotCache: LRUCacheTrait<K, V> + ConcurrentCache;
@@ -587,88 +553,6 @@ mod tests {
         assert_eq!(config.capacity, 500);
         assert!(config.enable_stats);
         assert!(config.prealloc_memory); // from default
-    }
-
-    struct MockStats {
-        gets: u64,
-        hits: u64,
-        evictions: u64,
-    }
-
-    impl CacheStats for MockStats {
-        fn hit_ratio(&self) -> f64 {
-            debug_assert!(
-                self.hits <= self.gets,
-                "total_hits cannot exceed total_gets"
-            );
-            if self.gets == 0 {
-                0.0
-            } else {
-                self.hits as f64 / self.gets as f64
-            }
-        }
-
-        fn total_gets(&self) -> u64 {
-            self.gets
-        }
-
-        fn total_hits(&self) -> u64 {
-            self.hits
-        }
-
-        fn total_misses(&self) -> u64 {
-            debug_assert!(
-                self.hits <= self.gets,
-                "total_hits cannot exceed total_gets"
-            );
-            self.total_gets().saturating_sub(self.total_hits())
-        }
-
-        fn total_evictions(&self) -> u64 {
-            self.evictions
-        }
-
-        fn reset_stats(&mut self) {
-            self.gets = 0;
-            self.hits = 0;
-            self.evictions = 0;
-        }
-    }
-
-    #[test]
-    fn test_cache_stats_total_misses_clamps() {
-        let stats = MockStats {
-            gets: 5,
-            hits: 3,
-            evictions: 0,
-        };
-
-        assert_eq!(stats.total_misses(), 2);
-    }
-
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn test_cache_stats_total_misses_clamps_invalid_counts() {
-        let stats = MockStats {
-            gets: 1,
-            hits: 2,
-            evictions: 0,
-        };
-
-        assert_eq!(stats.total_misses(), 0);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "total_hits cannot exceed total_gets")]
-    fn test_cache_stats_total_misses_debug_asserts_invalid_counts() {
-        let stats = MockStats {
-            gets: 1,
-            hits: 2,
-            evictions: 0,
-        };
-
-        let _ = stats.total_misses();
     }
 
     #[test]

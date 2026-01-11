@@ -4,6 +4,7 @@
 
 pub mod manager;
 pub mod policy;
+pub mod store;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
