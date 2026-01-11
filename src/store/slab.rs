@@ -1,8 +1,10 @@
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use parking_lot::RwLock;
 
 use crate::store::traits::{StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut};
 
@@ -87,53 +89,91 @@ impl<V> ValueModel<V> for OwnedValue {
 
 #[derive(Debug, Default)]
 struct StoreCounters {
-    hits: Cell<u64>,
-    misses: Cell<u64>,
-    inserts: Cell<u64>,
-    updates: Cell<u64>,
-    removes: Cell<u64>,
-    evictions: Cell<u64>,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    inserts: AtomicU64,
+    updates: AtomicU64,
+    removes: AtomicU64,
+    evictions: AtomicU64,
 }
 
 impl StoreCounters {
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
-            hits: self.hits.get(),
-            misses: self.misses.get(),
-            inserts: self.inserts.get(),
-            updates: self.updates.get(),
-            removes: self.removes.get(),
-            evictions: self.evictions.get(),
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            inserts: self.inserts.load(Ordering::Relaxed),
+            updates: self.updates.load(Ordering::Relaxed),
+            removes: self.removes.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
         }
     }
 
     fn inc_hit(&self) {
-        self.hits.set(self.hits.get() + 1);
+        self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
     fn inc_miss(&self) {
-        self.misses.set(self.misses.get() + 1);
+        self.misses.fetch_add(1, Ordering::Relaxed);
     }
 
     fn inc_insert(&self) {
-        self.inserts.set(self.inserts.get() + 1);
+        self.inserts.fetch_add(1, Ordering::Relaxed);
     }
 
     fn inc_update(&self) {
-        self.updates.set(self.updates.get() + 1);
+        self.updates.fetch_add(1, Ordering::Relaxed);
     }
 
     fn inc_remove(&self) {
-        self.removes.set(self.removes.get() + 1);
+        self.removes.fetch_add(1, Ordering::Relaxed);
     }
 
     fn inc_eviction(&self) {
-        self.evictions.set(self.evictions.get() + 1);
+        self.evictions.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 pub type SharedSlabStore<K, V> = SlabStore<K, V, SharedValue>;
 pub type OwnedSlabStore<K, V> = SlabStore<K, V, OwnedValue>;
+
+/// Concurrent slab-backed store using a `parking_lot::RwLock`.
+#[derive(Debug)]
+pub struct ConcurrentSlabStore<K, V> {
+    inner: RwLock<SlabStore<K, V, SharedValue>>,
+}
+
+impl<K, V> ConcurrentSlabStore<K, V>
+where
+    K: Eq + Hash,
+{
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: RwLock::new(SlabStore::new(capacity)),
+        }
+    }
+
+    /// Return the EntryId for a key if it exists.
+    pub fn entry_id(&self, key: &K) -> Option<EntryId> {
+        let store = self.inner.read();
+        store.entry_id(key)
+    }
+
+    /// Fetch a value by EntryId.
+    pub fn get_by_id(&self, id: EntryId) -> Option<Arc<V>> {
+        let store = self.inner.read();
+        store.get_by_id(id)
+    }
+
+    /// Fetch a key by EntryId.
+    pub fn key_by_id(&self, id: EntryId) -> Option<K>
+    where
+        K: Clone,
+    {
+        let store = self.inner.read();
+        store.key_by_id(id).cloned()
+    }
+}
 
 /// Slab-backed store with EntryId indirection.
 #[derive(Debug)]
@@ -307,9 +347,79 @@ where
     }
 }
 
+impl<K, V> StoreCore<K, V> for ConcurrentSlabStore<K, V>
+where
+    K: Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    fn get(&self, key: &K) -> Option<Arc<V>> {
+        let store = self.inner.read();
+        store.get(key)
+    }
+
+    fn contains(&self, key: &K) -> bool {
+        let store = self.inner.read();
+        store.contains(key)
+    }
+
+    fn len(&self) -> usize {
+        let store = self.inner.read();
+        store.len()
+    }
+
+    fn capacity(&self) -> usize {
+        let store = self.inner.read();
+        store.capacity()
+    }
+
+    fn metrics(&self) -> StoreMetrics {
+        let store = self.inner.read();
+        store.metrics()
+    }
+
+    fn record_eviction(&self) {
+        let store = self.inner.read();
+        store.record_eviction();
+    }
+}
+
+impl<K, V> crate::store::traits::ConcurrentStore<K, V> for ConcurrentSlabStore<K, V>
+where
+    K: Eq + Hash + Send + Sync + Clone,
+    V: Send + Sync,
+{
+    fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
+        let mut store = self.inner.write();
+        store.try_insert(key, value)
+    }
+
+    fn remove(&self, key: &K) -> Option<Arc<V>> {
+        let mut store = self.inner.write();
+        store.remove(key)
+    }
+
+    fn clear(&self) {
+        let mut store = self.inner.write();
+        store.clear();
+    }
+}
+
+impl<K, V> StoreFactory<K, V> for ConcurrentSlabStore<K, V>
+where
+    K: Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    type Store = ConcurrentSlabStore<K, V>;
+
+    fn create(capacity: usize) -> Self::Store {
+        Self::new(capacity)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::traits::ConcurrentStore;
 
     #[test]
     fn slab_store_basic_ops() {
@@ -359,5 +469,27 @@ mod tests {
         let id = store.entry_id(&"k1").expect("missing entry id");
         assert_eq!(store.get_by_id(id).map(|value| value.as_str()), Some("v1"));
         assert_eq!(store.remove_value(&"k1"), Some("v1".to_string()));
+    }
+
+    #[test]
+    fn concurrent_slab_store_basic_ops() {
+        let store = ConcurrentSlabStore::new(2);
+        let value = Arc::new("v1".to_string());
+        assert_eq!(store.try_insert("k1", value.clone()), Ok(None));
+        assert_eq!(store.get(&"k1"), Some(value.clone()));
+        assert!(store.contains(&"k1"));
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.capacity(), 2);
+        assert_eq!(store.remove(&"k1"), Some(value));
+        assert!(!store.contains(&"k1"));
+    }
+
+    #[test]
+    fn concurrent_slab_store_entry_id_roundtrip() {
+        let store = ConcurrentSlabStore::new(2);
+        assert_eq!(store.try_insert("k1", Arc::new("v1".to_string())), Ok(None));
+        let id = store.entry_id(&"k1").expect("missing entry id");
+        assert_eq!(store.get_by_id(id), Some(Arc::new("v1".to_string())));
+        assert_eq!(store.key_by_id(id), Some("k1"));
     }
 }

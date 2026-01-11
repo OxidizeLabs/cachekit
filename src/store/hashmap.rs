@@ -3,9 +3,8 @@ use crate::store::traits::{
 };
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::Hash;
-use std::hash::Hasher;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -58,19 +57,29 @@ impl ConcurrentStoreCounters {
 
 /// Single-threaded HashMap-backed store.
 #[derive(Debug)]
-pub struct HashMapStore<K, V> {
-    map: HashMap<K, Arc<V>>,
+pub struct HashMapStore<K, V, S = RandomState> {
+    map: HashMap<K, Arc<V>, S>,
     capacity: usize,
     metrics: ConcurrentStoreCounters,
 }
 
-impl<K, V> HashMapStore<K, V>
+impl<K, V> HashMapStore<K, V, RandomState>
 where
     K: Eq + Hash,
 {
     pub fn new(capacity: usize) -> Self {
+        Self::with_hasher(capacity, RandomState::new())
+    }
+}
+
+impl<K, V, S> HashMapStore<K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    pub fn with_hasher(capacity: usize, hasher: S) -> Self {
         Self {
-            map: HashMap::new(),
+            map: HashMap::with_capacity_and_hasher(capacity, hasher),
             capacity,
             metrics: ConcurrentStoreCounters::default(),
         }
@@ -104,9 +113,10 @@ where
     }
 }
 
-impl<K, V> StoreCore<K, V> for HashMapStore<K, V>
+impl<K, V, S> StoreCore<K, V> for HashMapStore<K, V, S>
 where
     K: Eq + Hash,
+    S: BuildHasher,
 {
     fn get(&self, key: &K) -> Option<Arc<V>> {
         match self.map.get(key).cloned() {
@@ -142,9 +152,10 @@ where
     }
 }
 
-impl<K, V> StoreMut<K, V> for HashMapStore<K, V>
+impl<K, V, S> StoreMut<K, V> for HashMapStore<K, V, S>
 where
     K: Eq + Hash,
+    S: BuildHasher,
 {
     fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         if !self.map.contains_key(&key) && self.map.len() >= self.capacity {
@@ -172,11 +183,11 @@ where
     }
 }
 
-impl<K, V> StoreFactory<K, V> for HashMapStore<K, V>
+impl<K, V> StoreFactory<K, V> for HashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send,
 {
-    type Store = HashMapStore<K, V>;
+    type Store = HashMapStore<K, V, RandomState>;
 
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
@@ -185,28 +196,39 @@ where
 
 /// Concurrent HashMap-backed store using interior mutability.
 #[derive(Debug)]
-pub struct ConcurrentHashMapStore<K, V> {
-    map: RwLock<HashMap<K, Arc<V>>>,
+pub struct ConcurrentHashMapStore<K, V, S = RandomState> {
+    map: RwLock<HashMap<K, Arc<V>, S>>,
     capacity: usize,
     metrics: ConcurrentStoreCounters,
 }
 
-impl<K, V> ConcurrentHashMapStore<K, V>
+impl<K, V> ConcurrentHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send,
 {
     pub fn new(capacity: usize) -> Self {
+        Self::with_hasher(capacity, RandomState::new())
+    }
+}
+
+impl<K, V, S> ConcurrentHashMapStore<K, V, S>
+where
+    K: Eq + Hash + Send,
+    S: BuildHasher,
+{
+    pub fn with_hasher(capacity: usize, hasher: S) -> Self {
         Self {
-            map: RwLock::new(HashMap::new()),
+            map: RwLock::new(HashMap::with_capacity_and_hasher(capacity, hasher)),
             capacity,
             metrics: ConcurrentStoreCounters::default(),
         }
     }
 }
 
-impl<K, V> StoreCore<K, V> for ConcurrentHashMapStore<K, V>
+impl<K, V, S> StoreCore<K, V> for ConcurrentHashMapStore<K, V, S>
 where
     K: Eq + Hash,
+    S: BuildHasher + Send + Sync,
 {
     fn get(&self, key: &K) -> Option<Arc<V>> {
         match self.map.read().get(key).cloned() {
@@ -242,10 +264,11 @@ where
     }
 }
 
-impl<K, V> ConcurrentStore<K, V> for ConcurrentHashMapStore<K, V>
+impl<K, V, S> ConcurrentStore<K, V> for ConcurrentHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
     V: Sync + Send,
+    S: BuildHasher + Send + Sync,
 {
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut map = self.map.write();
@@ -274,11 +297,11 @@ where
     }
 }
 
-impl<K, V> StoreFactory<K, V> for ConcurrentHashMapStore<K, V>
+impl<K, V> StoreFactory<K, V> for ConcurrentHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send,
 {
-    type Store = ConcurrentHashMapStore<K, V>;
+    type Store = ConcurrentHashMapStore<K, V, RandomState>;
 
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
@@ -287,28 +310,40 @@ where
 
 /// Concurrent HashMap-backed store with sharded locking.
 #[derive(Debug)]
-pub struct ShardedHashMapStore<K, V> {
-    shards: Vec<RwLock<HashMap<K, Arc<V>>>>,
+pub struct ShardedHashMapStore<K, V, S = RandomState> {
+    shards: Vec<RwLock<HashMap<K, Arc<V>, S>>>,
     capacity: usize,
     size: AtomicUsize,
     metrics: ConcurrentStoreCounters,
+    hasher: S,
 }
 
-impl<K, V> ShardedHashMapStore<K, V>
+impl<K, V> ShardedHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send + Sync,
 {
     pub fn new(capacity: usize, shards: usize) -> Self {
+        Self::with_hasher(capacity, shards, RandomState::new())
+    }
+}
+
+impl<K, V, S> ShardedHashMapStore<K, V, S>
+where
+    K: Eq + Hash + Send + Sync,
+    S: BuildHasher + Clone,
+{
+    pub fn with_hasher(capacity: usize, shards: usize, hasher: S) -> Self {
         let shard_count = shards.max(1);
         let mut shard_vec = Vec::with_capacity(shard_count);
         for _ in 0..shard_count {
-            shard_vec.push(RwLock::new(HashMap::new()));
+            shard_vec.push(RwLock::new(HashMap::with_hasher(hasher.clone())));
         }
         Self {
             shards: shard_vec,
             capacity,
             size: AtomicUsize::new(0),
             metrics: ConcurrentStoreCounters::default(),
+            hasher,
         }
     }
 
@@ -317,15 +352,14 @@ where
     }
 
     fn shard_index(&self, key: &K) -> usize {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        (hasher.finish() as usize) % self.shards.len()
+        (self.hasher.hash_one(key) as usize) % self.shards.len()
     }
 }
 
-impl<K, V> StoreCore<K, V> for ShardedHashMapStore<K, V>
+impl<K, V, S> StoreCore<K, V> for ShardedHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
+    S: BuildHasher + Clone,
 {
     fn get(&self, key: &K) -> Option<Arc<V>> {
         let idx = self.shard_index(key);
@@ -363,10 +397,11 @@ where
     }
 }
 
-impl<K, V> ConcurrentStore<K, V> for ShardedHashMapStore<K, V>
+impl<K, V, S> ConcurrentStore<K, V> for ShardedHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
+    S: BuildHasher + Clone + Send + Sync,
 {
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let idx = self.shard_index(&key);
@@ -425,12 +460,12 @@ where
     }
 }
 
-impl<K, V> StoreFactory<K, V> for ShardedHashMapStore<K, V>
+impl<K, V> StoreFactory<K, V> for ShardedHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
-    type Store = ShardedHashMapStore<K, V>;
+    type Store = ShardedHashMapStore<K, V, RandomState>;
 
     fn create(capacity: usize) -> Self::Store {
         let shards = std::thread::available_parallelism()
