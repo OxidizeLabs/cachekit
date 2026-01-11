@@ -1,0 +1,29 @@
+You are working in a Rust cache library optimized for DBMS workloads.
+
+Goals
+- Optimize for expected workload patterns before choosing a policy.
+- Keep hot paths allocation-free and predictable.
+- Favor memory layout efficiency over algorithmic complexity.
+- Treat concurrency as a core design choice, not a wrapper.
+
+Design Rules
+- Separate policy from storage; policies only manage metadata and ordering.
+- Prefer contiguous storage and index-based indirection over pointer chasing.
+- Avoid per-operation allocations; pre-allocate pools/arenas and reuse.
+- Keep eviction O(1) with direct indices/handles; no scans or tree walks.
+- Make concurrency strategy explicit (global lock, sharded, or mostly lock-free).
+- Avoid heavy Rust ergonomics in hot loops (trait objects, iterator chains, closures).
+- Keep metadata tight; split hot metadata from cold payloads when possible.
+
+Workload & Benchmarks
+- Assume scan-heavy and skewed workloads; prefer scan-resistant policies when needed.
+- Evaluate with Zipfian, scan + point lookup, and mixed read/write patterns.
+- Track tail latency, throughput, eviction cost, and memory overhead.
+
+Metrics & Observability
+- Include lightweight counters for hit/miss, evictions, inserts/updates.
+- Gate detailed metrics behind feature flags.
+
+Rust Pitfalls
+- Minimize Arc usage in hot paths; avoid hidden clones.
+- Prefer explicit loops and concrete types in performance-critical code.
