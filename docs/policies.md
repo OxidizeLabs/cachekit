@@ -2,6 +2,8 @@
 
 This document summarizes common cache replacement (eviction) policies, their tradeoffs, and when to use (or avoid) each. It’s written as a practical companion to `docs/design.md`.
 
+Implementation notes live in `docs/policies/README.md`.
+
 Terminology used below:
 - **Admission**: whether an item is allowed into cache at all (some “policies” combine admission + eviction).
 - **Eviction**: which resident item to remove when making space.
