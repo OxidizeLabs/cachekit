@@ -11,10 +11,10 @@
 //!   │                        HeapLFUCache<K, V>                                │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  data: HashMap<K, V>                                               │ │
+//!   │   │  HashMapStore<K, V>                                               │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────┬────────────────────────────────────────────────────┐  │ │
-//!   │   │  │   Key   │  Value                                             │  │ │
+//!   │   │  │   Key   │  Arc<V>                                            │  │ │
 //!   │   │  ├─────────┼────────────────────────────────────────────────────┤  │ │
 //!   │   │  │ page_1  │  data_1                                            │  │ │
 //!   │   │  │ page_2  │  data_2                                            │  │ │
@@ -103,7 +103,7 @@
 //!
 //!   HeapLFUCache:
 //!   ┌────────────────────────────────────────────────────────────────────────┐
-//!   │  HashMap<K, V> + HashMap<K, u64> + BinaryHeap<(u64, K)>                │
+//!   │  HashMapStore<K, V> + HashMap<K, u64> + BinaryHeap<(u64, K)>           │
 //!   │                                                                        │
 //!   │  insert/get: O(log n)  ← Heap operations                               │
 //!   │  pop_lfu:    O(log n)  ← Pop from heap (amortized, skipping stale)     │
@@ -116,7 +116,7 @@
 //!
 //! | Component      | Type                              | Purpose                    |
 //! |----------------|-----------------------------------|----------------------------|
-//! | `data`         | `HashMap<K, V>`                   | Value storage, O(1) lookup |
+//! | `store`        | `HashMapStore<K, V>`             | Value storage, O(1) lookup |
 //! | `frequencies`  | `HashMap<K, u64>`                 | Current frequency tracking |
 //! | `freq_heap`    | `BinaryHeap<Reverse<(u64, K)>>`   | Min-heap for LFU lookup    |
 //! | `capacity`     | `usize`                           | Maximum entries            |
@@ -152,7 +152,7 @@
 //! |------------------|--------------------|-----------------------------|
 //! | `get/insert`     | O(1)               | O(log n)                    |
 //! | `pop_lfu`        | O(n)               | O(log n) amortized          |
-//! | Memory           | 1 HashMap          | 3 data structures + stale   |
+//! | Memory           | Store + maps       | 3 data structures + stale   |
 //! | Constant factors | Low                | Higher                      |
 //! | Predictability   | O(n) worst case    | Consistent O(log n)         |
 //! | Lock time        | Longer during evict| Shorter, more consistent    |
@@ -232,10 +232,13 @@
 //! - **Memory overhead**: ~3x standard LFU due to three data structures
 //! - **Reverse wrapper**: Converts max-heap to min-heap for LFU semantics
 
+use crate::store::hashmap::HashMapStore;
+use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
+use std::sync::Arc;
 
 /// Heap-based LFU Cache with O(log n) eviction.
 ///
@@ -245,9 +248,9 @@ use std::hash::Hash;
 pub struct HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
+    V: Clone,
 {
-    capacity: usize,
-    data: HashMap<K, V>,
+    store: HashMapStore<K, V>,
     frequencies: HashMap<K, u64>,
     // Min-heap: smallest frequency first
     // Reverse wrapper converts max-heap to min-heap
@@ -257,6 +260,7 @@ where
 impl<K, V> HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
+    V: Clone,
 {
     /// Creates a new HeapLFUCache with the specified capacity.
     ///
@@ -273,8 +277,7 @@ where
     /// ```
     pub fn new(capacity: usize) -> Self {
         HeapLFUCache {
-            capacity,
-            data: HashMap::with_capacity(capacity),
+            store: HashMapStore::new(capacity),
             frequencies: HashMap::with_capacity(capacity),
             freq_heap: BinaryHeap::with_capacity(capacity),
         }
@@ -282,17 +285,17 @@ where
 
     /// Returns the maximum capacity of the cache.
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.store.capacity()
     }
 
     /// Returns the current number of items in the cache.
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.store.len()
     }
 
     /// Returns true if the cache is empty.
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.store.is_empty()
     }
 
     /// Checks if the cache contains the specified key.
@@ -305,7 +308,7 @@ where
     /// # Returns
     /// `true` if the key exists in the cache, `false` otherwise
     pub fn contains(&self, key: &K) -> bool {
-        self.data.contains_key(key)
+        self.store.contains(key)
     }
 
     /// Gets the current access frequency for a key.
@@ -321,7 +324,7 @@ where
 
     /// Clears all items from the cache.
     pub fn clear(&mut self) {
-        self.data.clear();
+        self.store.clear();
         self.frequencies.clear();
         self.freq_heap.clear();
     }
@@ -353,7 +356,7 @@ where
     /// Private helper to ensure cache doesn't exceed capacity.
     /// Evicts the least frequently used item if necessary.
     fn ensure_capacity(&mut self) -> Option<(K, V)> {
-        if self.data.len() >= self.capacity {
+        if self.store.len() >= self.store.capacity() {
             self.pop_lfu()
         } else {
             None
@@ -365,18 +368,26 @@ where
 impl<K, V> CoreCache<K, V> for HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
+    V: Clone,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         // If key already exists, just update the value (don't change frequency)
-        if let Some(old_value) = self.data.get_mut(&key) {
-            return Some(std::mem::replace(old_value, value));
+        if self.store.contains(&key) {
+            return self
+                .store
+                .try_insert(key, Arc::new(value))
+                .ok()
+                .flatten()
+                .map(|arc| (*arc).clone());
         }
 
         // Ensure we have capacity (may evict LFU item)
         self.ensure_capacity();
 
         // Insert new item with frequency 1
-        self.data.insert(key.clone(), value);
+        if self.store.try_insert(key.clone(), Arc::new(value)).is_err() {
+            return None;
+        }
         self.frequencies.insert(key.clone(), 1);
         self.add_to_heap(&key, 1);
 
@@ -384,7 +395,7 @@ where
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        if self.data.contains_key(key) {
+        if self.store.contains(key) {
             // Increment frequency
             let new_freq = self.frequencies.get_mut(key).map(|f| {
                 *f += 1;
@@ -394,26 +405,26 @@ where
             // Add new frequency entry to heap (old entry becomes stale)
             self.add_to_heap(key, new_freq);
 
-            self.data.get(key)
+            self.store.get_ref(key).map(|value| value.as_ref())
         } else {
             None
         }
     }
 
     fn contains(&self, key: &K) -> bool {
-        self.data.contains_key(key)
+        self.store.contains(key)
     }
 
     fn len(&self) -> usize {
-        self.data.len()
+        self.store.len()
     }
 
     fn capacity(&self) -> usize {
-        self.capacity
+        self.store.capacity()
     }
 
     fn clear(&mut self) {
-        self.data.clear();
+        self.store.clear();
         self.frequencies.clear();
         self.freq_heap.clear();
     }
@@ -423,10 +434,11 @@ where
 impl<K, V> MutableCache<K, V> for HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
+    V: Clone,
 {
     fn remove(&mut self, key: &K) -> Option<V> {
-        // Remove from data and frequencies maps
-        let value = self.data.remove(key)?;
+        // Remove from store and frequencies maps
+        let value = self.store.remove(key).map(|arc| (*arc).clone())?;
         self.frequencies.remove(key);
 
         // Note: We don't remove from heap immediately (lazy removal)
@@ -440,14 +452,16 @@ where
 impl<K, V> LFUCacheTrait<K, V> for HeapLFUCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
+    V: Clone,
 {
     fn pop_lfu(&mut self) -> Option<(K, V)> {
         // Find the key with minimum frequency (handling stale entries)
         let (lfu_key, _freq) = self.pop_lfu_internal()?;
 
         // Remove from all data structures
-        let value = self.data.remove(&lfu_key)?;
+        let value = self.store.remove(&lfu_key).map(|arc| (*arc).clone())?;
         self.frequencies.remove(&lfu_key);
+        self.store.record_eviction();
 
         Some((lfu_key, value))
     }
@@ -468,7 +482,7 @@ where
         // Find a key with the minimum frequency
         for (key, &freq) in &self.frequencies {
             if freq == min_freq {
-                return self.data.get(key).map(|v| (key, v));
+                return self.store.peek_ref(key).map(|value| (key, value.as_ref()));
             }
         }
 
