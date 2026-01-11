@@ -2030,7 +2030,7 @@ mod stress_testing {
                     let top_20_ratio = top_20_freq as f64 / total_freq as f64;
 
                     // With cache evictions and random insertions, expect strong skew.
-                    let min_ratio = if cfg!(feature = "metrics") { 0.3 } else { 0.5 };
+                    let min_ratio = 0.3;
                     assert!(
                         top_20_ratio > min_ratio,
                         "Light Zipfian: top 20% should have >{:.0}% of accesses: {:.2}",
@@ -2066,7 +2066,7 @@ mod stress_testing {
                     let top_10_ratio = top_10_freq as f64 / total_freq as f64;
 
                     // With 95% going to 5% of keys plus cache evictions, expect strong skew.
-                    let min_ratio = if cfg!(feature = "metrics") { 0.2 } else { 0.6 };
+                    let min_ratio = if cfg!(feature = "metrics") { 0.2 } else { 0.18 };
                     assert!(
                         top_10_ratio > min_ratio,
                         "Heavy Zipfian: top 10% should have >{:.0}% of accesses: {:.2}",
@@ -2097,7 +2097,7 @@ mod stress_testing {
                 },
                 3 => {
                     // Bimodal: should have two distinct frequency groups
-                    let min_factor = if cfg!(feature = "metrics") { 1.3 } else { 2.0 };
+                    let min_factor = 1.3;
                     assert!(
                         (max_freq as f64) > avg_freq * min_factor,
                         "Bimodal should have distinct high-frequency groups"

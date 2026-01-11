@@ -100,7 +100,7 @@ where
                 self.slots[idx] = Some(Entry {
                     key: entry_key,
                     value,
-                    referenced: true,
+                    referenced: false,
                 });
                 self.index.insert(key, idx);
                 self.advance_hand();
@@ -111,7 +111,7 @@ where
             self.slots[idx] = Some(Entry {
                 key: entry_key,
                 value,
-                referenced: true,
+                referenced: false,
             });
             self.index.insert(key, idx);
             self.len += 1;

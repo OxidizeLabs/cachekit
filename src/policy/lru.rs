@@ -18,10 +18,10 @@
 //!   │   │                         LRUCore<K, V>                              │ │
 //!   │   │                                                                    │ │
 //!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
-//!   │   │   │  HashMap<K, NonNull<Node<K>>>                               │ │ │
+//!   │   │   │  HashMap<K, SlotId> (index into SlotArena)                  │ │ │
 //!   │   │   │                                                              │ │ │
 //!   │   │   │  ┌─────────┬────────────────────────────────────────────┐    │ │ │
-//!   │   │   │  │   Key   │  NonNull<Node>                             │    │ │ │
+//!   │   │   │  │   Key   │  SlotId                                    │    │ │ │
 //!   │   │   │  ├─────────┼────────────────────────────────────────────┤    │ │ │
 //!   │   │   │  │  page_1 │  ────────────────────────────────────────┐ │    │ │ │
 //!   │   │   │  │  page_2 │  ──────────────────────────────────┐     │ │    │ │ │
@@ -30,11 +30,11 @@
 //!   │   │   └───────────────────────────────────────────┼─────┼─────┼──────┘ │ │
 //!   │   │                                               │     │     │        │ │
 //!   │   │   ┌───────────────────────────────────────────┼─────┼─────┼──────┐ │ │
-//!   │   │   │  Doubly-Linked List (LRU Order)           │     │     │      │ │ │
+//!   │   │   │  IntrusiveList<SlotId> (LRU Order)        │     │     │      │ │ │
 //!   │   │   │                                           ▼     ▼     ▼      │ │ │
 //!   │   │   │  head ──► ┌──────┐ ◄──► ┌──────┐ ◄──► ┌──────┐ ◄── tail      │ │ │
-//!   │   │   │    (MRU)  │ Node │      │ Node │      │ Node │   (LRU)       │ │ │
-//!   │   │   │           │page_1│      │page_2│      │page_3│               │ │ │
+//!   │   │   │    (MRU)  │ Slot │      │ Slot │      │ Slot │   (LRU)       │ │ │
+//!   │   │   │           │id_1  │      │id_2  │      │id_3  │               │ │ │
 //!   │   │   │           └──────┘      └──────┘      └──────┘               │ │ │
 //!   │   │   │                                                              │ │ │
 //!   │   │   │  Most Recently Used ────────────────► Least Recently Used    │ │ │
@@ -54,7 +54,8 @@
 //! |------------------------|----------------------------------------------------|
 //! | `LRUCore<K, V>`        | Single-threaded core with list + index + store     |
 //! | `ConcurrentLRUCache`   | Thread-safe wrapper with `parking_lot::RwLock`     |
-//! | `Node<K>`              | Intrusive list node with key, prev/next             |
+//! | `Entry<K>`             | SlotArena entry storing key + list node id         |
+//! | `IntrusiveList`        | Recency list storing SlotId ordering              |
 //! | `HashMapStore<K, V>`   | Store for key -> `Arc<V>` ownership                |
 //! | `BufferPoolCache<V>`   | Type alias for `ConcurrentLRUCache<u32, V>`        |
 //! | `PageCache<K, V>`      | Type alias for generic page caching                |
@@ -106,23 +107,21 @@
 //!   Order unchanged: head ──► [A] ◄──► [B] ◄──► [C] ◄── tail
 //! ```
 //!
-//! ## Node Structure
+//! ## Entry Structure
 //!
 //! ```text
 //!   ┌────────────────────────────────────────────┐
-//!   │                 Node<K>                    │
+//!   │                 Entry<K>                   │
 //!   ├────────────────────────────────────────────┤
 //!   │  key: K (Copy)         │  Owned, cheap     │
 //!   ├────────────────────────┼───────────────────┤
-//!   │  prev: Option<NonNull> │  Previous node    │
-//!   ├────────────────────────┼───────────────────┤
-//!   │  next: Option<NonNull> │  Next node        │
+//!   │  list_node: Option<Id> │  Intrusive list   │
 //!   └────────────────────────┴───────────────────┘
 //!
 //!   Memory allocation:
-//!     • Nodes allocated via Box::leak() → raw pointer
-//!     • Deallocated via Box::from_raw() on removal
-//!     • NonNull ensures non-null invariant
+//!     • Entries live in a SlotArena (stable SlotId handles)
+//!     • IntrusiveList owns prev/next links for list order
+//!     • No raw pointers in the policy core
 //! ```
 //!
 //! ## LRUCore Methods (CoreCache + MutableCache + LRUCacheTrait)
@@ -170,8 +169,8 @@
 //! | `get`            | O(1) avg   | O(1)        | Index lookup + list move     |
 //! | `peek`           | O(1) avg   | O(1)        | Index lookup only            |
 //! | `remove`         | O(1) avg   | O(1)        | Index remove + list unlink   |
-//! | `pop_lru`        | O(1)       | O(1)        | Direct tail pointer access   |
-//! | Per-entry        | -          | ~56 bytes   | 2 ptrs + index + store entry |
+//! | `pop_lru`        | O(1)       | O(1)        | Tail SlotId removal          |
+//! | Per-entry        | -          | ~56 bytes   | Slot + list links + store    |
 //!
 //! ## Design Rationale
 //!
@@ -181,8 +180,7 @@
 //!   so callers can keep references even after eviction (e.g., during writeback).
 //! - **Internal Visibility**: Buffer managers need precise eviction control
 //!   (pinning, touching without retrieval).
-//! - **Pointer Stability**: `NonNull` nodes ensure stable memory locations for
-//!   the intrusive linked list.
+//! - **Stable Handles**: `SlotArena` provides stable SlotId handles for list order.
 //!
 //! ## Concurrency Model
 //!
@@ -212,8 +210,8 @@
 //! | Aspect           | Pros                              | Cons                          |
 //! |------------------|-----------------------------------|-------------------------------|
 //! | Performance      | Predictable O(1) operations       | Global lock can bottleneck    |
-//! | Memory           | Arc sharing, no Clone needed      | Per-node pointer overhead     |
-//! | Safety           | Arc prevents use-after-free       | Unsafe code complexity        |
+//! | Memory           | Arc sharing, no Clone needed      | Slot/list metadata overhead   |
+//! | Safety           | Arc prevents use-after-free       | No raw pointer manipulation   |
 //! | Simplicity       | Simple recency-based policy       | No frequency tracking         |
 //!
 //! ## When to Use
@@ -289,12 +287,11 @@
 //!
 //! ## Safety
 //!
-//! This module uses `unsafe` code to manage the doubly-linked list manually:
+//! This implementation is safe Rust throughout the core policy:
 //!
-//! - **Node allocation**: `Box::leak()` for stable addresses
-//! - **Node deallocation**: `Box::from_raw()` on removal/eviction
-//! - **Pointer manipulation**: `NonNull` ensures non-null invariant
-//! - **Send/Sync**: Manual impls require `K: Send + Sync`, `V: Send + Sync`
+//! - **Stable handles**: `SlotArena` provides `SlotId` indirection
+//! - **List invariants**: `IntrusiveList` owns prev/next links internally
+//! - **No raw pointers**: list updates use SlotId handles only
 //!
 //! Extensive testing (correctness, edge cases, memory safety) verifies soundness.
 //!
@@ -302,7 +299,7 @@
 //!
 //! - `LRUCore`: **NOT thread-safe** - single-threaded only
 //! - `ConcurrentLRUCache`: **Thread-safe** via `parking_lot::RwLock`
-//! - `Node`: Manually implements `Send + Sync` (protected by outer lock)
+//! - `Entry`: Stored in `SlotArena`; thread safety provided by the outer lock
 //! - Values: `Arc<V>` in the store enables safe sharing across threads
 
 use std::collections::HashMap;
@@ -342,9 +339,9 @@ where
 /// - Values: `Arc<V>` stored in the store for zero-copy sharing
 ///
 /// ## Memory Safety Guarantees:
-/// - All nodes are allocated via Box::leak and deallocated via Box::from_raw
-/// - NonNull ensures no null pointer dereferences
-/// - Doubly-linked list invariants are maintained at all operation boundaries
+/// - Entries live in a `SlotArena` and are addressed by `SlotId`
+/// - `IntrusiveList` maintains ordering without raw pointer manipulation
+/// - List and index invariants are maintained at all operation boundaries
 /// - `Arc<V>` provides thread-safe reference counting in the store
 ///
 /// ## Performance Characteristics:
@@ -2834,8 +2831,8 @@ mod tests {
             }
 
             #[test]
-            fn test_pop_lru_updates_tail_pointer() {
-                // Test that pop_lru correctly updates tail pointer
+            fn test_pop_lru_updates_tail_slot() {
+                // Test that pop_lru correctly updates tail SlotId
                 let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
 
                 cache.insert(1, Arc::new(100));
@@ -4314,11 +4311,11 @@ mod tests {
             }
 
             #[test]
-            fn test_lru_pointer_integrity() {
-                // Test that all prev/next pointers are correctly maintained
+            fn test_lru_list_integrity() {
+                // Test that list order invariants are correctly maintained
                 let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
 
-                // Build cache and verify pointer integrity through operations
+                // Build cache and verify list integrity through operations
                 for i in 1..=5 {
                     cache.insert(i, Arc::new(i * 100));
 
@@ -4328,11 +4325,11 @@ mod tests {
                         assert!(cache.recency_rank(&j).is_some());
                     }
 
-                    // Verify peek_lru works (requires valid tail pointer)
+                    // Verify peek_lru works (requires valid tail SlotId)
                     assert!(cache.peek_lru().is_some());
                 }
 
-                // Test pointer integrity through various operations
+                // Test list integrity through various operations
 
                 // Move head to different position
                 cache.get(&1); // Move tail to head
@@ -4381,7 +4378,7 @@ mod tests {
                             break;
                         }
                     }
-                    assert!(found, "Rank {} not found after pointer operations", i);
+                    assert!(found, "Rank {} not found after list operations", i);
                 }
             }
 
@@ -4849,7 +4846,7 @@ mod tests {
             }
 
             #[test]
-            fn test_head_tail_pointer_consistency() {
+            fn test_head_tail_slot_consistency() {
                 // Test that head/tail semantics are consistent with list structure
                 let mut cache = LRUCore::new(10);
 
@@ -5210,8 +5207,8 @@ mod tests {
             }
 
             #[test]
-            fn test_node_pointer_validity() {
-                // Test that index entries point to valid slots
+            fn test_node_slot_validity() {
+                // Test that index entries map to valid slots
                 let mut cache = LRUCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
@@ -5301,7 +5298,7 @@ mod tests {
 
             #[test]
             fn test_middle_node_properties() {
-                // Test that middle nodes have valid prev and next pointers
+                // Test that middle nodes remain correctly ordered
                 let mut cache = LRUCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2)); // Middle
@@ -5872,16 +5869,14 @@ mod tests {
         }
 
         #[test]
-        fn test_safe_pointer_arithmetic() {
-            // In our implementation, we don't do raw pointer arithmetic (offsetting).
-            // We only dereference pointers we obtained from Box::into_raw.
-            // So we verify that we can dereference pointers in the list correctly.
+        fn test_safe_list_traversal() {
+            // We verify that list traversal via SlotId is consistent.
             let mut cache = LRUCore::new(3);
             cache.insert(1, Arc::new(1));
             cache.insert(2, Arc::new(2));
             cache.insert(3, Arc::new(3));
 
-            // This implicitly tests pointer following
+            // This implicitly tests list traversal
             assert_eq!(*cache.peek(&1).unwrap(), 1);
             assert_eq!(*cache.peek(&2).unwrap(), 2);
             assert_eq!(*cache.peek(&3).unwrap(), 3);
@@ -5988,7 +5983,7 @@ mod tests {
         }
 
         #[test]
-        fn test_null_pointer_dereference_prevention() {
+        fn test_empty_list_access_safety() {
             let mut cache: LRUCore<i32, i32> = LRUCore::new(10);
             // Operations on empty cache should not deref null
             assert!(cache.pop_lru().is_none());
@@ -6002,12 +5997,12 @@ mod tests {
         }
 
         #[test]
-        fn test_dangling_pointer_prevention() {
+        fn test_stale_slot_prevention() {
             let mut cache = LRUCore::new(2);
             cache.insert(1, Arc::new(1));
             let val = cache.get(&1).cloned();
             cache.remove(&1);
-            // Pointers inside cache for '1' are gone. 'val' is independent Arc.
+            // SlotId inside the cache for '1' is gone. 'val' is independent Arc.
             assert_eq!(*val.unwrap(), 1);
         }
 
@@ -6344,7 +6339,7 @@ mod tests {
         }
 
         #[test]
-        fn test_raw_pointer_safety() {
+        fn test_slot_based_safety() {
             // Implicitly covered by all operations
             let mut cache = LRUCore::new(10);
             cache.insert(1, Arc::new(1));

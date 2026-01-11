@@ -513,6 +513,19 @@ where
     }
 }
 
+#[cfg(all(test, not(feature = "metrics")))]
+impl<K, V> LFUCache<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_validate_invariants(&self) {
+        assert!(self.len() <= self.capacity());
+        assert_eq!(self.len(), self.buckets.len());
+        self.buckets.debug_validate_invariants();
+    }
+}
+
 #[cfg(feature = "metrics")]
 impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUCache<K, V>
 where
