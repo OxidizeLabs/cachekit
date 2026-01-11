@@ -370,4 +370,102 @@ mod tests {
         assert_eq!(popped, Some(("b", 1)));
         assert_eq!(buckets.min_freq(), Some(2));
     }
+
+    #[test]
+    fn frequency_buckets_duplicate_insert_is_noop() {
+        let mut buckets = FrequencyBuckets::new();
+        assert!(buckets.insert("a"));
+        assert!(!buckets.insert("a"));
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets.frequency(&"a"), Some(1));
+    }
+
+    #[test]
+    fn frequency_buckets_touch_missing_returns_none() {
+        let mut buckets: FrequencyBuckets<&str> = FrequencyBuckets::new();
+        assert_eq!(buckets.touch(&"missing"), None);
+        assert_eq!(buckets.min_freq(), None);
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
+    fn frequency_buckets_remove_updates_min_freq() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.touch(&"b");
+        assert_eq!(buckets.min_freq(), Some(1));
+
+        assert_eq!(buckets.remove(&"a"), Some(1));
+        assert_eq!(buckets.min_freq(), Some(2));
+        assert!(!buckets.contains(&"a"));
+        assert!(buckets.contains(&"b"));
+    }
+
+    #[test]
+    fn frequency_buckets_pop_min_on_empty() {
+        let mut buckets: FrequencyBuckets<&str> = FrequencyBuckets::new();
+        assert_eq!(buckets.pop_min(), None);
+        assert_eq!(buckets.peek_min(), None);
+        assert_eq!(buckets.min_freq(), None);
+    }
+
+    #[test]
+    fn frequency_buckets_peek_min_does_not_remove() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        let peeked = buckets.peek_min();
+        assert!(matches!(peeked, Some((&"a", 1)) | Some((&"b", 1))));
+        assert_eq!(buckets.len(), 2);
+        assert!(buckets.contains(&"a"));
+        assert!(buckets.contains(&"b"));
+    }
+
+    #[test]
+    fn frequency_buckets_fifo_within_same_frequency() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.insert("c");
+
+        let first = buckets.pop_min();
+        assert_eq!(first, Some(("a", 1)));
+        let second = buckets.pop_min();
+        assert_eq!(second, Some(("b", 1)));
+        let third = buckets.pop_min();
+        assert_eq!(third, Some(("c", 1)));
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
+    fn frequency_buckets_min_freq_tracks_next_bucket() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.insert("c");
+
+        buckets.touch(&"a");
+        buckets.touch(&"a");
+        assert_eq!(buckets.frequency(&"a"), Some(3));
+        assert_eq!(buckets.min_freq(), Some(1));
+
+        buckets.pop_min();
+        buckets.pop_min();
+        assert_eq!(buckets.min_freq(), Some(3));
+        assert_eq!(buckets.peek_min(), Some((&"a", 3)));
+    }
+
+    #[test]
+    fn frequency_buckets_clear_resets_state() {
+        let mut buckets = FrequencyBuckets::new();
+        buckets.insert("a");
+        buckets.insert("b");
+        buckets.touch(&"a");
+        buckets.clear();
+        assert!(buckets.is_empty());
+        assert_eq!(buckets.min_freq(), None);
+        assert_eq!(buckets.pop_min(), None);
+        assert_eq!(buckets.peek_min(), None);
+    }
 }

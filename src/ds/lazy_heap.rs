@@ -175,4 +175,79 @@ mod tests {
         assert_eq!(heap.pop_best(), Some(("a", 5)));
         assert_eq!(heap.pop_best(), None);
     }
+
+    #[test]
+    fn lazy_heap_update_overwrites_score_and_len() {
+        let mut heap = LazyMinHeap::new();
+        assert_eq!(heap.len(), 0);
+        assert_eq!(heap.update("a", 10), None);
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.score_of(&"a"), Some(&10));
+        assert_eq!(heap.update("a", 3), Some(10));
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.score_of(&"a"), Some(&3));
+    }
+
+    #[test]
+    fn lazy_heap_pop_best_removes_key() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 2);
+        heap.update("b", 1);
+        assert_eq!(heap.pop_best(), Some(("b", 1)));
+        assert_eq!(heap.score_of(&"b"), None);
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.pop_best(), Some(("a", 2)));
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn lazy_heap_tie_breaks_by_seq() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 1);
+        heap.update("b", 1);
+        heap.update("c", 1);
+        assert_eq!(heap.pop_best(), Some(("a", 1)));
+        assert_eq!(heap.pop_best(), Some(("b", 1)));
+        assert_eq!(heap.pop_best(), Some(("c", 1)));
+    }
+
+    #[test]
+    fn lazy_heap_remove_does_not_touch_heap_until_pop() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 2);
+        heap.update("b", 1);
+        assert_eq!(heap.remove(&"b"), Some(1));
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.pop_best(), Some(("a", 2)));
+        assert_eq!(heap.pop_best(), None);
+    }
+
+    #[test]
+    fn lazy_heap_rebuild_cleans_stale_entries() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 5);
+        heap.update("a", 4);
+        heap.update("a", 3);
+        heap.update("b", 2);
+        assert!(heap.heap_len() > heap.len());
+
+        heap.rebuild();
+        assert_eq!(heap.heap_len(), heap.len());
+        assert_eq!(heap.pop_best(), Some(("b", 2)));
+        assert_eq!(heap.pop_best(), Some(("a", 3)));
+    }
+
+    #[test]
+    fn lazy_heap_maybe_rebuild_triggers_on_factor() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 3);
+        heap.update("a", 2);
+        heap.update("a", 1);
+        heap.update("b", 4);
+        assert!(heap.heap_len() > heap.len());
+
+        heap.maybe_rebuild(1);
+        assert_eq!(heap.heap_len(), heap.len());
+        assert_eq!(heap.pop_best(), Some(("a", 1)));
+    }
 }

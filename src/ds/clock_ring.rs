@@ -153,4 +153,112 @@ mod tests {
         assert!(ring.contains(&"a"));
         assert!(ring.contains(&"c"));
     }
+
+    #[test]
+    fn clock_ring_zero_capacity_is_noop() {
+        let mut ring = ClockRing::<&str, i32>::new(0);
+        assert!(ring.is_empty());
+        assert_eq!(ring.capacity(), 0);
+        assert_eq!(ring.insert("a", 1), None);
+        assert!(ring.is_empty());
+        assert!(ring.peek(&"a").is_none());
+        assert!(ring.get(&"a").is_none());
+        assert!(!ring.contains(&"a"));
+    }
+
+    #[test]
+    fn clock_ring_insert_and_peek_no_eviction() {
+        let mut ring = ClockRing::new(3);
+        assert_eq!(ring.insert("a", 1), None);
+        assert_eq!(ring.insert("b", 2), None);
+        assert_eq!(ring.insert("c", 3), None);
+        assert_eq!(ring.len(), 3);
+        assert!(ring.contains(&"a"));
+        assert!(ring.contains(&"b"));
+        assert!(ring.contains(&"c"));
+        assert_eq!(ring.peek(&"a"), Some(&1));
+        assert_eq!(ring.peek(&"b"), Some(&2));
+        assert_eq!(ring.peek(&"c"), Some(&3));
+    }
+
+    #[test]
+    fn clock_ring_update_existing_key_does_not_grow() {
+        let mut ring = ClockRing::new(2);
+        assert_eq!(ring.insert("a", 1), None);
+        assert_eq!(ring.insert("b", 2), None);
+        assert_eq!(ring.len(), 2);
+
+        assert_eq!(ring.insert("a", 10), None);
+        assert_eq!(ring.len(), 2);
+        assert_eq!(ring.peek(&"a"), Some(&10));
+    }
+
+    #[test]
+    fn clock_ring_get_sets_referenced_and_eviction_skips_it() {
+        let mut ring = ClockRing::new(2);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        assert_eq!(ring.get(&"a"), Some(&1));
+        let evicted = ring.insert("c", 3);
+
+        assert_eq!(evicted, Some(("b", 2)));
+        assert!(ring.contains(&"a"));
+        assert!(ring.contains(&"c"));
+        assert!(!ring.contains(&"b"));
+    }
+
+    #[test]
+    fn clock_ring_touch_marks_referenced() {
+        let mut ring = ClockRing::new(2);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        assert!(ring.touch(&"b"));
+
+        let evicted = ring.insert("c", 3);
+        assert_eq!(evicted, Some(("a", 1)));
+        assert!(ring.contains(&"b"));
+        assert!(ring.contains(&"c"));
+    }
+
+    #[test]
+    fn clock_ring_remove_clears_slot_and_updates_len() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+        assert_eq!(ring.len(), 3);
+
+        assert_eq!(ring.remove(&"b"), Some(2));
+        assert_eq!(ring.len(), 2);
+        assert!(!ring.contains(&"b"));
+        assert!(ring.peek(&"b").is_none());
+
+        let evicted = ring.insert("d", 4);
+        assert!(ring.contains(&"d"));
+        assert!(!ring.contains(&"b"));
+        if evicted.is_some() {
+            assert_eq!(ring.len(), 2);
+        } else {
+            assert_eq!(ring.len(), 3);
+        }
+    }
+
+    #[test]
+    fn clock_ring_eviction_cycles_with_hand_wrap() {
+        let mut ring = ClockRing::new(2);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        let evicted1 = ring.insert("c", 3);
+        assert!(matches!(evicted1, Some(("a", 1)) | Some(("b", 2))));
+        assert_eq!(ring.len(), 2);
+
+        let evicted2 = ring.insert("d", 4);
+        assert!(matches!(
+            evicted2,
+            Some(("a", 1)) | Some(("b", 2)) | Some(("c", 3))
+        ));
+        assert_eq!(ring.len(), 2);
+        assert!(ring.contains(&"d"));
+    }
 }

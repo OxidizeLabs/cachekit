@@ -204,4 +204,85 @@ mod tests {
         assert!(!arena.contains(id));
         assert!(arena.is_empty());
     }
+
+    #[test]
+    fn slot_arena_remove_invalid_id_is_none() {
+        let mut arena: SlotArena<i32> = SlotArena::new();
+        let id = SlotId(0);
+        assert_eq!(arena.remove(id), None);
+        assert!(!arena.contains(id));
+        assert!(arena.is_empty());
+    }
+
+    #[test]
+    fn slot_arena_clear_resets_state() {
+        let mut arena = SlotArena::with_capacity(4);
+        let a = arena.insert("a");
+        let b = arena.insert("b");
+        assert_eq!(arena.len(), 2);
+        assert!(arena.contains(a));
+        assert!(arena.contains(b));
+
+        arena.clear();
+        assert_eq!(arena.len(), 0);
+        assert!(arena.is_empty());
+        assert!(!arena.contains(a));
+        assert!(!arena.contains(b));
+        assert_eq!(arena.iter().count(), 0);
+    }
+
+    #[test]
+    fn slot_arena_iter_skips_empty_slots() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert("a");
+        let b = arena.insert("b");
+        let c = arena.insert("c");
+        assert_eq!(arena.remove(b), Some("b"));
+
+        let mut values: Vec<_> = arena.iter().map(|(_, v)| *v).collect();
+        values.sort();
+        assert_eq!(values, vec!["a", "c"]);
+        assert!(arena.contains(a));
+        assert!(arena.contains(c));
+    }
+
+    #[test]
+    fn slot_arena_get_mut_updates_value() {
+        let mut arena = SlotArena::new();
+        let id = arena.insert(1);
+        if let Some(value) = arena.get_mut(id) {
+            *value = 2;
+        }
+        assert_eq!(arena.get(id), Some(&2));
+    }
+
+    #[test]
+    fn slot_arena_capacity_tracking() {
+        let arena: SlotArena<i32> = SlotArena::with_capacity(16);
+        assert!(arena.capacity() >= 16);
+        assert_eq!(arena.len(), 0);
+    }
+
+    #[test]
+    fn concurrent_slot_arena_clear_and_accessors() {
+        let arena = ConcurrentSlotArena::new();
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+        assert_eq!(arena.get_with(a, |v| *v), Some(1));
+        assert_eq!(arena.get_with(b, |v| *v), Some(2));
+
+        arena.clear();
+        assert!(arena.is_empty());
+        assert!(!arena.contains(a));
+        assert!(!arena.contains(b));
+        assert_eq!(arena.get_with(a, |v| *v), None);
+    }
+
+    #[test]
+    fn concurrent_slot_arena_get_mut_with_updates_value() {
+        let arena = ConcurrentSlotArena::new();
+        let id = arena.insert(5);
+        arena.get_mut_with(id, |v| *v = 10);
+        assert_eq!(arena.get_with(id, |v| *v), Some(10));
+    }
 }

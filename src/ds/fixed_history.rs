@@ -78,4 +78,51 @@ mod tests {
         assert_eq!(history.to_vec_mru(), vec![40, 30, 20]);
         assert_eq!(history.kth_most_recent(3), Some(20));
     }
+
+    #[test]
+    fn fixed_history_empty_returns_none() {
+        let history = FixedHistory::<4>::new();
+        assert!(history.is_empty());
+        assert_eq!(history.len(), 0);
+        assert_eq!(history.most_recent(), None);
+        assert_eq!(history.kth_most_recent(1), None);
+        assert_eq!(history.to_vec_mru(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn fixed_history_kth_bounds() {
+        let mut history = FixedHistory::<3>::new();
+        history.record(10);
+        history.record(20);
+        assert_eq!(history.kth_most_recent(0), None);
+        assert_eq!(history.kth_most_recent(3), None);
+        assert_eq!(history.kth_most_recent(1), Some(20));
+        assert_eq!(history.kth_most_recent(2), Some(10));
+    }
+
+    #[test]
+    fn fixed_history_wraps_and_overwrites_oldest() {
+        let mut history = FixedHistory::<2>::new();
+        history.record(1);
+        history.record(2);
+        assert_eq!(history.to_vec_mru(), vec![2, 1]);
+
+        history.record(3);
+        assert_eq!(history.to_vec_mru(), vec![3, 2]);
+        assert_eq!(history.most_recent(), Some(3));
+        assert_eq!(history.kth_most_recent(2), Some(2));
+    }
+
+    #[test]
+    fn fixed_history_preserves_order_after_multiple_wraps() {
+        let mut history = FixedHistory::<3>::new();
+        for t in 1..=6 {
+            history.record(t);
+        }
+        assert_eq!(history.len(), 3);
+        assert_eq!(history.to_vec_mru(), vec![6, 5, 4]);
+        assert_eq!(history.kth_most_recent(1), Some(6));
+        assert_eq!(history.kth_most_recent(2), Some(5));
+        assert_eq!(history.kth_most_recent(3), Some(4));
+    }
 }

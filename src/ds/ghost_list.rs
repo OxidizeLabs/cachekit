@@ -93,4 +93,60 @@ mod tests {
         assert!(ghost.contains(&"c"));
         assert!(!ghost.contains(&"b"));
     }
+
+    #[test]
+    fn ghost_list_zero_capacity_is_noop() {
+        let mut ghost = GhostList::new(0);
+        ghost.record("a");
+        ghost.record("b");
+        assert!(ghost.is_empty());
+        assert_eq!(ghost.len(), 0);
+        assert!(!ghost.contains(&"a"));
+        assert!(!ghost.contains(&"b"));
+    }
+
+    #[test]
+    fn ghost_list_record_existing_moves_to_front() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+        assert!(ghost.contains(&"a"));
+        assert!(ghost.contains(&"b"));
+        assert!(ghost.contains(&"c"));
+
+        ghost.record("a");
+        ghost.record("d");
+
+        assert!(ghost.contains(&"a"));
+        assert!(!ghost.contains(&"b"));
+        assert!(ghost.contains(&"c"));
+        assert!(ghost.contains(&"d"));
+    }
+
+    #[test]
+    fn ghost_list_remove_existing_and_missing() {
+        let mut ghost = GhostList::new(2);
+        ghost.record("a");
+        ghost.record("b");
+        assert!(ghost.remove(&"a"));
+        assert!(!ghost.contains(&"a"));
+        assert_eq!(ghost.len(), 1);
+
+        assert!(!ghost.remove(&"missing"));
+        assert_eq!(ghost.len(), 1);
+    }
+
+    #[test]
+    fn ghost_list_clear_resets_state() {
+        let mut ghost = GhostList::new(2);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.clear();
+
+        assert!(ghost.is_empty());
+        assert_eq!(ghost.len(), 0);
+        assert!(!ghost.contains(&"a"));
+        assert!(!ghost.contains(&"b"));
+    }
 }

@@ -387,4 +387,99 @@ mod tests {
         assert!(list.is_empty());
         assert!(!list.contains(a));
     }
+
+    #[test]
+    fn intrusive_list_iter_order() {
+        let mut list = IntrusiveList::new();
+        list.push_back(1);
+        list.push_back(2);
+        list.push_back(3);
+        let values: Vec<_> = list.iter().copied().collect();
+        assert_eq!(values, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn intrusive_list_move_to_front_back_edges() {
+        let mut list = IntrusiveList::new();
+        let a = list.push_back("a");
+        let b = list.push_back("b");
+        let c = list.push_back("c");
+
+        assert!(list.move_to_front(a));
+        let values: Vec<_> = list.iter().copied().collect();
+        assert_eq!(values, vec!["a", "b", "c"]);
+
+        assert!(list.move_to_back(a));
+        let values: Vec<_> = list.iter().copied().collect();
+        assert_eq!(values, vec!["b", "c", "a"]);
+
+        assert!(list.move_to_front(c));
+        let values: Vec<_> = list.iter().copied().collect();
+        assert_eq!(values, vec!["c", "b", "a"]);
+
+        assert!(list.contains(b));
+    }
+
+    #[test]
+    fn intrusive_list_remove_middle_and_ends() {
+        let mut list = IntrusiveList::new();
+        let a = list.push_back("a");
+        let b = list.push_back("b");
+        let c = list.push_back("c");
+
+        assert_eq!(list.remove(b), Some("b"));
+        let values: Vec<_> = list.iter().copied().collect();
+        assert_eq!(values, vec!["a", "c"]);
+
+        assert_eq!(list.remove(a), Some("a"));
+        assert_eq!(list.front(), Some(&"c"));
+        assert_eq!(list.back(), Some(&"c"));
+
+        assert_eq!(list.remove(c), Some("c"));
+        assert!(list.is_empty());
+        assert_eq!(list.front(), None);
+        assert_eq!(list.back(), None);
+    }
+
+    #[test]
+    fn intrusive_list_clear_resets_state() {
+        let mut list = IntrusiveList::new();
+        list.push_back(1);
+        list.push_back(2);
+        list.clear();
+        assert!(list.is_empty());
+        assert_eq!(list.front(), None);
+        assert_eq!(list.back(), None);
+        assert_eq!(list.pop_front(), None);
+        assert_eq!(list.pop_back(), None);
+    }
+
+    #[test]
+    fn intrusive_list_get_mut_updates_value() {
+        let mut list = IntrusiveList::new();
+        let id = list.push_back(10);
+        if let Some(value) = list.get_mut(id) {
+            *value = 20;
+        }
+        assert_eq!(list.get(id), Some(&20));
+    }
+
+    #[test]
+    fn concurrent_intrusive_list_clear_and_accessors() {
+        let list = ConcurrentIntrusiveList::new();
+        let a = list.push_front(1);
+        let b = list.push_back(2);
+
+        assert_eq!(list.get_with(a, |v| *v), Some(1));
+        assert_eq!(list.get_with(b, |v| *v), Some(2));
+        assert!(list.contains(a));
+        assert!(list.contains(b));
+
+        list.clear();
+        assert!(list.is_empty());
+        assert_eq!(list.front_with(|v| *v), None);
+        assert_eq!(list.back_with(|v| *v), None);
+        assert!(!list.contains(a));
+        assert!(!list.contains(b));
+    }
 }
