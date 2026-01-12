@@ -72,19 +72,15 @@ jobs:
           rustup override set nightly
           cargo miri setup
       - name: Test with Miri (core DS + light policies)
-        run: >
-          cargo miri test --package cachekit --lib
-          ds::slot_arena
-          ds::intrusive_list
-          ds::fixed_history
-          ds::clock_ring
-          ds::ghost_list
-          ds::lazy_heap
-          ds::frequency_buckets
-          policy::fifo::fifo_no_metrics
-          policy::lfu
-          policy::lru_k
-          -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+        run: |
+          cargo miri test --package cachekit --lib ds:: \
+            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+          cargo miri test --package cachekit --lib policy::fifo::fifo_no_metrics \
+            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+          cargo miri test --package cachekit --lib policy::lfu \
+            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+          cargo miri test --package cachekit --lib policy::lru_k \
+            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
 
   # Documentation build check
   docs:
