@@ -73,10 +73,8 @@ jobs:
           cargo miri setup
       - name: Test with Miri (core DS + light policies)
         run: |
-          cargo miri test --package cachekit --lib ds:: \
-            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
-          cargo miri test --package cachekit --lib policy:: \
-            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+          cargo miri test --package cachekit --lib ds:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+          cargo miri test --package cachekit --lib policy:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
 
   # Documentation build check
   docs:
