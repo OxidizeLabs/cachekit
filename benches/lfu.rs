@@ -1,12 +1,13 @@
 mod common;
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use cachekit::ds::FrequencyBucketsHandle;
 use cachekit::policy::lfu::LFUCache;
 use cachekit::traits::{CoreCache, LFUCacheTrait};
 use common::workload::{Workload, WorkloadSpec, run_hit_rate};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use std::sync::Arc;
-use std::time::Instant;
 
 fn bench_lfu_insert_get_end_to_end(c: &mut Criterion) {
     let mut group = c.benchmark_group("lfu_end_to_end");

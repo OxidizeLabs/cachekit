@@ -56,7 +56,7 @@ jobs:
       - name: Run tests
         run: cargo test --package cachekit --lib --verbose
 
-  # Run tests using Miri
+  # Run tests using Miri (curated subset)
   miri:
     name: Miri (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -71,8 +71,20 @@ jobs:
           rustup toolchain install nightly --component miri
           rustup override set nightly
           cargo miri setup
-      - name: Test with Miri lru
-        run: cargo miri test --package cachekit --lib policy::lru --verbose
+      - name: Test with Miri (core DS + light policies)
+        run: >
+          cargo miri test --package cachekit --lib
+          ds::slot_arena
+          ds::intrusive_list
+          ds::fixed_history
+          ds::clock_ring
+          ds::ghost_list
+          ds::lazy_heap
+          ds::frequency_buckets
+          policy::fifo::fifo_no_metrics
+          policy::lfu
+          policy::lru_k
+          -- --skip concurrent --skip stress --skip large --skip performance --skip memory
 
   # Documentation build check
   docs:

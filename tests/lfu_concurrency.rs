@@ -2,17 +2,19 @@
 // LFU CONCURRENCY TESTS (integration)
 // ==============================================
 
-use cachekit::policy::lfu::LFUCache;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use cachekit::policy::lfu::LFUCache;
 
 type ThreadSafeLFUCache<K, V> = Arc<Mutex<LFUCache<K, V>>>;
 
 // Thread Safety Tests
 mod thread_safety {
-    use super::*;
     use cachekit::traits::{CoreCache, LFUCacheTrait, MutableCache};
+
+    use super::*;
 
     #[test]
     fn test_concurrent_insertions() {
@@ -720,11 +722,13 @@ mod thread_safety {
 }
 
 mod stress_testing {
-    use super::*;
-    use cachekit::traits::{CoreCache, LFUCacheTrait};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    use cachekit::traits::{CoreCache, LFUCacheTrait};
+
+    use super::*;
 
     #[test]
     fn test_high_contention_scenario() {

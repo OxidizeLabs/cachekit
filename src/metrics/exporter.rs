@@ -1,9 +1,10 @@
+use std::io::Write;
+use std::sync::Mutex;
+
 use crate::metrics::snapshot::{
     CacheMetricsSnapshot, LfuMetricsSnapshot, LruKMetricsSnapshot, LruMetricsSnapshot,
 };
 use crate::metrics::traits::MetricsExporter;
-use std::io::Write;
-use std::sync::Mutex;
 
 /// Prometheus text exporter for cache metrics snapshots.
 ///

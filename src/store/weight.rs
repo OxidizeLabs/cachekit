@@ -28,12 +28,15 @@
 //!
 //! ## Example Usage
 //! ```rust
-//! use cachekit::store::weight::WeightStore;
-//! use cachekit::store::traits::StoreMut;
 //! use std::sync::Arc;
 //!
+//! use cachekit::store::traits::StoreMut;
+//! use cachekit::store::weight::WeightStore;
+//!
 //! let mut store = WeightStore::with_capacity(10, 64, |v: &String| v.len());
-//! store.try_insert("k1", Arc::new("value".to_string())).unwrap();
+//! store
+//!     .try_insert("k1", Arc::new("value".to_string()))
+//!     .unwrap();
 //! ```
 //!
 //! ## Type Constraints

@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use cachekit::policy::lru::LRUCore;
 use cachekit::traits::CoreCache;
-use std::sync::Arc;
 
 fn main() {
     let mut cache: LRUCore<u32, String> = LRUCore::new(2);

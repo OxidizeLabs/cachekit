@@ -69,9 +69,10 @@
 //! ## Notes
 //! - Slots are reused in place; keys map directly to slot indices.
 //! - `debug_validate_invariants()` is available in debug/test builds.
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::Hash;
+
+use parking_lot::RwLock;
 
 #[derive(Debug)]
 struct Entry<K, V> {

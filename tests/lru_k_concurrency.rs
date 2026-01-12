@@ -9,9 +9,10 @@ use std::time::Duration;
 
 // Thread Safety Tests
 mod thread_safety {
-    use super::*;
     use cachekit::policy::lru_k::LRUKCache;
     use cachekit::traits::{CoreCache, LRUKCacheTrait};
+
+    use super::*;
 
     type ThreadSafeLRUK<K, V> = Arc<Mutex<LRUKCache<K, V>>>;
 
@@ -237,9 +238,10 @@ mod thread_safety {
 
 // Stress Testing (kept lightweight to avoid long runtimes)
 mod stress_testing {
-    use super::*;
     use cachekit::policy::lru_k::LRUKCache;
     use cachekit::traits::{CoreCache, LRUKCacheTrait};
+
+    use super::*;
 
     type ThreadSafeLRUK<K, V> = Arc<Mutex<LRUKCache<K, V>>>;
 

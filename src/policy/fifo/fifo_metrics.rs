@@ -271,6 +271,13 @@
 //! - **Update Semantics**: Updating existing key preserves insertion position
 //! - **Zero Capacity**: Supported - rejects all insertions
 
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::hash::Hash;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+
 use crate::metrics::metrics_impl::CacheMetrics;
 use crate::metrics::snapshot::CacheMetricsSnapshot;
 use crate::metrics::traits::{
@@ -279,11 +286,6 @@ use crate::metrics::traits::{
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{ConcurrentCache, CoreCache, FIFOCacheTrait};
-use parking_lot::RwLock;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::hash::Hash;
-use std::sync::Arc;
 
 /// FIFO (First In, First Out) Cache.
 ///
@@ -682,9 +684,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::policy::fifo::FIFOCache;
     use crate::traits::{CoreCache, FIFOCacheTrait};
-    use std::collections::HashSet;
 
     // Basic FIFO Behavior Tests
     mod basic_behavior {

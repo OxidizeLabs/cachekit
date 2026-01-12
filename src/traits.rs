@@ -142,7 +142,6 @@
 //!   │   Purpose: Guarantee thread-safe cache implementations                  │
 //!   │   Usage: fn use_cache<C: CoreCache<K, V> + ConcurrentCache>(c: &C)      │
 //!   └─────────────────────────────────────────────────────────────────────────┘
-//!
 //! ```
 //!
 //! ## Cache Tier Management

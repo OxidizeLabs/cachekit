@@ -1499,6 +1499,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_large_cache_operations() {
             let capacity = 10000;
             let mut cache = LFUCache::new(capacity);

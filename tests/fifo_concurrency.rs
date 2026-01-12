@@ -7,9 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod thread_safe_wrapper {
-    use super::*;
     use cachekit::prelude::FIFOCache;
     use cachekit::traits::{CoreCache, FIFOCacheTrait};
+
+    use super::*;
 
     // Helper type for thread-safe testing
     type ThreadSafeFIFOCache<K, V> = Arc<Mutex<FIFOCache<K, V>>>;
@@ -566,9 +567,10 @@ mod thread_safe_wrapper {
 
 // Stress Testing
 mod stress_testing {
-    use super::*;
     use cachekit::prelude::FIFOCache;
     use cachekit::traits::{CoreCache, FIFOCacheTrait};
+
+    use super::*;
 
     // Helper type for thread-safe testing
     type ThreadSafeFIFOCache<K, V> = Arc<Mutex<FIFOCache<K, V>>>;

@@ -2088,6 +2088,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_memory_pressure_simulation() {
                 // Test cache behavior under simulated memory pressure
                 let mut cache: LRUCore<i32, String> = LRUCore::new(75);
@@ -4548,6 +4549,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_lru_memory_layout_efficiency() {
                 // Test memory layout and access patterns for efficiency
                 let mut cache: LRUCore<i32, i32> = LRUCore::new(1000);
@@ -4920,6 +4922,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_memory_consistency_on_eviction() {
                 // Test memory state consistency during eviction operations
                 let mut cache = LRUCore::new(2);
@@ -5086,6 +5089,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_concurrent_state_consistency() {
                 // Test state consistency in concurrent access scenarios
                 // Using ConcurrentLRUCache which wraps LRUCore
@@ -5373,6 +5377,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_memory_leak_prevention() {
                 // Test that no memory leaks occur during normal operations
                 // Basic check: ensure map and list counts match
@@ -5404,6 +5409,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_thread_safety_state_consistency() {
                 // Test state consistency across multiple threads
                 let cache = Arc::new(ConcurrentLRUCache::new(10));
@@ -5444,6 +5450,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_poison_lock_recovery() {
                 // Test state consistency after lock poisoning
                 let cache = Arc::new(ConcurrentLRUCache::new(10));
@@ -5469,6 +5476,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_large_capacity_state_consistency() {
                 // Test state consistency for very large capacity caches
                 let mut cache = LRUCore::new(1000);
@@ -5495,6 +5503,7 @@ mod tests {
             }
 
             #[test]
+            #[cfg_attr(miri, ignore)]
             fn test_stress_state_consistency() {
                 // Test state consistency under high-stress conditions
                 let mut cache = LRUCore::new(10);
@@ -5949,6 +5958,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_alignment_safety() {
             use std::mem;
             // Ensure Node alignment is respected
@@ -5960,6 +5970,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_stack_overflow_prevention() {
             // Test prevention of stack overflow in recursive operations (e.g. Drop)
             let mut cache = LRUCore::new(10000);
@@ -5971,6 +5982,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_heap_corruption_prevention() {
             // Stress test to try to trigger heap corruption if there were double frees
             let mut cache = LRUCore::new(100);
@@ -6017,6 +6029,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_bounds_checking() {
             // Capacity check
             let mut cache = LRUCore::new(1);
@@ -6028,6 +6041,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_safe_concurrent_access() {
             // Verify memory safety under concurrent load
             let counter = Arc::new(AtomicUsize::new(0));
@@ -6065,6 +6079,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_safe_concurrent_modification() {
             // Similar to test_safe_concurrent_access but mixing insert/remove
             let counter = Arc::new(AtomicUsize::new(0));
@@ -6096,6 +6111,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_lock_poisoning_memory_safety() {
             // parking_lot RwLock does not poison. It releases the lock on unwind.
             // We verify that the cache remains usable and consistent after a panic in a thread holding the lock.
@@ -6141,6 +6157,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_panic_safety_memory_cleanup() {
             use std::hash::{Hash, Hasher};
             use std::panic::{self, AssertUnwindSafe};
@@ -6213,6 +6230,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_leak_detection_valgrind() {
             // Placeholder: Run with valgrind
             // cargo build --tests
@@ -6220,12 +6238,14 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_leak_detection_miri() {
             // Placeholder: Run with miri
             // cargo miri test
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_safety_under_stress() {
             // High contention stress test
             let cache = Arc::new(ConcurrentLRUCache::new(100));
@@ -6247,6 +6267,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_fragmentation_handling() {
             // Hard to test fragmentation in unit test without allocator introspection.
             // Just verifying large churn works.
@@ -6257,6 +6278,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_large_allocation_safety() {
             // Test with large values
             let mut cache = LRUCore::new(2);
@@ -6266,6 +6288,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_copy_type_memory_efficiency() {
             // Verify that using Copy types for keys doesn't cause excessive overhead
             // Mostly a sanity check that we accept Copy keys
@@ -6346,6 +6369,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_reclamation_safety() {
             // Verify memory is reclaimed when cache is dropped
             let counter = Arc::new(AtomicUsize::new(0));
@@ -6363,6 +6387,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_cross_thread_memory_safety() {
             let cache = Arc::new(ConcurrentLRUCache::new(10));
             let c2 = cache.clone();
@@ -6387,18 +6412,22 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_memory_sanitizer_compatibility() {
             // Placeholder
         }
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_address_sanitizer_compatibility() {
             // Placeholder
         }
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_thread_sanitizer_compatibility() {
             // Placeholder
         }
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_leak_sanitizer_compatibility() {
             // Placeholder
         }

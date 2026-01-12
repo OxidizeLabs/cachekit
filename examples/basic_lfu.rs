@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use cachekit::policy::lfu::LFUCache;
 use cachekit::traits::CoreCache;
-use std::sync::Arc;
 
 fn main() {
     let mut cache: LFUCache<&str, String> = LFUCache::new(2);

@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 // ==============================================
 
 mod thread_safety {
-    use super::*;
     use cachekit::policy::lru::ConcurrentLRUCache;
+
+    use super::*;
 
     #[test]
     fn test_concurrent_insert_operations() {
@@ -207,8 +208,9 @@ mod thread_safety {
 }
 
 mod stress_testing {
-    use super::*;
     use cachekit::policy::lru::ConcurrentLRUCache;
+
+    use super::*;
 
     #[test]
     fn test_high_throughput_operations() {

@@ -1,11 +1,12 @@
 mod common;
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use cachekit::policy::lru::LRUCore;
 use cachekit::traits::{CoreCache, LRUCacheTrait};
 use common::workload::{Workload, WorkloadSpec, run_hit_rate};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use std::sync::Arc;
-use std::time::Instant;
 
 fn bench_lru_insert_get(c: &mut Criterion) {
     let mut group = c.benchmark_group("lru_policy");

@@ -4,7 +4,6 @@ pub use crate::ds::{
     KeyInterner, LazyMinHeap, ShardSelector, ShardedFrequencyBucketEntryMeta,
     ShardedFrequencyBuckets, ShardedSlotArena, ShardedSlotId, SlotArena, SlotId,
 };
-pub use crate::policy::fifo::FIFOCache;
-
 #[cfg(feature = "metrics")]
 pub use crate::metrics::snapshot::CacheMetricsSnapshot;
+pub use crate::policy::fifo::FIFOCache;

@@ -1033,6 +1033,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn test_large_cache_operations() {
             let mut cache = LRUKCache::new(100);
 

@@ -32,15 +32,18 @@
 //!
 //! ## Example Usage
 //! ```rust
+//! use std::sync::Arc;
+//!
 //! use cachekit::ds::KeyInterner;
 //! use cachekit::store::handle::HandleStore;
 //! use cachekit::store::traits::StoreMut;
-//! use std::sync::Arc;
 //!
 //! let mut interner = KeyInterner::new();
 //! let handle = interner.intern("alpha".to_string());
 //! let mut store: HandleStore<_, String> = HandleStore::new(2);
-//! store.try_insert(handle, Arc::new("value".to_string())).unwrap();
+//! store
+//!     .try_insert(handle, Arc::new("value".to_string()))
+//!     .unwrap();
 //! ```
 //!
 //! ## Type Constraints
@@ -54,15 +57,17 @@
 //! ## Implementation Notes
 //! - Handles must remain stable for the lifetime of stored entries.
 //! - Metrics are stored separately to keep the hot path simple.
-use crate::store::traits::{
-    ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
-};
-use parking_lot::RwLock;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use parking_lot::RwLock;
+
+use crate::store::traits::{
+    ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
+};
 
 /// Store metrics counters for single-threaded handle stores.
 #[derive(Debug, Default)]

@@ -28,9 +28,10 @@
 //!
 //! ## Example Usage
 //! ```rust
+//! use std::sync::Arc;
+//!
 //! use cachekit::store::hashmap::HashMapStore;
 //! use cachekit::store::traits::StoreMut;
-//! use std::sync::Arc;
 //!
 //! let mut store: HashMapStore<u64, String> = HashMapStore::new(2);
 //! store.try_insert(1, Arc::new("a".to_string())).unwrap();
@@ -48,15 +49,17 @@
 //! ## Implementation Notes
 //! - Sharded store uses the configured hasher to pick shards.
 //! - Metrics are tracked with atomics for concurrent access.
-use crate::store::traits::{
-    ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
-};
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use parking_lot::RwLock;
+
+use crate::store::traits::{
+    ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
+};
 
 /// Store metrics counters for concurrent hash map stores.
 #[derive(Debug, Default)]

@@ -30,8 +30,9 @@
 //! - `iter`: O(n)
 //!
 //! `debug_validate_invariants()` is available in debug/test builds.
-use crate::ds::slot_arena::{SlotArena, SlotId};
 use parking_lot::RwLock;
+
+use crate::ds::slot_arena::{SlotArena, SlotId};
 
 #[derive(Debug)]
 struct Node<T> {

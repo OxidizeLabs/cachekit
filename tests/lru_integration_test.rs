@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 #[cfg(test)]
 mod integration_tests {
-    use super::*;
     use cachekit::policy::lru::{ConcurrentLRUCache, LRUCore};
     use cachekit::traits::{CoreCache, LRUCacheTrait, MutableCache};
+
+    use super::*;
 
     #[test]
     fn test_zero_copy_lru_core() {

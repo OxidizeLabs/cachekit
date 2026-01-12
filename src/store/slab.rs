@@ -39,9 +39,10 @@
 //!
 //! ## Example Usage
 //! ```rust
-//! use cachekit::store::slab::{SlabStore, SharedSlabStore};
-//! use cachekit::store::traits::StoreMut;
 //! use std::sync::Arc;
+//!
+//! use cachekit::store::slab::{SharedSlabStore, SlabStore};
+//! use cachekit::store::traits::StoreMut;
 //!
 //! let mut store: SharedSlabStore<u64, String> = SlabStore::new(4);
 //! store.try_insert(1, Arc::new("a".to_string())).unwrap();

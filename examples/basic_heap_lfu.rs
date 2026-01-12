@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use cachekit::policy::heap_lfu::HeapLFUCache;
 use cachekit::traits::CoreCache;
-use std::sync::Arc;
 
 fn main() {
     let mut cache: HeapLFUCache<&str, String> = HeapLFUCache::new(2);

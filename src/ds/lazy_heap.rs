@@ -27,10 +27,8 @@
 //! - `rebuild`: O(n) when heap grows too stale
 //!
 //! `debug_validate_invariants()` is available in debug/test builds.
-use std::cmp::Ordering;
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-use std::collections::HashMap;
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 
 #[derive(Debug, Clone)]

@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod lookup_performance {
-    use super::*;
     use cachekit::policy::lfu::LFUCache;
     use cachekit::traits::{CoreCache, LFUCacheTrait};
+
+    use super::*;
 
     #[test]
     #[cfg_attr(
@@ -736,9 +737,10 @@ mod lookup_performance {
 }
 
 mod insertion_performance {
-    use super::*;
     use cachekit::policy::lfu::LFUCache;
     use cachekit::traits::{CoreCache, LFUCacheTrait};
+
+    use super::*;
 
     #[test]
     #[cfg_attr(
@@ -1490,9 +1492,10 @@ mod insertion_performance {
 }
 
 mod eviction_performance {
-    use super::*;
     use cachekit::policy::lfu::LFUCache;
     use cachekit::traits::{CoreCache, LFUCacheTrait};
+
+    use super::*;
 
     #[test]
     #[cfg_attr(
@@ -2570,11 +2573,12 @@ mod memory_efficiency {
 }
 
 mod complexity {
-    use cachekit::policy::lfu::LFUCache;
-    use cachekit::traits::{CoreCache, LFUCacheTrait, MutableCache};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    use cachekit::policy::lfu::LFUCache;
+    use cachekit::traits::{CoreCache, LFUCacheTrait, MutableCache};
 
     /// Helper function to measure execution time of a closure
     fn measure_time<F, R>(operation: F) -> (R, Duration)
