@@ -75,11 +75,7 @@ jobs:
         run: |
           cargo miri test --package cachekit --lib ds:: \
             -- --skip concurrent --skip stress --skip large --skip performance --skip memory
-          cargo miri test --package cachekit --lib policy::fifo::fifo_no_metrics \
-            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
-          cargo miri test --package cachekit --lib policy::lfu \
-            -- --skip concurrent --skip stress --skip large --skip performance --skip memory
-          cargo miri test --package cachekit --lib policy::lru_k \
+          cargo miri test --package cachekit --lib policy:: \
             -- --skip concurrent --skip stress --skip large --skip performance --skip memory
 
   # Documentation build check
