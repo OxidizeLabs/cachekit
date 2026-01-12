@@ -112,7 +112,7 @@
 //! |------------------|----------------------------------------------------|
 //! | `LRUKCache<K,V>` | Main cache struct with store + K value             |
 //! | `index`          | `HashMap<K, usize>` to slot indices                |
-//! | `cold`/`hot`      | Segmented LRU lists (<K and >=K accesses)          |
+//! | `cold`/`hot`      | Segmented LRU lists (&lt;K and >=K accesses)       |
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!

@@ -963,6 +963,7 @@ mod tests {
             assert_eq!(cache.frequency(&1), Some(2));
             cache.insert(3, Arc::new(30));
             assert_eq!(cache.len(), 2);
+            #[cfg(debug_assertions)]
             cache.debug_validate_invariants();
         }
 
@@ -2072,10 +2073,12 @@ mod tests {
             cache.get(&"high".to_string()); // high: freq = 3
 
             #[cfg(debug_assertions)]
+            #[cfg(debug_assertions)]
             cache.debug_validate_invariants();
 
             cache.remove(&"mid".to_string());
 
+            #[cfg(debug_assertions)]
             #[cfg(debug_assertions)]
             cache.debug_validate_invariants();
 
@@ -2528,6 +2531,7 @@ mod tests {
 
             // Test eviction doesn't break LFU ordering
             #[cfg(debug_assertions)]
+            #[cfg(debug_assertions)]
             cache.debug_validate_invariants();
 
             // Test eviction with zero capacity
@@ -2673,6 +2677,7 @@ mod tests {
                     assert_eq!(contains_result, get_result);
                 }
 
+                #[cfg(debug_assertions)]
                 #[cfg(debug_assertions)]
                 cache.debug_validate_invariants();
             };
