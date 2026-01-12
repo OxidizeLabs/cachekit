@@ -35,3 +35,12 @@ Notes:
 - Values above are from `cargo bench --bench lru`, `--bench lru_k`, and
   `--bench lfu` run in the same session.
 - Throughput is derived from `Throughput::Elements(...)` in the benchmarks.
+
+## Release summary (tagged)
+
+Use this table to track benchmarks captured for releases. Update after tagging
+and running the release benchmarks.
+
+| Release | Date | Environment | Micro-ops (ns/op) | Policy throughput (Melem/s) | Workload throughput (Melem/s) | Report link |
+| --- | --- | --- | --- | --- | --- | --- |
+| v0.1.0 | 2025-01-12 | TBD | TBD | TBD | TBD | TBD |

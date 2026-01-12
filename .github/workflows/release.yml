@@ -19,11 +19,30 @@ jobs:
     name: GitHub Release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benchmarks
+        run: cargo bench --no-fail-fast
+      - name: Package benchmark results
+        run: tar -czf criterion-results.tar.gz target/criterion
+      - name: Prepare gh-pages publish directory
+        run: |
+          mkdir -p target/gh-pages/benchmarks/${{ github.ref_name }}
+          mkdir -p target/gh-pages/benchmarks/latest
+          cp -R target/criterion/. target/gh-pages/benchmarks/${{ github.ref_name }}/
+          cp -R target/criterion/. target/gh-pages/benchmarks/latest/
+      - name: Publish benchmark report to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: target/gh-pages
       - name: Create release for tag push
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: criterion-results.tar.gz
 
       - name: Create release for manual dispatch
         if: github.event_name == 'workflow_dispatch'
@@ -31,3 +50,4 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           generate_release_notes: true
+          files: criterion-results.tar.gz
