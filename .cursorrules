@@ -27,3 +27,17 @@ Metrics & Observability
 Rust Pitfalls
 - Minimize Arc usage in hot paths; avoid hidden clones.
 - Prefer explicit loops and concrete types in performance-critical code.
+
+Documentation Layout
+- Use a consistent module doc layout: Architecture, Key Components, Core Operations, Performance Trade-offs, When to Use, Example Usage, Type Constraints, Thread Safety, Implementation Notes.
+- Keep examples short, compile-ready, and focused on a single use case.
+- Document public methods with concise docstrings; avoid restating the signature.
+
+Docstring Style Guide
+- Use Rustdoc (`//!` for modules, `///` for items).
+- Prefer one-sentence summaries; mention invariants or complexity only when they matter.
+- Avoid Args/Returns sections unless behavior is non-obvious.
+- Template:
+  //! ## Architecture
+  //! ...
+  /// Brief summary of behavior.
