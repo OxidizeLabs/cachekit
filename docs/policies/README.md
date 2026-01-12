@@ -9,26 +9,29 @@ These documents describe how to implement common cache eviction policies, with a
 - LFU: `src/policy/lfu.rs`
 - Heap LFU: `src/policy/heap_lfu.rs`
 
-**Index**
+**Index (Implemented)**
 
-- `opt.md` — Belady OPT / MIN (for trace evaluation)
-- `random.md` — Random eviction
 - `fifo.md` — FIFO
-- `lifo.md` — LIFO / FILO
 - `lru.md` — LRU
-- `mru.md` — MRU
-- `clock.md` — Second-chance / Clock
-- `nru.md` — NRU
-- `lfu.md` — LFU (bucketed)
-- `mfu.md` — MFU
-- `heap-lfu.md` — LFU via heap (lazy stale entries)
-- `lfu-aging.md` — Aging / decayed LFU patterns
 - `lru-k.md` — LRU-K
-- `2q.md` — 2Q
-- `slru.md` — Segmented LRU (SLRU)
-- `arc.md` — ARC
-- `car.md` — CAR (Clock with Adaptive Replacement)
-- `lirs.md` — LIRS
-- `clock-pro.md` — CLOCK-Pro
-- `gdsf.md` — GreedyDual-Size/Frequency style (size/cost-aware)
-- `ttl.md` — TTL (expiration; not an eviction policy)
+- `lfu.md` — LFU (bucketed)
+- `heap-lfu.md` — LFU via heap (lazy stale entries)
+
+**Roadmap (Not Implemented Yet)**
+
+- `roadmap/opt.md` — Belady OPT / MIN (for trace evaluation)
+- `roadmap/random.md` — Random eviction
+- `roadmap/lifo.md` — LIFO / FILO
+- `roadmap/mru.md` — MRU
+- `roadmap/clock.md` — Second-chance / Clock
+- `roadmap/nru.md` — NRU
+- `roadmap/mfu.md` — MFU
+- `roadmap/lfu-aging.md` — Aging / decayed LFU patterns
+- `roadmap/2q.md` — 2Q
+- `roadmap/slru.md` — Segmented LRU (SLRU)
+- `roadmap/arc.md` — ARC
+- `roadmap/car.md` — CAR (Clock with Adaptive Replacement)
+- `roadmap/lirs.md` — LIRS
+- `roadmap/clock-pro.md` — CLOCK-Pro
+- `roadmap/gdsf.md` — GreedyDual-Size/Frequency style (size/cost-aware)
+- `roadmap/ttl.md` — TTL (expiration; not an eviction policy)

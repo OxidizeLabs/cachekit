@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Initial project files
+- Nothing yet
 
 ### Changed
 - Nothing yet
@@ -24,3 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - Nothing yet
+
+## [0.1.0] - 2025-01-12
+
+### Added
+- Handle-based store (`HandleStore`, `ConcurrentHandleStore`) for zero-copy keys.
+- Concurrent slab store (`ConcurrentSlabStore`) with EntryId indirection.
+- Weight-aware store (`WeightStore`, `ConcurrentWeightStore`) for size-based limits.
+- HashMap stores now support custom hashers (`BuildHasher`).
+- Workload-style hit-rate benchmarks and grouped policy/micro-op benches.
+- Documentation style guide (`docs/style-guide.md`) and expanded module docs.
+
+### Changed
+- Benchmarks grouped by end-to-end, policy, micro-ops, and workloads.
+- LFU performance thresholds adjusted for debug/noisy environments.
+
+### Fixed
+- Clippy warnings across benches and store modules.
