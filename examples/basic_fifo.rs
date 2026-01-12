@@ -2,7 +2,7 @@ use cachekit::prelude::FIFOCache;
 use cachekit::traits::CoreCache;
 
 fn main() {
-    // Create an LRU cache with a capacity of 100 entries
+    // Create a FIFO cache with a capacity of 100 entries
     let mut cache = FIFOCache::new(100);
 
     // Insert an item
@@ -13,3 +13,8 @@ fn main() {
         println!("Got from cache: {}", value);
     }
 }
+
+// Expected output:
+// Got from cache: value1
+//
+// Explanation: FIFO preserves insertion order; the inserted key is still present.

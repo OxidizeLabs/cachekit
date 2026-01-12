@@ -46,7 +46,10 @@
 //! let mut store: SharedSlabStore<u64, String> = SlabStore::new(4);
 //! store.try_insert(1, Arc::new("a".to_string())).unwrap();
 //! let id = store.entry_id(&1).unwrap();
-//! assert_eq!(store.get_by_id(id).map(|v| v.as_str()), Some("a"));
+//! assert_eq!(
+//!     store.get_by_id(id).as_deref().map(String::as_str),
+//!     Some("a")
+//! );
 //! ```
 //!
 //! ## Type Constraints

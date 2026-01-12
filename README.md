@@ -21,6 +21,17 @@ This crate is designed for systems programming, microservices, and performance-c
 - Benchmarks to compare policy performance under real-world workloads.
 - Idiomatic Rust API with `no_std` compatibility where appropriate.
 
+## Documentation Index
+
+- `docs/design.md` — Architectural overview and design goals.
+- `docs/policies/README.md` — Implemented policies and roadmap.
+- `docs/policy-ds/README.md` — Data structure implementations used by policies.
+- `docs/policies.md` — Policy survey and tradeoffs.
+- `docs/style-guide.md` — Documentation style guide.
+- `docs/release-checklist.md` — Release readiness checklist.
+- `docs/integration.md` — Integration notes (placeholder).
+- `docs/metrics.md` — Metrics notes (placeholder).
+
 ## Installation
 
 Add `cachekit` as a dependency in your `Cargo.toml`:
