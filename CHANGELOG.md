@@ -8,10 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Nothing yet
+- Documentation index in `README.md`.
+- Example programs for LRU, LRU-K, LFU, and Heap LFU in `examples/`.
 
 ### Changed
-- Nothing yet
+- Example comments now include expected output and brief explanations.
 
 ### Deprecated
 - Nothing yet
