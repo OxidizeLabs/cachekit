@@ -1,13 +1,13 @@
-Designing high-performance caches for a DBMS in Rust is a multi-disciplinary problem: data structures, memory layout, concurrency, workload modeling, and systems-level performance all matter. The points below reflect what moves the needle in practice.
+Designing high-performance caches in Rust is a multi-disciplinary problem: data structures, memory layout, concurrency, workload modeling, and systems-level performance all matter. The points below reflect what moves the needle in practice across systems, services, and libraries.
 
 ## 1. Workload First, Policy Second
 
 Cache policy only matters relative to workload.
 
 Identify access patterns:
-- OLTP: skewed, hot keys, high churn.
-- OLAP: scans, large working sets, weak locality.
-- Mixed: bursts of hot data over large cold sets.
+- Hotset-heavy traffic: skewed keys, high churn.
+- Scan-heavy traffic: large working sets, weak locality.
+- Mixed traffic: bursts of hot data over large cold sets.
 
 Measure:
 - Reuse distance / stack distance.
@@ -16,14 +16,14 @@ Measure:
 
 Choose policies accordingly:
 - LRU: good for temporal locality, bad for scans.
-- LRU-K / 2Q: better at filtering one-off accesses.
-- Clock / ARC: lower overhead, more adaptive.
+- LRU-K / 2Q (roadmap): better at filtering one-off accesses.
+- Clock / ARC (roadmap): lower overhead, more adaptive.
 
-Never design a "general purpose" cache first, design for the workload you expect.
+Never design a "general purpose" cache first; design for the workload you expect.
 
 ## 2. Memory Layout Matters More Than Algorithms
 
-In a DBMS cache, memory layout often dominates policy.
+In a cache, memory layout often dominates policy.
 
 Prefer:
 - Contiguous storage (Vec, slabs, arenas).
@@ -38,7 +38,7 @@ Techniques:
 - Separate hot metadata from cold payloads.
 - Use slab allocators for fixed-size entries.
 
-Cache misses caused by your own data structure are as bad as disk misses.
+Cache misses caused by your own data structure are as bad as upstream misses.
 
 ## 3. Concurrency Strategy Is Core Design, Not a Wrapper
 
@@ -50,7 +50,7 @@ Options:
 - Lock-free or mostly-lock-free: hard in Rust, only worth it if contention dominates.
 
 Rust-specific notes:
-- Prefer parking_lot locks over std.
+- When `std` is available, prefer `parking_lot` locks over `std::sync` for lower overhead and better ergonomics.
 - Avoid Arc<Mutex<...>> in hot paths.
 - Consider per-thread caches with periodic merge.
 - Consider RCU-style read paths for read-heavy caches.
@@ -80,9 +80,9 @@ If malloc shows up in your flamegraph, your cache is already slow.
 
 Eviction is the critical slow path.
 
-O(1) eviction is mandatory.
+O(1) eviction is the goal.
 
-No tree walks, no scanning.
+Avoid unbounded tree walks or scans in eviction paths.
 
 Maintain:
 - Direct pointers/indices to eviction candidates.
@@ -103,7 +103,7 @@ Track at least:
 - Eviction count and reason.
 - Insert/update rate.
 - Scan pollution rate.
-- Lock contention or wait time.
+- Lock contention or wait time (roadmap).
 
 Expose:
 - Lightweight counters in hot path.
@@ -115,8 +115,8 @@ Metrics should guide design decisions, not justify them afterward.
 
 Design in layers:
 - Storage layer: how entries live in memory, allocation, layout, indexing.
-- Policy layer: LRU, FIFO, Clock, ARC, etc; only manipulates metadata and ordering.
-- Integration layer: ties DB pages, tuples, or segments into cache entries.
+- Policy layer: LRU, FIFO, LFU, LRU-K (roadmap: Clock/ARC/2Q, etc; see `docs/policies/roadmap/README.md`); only manipulates metadata and ordering.
+- Integration layer: ties application objects, payloads, or IDs into cache entries.
 
 Related docs:
 - Policy summaries: `docs/policies.md`
@@ -147,18 +147,18 @@ You can wrap fast internals in nice APIs at the edges.
 
 ## 9. Scans Are the Enemy of Caches
 
-In DBMS workloads:
+In scan-heavy workloads:
 
-Large table scans destroy LRU-style caches.
+Large sequential reads destroy LRU-style caches.
 
 Solutions:
-- Scan-resistant policies (2Q, LRU-K, ARC).
-- Explicit "scan mode" hints from query planner.
+- Scan-resistant policies (LRU-K, 2Q/ARC are roadmap).
+- Explicit "scan mode" hints from the caller or workload layer.
 - Bypass cache for known one-shot reads.
 
 If you ignore scans, your cache will look great in microbenchmarks and terrible in production.
 
-## 10. Benchmark Like a Database, Not a Library
+## 10. Benchmark Like a System, Not a Library
 
 Do not rely on random key benchmarks.
 
@@ -207,7 +207,7 @@ A cache that collapses under stress is worse than no cache.
 
 ## Bottom Line
 
-High-performance DBMS caches are not about clever algorithms—they are about:
+High-performance caches are not about clever algorithms—they are about:
 - Memory layout.
 - Allocation discipline.
 - Contention control.
