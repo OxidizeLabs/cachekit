@@ -1,9 +1,59 @@
 //! Handle-based store for zero-copy policy metadata.
 //!
-//! Flow overview:
+//! ## Architecture
+//! - Stores values keyed by compact handles (e.g., interner IDs).
+//! - A `HashMap<Handle, Arc<V>>` provides O(1) access.
+//! - Policies operate on handles; the interner maps handles back to keys.
+//!
 //! ```text
 //! key -> KeyInterner -> handle -> policy/DS -> eviction -> handle -> KeyInterner -> key
 //! ```
+//!
+//! ## Key Components
+//! - `HandleStore`: single-threaded handle-backed store.
+//! - `ConcurrentHandleStore`: thread-safe wrapper using `RwLock`.
+//! - Metrics counters for hits/misses/updates/evictions.
+//!
+//! ## Core Operations
+//! - `try_insert`: insert or update by handle.
+//! - `get`: fetch by handle (updates hit/miss metrics).
+//! - `remove`: delete by handle.
+//! - `clear`: drop all entries.
+//!
+//! ## Performance Trade-offs
+//! - Avoids cloning large keys by storing handles only.
+//! - Extra indirection requires a separate interner for key lookup.
+//! - Uses `Arc<V>` values; cloning is cheap but still allocates on insert.
+//!
+//! ## When to Use
+//! - You already use a `KeyInterner` or stable handle IDs.
+//! - You want to minimize key cloning for large keys.
+//! - Policy metadata is keyed by handle rather than full keys.
+//!
+//! ## Example Usage
+//! ```rust
+//! use cachekit::ds::KeyInterner;
+//! use cachekit::store::handle::HandleStore;
+//! use cachekit::store::traits::StoreMut;
+//! use std::sync::Arc;
+//!
+//! let mut interner = KeyInterner::new();
+//! let handle = interner.intern("alpha".to_string());
+//! let mut store: HandleStore<_, String> = HandleStore::new(2);
+//! store.try_insert(handle, Arc::new("value".to_string())).unwrap();
+//! ```
+//!
+//! ## Type Constraints
+//! - `H: Copy + Eq + Hash` for handle lookup.
+//! - Values are stored as `Arc<V>`.
+//!
+//! ## Thread Safety
+//! - `HandleStore` is single-threaded.
+//! - `ConcurrentHandleStore` is `Send + Sync` via `RwLock`.
+//!
+//! ## Implementation Notes
+//! - Handles must remain stable for the lifetime of stored entries.
+//! - Metrics are stored separately to keep the hot path simple.
 use crate::store::traits::{
     ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
 };
@@ -14,6 +64,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Store metrics counters for single-threaded handle stores.
 #[derive(Debug, Default)]
 struct StoreCounters {
     hits: Cell<u64>,
@@ -25,6 +76,7 @@ struct StoreCounters {
 }
 
 impl StoreCounters {
+    /// Snapshot current store metrics.
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
             hits: self.hits.get(),
@@ -36,31 +88,38 @@ impl StoreCounters {
         }
     }
 
+    /// Increment hit counter.
     fn inc_hit(&self) {
         self.hits.set(self.hits.get() + 1);
     }
 
+    /// Increment miss counter.
     fn inc_miss(&self) {
         self.misses.set(self.misses.get() + 1);
     }
 
+    /// Increment insert counter.
     fn inc_insert(&self) {
         self.inserts.set(self.inserts.get() + 1);
     }
 
+    /// Increment update counter.
     fn inc_update(&self) {
         self.updates.set(self.updates.get() + 1);
     }
 
+    /// Increment remove counter.
     fn inc_remove(&self) {
         self.removes.set(self.removes.get() + 1);
     }
 
+    /// Increment eviction counter.
     fn inc_eviction(&self) {
         self.evictions.set(self.evictions.get() + 1);
     }
 }
 
+/// Store metrics counters for concurrent handle stores.
 #[derive(Debug, Default)]
 struct ConcurrentStoreCounters {
     hits: AtomicU64,
@@ -72,6 +131,7 @@ struct ConcurrentStoreCounters {
 }
 
 impl ConcurrentStoreCounters {
+    /// Snapshot current store metrics.
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
             hits: self.hits.load(Ordering::Relaxed),
@@ -83,26 +143,32 @@ impl ConcurrentStoreCounters {
         }
     }
 
+    /// Increment hit counter.
     fn inc_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment miss counter.
     fn inc_miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment insert counter.
     fn inc_insert(&self) {
         self.inserts.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment update counter.
     fn inc_update(&self) {
         self.updates.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment remove counter.
     fn inc_remove(&self) {
         self.removes.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment eviction counter.
     fn inc_eviction(&self) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
     }
@@ -120,6 +186,7 @@ impl<H, V> HandleStore<H, V>
 where
     H: Copy + Eq + Hash,
 {
+    /// Create a handle store with a fixed capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
             map: HashMap::new(),
@@ -138,6 +205,7 @@ impl<H, V> StoreCore<H, V> for HandleStore<H, V>
 where
     H: Copy + Eq + Hash,
 {
+    /// Fetch a value by handle.
     fn get(&self, key: &H) -> Option<Arc<V>> {
         match self.map.get(key).cloned() {
             Some(value) => {
@@ -151,22 +219,27 @@ where
         }
     }
 
+    /// Check whether a handle exists.
     fn contains(&self, key: &H) -> bool {
         self.map.contains_key(key)
     }
 
+    /// Return the number of entries.
     fn len(&self) -> usize {
         self.map.len()
     }
 
+    /// Return the maximum capacity.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Snapshot store metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
 
+    /// Record an eviction.
     fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
@@ -176,6 +249,7 @@ impl<H, V> StoreMut<H, V> for HandleStore<H, V>
 where
     H: Copy + Eq + Hash,
 {
+    /// Insert or update an entry.
     fn try_insert(&mut self, key: H, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         if !self.map.contains_key(&key) && self.map.len() >= self.capacity {
             return Err(StoreFull);
@@ -189,6 +263,7 @@ where
         Ok(previous)
     }
 
+    /// Remove a value by handle.
     fn remove(&mut self, key: &H) -> Option<Arc<V>> {
         let removed = self.map.remove(key);
         if removed.is_some() {
@@ -197,6 +272,7 @@ where
         removed
     }
 
+    /// Clear all entries.
     fn clear(&mut self) {
         self.map.clear();
     }
@@ -208,6 +284,7 @@ where
 {
     type Store = HandleStore<H, V>;
 
+    /// Create a new store with the given capacity.
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
     }
@@ -225,6 +302,7 @@ impl<H, V> ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
 {
+    /// Create a concurrent handle store with a fixed capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
             map: RwLock::new(HashMap::new()),
@@ -238,6 +316,7 @@ impl<H, V> StoreCore<H, V> for ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
 {
+    /// Fetch a value by handle.
     fn get(&self, key: &H) -> Option<Arc<V>> {
         match self.map.read().get(key).cloned() {
             Some(value) => {
@@ -251,22 +330,27 @@ where
         }
     }
 
+    /// Check whether a handle exists.
     fn contains(&self, key: &H) -> bool {
         self.map.read().contains_key(key)
     }
 
+    /// Return the number of entries.
     fn len(&self) -> usize {
         self.map.read().len()
     }
 
+    /// Return the maximum capacity.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Snapshot store metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
 
+    /// Record an eviction.
     fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
@@ -277,6 +361,7 @@ where
     H: Copy + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
+    /// Insert or update an entry.
     fn try_insert(&self, key: H, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut map = self.map.write();
         if !map.contains_key(&key) && map.len() >= self.capacity {
@@ -291,6 +376,7 @@ where
         Ok(previous)
     }
 
+    /// Remove a value by handle.
     fn remove(&self, key: &H) -> Option<Arc<V>> {
         let removed = self.map.write().remove(key);
         if removed.is_some() {
@@ -299,6 +385,7 @@ where
         removed
     }
 
+    /// Clear all entries.
     fn clear(&self) {
         self.map.write().clear();
     }
@@ -310,6 +397,7 @@ where
 {
     type Store = ConcurrentHandleStore<H, V>;
 
+    /// Create a new store with the given capacity.
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
     }
