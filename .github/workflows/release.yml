@@ -34,15 +34,30 @@ jobs:
           criterion_dir="target/criterion"
 
           mean_ns() {
-            jq -r '.mean.point_estimate' "$1/new/estimates.json"
+            local est="$1/new/estimates.json"
+            if [ ! -f "$est" ]; then
+              echo "TBD"
+              return
+            fi
+            jq -r '.mean.point_estimate' "$est"
           }
 
           mems_from() {
             local bench_dir="$1"
+            local bench_json="$bench_dir/new/benchmark.json"
+            local est_json="$bench_dir/new/estimates.json"
             local elements
             local ns
-            elements=$(jq -r '.throughput.Elements' "$bench_dir/new/benchmark.json")
-            ns=$(jq -r '.mean.point_estimate' "$bench_dir/new/estimates.json")
+            if [ ! -f "$bench_json" ] || [ ! -f "$est_json" ]; then
+              echo "TBD"
+              return
+            fi
+            elements=$(jq -r '.throughput.Elements // empty' "$bench_json")
+            ns=$(jq -r '.mean.point_estimate // empty' "$est_json")
+            if [ -z "$elements" ] || [ -z "$ns" ] || [ "$elements" = "0" ] || [ "$ns" = "0" ]; then
+              echo "TBD"
+              return
+            fi
             awk -v e="$elements" -v ns="$ns" 'BEGIN { printf "%.2f", (e * 1e9 / ns) / 1e6 }'
           }
 
