@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "lfu"
 harness = false
+
+[[bench]]
+name = "lru_k"
+harness = false
