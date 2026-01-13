@@ -15,6 +15,8 @@ Welcome to the CacheKit documentation site.
 ## Release and maintenance
 
 - [Release checklist](release-checklist.md)
+- [Releasing CacheKit](releasing.md)
+- [CI/CD release cycle](ci-cd-release-cycle.md)
 - [Documentation style guide](style-guide.md)
 
 ## Misc

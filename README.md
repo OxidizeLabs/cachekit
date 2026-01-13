@@ -29,6 +29,8 @@ This crate is designed for systems programming, microservices, and performance-c
 - `docs/policies.md` — Policy survey and tradeoffs.
 - `docs/style-guide.md` — Documentation style guide.
 - `docs/release-checklist.md` — Release readiness checklist.
+- `docs/releasing.md` — How to cut a release (tag, CI, publish, docs).
+- `docs/ci-cd-release-cycle.md` — CI/CD overview for releases.
 - `docs/integration.md` — Integration notes (placeholder).
 - `docs/metrics.md` — Metrics notes (placeholder).
 

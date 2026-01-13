@@ -61,6 +61,8 @@ Purpose: produce a GitHub Release (notes + artifacts) and publish to crates.io (
 Triggers:
 
 - `push` tags: `v*.*.*`
+  - Note: this does not include pre-release tags like `v0.1.0-alpha` or `v0.2.0-rc.1`
+    unless you expand the trigger pattern.
 
 Recommended release steps:
 
