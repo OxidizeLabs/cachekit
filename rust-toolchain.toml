@@ -1,5 +1,5 @@
-# cachkit Rust toolchain configuration
-# This ensures all contributors use the same Rust version
+# cachekit Rust toolchain configuration
+# This standardizes tooling (rustfmt/clippy) and targets; the Rust version tracks the latest stable.
 
 [toolchain]
 channel = "stable"
