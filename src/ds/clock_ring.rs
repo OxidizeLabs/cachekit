@@ -393,10 +393,10 @@ where
         let cap = self.capacity();
         for offset in 0..cap {
             let idx = (self.hand + offset) % cap;
-            if let Some(entry) = self.slots.get(idx).and_then(|slot| slot.as_ref())
-                && !entry.referenced
-            {
-                return Some((&entry.key, &entry.value));
+            if let Some(entry) = self.slots.get(idx).and_then(|slot| slot.as_ref()) {
+                if !entry.referenced {
+                    return Some((&entry.key, &entry.value));
+                }
             }
         }
         None

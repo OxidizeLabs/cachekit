@@ -80,10 +80,10 @@ where
             return;
         }
 
-        if self.list.len() >= self.capacity
-            && let Some(old_key) = self.list.pop_back()
-        {
-            self.index.remove(&old_key);
+        if self.list.len() >= self.capacity {
+            if let Some(old_key) = self.list.pop_back() {
+                self.index.remove(&old_key);
+            }
         }
 
         let id = self.list.push_front(key.clone());

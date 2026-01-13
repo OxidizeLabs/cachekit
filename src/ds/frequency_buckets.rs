@@ -710,28 +710,28 @@ where
         };
         self.buckets.insert(freq, bucket);
 
-        if let Some(prev) = prev
-            && let Some(prev_bucket) = self.buckets.get_mut(&prev)
-        {
-            prev_bucket.next = Some(freq);
+        if let Some(prev) = prev {
+            if let Some(prev_bucket) = self.buckets.get_mut(&prev) {
+                prev_bucket.next = Some(freq);
+            }
         }
-        if let Some(next) = next
-            && let Some(next_bucket) = self.buckets.get_mut(&next)
-        {
-            next_bucket.prev = Some(freq);
+        if let Some(next) = next {
+            if let Some(next_bucket) = self.buckets.get_mut(&next) {
+                next_bucket.prev = Some(freq);
+            }
         }
     }
 
     fn remove_bucket(&mut self, freq: u64, prev: Option<u64>, next: Option<u64>) {
-        if let Some(prev) = prev
-            && let Some(prev_bucket) = self.buckets.get_mut(&prev)
-        {
-            prev_bucket.next = next;
+        if let Some(prev) = prev {
+            if let Some(prev_bucket) = self.buckets.get_mut(&prev) {
+                prev_bucket.next = next;
+            }
         }
-        if let Some(next) = next
-            && let Some(next_bucket) = self.buckets.get_mut(&next)
-        {
-            next_bucket.prev = prev;
+        if let Some(next) = next {
+            if let Some(next_bucket) = self.buckets.get_mut(&next) {
+                next_bucket.prev = prev;
+            }
         }
         self.buckets.remove(&freq);
     }
@@ -1023,9 +1023,11 @@ where
         let mut best: Option<(usize, u64)> = None;
         for (idx, shard) in self.shards.iter().enumerate() {
             let buckets = shard.read();
-            if let Some(freq) = buckets.min_freq()
-                && best.is_none_or(|(_, best_freq)| freq < best_freq)
-            {
+            let Some(freq) = buckets.min_freq() else {
+                continue;
+            };
+            let is_better = best.is_none_or(|(_, best_freq)| freq < best_freq);
+            if is_better {
                 best = Some((idx, freq));
             }
         }
@@ -1039,9 +1041,11 @@ where
         let mut best: Option<(usize, u64)> = None;
         for (idx, shard) in self.shards.iter().enumerate() {
             let buckets = shard.read();
-            if let Some(freq) = buckets.min_freq()
-                && best.is_none_or(|(_, best_freq)| freq < best_freq)
-            {
+            let Some(freq) = buckets.min_freq() else {
+                continue;
+            };
+            let is_better = best.is_none_or(|(_, best_freq)| freq < best_freq);
+            if is_better {
                 best = Some((idx, freq));
             }
         }

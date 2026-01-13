@@ -366,12 +366,12 @@ where
     fn pop_lfu_internal(&mut self) -> Option<(K, u64)> {
         let mut stale_pops = 0usize;
         while let Some(Reverse((heap_freq, key))) = self.freq_heap.peek() {
-            if let Some(&current_freq) = self.frequencies.get(key)
-                && *heap_freq == current_freq
-            {
-                // This is a valid (non-stale) entry
-                let Reverse((freq, key)) = self.freq_heap.pop().unwrap();
-                return Some((key, freq));
+            if let Some(&current_freq) = self.frequencies.get(key) {
+                if *heap_freq == current_freq {
+                    // This is a valid (non-stale) entry
+                    let Reverse((freq, key)) = self.freq_heap.pop().unwrap();
+                    return Some((key, freq));
+                }
             }
 
             // This entry is stale (key doesn't exist or frequency changed)
