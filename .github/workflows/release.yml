@@ -40,12 +40,6 @@ jobs:
         with:
           source: ./docs
           destination: ./_site
-      - name: Stage benchmark artifacts for Pages
-        run: |
-          mkdir -p _site/benchmarks/${RELEASE_TAG}
-          mkdir -p _site/benchmarks/latest
-          cp -R target/criterion/. _site/benchmarks/${RELEASE_TAG}/
-          cp -R target/criterion/. _site/benchmarks/latest/
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
