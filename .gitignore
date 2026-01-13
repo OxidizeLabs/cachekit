@@ -18,8 +18,10 @@ target
 
 # User-specific stuff
 .idea/**/workspace.xml
+.idea/**/vcs.xml
 .idea/**/tasks.xml
 .idea/**/usage.statistics.xml
+.idea/**/Project_Default.xml
 .idea/**/dictionaries
 .idea/**/shelf
 
