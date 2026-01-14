@@ -1,6 +1,13 @@
 # cachekit
 
-**High-performance cache policies and tiered caching primitives for Rust systems with optional metrics and benchmarks.**:contentReference[oaicite:1]{index=1}
+[![CI](https://github.com/OxidizeLabs/cachekit/actions/workflows/ci.yml/badge.svg)](https://github.com/OxidizeLabs/cachekit/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/cachekit)](https://crates.io/crates/cachekit)
+[![Docs](https://img.shields.io/docsrs/cachekit)](https://docs.rs/cachekit)
+[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)](https://github.com/OxidizeLabs/cachekit/blob/main/Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
+
+**High-performance cache policies and tiered caching primitives for Rust systems with optional metrics and benchmarks.**
 
 ## Overview
 

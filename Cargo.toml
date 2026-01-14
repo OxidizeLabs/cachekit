@@ -10,7 +10,7 @@ homepage = "https://oxidizelabs.github.io/cachekit/"
 repository = "https://github.com/OxidizeLabs/cachekit"
 documentation = "https://oxidizelabs.github.io/cachekit/"
 readme = "README.md"
-keywords = ["cache", "lru", "fifo", "arc", "cache"]
+keywords = ["cache", "lru", "fifo", "arc", "lru-k"]
 categories = ["data-structures", "caching"]
 exclude = ["/.idea/", "/target/", "/.DS_Store", "/**/.DS_Store"]
 
@@ -21,11 +21,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 manager = []
-metrics = []          # enables instrumentation layer
+metrics = []
 
 [dependencies]
 parking_lot = "0.12"
-log = "0.4.29"
+log = "0.4"
 
 [dev-dependencies]
 criterion = "0.8"
