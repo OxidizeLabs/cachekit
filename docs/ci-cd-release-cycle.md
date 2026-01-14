@@ -1,153 +1,127 @@
-# CI/CD release cycle (Rust crate)
+# CI/CD release cycle
 
-This document describes a practical CI/CD software release cycle for a Rust library crate using GitHub Actions. It’s designed to keep PR feedback fast, keep `main` always releasable, and make releases repeatable and auditable.
+This document explains how CacheKit’s release cycle works in practice: what runs in CI,
+what makes `main` “releasable”, and how a version becomes a GitHub Release and (optionally)
+a crates.io publish.
 
-## Goals
+For the hands-on, step-by-step release procedure, see `docs/releasing.md`.
 
-- Catch issues early (format, lint, tests) on every PR.
-- Keep `main` green and always releasable (protected branch + required checks).
-- Make releases reproducible (tagged source, locked toolchain, deterministic steps).
-- Separate “fast PR checks” from “slow/deep validation” (Miri/bench).
+## Mental model
 
-## Branch + versioning model
+- **All change goes through PRs into `main`.**
+- **`main` should always be releasable.** CI is set up so that obvious breakages are caught
+  before merge (format/lint/tests/docs/audit/MSRV).
+- **A “release” is signaled by a git tag.**
+  - Stable releases: `vX.Y.Z` (example: `v0.1.0`)
+  - Pre-releases: `vX.Y.Z-alpha` / `vX.Y.Z-rc.1`, etc.
+- **Crate versions do not use `v`.** In `Cargo.toml`, use `0.1.0-alpha`, not `v0.1.0-alpha`.
 
-- **Default branch:** `main`
-- **Feature work:** branch from `main`, merge via PR.
-- **Versioning:** SemVer in `Cargo.toml` and `CHANGELOG.md`.
-- **Release signal:** annotated git tag `vX.Y.Z` created from a commit on `main`.
+## What runs when
 
-Recommended repo settings:
+### Pull requests and pushes to `main` (`.github/workflows/ci.yml`)
 
-- Protect `main`:
-  - Require PRs
-  - Require status checks to pass (CI jobs)
-  - Require up-to-date branches before merge
-  - Require linear history (optional but helps)
-- Use CODEOWNERS or required reviewers for release-sensitive areas (optional).
+CI runs on:
 
-## Pipelines and required workflows
-
-### 1) PR / main CI pipeline (`.github/workflows/ci.yml`)
-
-Triggers:
-
-- `pull_request` to `main`
+- `pull_request` targeting `main`
 - `push` to `main`
 
-Required checks (typical):
+What it does (project-specific):
 
-- **Format:** `cargo fmt --check`
+- **Formatting:** `cargo fmt --check`
 - **Lint:** `cargo clippy --all-targets --all-features -- -D warnings`
-- **Test:** `cargo test --all-features --all-targets` (run on Linux, optionally also macOS/Windows)
-- **Docs:** `cargo doc --no-deps --all-features` (treat warnings as errors)
-- **MSRV:** `cargo check --all-features` on the project’s declared MSRV toolchain
-- **Security audit:** `cargo audit` (or `rustsec/audit-check`)
+- **Tests:** `cargo test --all-features --all-targets` on Linux/macOS/Windows
+- **Docs build:** `RUSTDOCFLAGS='-Dwarnings' cargo doc --no-deps --all-features`
+- **Security audit:** `rustsec/audit-check`
+- **Benchmarks:** `cargo bench --no-fail-fast` (only on `main`, not required for PRs)
+- **MSRV check:** `cargo check --all-features` on Rust `1.85.0`
+- **Miri:** curated subset on nightly for Linux/macOS (slower; not on Windows)
 
-Optional (usually *not* required to merge due to slowness/flakiness):
+Local equivalents (useful before opening a PR):
 
-- **Miri:** run on Linux (and optionally macOS). Do not run on Windows.
-- **Benchmarks:** run only on `main` or on demand (not required for PR merge).
+```bash
+cargo fmt
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features --all-targets
+RUSTDOCFLAGS='-Dwarnings' cargo doc --no-deps --all-features
+```
 
-Suggested commands:
+### Release automation on tags (`.github/workflows/release.yml`)
 
-- Tests (thorough): `cargo test --all-features --all-targets`
-- Tests (fast PR): `cargo test`
-- Docs: `RUSTDOCFLAGS='-Dwarnings' cargo doc --no-deps --all-features`
+The release workflow runs on:
 
-### 2) Release pipeline (`.github/workflows/release.yml`)
+- `push` tags matching `v*.*.*`
 
-Purpose: produce a GitHub Release (notes + artifacts) and publish to crates.io (optional), only from a version tag.
+Important:
 
-Triggers:
+- This tag pattern matches stable tags like `v0.1.0`.
+- It does **not** match pre-release tags like `v0.1.0-alpha` or `v0.2.0-rc.1` unless you
+  expand the trigger pattern.
 
-- `push` tags: `v*.*.*`
-  - Note: this does not include pre-release tags like `v0.1.0-alpha` or `v0.2.0-rc.1`
-    unless you expand the trigger pattern.
+What the workflow does:
 
-Recommended release steps:
+1. Verifies the tag commit is reachable from `origin/main`.
+2. Re-runs full validation: fmt, clippy, tests, docs.
+3. Verifies the crate packages cleanly: `cargo package` and `cargo publish --dry-run`.
+4. Creates a GitHub Release (currently using auto-generated release notes).
+5. Optionally publishes to crates.io.
 
-1. **Validate tag source:** ensure tag points to a commit on `main` (optional but recommended).
-2. **Run full validation again** (or assert CI was green on the tagged commit):
-   - `cargo fmt --check`
-   - `cargo clippy --all-targets --all-features -- -D warnings`
-   - `cargo test --all-features --all-targets`
-   - `cargo doc --no-deps --all-features`
-3. **Build artifacts** (optional, if you ship binaries or example builds):
-   - `cargo build --release`
-4. **Package verification** before publish:
-   - `cargo package`
-   - `cargo publish --dry-run`
-5. **Create GitHub Release**:
-   - Use generated notes or extract from `CHANGELOG.md`
-6. **Publish to crates.io** (optional):
-   - `cargo publish`
-   - Requires `CARGO_REGISTRY_TOKEN` secret
+crates.io publishing:
 
-If you ship binaries, add a matrix to build per OS and upload artifacts to the GitHub Release.
+- The publish job only runs if the repository variable `CARGO_REGISTRY_TOKEN` is set.
+- When enabled, the job runs `cargo publish` using that token.
 
-### 3) Scheduled security + drift checks (`.github/workflows/maintenance.yml`)
+### Scheduled maintenance (`.github/workflows/maintenance.yml`)
 
-Purpose: catch dependency advisories and ecosystem drift even when there are no PRs.
+Maintenance runs on a schedule and manually (`workflow_dispatch`) to catch:
 
-Triggers:
+- New RustSec advisories and dependency issues
+- Ecosystem drift when there isn’t active development
 
-- `schedule` (e.g., weekly)
-- `workflow_dispatch` (manual)
+### Docs site publishing (`.github/workflows/jekyll-gh-pages.yml`)
 
-Recommended jobs:
+On each push to `main` (or manually), GitHub Pages builds the site from `docs/` via Jekyll.
+This is for the documentation site under the repo’s Pages URL (not `cargo doc` output).
 
-- `cargo audit` / `rustsec/audit-check`
-- `cargo update -w --dry-run` (optional, informational)
-- (Optional) run CI with the latest stable toolchain if you pin a toolchain, to detect upcoming breakages.
+## How a release happens (end-to-end)
 
-### 4) Documentation publishing (optional)
+### 1) Prepare a release PR
 
-Only needed if you publish docs to GitHub Pages.
+In a PR that targets `main`:
 
-Options:
+- Bump `Cargo.toml` `version = "X.Y.Z(...)"` (no `v`).
+- Finalize `CHANGELOG.md` for that version/date.
+- (Optional) Update `docs/benchmarks.md` after a local run:
+  - `cargo bench`
+  - `scripts/update_docs_benchmarks.sh target/criterion docs/benchmarks.md`
 
-- Publish `cargo doc` output to `gh-pages` (for crate docs).
-- Build and publish a separate `docs/` site (e.g., MkDocs / mdBook / Jekyll).
+### 2) Merge to `main`
 
-## Typical software release cycle (end-to-end)
+Merge once CI is green. This keeps `main` always in a releasable state.
 
-1. **Development**
-   - Work on a branch, run locally:
-     - `cargo fmt`
-     - `cargo clippy --all-targets --all-features -- -D warnings`
-     - `cargo test --all-features --all-targets`
-2. **Pull request**
-   - CI runs required checks.
-   - Review and iterate until green.
-3. **Merge to `main`**
-   - CI runs again on `main`.
-   - `main` stays green (releasable).
-4. **Release preparation**
-   - Update `CHANGELOG.md` and bump `Cargo.toml` version.
-   - Open PR “Release vX.Y.Z”.
-5. **Tag and release**
-   - After merge, create tag `vX.Y.Z` on `main`.
-   - Release workflow runs full validation, builds artifacts, publishes release (and crates.io if configured).
-6. **Post-release**
-   - Verify published crate metadata and docs.
-   - Triage any newly reported issues.
+### 3) Tag the release
 
-## What to require vs. what to keep optional
+Tag the exact commit on `main` you want to release.
 
-Recommended **required for merge**:
+- **Stable tags** (`vX.Y.Z`) will trigger the automated release workflow.
+- **Pre-release tags** (`vX.Y.Z-alpha`, etc.) currently will not trigger the release
+  workflow with the default tag pattern.
 
-- fmt, clippy, tests (at least Linux), docs build, MSRV check, audit
+### 4) Watch the automation
 
-Recommended **optional / non-blocking**:
+For stable tags, GitHub Actions validates, creates the GitHub Release, and optionally
+publishes to crates.io if configured.
 
-- Miri (Linux/macOS only), benchmarks, extended multi-OS test matrices, stress/perf tests
+### 5) After the release
 
-## Commands cheat sheet (CI-friendly defaults)
+- Verify the GitHub Release notes/tag/version.
+- If published, verify the crates.io page and metadata.
+- Keep `[Unreleased]` in `CHANGELOG.md` ready for the next cycle.
 
-- Format: `cargo fmt --check`
-- Lint: `cargo clippy --all-targets --all-features -- -D warnings`
-- Test (thorough): `cargo test --all-features --all-targets`
-- Test (workspace): `cargo test --workspace --all-features --all-targets`
-- Docs: `RUSTDOCFLAGS='-Dwarnings' cargo doc --no-deps --all-features`
-- MSRV (example): `cargo +1.85.0 check --all-features`
-- Audit: `cargo audit`
+## Troubleshooting
+
+- **Release workflow didn’t run:** the tag must match `v*.*.*` (stable) unless you change
+  the workflow trigger.
+- **Publish job skipped:** ensure `CARGO_REGISTRY_TOKEN` is configured as a repository
+  variable (or update the workflow to use secrets).
+- **Docs site didn’t update:** confirm the Pages workflow is enabled and the `docs/`
+  folder builds successfully with Jekyll.
