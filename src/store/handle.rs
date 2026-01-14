@@ -39,11 +39,15 @@
 //! use cachekit::store::traits::StoreMut;
 //!
 //! let mut interner = KeyInterner::new();
-//! let handle = interner.intern("alpha".to_string());
-//! let mut store: HandleStore<_, String> = HandleStore::new(2);
+//! let handle = interner.intern("alpha");
+//! let mut store: HandleStore<u64, String> = HandleStore::new(2);
 //! store
-//!     .try_insert(handle, Arc::new("value".to_string()))
+//!     .try_insert(handle, "value".to_string())
 //!     .unwrap();
+//! assert!(store.contains(&handle));
+//! assert_eq!(store.get(&handle), Some("value".to_string()));
+//! assert_eq!(store.remove(&handle), Some("value".to_string()));
+//! assert!(!store.contains(&handle));
 //! ```
 //!
 //! ## Type Constraints

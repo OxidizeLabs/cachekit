@@ -32,6 +32,7 @@
 //!
 //! use cachekit::store::hashmap::HashMapStore;
 //! use cachekit::store::traits::StoreMut;
+//! use crate::cachekit::store::traits::StoreCore;
 //!
 //! let mut store: HashMapStore<u64, String> = HashMapStore::new(2);
 //! store.try_insert(1, Arc::new("a".to_string())).unwrap();
