@@ -41,3 +41,4 @@ Docstring Style Guide
   //! ## Architecture
   //! ...
   /// Brief summary of behavior.
+- Align public APIs and documentation with the [Rust API Guidelines checklist](https://rust-lang.github.io/api-guidelines/checklist.html) so naming, visibility, and ergonomics stay consistent across consumers.

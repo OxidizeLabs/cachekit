@@ -1,5 +1,7 @@
 Designing high-performance caches in Rust is a multi-disciplinary problem: data structures, memory layout, concurrency, workload modeling, and systems-level performance all matter. The points below reflect what moves the needle in practice across systems, services, and libraries.
 
+For interface and API decisions, the [Rust API Guidelines checklist](https://rust-lang.github.io/api-guidelines/checklist.html) is a useful companion for consistent, ergonomic design.
+
 ## 1. Workload First, Policy Second
 
 Cache policy only matters relative to workload.
