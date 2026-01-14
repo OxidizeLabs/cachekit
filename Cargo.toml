@@ -3,13 +3,20 @@ name = "cachekit"
 version = "0.1.0-alpha"
 edition = "2024"
 rust-version = "1.85"
+authors = ["Thomas Korrison <ferrite.db@gmail.com>"]
 license = "MIT OR Apache-2.0"
 description = "High-performance, policy-driven cache primitives for Rust systems (FIFO/LRU/ARC) with optional metrics."
+homepage = "https://oxidizelabs.github.io/cachekit/"
 repository = "https://github.com/OxidizeLabs/cachekit"
 documentation = "https://oxidizelabs.github.io/cachekit/"
 readme = "README.md"
 keywords = ["cache", "lru", "fifo", "arc", "cache"]
 categories = ["data-structures", "caching"]
+exclude = ["/.idea/", "/target/", "/.DS_Store", "/**/.DS_Store"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
