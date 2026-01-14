@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 #[cfg(test)]
 mod integration_tests {
-    use cachekit::policy::lru::{ConcurrentLRUCache, LRUCore};
-    use cachekit::traits::{CoreCache, LRUCacheTrait, MutableCache};
+    use cachekit::policy::lru::{ConcurrentLruCache, LruCore};
+    use cachekit::traits::{CoreCache, LruCacheTrait, MutableCache};
 
     use super::*;
 
     #[test]
     fn test_zero_copy_lru_core() {
-        let mut cache = LRUCore::new(3);
+        let mut cache = LruCore::new(3);
 
         // Test basic zero-copy operations
         cache.insert(1, Arc::new("one"));
@@ -48,7 +48,7 @@ mod integration_tests {
 
     #[test]
     fn test_concurrent_lru_cache() {
-        let cache = ConcurrentLRUCache::new(3);
+        let cache = ConcurrentLruCache::new(3);
 
         // Test concurrent wrapper operations
         cache.insert(1, "one");
@@ -89,7 +89,7 @@ mod integration_tests {
         type PageId = u32;
         type Page = Vec<u8>;
 
-        let cache: ConcurrentLRUCache<PageId, Page> = ConcurrentLRUCache::new(100);
+        let cache: ConcurrentLruCache<PageId, Page> = ConcurrentLruCache::new(100);
 
         // Simulate page insertions
         for page_id in 0..150u32 {

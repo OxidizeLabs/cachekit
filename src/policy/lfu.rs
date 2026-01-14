@@ -8,7 +8,7 @@
 //!
 //! ```text
 //!   ┌──────────────────────────────────────────────────────────────────────────┐
-//!   │                          LFUCache<K, V>                                  │
+//!   │                          LfuCache<K, V>                                  │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
 //!   │   │  FrequencyBuckets<K>                                               │ │
@@ -143,7 +143,7 @@
 //!
 //! | Component        | Description                                        |
 //! |------------------|----------------------------------------------------|
-//! | `LFUCache<K, V>` | Main cache struct                                  |
+//! | `LfuCache<K, V>` | Main cache struct                                  |
 //! | `buckets`        | `FrequencyBuckets` for per-frequency LRU buckets   |
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //! | `Entry<K>`       | SlotArena entry with key + freq + bucket links     |
@@ -162,7 +162,7 @@
 //! | `capacity()`     | O(1)       | Maximum capacity                         |
 //! | `clear()`        | O(n)       | Remove all entries                       |
 //!
-//! ## LFU-Specific Operations (LFUCacheTrait)
+//! ## LFU-Specific Operations (LfuCacheTrait)
 //!
 //! | Method                   | Complexity | Description                       |
 //! |--------------------------|------------|-----------------------------------|
@@ -218,14 +218,14 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::lfu::LFUCache;
+//! use crate::storage::disk::async_disk::cache::lfu::LfuCache;
 //! use std::sync::Arc;
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, MutableCache, LFUCacheTrait,
+//!     CoreCache, MutableCache, LfuCacheTrait,
 //! };
 //!
 //! // Create cache
-//! let mut cache: LFUCache<String, i32> = LFUCache::new(100);
+//! let mut cache: LfuCache<String, i32> = LfuCache::new(100);
 //!
 //! // Insert items (frequency starts at 1)
 //! cache.insert("key1".to_string(), Arc::new(100));
@@ -254,7 +254,7 @@
 //!
 //! // Thread-safe usage
 //! use std::sync::{Arc, Mutex};
-//! let shared_cache = Arc::new(Mutex::new(LFUCache::<u64, Vec<u8>>::new(1000)));
+//! let shared_cache = Arc::new(Mutex::new(LfuCache::<u64, Vec<u8>>::new(1000)));
 //!
 //! // In thread:
 //! {
@@ -268,7 +268,7 @@
 //! ```rust,ignore
 //! use crate::ds::KeyInterner;
 //! use crate::policy::lfu::LFUHandleCache;
-//! use crate::traits::{CoreCache, LFUCacheTrait};
+//! use crate::traits::{CoreCache, LfuCacheTrait};
 //! use std::sync::Arc;
 //!
 //! let mut interner = KeyInterner::new();
@@ -298,8 +298,8 @@
 //!
 //! ## Thread Safety
 //!
-//! - `LFUCache` is **NOT thread-safe**
-//! - Wrap in `Arc<Mutex<LFUCache>>` or `Arc<RwLock<LFUCache>>` for concurrent access
+//! - `LfuCache` is **NOT thread-safe**
+//! - Wrap in `Arc<Mutex<LfuCache>>` or `Arc<RwLock<LfuCache>>` for concurrent access
 //! - Note: Long critical sections still matter; keep list operations tight
 //!
 //! ## Implementation Notes
@@ -324,14 +324,14 @@ use crate::metrics::traits::{
 };
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
+use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 
 /// LFU (Least Frequently Used) Cache.
 ///
 /// Evicts the item with the lowest access frequency when capacity is reached.
 /// See module-level documentation for details.
 #[derive(Debug)]
-pub struct LFUCache<K, V>
+pub struct LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -356,12 +356,12 @@ where
     metrics: LfuMetrics,
 }
 
-impl<K, V> LFUCache<K, V>
+impl<K, V> LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
     pub fn new(capacity: usize) -> Self {
-        LFUCache {
+        LfuCache {
             store: HashMapStore::new(capacity),
             buckets: FrequencyBuckets::new(),
             #[cfg(feature = "metrics")]
@@ -481,7 +481,7 @@ where
 }
 
 // Implementation of specialized traits
-impl<K, V> CoreCache<K, Arc<V>> for LFUCache<K, V>
+impl<K, V> CoreCache<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -636,7 +636,7 @@ where
     }
 }
 
-impl<K, V> MutableCache<K, Arc<V>> for LFUCache<K, V>
+impl<K, V> MutableCache<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -656,7 +656,7 @@ where
     }
 }
 
-impl<K, V> LFUCacheTrait<K, Arc<V>> for LFUCache<K, V>
+impl<K, V> LfuCacheTrait<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -727,7 +727,7 @@ where
     }
 }
 
-impl<H, V> LFUCacheTrait<H, Arc<V>> for LFUHandleCache<H, V>
+impl<H, V> LfuCacheTrait<H, Arc<V>> for LFUHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
@@ -799,7 +799,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> LFUCache<K, V>
+impl<K, V> LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -877,7 +877,7 @@ where
 }
 
 #[cfg(all(test, not(feature = "metrics")))]
-impl<K, V> LFUCache<K, V>
+impl<K, V> LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -903,7 +903,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUCache<K, V>
+impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -933,7 +933,7 @@ mod tests {
 
         #[test]
         fn test_basic_lfu_insertion_and_retrieval() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Test insertion and basic retrieval
             assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
@@ -969,7 +969,7 @@ mod tests {
 
         #[test]
         fn test_lfu_batch_ops() {
-            let mut cache: LFUCache<String, i32> = LFUCache::new(3);
+            let mut cache: LfuCache<String, i32> = LfuCache::new(3);
             let inserted = cache.insert_batch([
                 ("a".to_string(), Arc::new(1)),
                 ("b".to_string(), Arc::new(2)),
@@ -992,7 +992,7 @@ mod tests {
 
         #[test]
         fn test_lfu_eviction_order() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Fill cache to capacity
             cache.insert("key1".to_string(), Arc::new(100));
@@ -1030,7 +1030,7 @@ mod tests {
 
         #[test]
         fn test_capacity_enforcement() {
-            let mut cache = LFUCache::new(2);
+            let mut cache = LfuCache::new(2);
 
             // Verify initial state
             assert_eq!(cache.len(), 0);
@@ -1059,7 +1059,7 @@ mod tests {
             }
 
             // Test with zero capacity
-            let mut zero_cache = LFUCache::new(0);
+            let mut zero_cache = LfuCache::new(0);
             assert_eq!(zero_cache.capacity(), 0);
             assert_eq!(zero_cache.len(), 0);
 
@@ -1071,7 +1071,7 @@ mod tests {
 
         #[test]
         fn test_update_existing_key() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Insert initial value
             assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
@@ -1114,7 +1114,7 @@ mod tests {
 
         #[test]
         fn test_frequency_tracking() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Insert items with initial frequency of 1
             cache.insert("a".to_string(), Arc::new(1));
@@ -1174,7 +1174,7 @@ mod tests {
 
         #[test]
         fn test_key_operations_consistency() {
-            let mut cache = LFUCache::new(4);
+            let mut cache = LfuCache::new(4);
 
             // Test empty cache consistency
             assert_eq!(cache.len(), 0);
@@ -1267,7 +1267,7 @@ mod tests {
 
         #[test]
         fn test_empty_cache_operations() {
-            let mut cache = LFUCache::<String, i32>::new(5);
+            let mut cache = LfuCache::<String, i32>::new(5);
 
             // Test all operations on empty cache
             assert_eq!(cache.len(), 0);
@@ -1290,7 +1290,7 @@ mod tests {
 
         #[test]
         fn test_single_item_cache() {
-            let mut cache = LFUCache::new(1);
+            let mut cache = LfuCache::new(1);
 
             // Test initial state
             assert_eq!(cache.len(), 0);
@@ -1331,7 +1331,7 @@ mod tests {
 
         #[test]
         fn test_zero_capacity_cache() {
-            let mut cache = LFUCache::<String, i32>::new(0);
+            let mut cache = LfuCache::<String, i32>::new(0);
 
             // Test initial state
             assert_eq!(cache.len(), 0);
@@ -1363,7 +1363,7 @@ mod tests {
 
         #[test]
         fn test_same_frequency_items() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Insert items with same initial frequency
             cache.insert("key1".to_string(), Arc::new(100));
@@ -1408,7 +1408,7 @@ mod tests {
 
         #[test]
         fn test_frequency_overflow_protection() {
-            let mut cache = LFUCache::new(2);
+            let mut cache = LfuCache::new(2);
 
             // Insert an item
             cache.insert("key1".to_string(), Arc::new(100));
@@ -1448,7 +1448,7 @@ mod tests {
 
         #[test]
         fn test_duplicate_key_insertion() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Insert initial value
             assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
@@ -1502,7 +1502,7 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn test_large_cache_operations() {
             let capacity = 10000;
-            let mut cache = LFUCache::new(capacity);
+            let mut cache = LfuCache::new(capacity);
 
             // Test initial state
             assert_eq!(cache.len(), 0);
@@ -1556,7 +1556,7 @@ mod tests {
 
         #[test]
         fn test_pop_lfu_basic() {
-            let mut cache = LFUCache::new(4);
+            let mut cache = LfuCache::new(4);
 
             // Insert items with different access patterns
             cache.insert("key1".to_string(), Arc::new(100));
@@ -1598,7 +1598,7 @@ mod tests {
 
         #[test]
         fn test_peek_lfu_basic() {
-            let mut cache = LFUCache::new(4);
+            let mut cache = LfuCache::new(4);
 
             // Insert items with different access patterns
             cache.insert("key1".to_string(), Arc::new(100));
@@ -1642,7 +1642,7 @@ mod tests {
 
         #[test]
         fn test_frequency_retrieval() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Test frequency for non-existent key
             assert_eq!(cache.frequency(&"nonexistent".to_string()), None);
@@ -1681,7 +1681,7 @@ mod tests {
 
         #[test]
         fn test_reset_frequency() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Test reset on non-existent key
             assert_eq!(cache.reset_frequency(&"nonexistent".to_string()), None);
@@ -1729,7 +1729,7 @@ mod tests {
 
         #[test]
         fn test_increment_frequency() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Test increment on non-existent key
             assert_eq!(cache.increment_frequency(&"nonexistent".to_string()), None);
@@ -1781,7 +1781,7 @@ mod tests {
 
         #[test]
         fn test_pop_lfu_empty_cache() {
-            let mut cache = LFUCache::<String, i32>::new(5);
+            let mut cache = LfuCache::<String, i32>::new(5);
 
             // Test pop_lfu on empty cache
             assert_eq!(cache.pop_lfu(), None);
@@ -1817,14 +1817,14 @@ mod tests {
 
         #[test]
         fn test_peek_lfu_empty_cache() {
-            let cache = LFUCache::<String, i32>::new(5);
+            let cache = LfuCache::<String, i32>::new(5);
 
             // Test peek_lfu on empty cache
             assert_eq!(cache.peek_lfu(), None);
             assert_eq!(cache.len(), 0);
 
             // Test with zero capacity cache
-            let zero_cache = LFUCache::<String, i32>::new(0);
+            let zero_cache = LfuCache::<String, i32>::new(0);
             assert_eq!(zero_cache.peek_lfu(), None);
             assert_eq!(zero_cache.len(), 0);
 
@@ -1834,7 +1834,7 @@ mod tests {
             assert_eq!(cache.peek_lfu(), None);
 
             // Test after creating and emptying cache
-            let mut cache2 = LFUCache::new(3);
+            let mut cache2 = LfuCache::new(3);
             cache2.insert("temp".to_string(), Arc::new(999));
             assert!(cache2.peek_lfu().is_some());
 
@@ -1843,7 +1843,7 @@ mod tests {
             assert_eq!(cache2.len(), 0);
 
             // Test after removing all items
-            let mut cache3 = LFUCache::new(2);
+            let mut cache3 = LfuCache::new(2);
             cache3.insert("a".to_string(), Arc::new(1));
             cache3.insert("b".to_string(), Arc::new(2));
             assert!(cache3.peek_lfu().is_some());
@@ -1856,7 +1856,7 @@ mod tests {
 
         #[test]
         fn test_lfu_tie_breaking() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Insert items and create different frequency levels
             cache.insert("low1".to_string(), Arc::new(1)); // will have freq = 1
@@ -1933,7 +1933,7 @@ mod tests {
 
         #[test]
         fn test_frequency_after_removal() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Insert items and build up frequencies
             cache.insert("key1".to_string(), Arc::new(100));
@@ -1995,7 +1995,7 @@ mod tests {
 
         #[test]
         fn test_frequency_after_clear() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Insert items and build up frequencies
             cache.insert("key1".to_string(), Arc::new(100));
@@ -2063,7 +2063,7 @@ mod tests {
 
         #[test]
         fn test_bucket_link_updates_on_middle_removal() {
-            let mut cache = LFUCache::new(4);
+            let mut cache = LfuCache::new(4);
 
             cache.insert("low".to_string(), Arc::new(1));
             cache.insert("mid".to_string(), Arc::new(2));
@@ -2094,7 +2094,7 @@ mod tests {
 
         #[test]
         fn test_cache_frequency_consistency() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Test initial state consistency
             assert_eq!(cache.len(), 0);
@@ -2144,7 +2144,7 @@ mod tests {
 
         #[test]
         fn test_len_consistency() {
-            let mut cache = LFUCache::new(4);
+            let mut cache = LfuCache::new(4);
 
             // Test empty cache
             assert_eq!(cache.len(), 0);
@@ -2225,7 +2225,7 @@ mod tests {
             let capacities = [0, 1, 3, 10, 100];
 
             for &capacity in &capacities {
-                let mut cache = LFUCache::<String, i32>::new(capacity);
+                let mut cache = LfuCache::<String, i32>::new(capacity);
 
                 // Test initial capacity
                 assert_eq!(cache.capacity(), capacity);
@@ -2268,7 +2268,7 @@ mod tests {
             }
 
             // Test capacity consistency across multiple operations
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
             let original_capacity = cache.capacity();
 
             // Perform 100 random operations
@@ -2297,7 +2297,7 @@ mod tests {
 
         #[test]
         fn test_clear_resets_all_state() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Populate cache with data and complex state
             cache.insert("key1".to_string(), Arc::new(100));
@@ -2386,7 +2386,7 @@ mod tests {
 
         #[test]
         fn test_remove_consistency() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Setup cache with various frequencies
             cache.insert("key1".to_string(), Arc::new(100));
@@ -2477,7 +2477,7 @@ mod tests {
 
         #[test]
         fn test_eviction_consistency() {
-            let mut cache = LFUCache::new(3);
+            let mut cache = LfuCache::new(3);
 
             // Fill cache to capacity
             cache.insert("key1".to_string(), Arc::new(100));
@@ -2536,13 +2536,13 @@ mod tests {
             cache.debug_validate_invariants();
 
             // Test eviction with zero capacity
-            let mut zero_cache = LFUCache::<String, i32>::new(0);
+            let mut zero_cache = LfuCache::<String, i32>::new(0);
             zero_cache.insert("key1".to_string(), Arc::new(100));
             assert_eq!(zero_cache.len(), 0); // Should reject insertion
             assert!(!zero_cache.contains(&"key1".to_string()));
 
             // Test eviction preserves invariants
-            let mut test_cache = LFUCache::new(2);
+            let mut test_cache = LfuCache::new(2);
 
             // Insert items with known frequencies
             test_cache.insert("low".to_string(), Arc::new(1));
@@ -2568,7 +2568,7 @@ mod tests {
 
         #[test]
         fn test_frequency_increment_on_get() {
-            let mut cache = LFUCache::new(5);
+            let mut cache = LfuCache::new(5);
 
             // Insert items with initial frequency of 1
             cache.insert("key1".to_string(), Arc::new(100));
@@ -2661,10 +2661,10 @@ mod tests {
 
         #[test]
         fn test_invariants_after_operations() {
-            let mut cache = LFUCache::new(4);
+            let mut cache = LfuCache::new(4);
 
             // Helper function to verify all invariants
-            let verify_invariants = |cache: &mut LFUCache<String, i32>| {
+            let verify_invariants = |cache: &mut LfuCache<String, i32>| {
                 if cache.len() > 0 {
                     assert!(cache.peek_lfu().is_some());
                 } else {
@@ -2766,13 +2766,13 @@ mod tests {
             // Test invariants with edge cases
 
             // Zero capacity cache
-            let mut zero_cache = LFUCache::<String, i32>::new(0);
+            let mut zero_cache = LfuCache::<String, i32>::new(0);
             verify_invariants(&mut zero_cache);
             zero_cache.insert("test".to_string(), Arc::new(1));
             verify_invariants(&mut zero_cache);
 
             // Single capacity cache
-            let mut single_cache = LFUCache::new(1);
+            let mut single_cache = LfuCache::new(1);
             verify_invariants(&mut single_cache);
 
             single_cache.insert("only".to_string(), Arc::new(1));
@@ -2782,7 +2782,7 @@ mod tests {
             verify_invariants(&mut single_cache);
 
             // Test with complex frequency patterns
-            let mut complex_cache = LFUCache::new(3);
+            let mut complex_cache = LfuCache::new(3);
             complex_cache.insert("a".to_string(), Arc::new(1));
             complex_cache.insert("b".to_string(), Arc::new(2));
             complex_cache.insert("c".to_string(), Arc::new(3));

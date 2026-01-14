@@ -1,8 +1,8 @@
-use cachekit::policy::lru_k::LRUKCache;
+use cachekit::policy::lru_k::LrukCache;
 use cachekit::traits::CoreCache;
 
 fn main() {
-    let mut cache: LRUKCache<&str, i32> = LRUKCache::with_k(2, 2);
+    let mut cache: LrukCache<&str, i32> = LrukCache::with_k(2, 2);
 
     cache.insert("a", 10);
     cache.insert("b", 20);

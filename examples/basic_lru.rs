@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use cachekit::policy::lru::LRUCore;
+use cachekit::policy::lru::LruCore;
 use cachekit::traits::CoreCache;
 
 fn main() {
-    let mut cache: LRUCore<u32, String> = LRUCore::new(2);
+    let mut cache: LruCore<u32, String> = LruCore::new(2);
 
     cache.insert(1, Arc::new("alpha".to_string()));
     cache.insert(2, Arc::new("beta".to_string()));

@@ -7,15 +7,15 @@
 //!
 //! ```text
 //!   ┌──────────────────────────────────────────────────────────────────────────┐
-//!   │                        ConcurrentLRUCache<K, V>                          │
+//!   │                        ConcurrentLruCache<K, V>                          │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │                    Arc<RwLock<LRUCore<K, V>>>                       │ │
+//!   │   │                    Arc<RwLock<LruCore<K, V>>>                       │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                  │                                       │
 //!   │                                  ▼                                       │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │                         LRUCore<K, V>                              │ │
+//!   │   │                         LruCore<K, V>                              │ │
 //!   │   │                                                                    │ │
 //!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
 //!   │   │   │  HashMap<K, SlotId> (index into SlotArena)                  │ │ │
@@ -52,14 +52,14 @@
 //!
 //! | Component              | Description                                        |
 //! |------------------------|----------------------------------------------------|
-//! | `LRUCore<K, V>`        | Single-threaded core with list + index + store     |
-//! | `ConcurrentLRUCache`   | Thread-safe wrapper with `parking_lot::RwLock`     |
+//! | `LruCore<K, V>`        | Single-threaded core with list + index + store     |
+//! | `ConcurrentLruCache`   | Thread-safe wrapper with `parking_lot::RwLock`     |
 //! | `Entry<K>`             | SlotArena entry storing key + list node id         |
 //! | `IntrusiveList`        | Recency list storing SlotId ordering              |
 //! | `HashMapStore<K, V>`   | Store for key -> `Arc<V>` ownership                |
-//! | `BufferPoolCache<V>`   | Type alias for `ConcurrentLRUCache<u32, V>`        |
+//! | `BufferPoolCache<V>`   | Type alias for `ConcurrentLruCache<u32, V>`        |
 //! | `PageCache<K, V>`      | Type alias for generic page caching                |
-//! | `LRUCache<K, V>`       | Type alias for `LRUCore` (single-threaded usage)   |
+//! | `LruCache<K, V>`       | Type alias for `LruCore` (single-threaded usage)   |
 //!
 //! ## LRU Operations Flow
 //!
@@ -124,7 +124,7 @@
 //!     • No raw pointers in the policy core
 //! ```
 //!
-//! ## LRUCore Methods (CoreCache + MutableCache + LRUCacheTrait)
+//! ## LruCore Methods (CoreCache + MutableCache + LruCacheTrait)
 //!
 //! | Method           | Complexity | Description                               |
 //! |------------------|------------|-------------------------------------------|
@@ -142,7 +142,7 @@
 //! | `capacity()`     | O(1)       | Maximum capacity                          |
 //! | `clear()`        | O(n)       | Remove all entries                        |
 //!
-//! ## ConcurrentLRUCache Methods
+//! ## ConcurrentLruCache Methods
 //!
 //! | Method               | Lock Type | Description                          |
 //! |----------------------|-----------|--------------------------------------|
@@ -201,7 +201,7 @@
 //!        │
 //!        ▼
 //!   ┌──────────────────────────────────────────────────────────┐
-//!   │  LRUCore (single-threaded operations)                    │
+//!   │  LruCore (single-threaded operations)                    │
 //!   └──────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -229,12 +229,12 @@
 //!
 //! ```rust,ignore
 //! use crate::storage::disk::async_disk::cache::lru::{
-//!     ConcurrentLRUCache, LRUCore,
+//!     ConcurrentLruCache, LruCore,
 //! };
 //! use std::sync::Arc;
 //!
 //! // Single-threaded usage
-//! let mut cache: LRUCore<u32, String> = LRUCore::new(100);
+//! let mut cache: LruCore<u32, String> = LruCore::new(100);
 //! cache.insert(1, Arc::new("page_data".to_string()));
 //!
 //! if let Some(value) = cache.get(&1) {
@@ -252,8 +252,8 @@
 //! }
 //!
 //! // Concurrent usage
-//! let concurrent_cache: ConcurrentLRUCache<u32, String> =
-//!     ConcurrentLRUCache::new(1000);
+//! let concurrent_cache: ConcurrentLruCache<u32, String> =
+//!     ConcurrentLruCache::new(1000);
 //!
 //! // Insert (wraps in Arc internally)
 //! concurrent_cache.insert(1, "data".to_string());
@@ -297,8 +297,8 @@
 //!
 //! ## Thread Safety
 //!
-//! - `LRUCore`: **NOT thread-safe** - single-threaded only
-//! - `ConcurrentLRUCache`: **Thread-safe** via `parking_lot::RwLock`
+//! - `LruCore`: **NOT thread-safe** - single-threaded only
+//! - `ConcurrentLruCache`: **Thread-safe** via `parking_lot::RwLock`
 //! - `Entry`: Stored in `SlotArena`; thread safety provided by the outer lock
 //! - Values: `Arc<V>` in the store enables safe sharing across threads
 
@@ -319,7 +319,7 @@ use crate::metrics::traits::{
 };
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{CoreCache, LRUCacheTrait, MutableCache};
+use crate::traits::{CoreCache, LruCacheTrait, MutableCache};
 
 #[derive(Debug)]
 struct Entry<K>
@@ -351,9 +351,9 @@ where
 ///
 /// ## Thread Safety:
 /// - Core is single-threaded for maximum performance
-/// - Thread safety provided by wrapper (ConcurrentLRUCache)
+/// - Thread safety provided by wrapper (ConcurrentLruCache)
 /// - Values are thread-safe via `Arc<V>` stored in the store
-pub struct LRUCore<K, V>
+pub struct LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -365,7 +365,7 @@ where
     metrics: LruMetrics,
 }
 
-impl<K, V> LRUCore<K, V>
+impl<K, V> LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -376,12 +376,12 @@ where
     ///
     /// # Example
     /// ```
-    /// use cachekit::policy::lru::LRUCore;
+    /// use cachekit::policy::lru::LruCore;
     ///
-    /// let mut cache: LRUCore<u32, String> = LRUCore::new(100);
+    /// let mut cache: LruCore<u32, String> = LruCore::new(100);
     /// ```
     pub fn new(capacity: usize) -> Self {
-        LRUCore {
+        LruCore {
             store: HashMapStore::new(capacity),
             entries: SlotArena::with_capacity(capacity),
             index: HashMap::with_capacity(capacity),
@@ -455,7 +455,7 @@ where
 }
 
 // Implementation of specialized traits for zero-copy operations
-impl<K, V> CoreCache<K, Arc<V>> for LRUCore<K, V>
+impl<K, V> CoreCache<K, Arc<V>> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -571,7 +571,7 @@ where
     }
 }
 
-impl<K, V> LRUCore<K, V>
+impl<K, V> LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -594,7 +594,7 @@ where
     }
 }
 
-impl<K, V> MutableCache<K, Arc<V>> for LRUCore<K, V>
+impl<K, V> MutableCache<K, Arc<V>> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -612,7 +612,7 @@ where
     }
 }
 
-impl<K, V> LRUCacheTrait<K, Arc<V>> for LRUCore<K, V>
+impl<K, V> LruCacheTrait<K, Arc<V>> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -691,7 +691,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> LRUCore<K, V>
+impl<K, V> LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -721,7 +721,7 @@ where
 }
 
 // Proper cleanup when cache core is dropped
-impl<K, V> Drop for LRUCore<K, V>
+impl<K, V> Drop for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -731,30 +731,30 @@ where
 }
 
 // Send + Sync analysis:
-// - LRUCore is Send if K and V are Send (no shared references)
-// - LRUCore is NOT Sync (requires &mut for modifications)
-// - Thread safety provided by ConcurrentLRUCache wrapper
+// - LruCore is Send if K and V are Send (no shared references)
+// - LruCore is NOT Sync (requires &mut for modifications)
+// - Thread safety provided by ConcurrentLruCache wrapper
 // This is enforced by Rust's auto traits
 
 /// Thread-safe concurrent LRU cache wrapper using RwLock
 /// Optimized for read-heavy database workloads (buffer pools)
 #[derive(Clone)]
-pub struct ConcurrentLRUCache<K, V>
+pub struct ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    inner: Arc<RwLock<LRUCore<K, V>>>,
+    inner: Arc<RwLock<LruCore<K, V>>>,
 }
 
-impl<K, V> ConcurrentLRUCache<K, V>
+impl<K, V> ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
     /// Create a new concurrent LRU cache with the given capacity
     pub fn new(capacity: usize) -> Self {
-        ConcurrentLRUCache {
-            inner: Arc::new(RwLock::new(LRUCore::new(capacity))),
+        ConcurrentLruCache {
+            inner: Arc::new(RwLock::new(LruCore::new(capacity))),
         }
     }
 
@@ -842,7 +842,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> ConcurrentLRUCache<K, V>
+impl<K, V> ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
     V: Send + Sync,
@@ -854,7 +854,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for LRUCore<K, V>
+impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -864,7 +864,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for ConcurrentLRUCache<K, V>
+impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
     V: Send + Sync,
@@ -891,15 +891,15 @@ mod tests {
             #[test]
             fn test_new_cache_creation() {
                 // Test creating new LRU cache with various capacities
-                let cache1: LRUCore<i32, i32> = LRUCore::new(0);
+                let cache1: LruCore<i32, i32> = LruCore::new(0);
                 assert_eq!(cache1.capacity(), 0);
                 assert_eq!(cache1.len(), 0);
 
-                let cache2: LRUCore<i32, i32> = LRUCore::new(10);
+                let cache2: LruCore<i32, i32> = LruCore::new(10);
                 assert_eq!(cache2.capacity(), 10);
                 assert_eq!(cache2.len(), 0);
 
-                let cache3: LRUCore<i32, i32> = LRUCore::new(1000);
+                let cache3: LruCore<i32, i32> = LruCore::new(1000);
                 assert_eq!(cache3.capacity(), 1000);
                 assert_eq!(cache3.len(), 0);
             }
@@ -907,7 +907,7 @@ mod tests {
             #[test]
             fn test_insert_single_item() {
                 // Test inserting a single item into empty cache
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
 
                 let result = cache.insert(1, Arc::new(100));
                 assert!(result.is_none()); // No previous value
@@ -918,7 +918,7 @@ mod tests {
             #[test]
             fn test_insert_multiple_items() {
                 // Test inserting multiple items within capacity
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
 
                 for i in 1..=3 {
                     let result = cache.insert(i, Arc::new(i * 10));
@@ -934,7 +934,7 @@ mod tests {
             #[test]
             fn test_get_existing_item() {
                 // Test getting an item that exists in cache
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 let value = cache.get(&1);
@@ -945,7 +945,7 @@ mod tests {
             #[test]
             fn test_get_nonexistent_item() {
                 // Test getting an item that doesn't exist in cache
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 let value = cache.get(&2);
@@ -955,7 +955,7 @@ mod tests {
             #[test]
             fn test_peek_existing_item() {
                 // Test peeking at an item that exists (no LRU update)
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 let value = cache.peek(&1);
@@ -966,7 +966,7 @@ mod tests {
             #[test]
             fn test_peek_nonexistent_item() {
                 // Test peeking at an item that doesn't exist
-                let cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let cache: LruCore<i32, i32> = LruCore::new(5);
 
                 let value = cache.peek(&1);
                 assert!(value.is_none());
@@ -975,7 +975,7 @@ mod tests {
             #[test]
             fn test_contains_existing_item() {
                 // Test contains check for existing item
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 assert!(cache.contains(&1));
@@ -984,7 +984,7 @@ mod tests {
             #[test]
             fn test_contains_nonexistent_item() {
                 // Test contains check for non-existing item
-                let cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let cache: LruCore<i32, i32> = LruCore::new(5);
 
                 assert!(!cache.contains(&1));
             }
@@ -992,7 +992,7 @@ mod tests {
             #[test]
             fn test_remove_existing_item() {
                 // Test removing an item that exists in cache
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 let removed = cache.remove(&1);
@@ -1005,7 +1005,7 @@ mod tests {
             #[test]
             fn test_remove_nonexistent_item() {
                 // Test removing an item that doesn't exist in cache
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 let removed = cache.remove(&2);
@@ -1016,7 +1016,7 @@ mod tests {
             #[test]
             fn test_insert_duplicate_key() {
                 // Test inserting with same key twice (should update value)
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
 
                 let old_value = cache.insert(1, Arc::new(100));
                 assert!(old_value.is_none());
@@ -1033,7 +1033,7 @@ mod tests {
             #[test]
             fn test_cache_length_updates() {
                 // Test that cache length is updated correctly on operations
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 assert_eq!(cache.len(), 0);
 
                 cache.insert(1, Arc::new(10));
@@ -1052,20 +1052,20 @@ mod tests {
             #[test]
             fn test_cache_capacity() {
                 // Test that cache reports correct capacity
-                let cache1: LRUCore<i32, i32> = LRUCore::new(0);
+                let cache1: LruCore<i32, i32> = LruCore::new(0);
                 assert_eq!(cache1.capacity(), 0);
 
-                let cache2: LRUCore<i32, i32> = LRUCore::new(10);
+                let cache2: LruCore<i32, i32> = LruCore::new(10);
                 assert_eq!(cache2.capacity(), 10);
 
-                let cache3: LRUCore<i32, i32> = LRUCore::new(1000);
+                let cache3: LruCore<i32, i32> = LruCore::new(1000);
                 assert_eq!(cache3.capacity(), 1000);
             }
 
             #[test]
             fn test_cache_clear() {
                 // Test clearing all items from cache
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
 
                 for i in 1..=3 {
                     cache.insert(i, Arc::new(i * 10));
@@ -1082,7 +1082,7 @@ mod tests {
             #[test]
             fn test_empty_cache_behavior() {
                 // Test operations on empty cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 assert_eq!(cache.len(), 0);
                 assert!(cache.get(&1).is_none());
@@ -1098,7 +1098,7 @@ mod tests {
             #[test]
             fn test_single_item_cache() {
                 // Test cache with capacity of 1
-                let mut cache = LRUCore::new(1);
+                let mut cache = LruCore::new(1);
 
                 cache.insert(1, Arc::new(100));
                 assert_eq!(cache.len(), 1);
@@ -1114,7 +1114,7 @@ mod tests {
             #[test]
             fn test_zero_capacity_cache() {
                 // Test cache with capacity of 0
-                let mut cache = LRUCore::new(0);
+                let mut cache = LruCore::new(0);
 
                 let result = cache.insert(1, Arc::new(100));
                 assert!(result.is_none());
@@ -1125,9 +1125,9 @@ mod tests {
             #[test]
             fn test_is_empty() {
                 // Test is_empty method on various cache states
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
 
-                // For LRUCore, we need to check len() == 0
+                // For LruCore, we need to check len() == 0
                 assert_eq!(cache.len(), 0);
 
                 cache.insert(1, Arc::new(100));
@@ -1144,7 +1144,7 @@ mod tests {
             #[test]
             fn test_lru_eviction_basic() {
                 // Test that LRU item is evicted when capacity exceeded
-                let mut cache = LRUCore::new(2);
+                let mut cache = LruCore::new(2);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1161,7 +1161,7 @@ mod tests {
             #[test]
             fn test_lru_order_preservation() {
                 // Test that LRU order is maintained correctly
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1183,7 +1183,7 @@ mod tests {
             #[test]
             fn test_access_updates_lru_order() {
                 // Test that accessing an item moves it to most recent
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1203,7 +1203,7 @@ mod tests {
             #[test]
             fn test_peek_does_not_update_lru() {
                 // Test that peek doesn't change LRU order
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1223,7 +1223,7 @@ mod tests {
             #[test]
             fn test_touch_updates_lru_order() {
                 // Test that touch operation updates LRU order
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1244,7 +1244,7 @@ mod tests {
             #[test]
             fn test_touch_nonexistent_item() {
                 // Test touch on item that doesn't exist
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 cache.insert(1, Arc::new(100));
 
                 let touched = cache.touch(&2);
@@ -1254,7 +1254,7 @@ mod tests {
             #[test]
             fn test_pop_lru_basic() {
                 // Test popping least recently used item
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1272,7 +1272,7 @@ mod tests {
             #[test]
             fn test_pop_lru_empty_cache() {
                 // Test popping from empty cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 let popped = cache.pop_lru();
                 assert!(popped.is_none());
@@ -1281,7 +1281,7 @@ mod tests {
             #[test]
             fn test_peek_lru_basic() {
                 // Test peeking at least recently used item
-                let cache = LRUCore::new(3);
+                let cache = LruCore::new(3);
                 let mut cache = cache;
 
                 cache.insert(1, Arc::new(100));
@@ -1300,7 +1300,7 @@ mod tests {
             #[test]
             fn test_peek_lru_empty_cache() {
                 // Test peeking LRU from empty cache
-                let cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let cache: LruCore<i32, i32> = LruCore::new(3);
 
                 let peeked = cache.peek_lru();
                 assert!(peeked.is_none());
@@ -1309,7 +1309,7 @@ mod tests {
             #[test]
             fn test_recency_rank_basic() {
                 // Test getting recency rank of items
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1324,7 +1324,7 @@ mod tests {
             #[test]
             fn test_recency_rank_nonexistent() {
                 // Test recency rank for non-existing item
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 cache.insert(1, Arc::new(100));
 
                 assert!(cache.recency_rank(&2).is_none());
@@ -1332,8 +1332,8 @@ mod tests {
 
             #[test]
             fn test_concurrent_cache_basic() {
-                // Test basic operations on ConcurrentLRUCache
-                let cache = ConcurrentLRUCache::new(5);
+                // Test basic operations on ConcurrentLruCache
+                let cache = ConcurrentLruCache::new(5);
 
                 assert_eq!(cache.capacity(), 5);
                 assert_eq!(cache.len(), 0);
@@ -1362,7 +1362,7 @@ mod tests {
             #[test]
             fn test_concurrent_insert_arc() {
                 // Test inserting Arc<V> directly into concurrent cache
-                let cache = ConcurrentLRUCache::new(5);
+                let cache = ConcurrentLruCache::new(5);
                 let value = Arc::new(100);
                 let value_clone = Arc::clone(&value);
 
@@ -1381,7 +1381,7 @@ mod tests {
             #[test]
             fn test_arc_value_sharing() {
                 // Test that Arc<V> values are properly shared (zero-copy)
-                let cache = ConcurrentLRUCache::new(5);
+                let cache = ConcurrentLruCache::new(5);
                 cache.insert(1, 100);
 
                 let value1 = cache.get(&1);
@@ -1404,7 +1404,7 @@ mod tests {
             #[test]
             fn test_key_copy_semantics() {
                 // Test that keys use Copy semantics efficiently
-                let cache = ConcurrentLRUCache::new(5);
+                let cache = ConcurrentLruCache::new(5);
 
                 let key1 = 42u32;
                 let key2 = key1; // Copy, not move
@@ -1432,7 +1432,7 @@ mod tests {
                 // Test cache with very large capacity (usize::MAX or close to it)
                 // Use a reasonable large number to avoid memory issues
                 let large_capacity = 1_000_000_usize;
-                let cache: LRUCore<i32, i32> = LRUCore::new(large_capacity);
+                let cache: LruCore<i32, i32> = LruCore::new(large_capacity);
 
                 assert_eq!(cache.capacity(), large_capacity);
                 assert_eq!(cache.len(), 0);
@@ -1447,7 +1447,7 @@ mod tests {
             #[test]
             fn test_zero_capacity_operations() {
                 // Test all operations on zero-capacity cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(0);
+                let mut cache: LruCore<i32, i32> = LruCore::new(0);
 
                 // All insertions should fail/be ignored
                 let result = cache.insert(1, Arc::new(100));
@@ -1472,7 +1472,7 @@ mod tests {
             #[test]
             fn test_single_capacity_eviction_patterns() {
                 // Test eviction behavior with capacity = 1
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(1);
+                let mut cache: LruCore<i32, i32> = LruCore::new(1);
 
                 // Insert first item
                 cache.insert(1, Arc::new(100));
@@ -1501,7 +1501,7 @@ mod tests {
             #[test]
             fn test_repeated_insert_same_key() {
                 // Test inserting same key many times with different values
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Insert same key multiple times
                 for i in 1..=10 {
@@ -1527,7 +1527,7 @@ mod tests {
             #[test]
             fn test_alternating_access_pattern() {
                 // Test alternating access to two items in capacity-2 cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(2);
+                let mut cache: LruCore<i32, i32> = LruCore::new(2);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1553,7 +1553,7 @@ mod tests {
             #[test]
             fn test_insert_then_immediate_remove() {
                 // Test inserting and immediately removing items
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 for i in 1..=10 {
                     cache.insert(i, Arc::new(i * 100));
@@ -1568,7 +1568,7 @@ mod tests {
             #[test]
             fn test_remove_during_eviction() {
                 // Test removing items while eviction is happening
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Fill cache to capacity
                 cache.insert(1, Arc::new(100));
@@ -1598,7 +1598,7 @@ mod tests {
             #[test]
             fn test_clear_on_empty_cache() {
                 // Test clearing an already empty cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 assert_eq!(cache.len(), 0);
                 cache.clear();
@@ -1613,7 +1613,7 @@ mod tests {
             #[test]
             fn test_clear_then_operations() {
                 // Test operations after clearing a populated cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Populate cache
                 for i in 1..=3 {
@@ -1644,7 +1644,7 @@ mod tests {
             #[test]
             fn test_multiple_clear_operations() {
                 // Test calling clear multiple times in succession
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 cache.insert(1, Arc::new(100));
                 assert_eq!(cache.len(), 1);
@@ -1664,7 +1664,7 @@ mod tests {
             #[test]
             fn test_pop_lru_until_empty() {
                 // Test repeatedly calling pop_lru until cache is empty
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Fill cache
                 for i in 1..=5 {
@@ -1690,7 +1690,7 @@ mod tests {
             #[test]
             fn test_peek_after_eviction() {
                 // Test peeking at items that should have been evicted
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(2);
+                let mut cache: LruCore<i32, i32> = LruCore::new(2);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1712,7 +1712,7 @@ mod tests {
             #[test]
             fn test_touch_evicted_items() {
                 // Test touching items that have been evicted
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(2);
+                let mut cache: LruCore<i32, i32> = LruCore::new(2);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1733,7 +1733,7 @@ mod tests {
             #[test]
             fn test_recency_rank_after_operations() {
                 // Test recency ranks after complex operation sequences
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Insert in order
                 cache.insert(1, Arc::new(100));
@@ -1767,7 +1767,7 @@ mod tests {
             #[test]
             fn test_cache_with_identical_values() {
                 // Test cache behavior when multiple keys map to identical values
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
                 let shared_value = Arc::new(999);
 
                 // Insert different keys with same Arc value
@@ -1797,7 +1797,7 @@ mod tests {
             #[test]
             fn test_interleaved_operations() {
                 // Test complex interleaving of insert/get/remove/touch operations
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 assert!(cache.get(&1).is_some());
@@ -1828,7 +1828,7 @@ mod tests {
             #[test]
             fn test_capacity_reduction_simulation() {
                 // Test behavior as if capacity was reduced (by manual eviction)
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Fill to capacity
                 for i in 1..=5 {
@@ -1857,7 +1857,7 @@ mod tests {
             #[test]
             fn test_duplicate_key_with_same_value() {
                 // Test inserting same key-value pair multiple times
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
                 let value = Arc::new(100);
 
                 // Insert same key-value multiple times
@@ -1880,7 +1880,7 @@ mod tests {
             #[test]
             fn test_lru_order_with_duplicate_inserts() {
                 // Test LRU order when same key is inserted repeatedly
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1910,7 +1910,7 @@ mod tests {
             #[test]
             fn test_peek_vs_get_ordering_difference() {
                 // Test that peek and get produce different LRU ordering
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -1943,8 +1943,8 @@ mod tests {
 
             #[test]
             fn test_concurrent_cache_edge_cases() {
-                // Test edge cases specific to ConcurrentLRUCache
-                let cache = ConcurrentLRUCache::new(2);
+                // Test edge cases specific to ConcurrentLruCache
+                let cache = ConcurrentLruCache::new(2);
 
                 // Empty cache operations
                 assert!(cache.is_empty());
@@ -1979,7 +1979,7 @@ mod tests {
             #[test]
             fn test_arc_reference_counting_edge_cases() {
                 // Test Arc reference counting in edge scenarios
-                let cache = ConcurrentLRUCache::new(3);
+                let cache = ConcurrentLruCache::new(3);
                 let value = Arc::new(vec![1, 2, 3, 4, 5]); // Non-trivial value
 
                 // Initial ref count should be 1
@@ -2012,7 +2012,7 @@ mod tests {
             #[test]
             fn test_insert_arc_vs_insert_value() {
                 // Test difference between insert_arc and regular insert
-                let cache = ConcurrentLRUCache::new(3);
+                let cache = ConcurrentLruCache::new(3);
                 let value = Arc::new(100);
 
                 // insert_arc uses provided Arc directly
@@ -2041,7 +2041,7 @@ mod tests {
             #[test]
             fn test_large_key_values() {
                 // Test with unusually large key values (if applicable)
-                let mut cache: LRUCore<i64, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i64, i32> = LruCore::new(3);
 
                 // Test with max and min key values
                 cache.insert(i64::MAX, Arc::new(1));
@@ -2060,7 +2060,7 @@ mod tests {
             #[test]
             fn test_key_collision_scenarios() {
                 // Test scenarios that might cause hash collisions
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(10);
+                let mut cache: LruCore<i32, i32> = LruCore::new(10);
 
                 // Use keys that might have similar hash values
                 let keys = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
@@ -2091,7 +2091,7 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_memory_pressure_simulation() {
                 // Test cache behavior under simulated memory pressure
-                let mut cache: LRUCore<i32, String> = LRUCore::new(75);
+                let mut cache: LruCore<i32, String> = LruCore::new(75);
 
                 // Create large values to simulate memory pressure
                 for i in 0..50 {
@@ -2131,7 +2131,7 @@ mod tests {
             #[test]
             fn test_rapid_capacity_fill_and_drain() {
                 // Test rapidly filling to capacity then draining cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(50);
+                let mut cache: LruCore<i32, i32> = LruCore::new(50);
 
                 // Rapid fill
                 for i in 0..50 {
@@ -2169,7 +2169,7 @@ mod tests {
             #[test]
             fn test_operation_sequence_corner_cases() {
                 // Test specific sequences that might break invariants
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Sequence 1: Insert, remove, insert same key
                 cache.insert(1, Arc::new(100));
@@ -2203,7 +2203,7 @@ mod tests {
             #[test]
             fn test_boundary_value_keys() {
                 // Test with boundary values for key type (min/max values)
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 let boundary_keys = vec![i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
 
@@ -2228,7 +2228,7 @@ mod tests {
             #[test]
             fn test_remove_head_and_tail_items() {
                 // Test removing items at head and tail positions specifically
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Fill cache
                 for i in 1..=5 {
@@ -2262,7 +2262,7 @@ mod tests {
             #[test]
             fn test_get_after_remove() {
                 // Test getting items immediately after they've been removed
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2286,7 +2286,7 @@ mod tests {
             #[test]
             fn test_contains_after_eviction() {
                 // Test contains check for items that were evicted
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(2);
+                let mut cache: LruCore<i32, i32> = LruCore::new(2);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2311,7 +2311,7 @@ mod tests {
             #[test]
             fn test_empty_cache_all_operations() {
                 // Test all possible operations on empty cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Verify empty state
                 assert_eq!(cache.len(), 0);
@@ -2340,7 +2340,7 @@ mod tests {
             #[test]
             fn test_single_item_all_operations() {
                 // Test all operations when cache contains exactly one item
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 // Verify single item state
@@ -2372,7 +2372,7 @@ mod tests {
             #[test]
             fn test_full_cache_all_operations() {
                 // Test all operations when cache is at full capacity
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Fill to capacity
                 cache.insert(1, Arc::new(100));
@@ -2407,7 +2407,7 @@ mod tests {
             #[test]
             fn test_lru_rank_boundary_conditions() {
                 // Test recency rank at boundaries (0, capacity-1)
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2431,7 +2431,7 @@ mod tests {
             #[test]
             fn test_peek_lru_on_single_item() {
                 // Test peek_lru when cache has exactly one item
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 let peeked = cache.peek_lru();
@@ -2449,7 +2449,7 @@ mod tests {
             #[test]
             fn test_touch_only_item() {
                 // Test touching the only item in a single-item cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
                 cache.insert(1, Arc::new(100));
 
                 // Touch should succeed
@@ -2467,7 +2467,7 @@ mod tests {
             #[test]
             fn test_concurrent_read_write_edge_cases() {
                 // Test edge cases in concurrent read/write scenarios
-                let cache = ConcurrentLRUCache::new(2);
+                let cache = ConcurrentLruCache::new(2);
 
                 // Concurrent insert and read of same key
                 cache.insert(1, 100);
@@ -2498,14 +2498,14 @@ mod tests {
                 // Test cache dropping behavior in various states
                 {
                     // Empty cache drop
-                    let cache: LRUCore<i32, i32> = LRUCore::new(5);
+                    let cache: LruCore<i32, i32> = LruCore::new(5);
                     assert_eq!(cache.len(), 0);
                     // Cache drops here
                 }
 
                 {
                     // Single item cache drop
-                    let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                    let mut cache: LruCore<i32, i32> = LruCore::new(5);
                     cache.insert(1, Arc::new(100));
                     assert_eq!(cache.len(), 1);
                     // Cache drops here
@@ -2513,7 +2513,7 @@ mod tests {
 
                 {
                     // Full cache drop
-                    let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                    let mut cache: LruCore<i32, i32> = LruCore::new(3);
                     for i in 1..=3 {
                         cache.insert(i, Arc::new(i * 100));
                     }
@@ -2531,7 +2531,7 @@ mod tests {
             #[test]
             fn test_lru_insertion_order_tracking() {
                 // Test that insertion order is correctly tracked in LRU list
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Insert items in sequence
                 for i in 1..=5 {
@@ -2553,7 +2553,7 @@ mod tests {
             #[test]
             fn test_lru_access_order_updates() {
                 // Test that access operations correctly update LRU order
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2582,7 +2582,7 @@ mod tests {
             #[test]
             fn test_lru_eviction_policy() {
                 // Test that least recently used items are evicted first
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Fill cache
                 cache.insert(1, Arc::new(100));
@@ -2606,7 +2606,7 @@ mod tests {
             #[test]
             fn test_lru_head_tail_positioning() {
                 // Test that head is most recent and tail is least recent
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2633,7 +2633,7 @@ mod tests {
             #[test]
             fn test_move_to_head_operation() {
                 // Test internal move_to_head functionality
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 for i in 1..=5 {
                     cache.insert(i, Arc::new(i * 100));
@@ -2658,7 +2658,7 @@ mod tests {
             #[test]
             fn test_lru_chain_integrity() {
                 // Test that doubly-linked list maintains proper forward/backward links
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Build up cache
                 for i in 1..=4 {
@@ -2698,7 +2698,7 @@ mod tests {
             #[test]
             fn test_lru_ordering_after_get() {
                 // Test LRU order changes after get operations
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -2733,7 +2733,7 @@ mod tests {
             #[test]
             fn test_lru_ordering_after_touch() {
                 // Test LRU order changes after touch operations
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2767,7 +2767,7 @@ mod tests {
             #[test]
             fn test_lru_ordering_preservation_on_peek() {
                 // Test that peek operations don't change LRU order
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -2801,7 +2801,7 @@ mod tests {
             #[test]
             fn test_pop_lru_removes_tail() {
                 // Test that pop_lru always removes the tail (LRU) item
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Fill cache
                 for i in 1..=5 {
@@ -2834,7 +2834,7 @@ mod tests {
             #[test]
             fn test_pop_lru_updates_tail_slot() {
                 // Test that pop_lru correctly updates tail SlotId
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2866,7 +2866,7 @@ mod tests {
             #[test]
             fn test_peek_lru_returns_tail() {
                 // Test that peek_lru returns tail item without removal
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -2900,7 +2900,7 @@ mod tests {
             #[test]
             fn test_lru_recency_rank_calculation() {
                 // Test recency rank calculation from head to tail
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(6);
+                let mut cache: LruCore<i32, i32> = LruCore::new(6);
 
                 // Insert items
                 for i in 1..=6 {
@@ -2933,7 +2933,7 @@ mod tests {
             #[test]
             fn test_lru_rank_after_reordering() {
                 // Test recency ranks after LRU order changes
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -2965,7 +2965,7 @@ mod tests {
             #[test]
             fn test_multiple_access_lru_stability() {
                 // Test LRU order with multiple accesses to same items
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -2996,7 +2996,7 @@ mod tests {
             #[test]
             fn test_lru_eviction_sequence() {
                 // Test sequence of evictions follows LRU order
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Fill cache
                 cache.insert(1, Arc::new(100));
@@ -3029,7 +3029,7 @@ mod tests {
             #[test]
             fn test_lru_invariants_after_insert() {
                 // Test LRU invariants are maintained after insertions
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Insert first item
                 cache.insert(1, Arc::new(100));
@@ -3065,7 +3065,7 @@ mod tests {
             #[test]
             fn test_lru_invariants_after_remove() {
                 // Test LRU invariants are maintained after removals
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3103,7 +3103,7 @@ mod tests {
             #[test]
             fn test_lru_invariants_after_clear() {
                 // Test LRU invariants after clearing cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Fill cache
                 for i in 1..=5 {
@@ -3145,7 +3145,7 @@ mod tests {
             #[test]
             fn test_lru_order_with_duplicate_keys() {
                 // Test LRU order when same key is accessed multiple times
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -3182,7 +3182,7 @@ mod tests {
             #[test]
             fn test_lru_traversal_forward() {
                 // Test forward traversal from head to tail
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 for i in 1..=5 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3209,7 +3209,7 @@ mod tests {
             #[test]
             fn test_lru_traversal_backward() {
                 // Test backward traversal from tail to head
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3241,7 +3241,7 @@ mod tests {
             #[test]
             fn test_lru_middle_node_removal() {
                 // Test removing nodes from middle of LRU chain
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 for i in 1..=5 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3277,7 +3277,7 @@ mod tests {
             #[test]
             fn test_lru_head_node_removal() {
                 // Test removing head node and updating LRU chain
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3315,7 +3315,7 @@ mod tests {
             #[test]
             fn test_lru_tail_node_removal() {
                 // Test removing tail node and updating LRU chain
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3353,7 +3353,7 @@ mod tests {
             #[test]
             fn test_lru_single_node_operations() {
                 // Test LRU operations when cache has only one node
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Insert single item
                 cache.insert(1, Arc::new(100));
@@ -3398,7 +3398,7 @@ mod tests {
             #[test]
             fn test_lru_two_node_operations() {
                 // Test LRU operations with exactly two nodes
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -3460,7 +3460,7 @@ mod tests {
             #[test]
             fn test_lru_aging_pattern() {
                 // Test items aging from head to tail over time
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Insert items with delays to simulate aging
                 cache.insert(1, Arc::new(100));
@@ -3493,7 +3493,7 @@ mod tests {
             #[test]
             fn test_lru_promotion_to_head() {
                 // Test promoting items from various positions to head
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 for i in 1..=5 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3532,7 +3532,7 @@ mod tests {
             #[test]
             fn test_lru_demotion_patterns() {
                 // Test how items move down in LRU order
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -3578,7 +3578,7 @@ mod tests {
             #[test]
             fn test_lru_circular_access_pattern() {
                 // Test LRU behavior with circular access patterns
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Fill cache
                 cache.insert(1, Arc::new(100));
@@ -3614,7 +3614,7 @@ mod tests {
             #[test]
             fn test_lru_working_set_behavior() {
                 // Test LRU behavior with working set larger than cache
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Working set of 5 items, but cache capacity is only 3
                 let working_set = [1, 2, 3, 4, 5];
@@ -3654,7 +3654,7 @@ mod tests {
             #[test]
             fn test_lru_temporal_locality() {
                 // Test LRU behavior with high temporal locality
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Fill cache
                 for i in 1..=4 {
@@ -3694,7 +3694,7 @@ mod tests {
             #[test]
             fn test_lru_no_temporal_locality() {
                 // Test LRU behavior with no temporal locality (sequential access)
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Sequential access pattern with no repetition
                 let mut access_sequence = 1;
@@ -3731,7 +3731,7 @@ mod tests {
             #[test]
             fn test_lru_mixed_access_patterns() {
                 // Test LRU with mixed random and sequential access
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Phase 1: Sequential insertion
                 for i in 1..=4 {
@@ -3776,7 +3776,7 @@ mod tests {
             #[test]
             fn test_lru_hotspot_behavior() {
                 // Test LRU behavior when few items are accessed frequently
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Fill cache with items
                 for i in 1..=5 {
@@ -3828,7 +3828,7 @@ mod tests {
             #[test]
             fn test_lru_coldspot_eviction() {
                 // Test that rarely accessed items are evicted appropriately
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Insert items
                 for i in 1..=4 {
@@ -3879,14 +3879,14 @@ mod tests {
             #[test]
             fn test_lru_rank_consistency() {
                 // Test that recency ranks are consistent with actual order
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 for i in 1..=5 {
                     cache.insert(i, Arc::new(i * 100));
                 }
 
                 // Function to verify rank consistency
-                let verify_ranks = |cache: &LRUCore<i32, i32>| {
+                let verify_ranks = |cache: &LruCore<i32, i32>| {
                     let mut ranks = vec![];
                     // Check all possible keys that might be in cache (including newly inserted ones)
                     for i in 1..=10 {
@@ -3943,7 +3943,7 @@ mod tests {
             #[test]
             fn test_lru_rank_updates_after_access() {
                 // Test recency rank changes after accessing items
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 for i in 1..=4 {
                     cache.insert(i, Arc::new(i * 100));
@@ -3986,7 +3986,7 @@ mod tests {
             #[test]
             fn test_lru_batch_operations() {
                 // Test LRU behavior with batches of operations
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(6);
+                let mut cache: LruCore<i32, i32> = LruCore::new(6);
 
                 // Batch 1: Insert multiple items
                 let batch1_keys = [1, 2, 3, 4];
@@ -4049,7 +4049,7 @@ mod tests {
             #[test]
             fn test_lru_interleaved_insert_access() {
                 // Test interleaved insert and access operations on LRU order
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Interleave insertions and accesses
                 cache.insert(1, Arc::new(100)); // Cache: [1]
@@ -4078,7 +4078,7 @@ mod tests {
             #[test]
             fn test_lru_frequency_vs_recency() {
                 // Test LRU prioritizes recency over frequency
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 cache.insert(1, Arc::new(100));
                 cache.insert(2, Arc::new(200));
@@ -4112,7 +4112,7 @@ mod tests {
             #[test]
             fn test_lru_cache_warming() {
                 // Test LRU behavior during cache warming phase
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Phase 1: Empty cache
                 assert_eq!(cache.len(), 0);
@@ -4153,7 +4153,7 @@ mod tests {
             #[test]
             fn test_lru_cache_cooling() {
                 // Test LRU behavior when cache activity decreases
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Fill cache with high activity
                 for i in 1..=4 {
@@ -4205,7 +4205,7 @@ mod tests {
             #[test]
             fn test_lru_steady_state_behavior() {
                 // Test LRU behavior in steady state (full cache)
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Reach steady state (full capacity)
                 for i in 1..=4 {
@@ -4257,7 +4257,7 @@ mod tests {
             #[test]
             fn test_lru_transition_states() {
                 // Test LRU behavior during capacity transitions
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Transition 1: Empty -> Partial (25%)
                 cache.insert(1, Arc::new(100));
@@ -4314,7 +4314,7 @@ mod tests {
             #[test]
             fn test_lru_list_integrity() {
                 // Test that list order invariants are correctly maintained
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 // Build cache and verify list integrity through operations
                 for i in 1..=5 {
@@ -4386,7 +4386,7 @@ mod tests {
             #[test]
             fn test_lru_list_node_count() {
                 // Test that linked list node count matches HashMap size
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache: LruCore<i32, i32> = LruCore::new(4);
 
                 // Initially empty
                 assert_eq!(cache.len(), 0);
@@ -4436,14 +4436,14 @@ mod tests {
             #[test]
             fn test_lru_bidirectional_consistency() {
                 // Test that forward and backward traversals are consistent
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let mut cache: LruCore<i32, i32> = LruCore::new(5);
 
                 for i in 1..=5 {
                     cache.insert(i, Arc::new(i * 100));
                 }
 
                 // Function to verify bidirectional consistency
-                let verify_bidirectional = |cache: &LRUCore<i32, i32>| {
+                let verify_bidirectional = |cache: &LruCore<i32, i32>| {
                     // Forward traversal: collect items by rank from 0 to len-1
                     let mut forward_items = vec![];
                     for rank in 0..cache.len() {
@@ -4497,7 +4497,7 @@ mod tests {
             #[test]
             fn test_lru_eviction_callback_order() {
                 // Test that eviction happens in proper LRU order
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(3);
+                let mut cache: LruCore<i32, i32> = LruCore::new(3);
 
                 // Fill cache
                 cache.insert(1, Arc::new(100));
@@ -4552,7 +4552,7 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_lru_memory_layout_efficiency() {
                 // Test memory layout and access patterns for efficiency
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(1000);
+                let mut cache: LruCore<i32, i32> = LruCore::new(1000);
 
                 // Fill with many items to test memory efficiency
                 for i in 1..=1000 {
@@ -4603,7 +4603,7 @@ mod tests {
             #[test]
             fn test_lru_algorithmic_complexity() {
                 // Test that LRU operations maintain O(1) complexity
-                let mut cache: LRUCore<i32, i32> = LRUCore::new(100);
+                let mut cache: LruCore<i32, i32> = LruCore::new(100);
 
                 // Fill cache
                 for i in 1..=100 {
@@ -4668,7 +4668,7 @@ mod tests {
             fn test_lru_concurrent_ordering() {
                 // Test LRU ordering behavior in concurrent scenarios
                 use std::sync::Arc;
-                let cache = super::super::ConcurrentLRUCache::new(4);
+                let cache = super::super::ConcurrentLruCache::new(4);
 
                 // Fill cache
                 for i in 1..=4 {
@@ -4710,8 +4710,8 @@ mod tests {
             #[test]
             fn test_lru_deterministic_behavior() {
                 // Test that LRU behavior is deterministic given same operations
-                let mut cache1: LRUCore<i32, i32> = LRUCore::new(4);
-                let mut cache2: LRUCore<i32, i32> = LRUCore::new(4);
+                let mut cache1: LruCore<i32, i32> = LruCore::new(4);
+                let mut cache2: LruCore<i32, i32> = LruCore::new(4);
 
                 // Perform identical sequence of operations on both caches
                 let operations = [
@@ -4790,14 +4790,14 @@ mod tests {
 
             use super::*;
 
-            fn count_nodes<K, V>(cache: &LRUCore<K, V>) -> usize
+            fn count_nodes<K, V>(cache: &LruCore<K, V>) -> usize
             where
                 K: Copy + Eq + Hash,
             {
                 cache.list.len()
             }
 
-            fn list_keys<K, V>(cache: &LRUCore<K, V>) -> Vec<K>
+            fn list_keys<K, V>(cache: &LruCore<K, V>) -> Vec<K>
             where
                 K: Copy + Eq + Hash,
             {
@@ -4808,7 +4808,7 @@ mod tests {
                     .collect()
             }
 
-            fn head_key<K, V>(cache: &LRUCore<K, V>) -> Option<K>
+            fn head_key<K, V>(cache: &LruCore<K, V>) -> Option<K>
             where
                 K: Copy + Eq + Hash,
             {
@@ -4818,7 +4818,7 @@ mod tests {
                     .and_then(|id| cache.entries.get(*id).map(|entry| entry.key))
             }
 
-            fn tail_key<K, V>(cache: &LRUCore<K, V>) -> Option<K>
+            fn tail_key<K, V>(cache: &LruCore<K, V>) -> Option<K>
             where
                 K: Copy + Eq + Hash,
             {
@@ -4831,7 +4831,7 @@ mod tests {
             #[test]
             fn test_hashmap_linkedlist_size_consistency() {
                 // Test that HashMap size always matches linked list node count
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 assert_eq!(cache.index.len(), count_nodes(&cache));
 
                 cache.insert(1, Arc::new(10));
@@ -4850,7 +4850,7 @@ mod tests {
             #[test]
             fn test_head_tail_slot_consistency() {
                 // Test that head/tail semantics are consistent with list structure
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
 
                 // Empty
                 assert!(cache.list.is_empty());
@@ -4870,7 +4870,7 @@ mod tests {
             #[test]
             fn test_node_reference_consistency() {
                 // Test that all index entries correspond to list entries
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -4886,7 +4886,7 @@ mod tests {
             #[test]
             fn test_doubly_linked_list_integrity() {
                 // Test list integrity: no duplicates and consistent counts
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -4900,7 +4900,7 @@ mod tests {
             #[test]
             fn test_invariants_after_every_operation() {
                 // Test all invariants are maintained after each cache operation
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.validate_invariants();
 
                 for i in 0..5 {
@@ -4925,7 +4925,7 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_memory_consistency_on_eviction() {
                 // Test memory state consistency during eviction operations
-                let mut cache = LRUCore::new(2);
+                let mut cache = LruCore::new(2);
                 cache.insert(1, Arc::new(10));
                 cache.insert(2, Arc::new(20));
 
@@ -4948,7 +4948,7 @@ mod tests {
             fn test_capacity_constraints_enforcement() {
                 // Test that cache never exceeds capacity constraints
                 let capacity = 10;
-                let mut cache = LRUCore::new(capacity);
+                let mut cache = LruCore::new(capacity);
 
                 for i in 0..capacity * 2 {
                     cache.insert(i, Arc::new(i));
@@ -4960,7 +4960,7 @@ mod tests {
             #[test]
             fn test_empty_cache_state_invariants() {
                 // Test invariants when cache is empty (head=None, tail=None)
-                let cache: LRUCore<i32, i32> = LRUCore::new(10);
+                let cache: LruCore<i32, i32> = LruCore::new(10);
                 assert!(cache.list.is_empty());
                 assert!(cache.index.is_empty());
                 assert_eq!(count_nodes(&cache), 0);
@@ -4969,7 +4969,7 @@ mod tests {
             #[test]
             fn test_single_item_cache_state() {
                 // Test state consistency when cache has exactly one item
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 cache.insert(1, Arc::new(100));
 
                 assert_eq!(head_key(&cache), Some(1));
@@ -4982,7 +4982,7 @@ mod tests {
             fn test_full_cache_state_invariants() {
                 // Test invariants when cache is at full capacity
                 let capacity = 3;
-                let mut cache = LRUCore::new(capacity);
+                let mut cache = LruCore::new(capacity);
                 for i in 0..capacity {
                     cache.insert(i, Arc::new(i));
                 }
@@ -4999,7 +4999,7 @@ mod tests {
             #[test]
             fn test_state_after_clear_operation() {
                 // Test that cache state is properly reset after clear()
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 for i in 0..3 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -5014,7 +5014,7 @@ mod tests {
             #[test]
             fn test_state_during_capacity_transitions() {
                 // Test state consistency during transitions between different fill levels
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
 
                 // 0 -> 1
                 cache.insert(1, Arc::new(1));
@@ -5038,7 +5038,7 @@ mod tests {
             fn test_node_allocation_consistency() {
                 // Test that all allocated nodes are properly tracked and deallocated
                 // We verify this by checking map size vs list size
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 for i in 0..10 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -5057,7 +5057,7 @@ mod tests {
             #[test]
             fn test_key_value_mapping_consistency() {
                 // Test that keys in the list map to values in the store
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i * 10));
                 }
@@ -5074,7 +5074,7 @@ mod tests {
             #[test]
             fn test_lru_ordering_state_consistency() {
                 // Test that LRU ordering state matches actual access patterns
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
                 cache.insert(3, Arc::new(3));
@@ -5092,8 +5092,8 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_concurrent_state_consistency() {
                 // Test state consistency in concurrent access scenarios
-                // Using ConcurrentLRUCache which wraps LRUCore
-                let cache = Arc::new(ConcurrentLRUCache::new(10));
+                // Using ConcurrentLruCache which wraps LruCore
+                let cache = Arc::new(ConcurrentLruCache::new(10));
                 let mut threads = vec![];
 
                 for i in 0..10 {
@@ -5109,7 +5109,7 @@ mod tests {
                 }
 
                 assert!(cache.len() <= 10);
-                // We access inner LRUCore to check consistency via the lock
+                // We access inner LruCore to check consistency via the lock
                 let guard = cache.inner.read();
                 assert_eq!(guard.index.len(), count_nodes(&*guard));
             }
@@ -5117,12 +5117,12 @@ mod tests {
             #[test]
             fn test_state_recovery_after_errors() {
                 // Test state consistency after error conditions
-                // LRUCore operations generally don't return Result, but we can check boundary cases
-                let mut cache = LRUCore::new(0);
+                // LruCore operations generally don't return Result, but we can check boundary cases
+                let mut cache = LruCore::new(0);
                 assert!(cache.insert(1, Arc::new(1)).is_none());
                 assert!(cache.index.is_empty());
 
-                let mut cache = LRUCore::new(1);
+                let mut cache = LruCore::new(1);
                 cache.insert(1, Arc::new(1));
                 // Try to remove non-existent
                 assert!(cache.remove(&2).is_none());
@@ -5133,7 +5133,7 @@ mod tests {
             #[test]
             fn test_arc_reference_count_consistency() {
                 // Test that Arc reference counts are consistent with expectations
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 let val = Arc::new(100);
                 assert_eq!(Arc::strong_count(&val), 1);
 
@@ -5150,14 +5150,14 @@ mod tests {
             fn test_phantom_data_type_consistency() {
                 // Test that PhantomData correctly represents type relationships
                 // This is mostly a compile-time check, but we can verify instantiation
-                let cache: LRUCore<u32, String> = LRUCore::new(10);
+                let cache: LruCore<u32, String> = LruCore::new(10);
                 assert_eq!(cache.capacity(), 10);
             }
 
             #[test]
             fn test_state_transitions_insert_remove() {
                 // Test state consistency during insert/remove cycles
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
 
                 // Insert 1, 2, 3
                 cache.insert(1, Arc::new(1));
@@ -5178,7 +5178,7 @@ mod tests {
             #[test]
             fn test_state_transitions_get_peek() {
                 // Test state consistency during get/peek operations
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
 
@@ -5198,7 +5198,7 @@ mod tests {
             #[test]
             fn test_state_transitions_touch_operations() {
                 // Test state consistency during touch operations
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 cache.insert(1, Arc::new(1)); // Tail
                 cache.insert(2, Arc::new(2));
                 cache.insert(3, Arc::new(3)); // Head
@@ -5213,7 +5213,7 @@ mod tests {
             #[test]
             fn test_node_slot_validity() {
                 // Test that index entries map to valid slots
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
 
@@ -5227,7 +5227,7 @@ mod tests {
             fn test_circular_reference_prevention() {
                 // Test prevention of circular references in linked list
                 // We verify by traversing and ensuring we don't loop
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -5242,7 +5242,7 @@ mod tests {
             fn test_orphaned_node_detection() {
                 // Test detection and prevention of orphaned nodes
                 // In a valid cache, every node in map is in the list and vice versa
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
 
@@ -5253,7 +5253,7 @@ mod tests {
             #[test]
             fn test_duplicate_node_prevention() {
                 // Test prevention of duplicate nodes for same key
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 let id1 = cache.index.get(&1).copied();
 
@@ -5268,7 +5268,7 @@ mod tests {
             #[test]
             fn test_list_termination_consistency() {
                 // Test that list properly terminates (no infinite loops)
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -5281,7 +5281,7 @@ mod tests {
             #[test]
             fn test_head_node_properties() {
                 // Test that head node has prev=None and is most recent
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
 
                 assert_eq!(head_key(&cache), Some(1));
@@ -5293,7 +5293,7 @@ mod tests {
             #[test]
             fn test_tail_node_properties() {
                 // Test that tail node has next=None and is least recent
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1)); // becomes tail when 2 is added
                 cache.insert(2, Arc::new(2));
 
@@ -5303,7 +5303,7 @@ mod tests {
             #[test]
             fn test_middle_node_properties() {
                 // Test that middle nodes remain correctly ordered
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2)); // Middle
                 cache.insert(3, Arc::new(3));
@@ -5315,7 +5315,7 @@ mod tests {
             #[test]
             fn test_key_uniqueness_in_list() {
                 // Test that no key appears twice in the linked list
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
                 cache.insert(1, Arc::new(3)); // Update 1
@@ -5329,7 +5329,7 @@ mod tests {
             #[test]
             fn test_value_consistency_across_structures() {
                 // Test that values are consistent between store and list nodes
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(10));
 
                 let map_val = cache.store.peek_ref(&1).unwrap().clone();
@@ -5341,7 +5341,7 @@ mod tests {
             #[test]
             fn test_state_during_eviction_cascades() {
                 // Test state consistency during multiple evictions
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 for i in 0..10 {
                     cache.insert(i, Arc::new(i));
                     assert!(cache.len() <= 3);
@@ -5352,9 +5352,9 @@ mod tests {
             #[test]
             fn test_atomic_operation_consistency() {
                 // Test that operations are atomic with respect to state consistency
-                // Since LRUCore is single threaded, operations are atomic.
+                // Since LruCore is single threaded, operations are atomic.
                 // We verify that an operation either completes fully or (if we could fail) doesn't change state.
-                let mut cache = LRUCore::new(3);
+                let mut cache = LruCore::new(3);
                 cache.insert(1, Arc::new(1));
                 cache.validate_invariants();
             }
@@ -5363,14 +5363,14 @@ mod tests {
             fn test_rollback_state_on_failure() {
                 // Test state rollback when operations fail
                 // Currently no operations return Result/failure that requires rollback.
-                let cache = LRUCore::<i32, i32>::new(5);
+                let cache = LruCore::<i32, i32>::new(5);
                 assert!(cache.list.is_empty());
             }
 
             #[test]
             fn test_debug_invariant_validation() {
                 // Test the internal validate_invariants function thoroughly
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.validate_invariants();
                 cache.insert(1, Arc::new(1));
                 cache.validate_invariants();
@@ -5381,7 +5381,7 @@ mod tests {
             fn test_memory_leak_prevention() {
                 // Test that no memory leaks occur during normal operations
                 // Basic check: ensure map and list counts match
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 for i in 0..100 {
                     cache.insert(i % 20, Arc::new(i));
                 }
@@ -5391,7 +5391,7 @@ mod tests {
             #[test]
             fn test_double_free_prevention() {
                 // Test prevention of double-free errors
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.remove(&1);
                 cache.remove(&1); // Should be safe
@@ -5400,7 +5400,7 @@ mod tests {
             #[test]
             fn test_use_after_free_prevention() {
                 // Test prevention of use-after-free errors
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 let val = cache.get(&1).cloned();
                 cache.remove(&1);
@@ -5412,7 +5412,7 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_thread_safety_state_consistency() {
                 // Test state consistency across multiple threads
-                let cache = Arc::new(ConcurrentLRUCache::new(10));
+                let cache = Arc::new(ConcurrentLruCache::new(10));
                 let c1 = cache.clone();
                 let t1 = std::thread::spawn(move || {
                     for i in 0..100 {
@@ -5436,7 +5436,7 @@ mod tests {
             #[test]
             fn test_lock_state_consistency() {
                 // Test RwLock state consistency in concurrent scenarios
-                let cache = Arc::new(ConcurrentLRUCache::new(10));
+                let cache = Arc::new(ConcurrentLruCache::new(10));
 
                 // Write lock
                 {
@@ -5453,7 +5453,7 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_poison_lock_recovery() {
                 // Test state consistency after lock poisoning
-                let cache = Arc::new(ConcurrentLRUCache::new(10));
+                let cache = Arc::new(ConcurrentLruCache::new(10));
                 let c_clone = cache.clone();
                 let _ = std::thread::spawn(move || {
                     let _ = c_clone.insert(1, Arc::new(1));
@@ -5469,7 +5469,7 @@ mod tests {
             #[test]
             fn test_capacity_zero_state_consistency() {
                 // Test state consistency for zero-capacity cache
-                let mut cache = LRUCore::new(0);
+                let mut cache = LruCore::new(0);
                 cache.insert(1, Arc::new(1));
                 assert_eq!(cache.len(), 0);
                 assert!(cache.list.is_empty());
@@ -5479,7 +5479,7 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_large_capacity_state_consistency() {
                 // Test state consistency for very large capacity caches
-                let mut cache = LRUCore::new(1000);
+                let mut cache = LruCore::new(1000);
                 for i in 0..1000 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -5490,14 +5490,14 @@ mod tests {
             #[test]
             fn test_state_after_drop() {
                 // Test proper cleanup state when cache is dropped
-                let cache: LRUCore<i32, i32> = LRUCore::new(5);
+                let cache: LruCore<i32, i32> = LruCore::new(5);
                 drop(cache);
             }
 
             #[test]
             fn test_partial_operation_state_consistency() {
                 // Test state consistency when operations are interrupted
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.validate_invariants();
             }
@@ -5506,7 +5506,7 @@ mod tests {
             #[cfg_attr(miri, ignore)]
             fn test_stress_state_consistency() {
                 // Test state consistency under high-stress conditions
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 for i in 0..10000 {
                     cache.insert(i % 20, Arc::new(i));
                     if i % 100 == 0 {
@@ -5518,7 +5518,7 @@ mod tests {
             #[test]
             fn test_node_lifetime_consistency() {
                 // Test that node lifetimes are properly managed
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 let val = Arc::new(42);
                 cache.insert(1, val.clone());
                 assert_eq!(Arc::strong_count(&val), 2);
@@ -5530,7 +5530,7 @@ mod tests {
             #[test]
             fn test_reallocation_state_consistency() {
                 // Test state consistency during HashMap reallocation
-                let mut cache = LRUCore::new(100);
+                let mut cache = LruCore::new(100);
                 for i in 0..100 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -5547,7 +5547,7 @@ mod tests {
             #[test]
             fn test_hash_collision_state_consistency() {
                 // Test state consistency when hash collisions occur
-                let mut cache = LRUCore::new(100);
+                let mut cache = LruCore::new(100);
                 for i in 0..200 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -5556,7 +5556,7 @@ mod tests {
             #[test]
             fn test_boundary_condition_state() {
                 // Test state consistency at various boundary conditions
-                let mut cache = LRUCore::new(1);
+                let mut cache = LruCore::new(1);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2)); // Evict 1
                 assert_eq!(cache.len(), 1);
@@ -5569,7 +5569,7 @@ mod tests {
             #[test]
             fn test_state_serialization_consistency() {
                 // Test that cache state could be consistently serialized/deserialized
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
 
                 // Capture state
@@ -5580,7 +5580,7 @@ mod tests {
             #[test]
             fn test_clone_state_consistency() {
                 // Test state consistency of concurrent cache cloning
-                let cache = Arc::new(ConcurrentLRUCache::new(5));
+                let cache = Arc::new(ConcurrentLruCache::new(5));
                 cache.insert(1, Arc::new(1));
 
                 let c2 = cache.clone();
@@ -5593,7 +5593,7 @@ mod tests {
             #[test]
             fn test_recursive_operation_state() {
                 // Test state consistency during recursive operations
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.validate_invariants();
             }
@@ -5601,15 +5601,15 @@ mod tests {
             #[test]
             fn test_error_propagation_state() {
                 // Test state consistency during error propagation
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
             }
 
             #[test]
             fn test_deterministic_state_reproduction() {
                 // Test that same operations produce same internal state
-                let mut c1 = LRUCore::new(5);
-                let mut c2 = LRUCore::new(5);
+                let mut c1 = LruCore::new(5);
+                let mut c2 = LruCore::new(5);
 
                 let ops = [1, 2, 3, 1, 4, 5, 2, 6];
                 for &op in &ops {
@@ -5624,7 +5624,7 @@ mod tests {
             #[test]
             fn test_state_checkpointing() {
                 // Test ability to checkpoint and verify cache state
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
 
                 // "Checkpoint" by cloning state to vector
@@ -5636,7 +5636,7 @@ mod tests {
             #[test]
             fn test_incremental_state_validation() {
                 // Test state validation at incremental checkpoints
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i));
                     cache.validate_invariants();
@@ -5677,7 +5677,7 @@ mod tests {
         #[test]
         fn test_no_memory_leaks_on_eviction() {
             let counter = Arc::new(AtomicUsize::new(0));
-            let mut cache = LRUCore::new(2);
+            let mut cache = LruCore::new(2);
 
             // Insert 2 items
             cache.insert(1, Arc::new(LifeCycleTracker::new(1, counter.clone())));
@@ -5697,7 +5697,7 @@ mod tests {
         #[test]
         fn test_no_memory_leaks_on_remove() {
             let counter = Arc::new(AtomicUsize::new(0));
-            let mut cache = LRUCore::new(5);
+            let mut cache = LruCore::new(5);
 
             cache.insert(1, Arc::new(LifeCycleTracker::new(1, counter.clone())));
             assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -5715,7 +5715,7 @@ mod tests {
         #[test]
         fn test_no_memory_leaks_on_pop_lru() {
             let counter = Arc::new(AtomicUsize::new(0));
-            let mut cache = LRUCore::new(5);
+            let mut cache = LruCore::new(5);
 
             cache.insert(1, Arc::new(LifeCycleTracker::new(1, counter.clone())));
             assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -5731,7 +5731,7 @@ mod tests {
         #[test]
         fn test_no_memory_leaks_on_clear() {
             let counter = Arc::new(AtomicUsize::new(0));
-            let mut cache = LRUCore::new(5);
+            let mut cache = LruCore::new(5);
 
             for i in 0..5 {
                 cache.insert(i, Arc::new(LifeCycleTracker::new(i, counter.clone())));
@@ -5747,7 +5747,7 @@ mod tests {
         fn test_no_memory_leaks_on_drop() {
             let counter = Arc::new(AtomicUsize::new(0));
             {
-                let mut cache = LRUCore::new(5);
+                let mut cache = LruCore::new(5);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(LifeCycleTracker::new(i, counter.clone())));
                 }
@@ -5761,7 +5761,7 @@ mod tests {
             // Implicitly tested by AtomicUsize wrapping if double free occurred
             // but we can be explicit
             let counter = Arc::new(AtomicUsize::new(100)); // Start at 100 to avoid wrapping on first decrement if bug
-            let mut cache = LRUCore::new(1);
+            let mut cache = LruCore::new(1);
 
             cache.insert(1, Arc::new(LifeCycleTracker::new(1, counter.clone())));
             assert_eq!(counter.load(Ordering::SeqCst), 101);
@@ -5774,7 +5774,7 @@ mod tests {
         #[test]
         fn test_no_double_free_on_remove() {
             let counter = Arc::new(AtomicUsize::new(100));
-            let mut cache = LRUCore::new(5);
+            let mut cache = LruCore::new(5);
 
             cache.insert(1, Arc::new(LifeCycleTracker::new(1, counter.clone())));
             assert_eq!(counter.load(Ordering::SeqCst), 101);
@@ -5794,7 +5794,7 @@ mod tests {
         #[test]
         fn test_no_double_free_on_clear() {
             let counter = Arc::new(AtomicUsize::new(100));
-            let mut cache = LRUCore::new(5);
+            let mut cache = LruCore::new(5);
 
             for i in 0..5 {
                 cache.insert(i, Arc::new(LifeCycleTracker::new(i, counter.clone())));
@@ -5811,7 +5811,7 @@ mod tests {
 
         #[test]
         fn test_no_use_after_free_access() {
-            let mut cache = LRUCore::new(5);
+            let mut cache = LruCore::new(5);
             let key = 1;
             cache.insert(key, Arc::new(100));
 
@@ -5831,7 +5831,7 @@ mod tests {
         fn test_no_use_after_free_traversal() {
             // Ensure traversing (e.g., via iteration or internal methods) doesn't access freed memory
             // We simulate this by checking internal consistency after operations
-            let mut cache = LRUCore::new(3);
+            let mut cache = LruCore::new(3);
             cache.insert(1, Arc::new(1));
             cache.insert(2, Arc::new(2));
             cache.insert(3, Arc::new(3));
@@ -5847,7 +5847,7 @@ mod tests {
 
         #[test]
         fn test_safe_node_allocation() {
-            let mut cache = LRUCore::new(1000);
+            let mut cache = LruCore::new(1000);
             for i in 0..1000 {
                 cache.insert(i, Arc::new(i));
             }
@@ -5862,7 +5862,7 @@ mod tests {
         fn test_safe_node_deallocation() {
             let counter = Arc::new(AtomicUsize::new(0));
             {
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 for i in 0..10 {
                     cache.insert(i, Arc::new(LifeCycleTracker::new(i, counter.clone())));
                 }
@@ -5880,7 +5880,7 @@ mod tests {
         #[test]
         fn test_safe_list_traversal() {
             // We verify that list traversal via SlotId is consistent.
-            let mut cache = LRUCore::new(3);
+            let mut cache = LruCore::new(3);
             cache.insert(1, Arc::new(1));
             cache.insert(2, Arc::new(2));
             cache.insert(3, Arc::new(3));
@@ -5893,7 +5893,7 @@ mod tests {
 
         #[test]
         fn test_safe_list_manipulation() {
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             // Create a chain
             for i in 0..5 {
                 cache.insert(i, Arc::new(i));
@@ -5917,7 +5917,7 @@ mod tests {
         #[test]
         fn test_arc_reference_counting_safety() {
             let counter = Arc::new(AtomicUsize::new(0));
-            let mut cache = LRUCore::new(5);
+            let mut cache = LruCore::new(5);
 
             let tracker = Arc::new(LifeCycleTracker::new(1, counter.clone()));
             cache.insert(1, tracker.clone());
@@ -5941,7 +5941,7 @@ mod tests {
                 _next: Option<Arc<_Node>>,
             }
 
-            let mut cache = LRUCore::new(2);
+            let mut cache = LruCore::new(2);
             // We just ensure LRU drops its reference.
 
             let counter = Arc::new(AtomicUsize::new(0));
@@ -5964,7 +5964,7 @@ mod tests {
             // Ensure Node alignment is respected
             assert!(mem::align_of::<Entry<u32>>() >= mem::align_of::<u32>());
 
-            let mut cache = LRUCore::new(1);
+            let mut cache = LruCore::new(1);
             cache.insert(1, Arc::new(1u64)); // u64 has stricter alignment
             assert_eq!(**cache.get(&1).unwrap(), 1u64);
         }
@@ -5973,7 +5973,7 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn test_stack_overflow_prevention() {
             // Test prevention of stack overflow in recursive operations (e.g. Drop)
-            let mut cache = LRUCore::new(10000);
+            let mut cache = LruCore::new(10000);
             for i in 0..10000 {
                 cache.insert(i, Arc::new(i));
             }
@@ -5985,7 +5985,7 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn test_heap_corruption_prevention() {
             // Stress test to try to trigger heap corruption if there were double frees
-            let mut cache = LRUCore::new(100);
+            let mut cache = LruCore::new(100);
             for i in 0..1000 {
                 cache.insert(i % 200, Arc::new(i));
                 if i % 3 == 0 {
@@ -5996,7 +5996,7 @@ mod tests {
 
         #[test]
         fn test_empty_list_access_safety() {
-            let mut cache: LRUCore<i32, i32> = LRUCore::new(10);
+            let mut cache: LruCore<i32, i32> = LruCore::new(10);
             // Operations on empty cache should not deref null
             assert!(cache.pop_lru().is_none());
             assert!(cache.peek_lru().is_none());
@@ -6010,7 +6010,7 @@ mod tests {
 
         #[test]
         fn test_stale_slot_prevention() {
-            let mut cache = LRUCore::new(2);
+            let mut cache = LruCore::new(2);
             cache.insert(1, Arc::new(1));
             let val = cache.get(&1).cloned();
             cache.remove(&1);
@@ -6021,7 +6021,7 @@ mod tests {
         #[test]
         fn test_buffer_overflow_prevention() {
             // Not directly applicable to linked list, but we can test capacity limits
-            let mut cache = LRUCore::new(2);
+            let mut cache = LruCore::new(2);
             cache.insert(1, Arc::new(1));
             cache.insert(2, Arc::new(2));
             cache.insert(3, Arc::new(3));
@@ -6032,7 +6032,7 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn test_memory_bounds_checking() {
             // Capacity check
-            let mut cache = LRUCore::new(1);
+            let mut cache = LruCore::new(1);
             cache.insert(1, Arc::new(1));
             cache.insert(2, Arc::new(2));
             assert_eq!(cache.len(), 1);
@@ -6045,7 +6045,7 @@ mod tests {
         fn test_safe_concurrent_access() {
             // Verify memory safety under concurrent load
             let counter = Arc::new(AtomicUsize::new(0));
-            let cache = Arc::new(ConcurrentLRUCache::new(10));
+            let cache = Arc::new(ConcurrentLruCache::new(10));
 
             let mut handles = vec![];
 
@@ -6073,7 +6073,7 @@ mod tests {
                 "Memory leak detected: {} items alive (capacity 10)",
                 count
             );
-            // Note: ConcurrentLRUCache might be slightly loose on exact capacity during heavy contention
+            // Note: ConcurrentLruCache might be slightly loose on exact capacity during heavy contention
             // depending on implementation, but should settle.
             // If strict, count == cache.len().
         }
@@ -6083,7 +6083,7 @@ mod tests {
         fn test_safe_concurrent_modification() {
             // Similar to test_safe_concurrent_access but mixing insert/remove
             let counter = Arc::new(AtomicUsize::new(0));
-            let cache = Arc::new(ConcurrentLRUCache::new(100));
+            let cache = Arc::new(ConcurrentLruCache::new(100));
 
             let mut handles = vec![];
             for i in 0..10 {
@@ -6130,15 +6130,15 @@ mod tests {
             }
 
             // Use generic type parameters to trick the cache into accepting our key
-            // But ConcurrentLRUCache<K, V> is generic.
+            // But ConcurrentLruCache<K, V> is generic.
             // We need to instantiate a cache with PanickingKey.
-            // But ConcurrentLRUCache wraps LRUCore.
+            // But ConcurrentLruCache wraps LruCore.
 
-            // We can't easily use ConcurrentLRUCache with PanickingKey if we don't change the test signature
+            // We can't easily use ConcurrentLruCache with PanickingKey if we don't change the test signature
             // or use a specific instantiation.
             // The test function body can instantiate whatever it wants.
 
-            let cache = Arc::new(ConcurrentLRUCache::<PanickingKey, i32>::new(10));
+            let cache = Arc::new(ConcurrentLruCache::<PanickingKey, i32>::new(10));
 
             let c_clone = cache.clone();
             let _ = thread::spawn(move || {
@@ -6175,7 +6175,7 @@ mod tests {
             }
 
             let counter = Arc::new(AtomicUsize::new(0));
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
 
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
                 let tracker = Arc::new(LifeCycleTracker::new(666, counter.clone()));
@@ -6216,7 +6216,7 @@ mod tests {
                 }
             }
 
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             cache.insert(PanickingKey(1), Arc::new(1));
 
             let _ = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -6248,7 +6248,7 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn test_memory_safety_under_stress() {
             // High contention stress test
-            let cache = Arc::new(ConcurrentLRUCache::new(100));
+            let cache = Arc::new(ConcurrentLruCache::new(100));
             let mut handles = vec![];
             for _i in 0..10 {
                 let c = cache.clone();
@@ -6271,7 +6271,7 @@ mod tests {
         fn test_memory_fragmentation_handling() {
             // Hard to test fragmentation in unit test without allocator introspection.
             // Just verifying large churn works.
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             for i in 0..10000 {
                 cache.insert(i % 20, Arc::new(i));
             }
@@ -6281,7 +6281,7 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn test_large_allocation_safety() {
             // Test with large values
-            let mut cache = LRUCore::new(2);
+            let mut cache = LruCore::new(2);
             let big_vec = vec![0u8; 1024 * 1024]; // 1MB
             cache.insert(1, Arc::new(big_vec));
             assert_eq!(cache.get(&1).unwrap().len(), 1024 * 1024);
@@ -6292,7 +6292,7 @@ mod tests {
         fn test_copy_type_memory_efficiency() {
             // Verify that using Copy types for keys doesn't cause excessive overhead
             // Mostly a sanity check that we accept Copy keys
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             cache.insert(1usize, Arc::new(1));
             assert!(cache.contains(&1));
         }
@@ -6301,7 +6301,7 @@ mod tests {
         fn test_move_semantics_safety() {
             // Ensure values are moved into Arc correctly
             let s = String::from("hello");
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             cache.insert(1, Arc::new(s)); // s moved into Arc
             // s is gone (compile time check effectively, but runtime we verify value)
             let v = cache.get(&1).unwrap();
@@ -6311,7 +6311,7 @@ mod tests {
         #[test]
         fn test_lifetime_parameter_safety() {
             // Verify standard lifetime rules apply
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             let v = Arc::new(1);
             cache.insert(1, v.clone());
             {
@@ -6326,17 +6326,17 @@ mod tests {
             fn assert_send<T: Send>() {}
             fn assert_sync<T: Sync>() {}
 
-            assert_send::<LRUCore<i32, i32>>();
-            assert_sync::<LRUCore<i32, i32>>();
-            assert_send::<ConcurrentLRUCache<i32, i32>>();
-            assert_sync::<ConcurrentLRUCache<i32, i32>>();
+            assert_send::<LruCore<i32, i32>>();
+            assert_sync::<LruCore<i32, i32>>();
+            assert_send::<ConcurrentLruCache<i32, i32>>();
+            assert_sync::<ConcurrentLruCache<i32, i32>>();
         }
 
         #[test]
         fn test_drop_trait_memory_cleanup() {
             let counter = Arc::new(AtomicUsize::new(0));
             {
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 cache.insert(1, Arc::new(LifeCycleTracker::new(1, counter.clone())));
             }
             assert_eq!(counter.load(Ordering::SeqCst), 0);
@@ -6344,8 +6344,8 @@ mod tests {
 
         #[test]
         fn test_clone_memory_safety() {
-            // Verify ConcurrentLRUCache clone shares state safely
-            let cache = Arc::new(ConcurrentLRUCache::new(10));
+            // Verify ConcurrentLruCache clone shares state safely
+            let cache = Arc::new(ConcurrentLruCache::new(10));
             let c2 = cache.clone();
 
             cache.insert(1, Arc::new(1));
@@ -6356,7 +6356,7 @@ mod tests {
         fn test_unsafe_block_soundness() {
             // Function to tag tests covering unsafe blocks
             // Most tests cover unsafe blocks in allocate_node, insert, remove_from_list, etc.
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             cache.insert(1, Arc::new(1));
             cache.remove(&1);
         }
@@ -6364,7 +6364,7 @@ mod tests {
         #[test]
         fn test_slot_based_safety() {
             // Implicitly covered by all operations
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             cache.insert(1, Arc::new(1));
         }
 
@@ -6374,7 +6374,7 @@ mod tests {
             // Verify memory is reclaimed when cache is dropped
             let counter = Arc::new(AtomicUsize::new(0));
             {
-                let mut cache = LRUCore::new(10);
+                let mut cache = LruCore::new(10);
                 cache.insert(1, Arc::new(LifeCycleTracker::new(1, counter.clone())));
             }
             assert_eq!(counter.load(Ordering::SeqCst), 0);
@@ -6389,7 +6389,7 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore)]
         fn test_cross_thread_memory_safety() {
-            let cache = Arc::new(ConcurrentLRUCache::new(10));
+            let cache = Arc::new(ConcurrentLruCache::new(10));
             let c2 = cache.clone();
             thread::spawn(move || {
                 c2.insert(1, Arc::new(1));
@@ -6402,7 +6402,7 @@ mod tests {
         #[test]
         fn test_unwind_safety() {
             // Panic safety check
-            let mut cache = LRUCore::new(10);
+            let mut cache = LruCore::new(10);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 cache.insert(1, Arc::new(1));
                 panic!("oops");

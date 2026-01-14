@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod lookup_performance {
-    use cachekit::policy::lfu::LFUCache;
-    use cachekit::traits::{CoreCache, LFUCacheTrait};
+    use cachekit::policy::lfu::LfuCache;
+    use cachekit::traits::{CoreCache, LfuCacheTrait};
 
     use super::*;
 
@@ -17,7 +17,7 @@ mod lookup_performance {
     )]
     fn test_get_performance_with_varying_frequencies() {
         let cache_size = 10000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Setup: Fill cache with items
         for i in 0..cache_size {
@@ -100,7 +100,7 @@ mod lookup_performance {
     )]
     fn test_contains_performance() {
         let cache_size = 50000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Setup: Fill cache with items
         for i in 0..cache_size {
@@ -177,7 +177,7 @@ mod lookup_performance {
 
         // Test 4: Performance comparison with very large cache
         let large_cache_size = 100000;
-        let mut large_cache = LFUCache::new(large_cache_size);
+        let mut large_cache = LfuCache::new(large_cache_size);
 
         for i in 0..large_cache_size {
             large_cache.insert(format!("large_{}", i), Arc::new(i));
@@ -204,7 +204,7 @@ mod lookup_performance {
     )]
     fn test_frequency_lookup_performance() {
         let cache_size = 25000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Setup: Fill cache and create varied frequency distributions
         for i in 0..cache_size {
@@ -348,7 +348,7 @@ mod lookup_performance {
     fn test_peek_lfu_performance() {
         // Test 1: Small cache peek_lfu performance
         let small_cache_size = 1000;
-        let mut small_cache = LFUCache::new(small_cache_size);
+        let mut small_cache = LfuCache::new(small_cache_size);
 
         for i in 0..small_cache_size {
             small_cache.insert(format!("small_{}", i), Arc::new(i));
@@ -362,7 +362,7 @@ mod lookup_performance {
 
         // Test 2: Medium cache peek_lfu performance
         let medium_cache_size = 10000;
-        let mut medium_cache = LFUCache::new(medium_cache_size);
+        let mut medium_cache = LfuCache::new(medium_cache_size);
 
         for i in 0..medium_cache_size {
             medium_cache.insert(format!("medium_{}", i), Arc::new(i));
@@ -376,7 +376,7 @@ mod lookup_performance {
 
         // Test 3: Large cache peek_lfu performance
         let large_cache_size = 100000;
-        let mut large_cache = LFUCache::new(large_cache_size);
+        let mut large_cache = LfuCache::new(large_cache_size);
 
         for i in 0..large_cache_size {
             large_cache.insert(format!("large_{}", i), Arc::new(i));
@@ -389,7 +389,7 @@ mod lookup_performance {
         let large_cache_duration = start.elapsed();
 
         // Test 4: Performance with varied frequency distributions
-        let mut varied_cache = LFUCache::new(50000);
+        let mut varied_cache = LfuCache::new(50000);
 
         // Insert items with intentionally varied frequencies
         for i in 0..50000 {
@@ -427,7 +427,7 @@ mod lookup_performance {
         let varied_cache_duration = start.elapsed();
 
         // Test 5: Performance when LFU changes frequently
-        let mut dynamic_cache = LFUCache::new(5000);
+        let mut dynamic_cache = LfuCache::new(5000);
         for i in 0..5000 {
             dynamic_cache.insert(format!("dynamic_{}", i), Arc::new(i));
         }
@@ -491,7 +491,7 @@ mod lookup_performance {
         assert!(key_index >= 1600);
 
         // Test 6: Performance consistency across multiple operations
-        let mut consistency_cache = LFUCache::new(20000);
+        let mut consistency_cache = LfuCache::new(20000);
         for i in 0..20000 {
             consistency_cache.insert(format!("consistency_{}", i), Arc::new(i));
         }
@@ -524,7 +524,7 @@ mod lookup_performance {
     )]
     fn test_cache_hit_vs_miss_performance() {
         let cache_size = 20000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Setup: Fill cache with items
         for i in 0..cache_size {
@@ -691,9 +691,9 @@ mod lookup_performance {
         );
 
         // Test 7: Performance with different cache sizes for hit/miss patterns
-        let mut small_cache = LFUCache::<String, i32>::new(100);
-        let mut medium_cache = LFUCache::<String, i32>::new(5000);
-        let mut large_cache = LFUCache::<String, i32>::new(50000);
+        let mut small_cache = LfuCache::<String, i32>::new(100);
+        let mut medium_cache = LfuCache::<String, i32>::new(5000);
+        let mut large_cache = LfuCache::<String, i32>::new(50000);
 
         // All caches should have similar miss performance (O(1) HashMap lookup failure)
         let start = Instant::now();
@@ -737,8 +737,8 @@ mod lookup_performance {
 }
 
 mod insertion_performance {
-    use cachekit::policy::lfu::LFUCache;
-    use cachekit::traits::{CoreCache, LFUCacheTrait};
+    use cachekit::policy::lfu::LfuCache;
+    use cachekit::traits::{CoreCache, LfuCacheTrait};
 
     use super::*;
 
@@ -749,7 +749,7 @@ mod insertion_performance {
     )]
     fn test_insertion_performance_with_eviction() {
         let cache_capacity = 5000;
-        let mut cache = LFUCache::new(cache_capacity);
+        let mut cache = LfuCache::new(cache_capacity);
 
         // Phase 1: Fill cache to capacity without eviction
         let start = Instant::now();
@@ -792,7 +792,7 @@ mod insertion_performance {
         );
 
         // Test with frequent access patterns during eviction
-        let mut cache_with_access = LFUCache::new(1000);
+        let mut cache_with_access = LfuCache::new(1000);
 
         // Fill cache
         for i in 0..1000 {
@@ -828,7 +828,7 @@ mod insertion_performance {
         let mut eviction_times = Vec::new();
 
         for &size in &sizes {
-            let mut test_cache = LFUCache::new(size);
+            let mut test_cache = LfuCache::new(size);
 
             // Fill to capacity
             for i in 0..size {
@@ -864,7 +864,7 @@ mod insertion_performance {
     )]
     fn test_batch_insertion_performance() {
         // Test 1: Small batch insertions
-        let mut small_cache = LFUCache::new(1000);
+        let mut small_cache = LfuCache::new(1000);
         let batch_sizes = [10, 50, 100, 500];
         let mut small_batch_times = Vec::new();
 
@@ -888,7 +888,7 @@ mod insertion_performance {
 
         // Test 2: Large sequential insertions
         let large_cache_size = 20000;
-        let mut large_cache = LFUCache::new(large_cache_size);
+        let mut large_cache = LfuCache::new(large_cache_size);
 
         let start = Instant::now();
         for i in 0..large_cache_size {
@@ -903,7 +903,7 @@ mod insertion_performance {
         );
 
         // Test 3: Insertion performance with different value sizes
-        let mut value_size_cache = LFUCache::new(5000);
+        let mut value_size_cache = LfuCache::new(5000);
 
         // Small values (integers)
         let start = Instant::now();
@@ -932,7 +932,7 @@ mod insertion_performance {
         );
 
         // Test 4: Batch insertion with interleaved operations
-        let mut mixed_cache = LFUCache::new(2000);
+        let mut mixed_cache = LfuCache::new(2000);
 
         let start = Instant::now();
         for i in 0..1000 {
@@ -959,7 +959,7 @@ mod insertion_performance {
 
         // Test 5: Throughput measurement
         let throughput_cache_size = 10000;
-        let mut throughput_cache = LFUCache::new(throughput_cache_size);
+        let mut throughput_cache = LfuCache::new(throughput_cache_size);
 
         let start = Instant::now();
         for i in 0..throughput_cache_size {
@@ -984,7 +984,7 @@ mod insertion_performance {
         log::info!("  Throughput: {:.2} ops/sec", ops_per_second);
 
         // Test 6: Memory allocation impact during batch insertion
-        let mut allocation_cache = LFUCache::new(5000);
+        let mut allocation_cache = LfuCache::new(5000);
 
         // Measure insertion of progressively larger batches
         let progressive_sizes = [100, 500, 1000, 2000];
@@ -1020,7 +1020,7 @@ mod insertion_performance {
     )]
     fn test_update_vs_new_insertion_performance() {
         let cache_size = 5000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Phase 1: Initial population with new insertions
         let start = Instant::now();
@@ -1064,7 +1064,7 @@ mod insertion_performance {
         );
 
         // Test 4: Mixed new vs update operations
-        let mut mixed_cache = LFUCache::new(3000);
+        let mut mixed_cache = LfuCache::new(3000);
 
         // Pre-populate half the cache
         for i in 0..1500 {
@@ -1091,7 +1091,7 @@ mod insertion_performance {
         );
 
         // Test 5: Update performance with different frequency distributions
-        let mut freq_cache = LFUCache::new(2000);
+        let mut freq_cache = LfuCache::new(2000);
 
         // Create items with different frequencies
         for i in 0..2000 {
@@ -1149,7 +1149,7 @@ mod insertion_performance {
         );
 
         // Test 6: Update vs new insertion when cache is full
-        let mut full_cache = LFUCache::new(1000);
+        let mut full_cache = LfuCache::new(1000);
 
         // Fill to capacity
         for i in 0..1000 {
@@ -1183,7 +1183,7 @@ mod insertion_performance {
         );
 
         // Test 7: Batch update performance
-        let mut batch_cache = LFUCache::new(5000);
+        let mut batch_cache = LfuCache::new(5000);
 
         // Initial population
         for i in 0..5000 {
@@ -1254,7 +1254,7 @@ mod insertion_performance {
     fn test_insertion_with_frequency_tracking() {
         // Test 1: Basic frequency tracking overhead during insertion
         let cache_size = 10000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Measure pure insertion time (frequency tracking included)
         let start = Instant::now();
@@ -1275,7 +1275,7 @@ mod insertion_performance {
         );
 
         // Test 2: Frequency tracking during updates vs new insertions
-        let mut tracking_cache = LFUCache::new(5000);
+        let mut tracking_cache = LfuCache::new(5000);
 
         // Initial population
         for i in 0..5000 {
@@ -1304,7 +1304,7 @@ mod insertion_performance {
         );
 
         // Test 3: Frequency tracking impact during eviction
-        let mut eviction_cache = LFUCache::new(2000);
+        let mut eviction_cache = LfuCache::new(2000);
 
         // Fill cache
         for i in 0..2000 {
@@ -1336,7 +1336,7 @@ mod insertion_performance {
         );
 
         // Test 4: Frequency tracking accuracy under load
-        let mut accuracy_cache = LFUCache::new(3000);
+        let mut accuracy_cache = LfuCache::new(3000);
 
         // Insert items
         for i in 0..3000 {
@@ -1380,7 +1380,7 @@ mod insertion_performance {
         );
 
         // Test 5: Frequency tracking memory overhead
-        let mut memory_test_cache = LFUCache::new(20000);
+        let mut memory_test_cache = LfuCache::new(20000);
 
         // Insert large number of items and verify each has correct frequency
         let start = Instant::now();
@@ -1404,7 +1404,7 @@ mod insertion_performance {
         );
 
         // Test 6: Frequency increment performance during mixed operations
-        let mut mixed_freq_cache = LFUCache::new(5000);
+        let mut mixed_freq_cache = LfuCache::new(5000);
 
         // Populate cache
         for i in 0..5000 {
@@ -1433,7 +1433,7 @@ mod insertion_performance {
         );
 
         // Test 7: Frequency tracking during rapid insertions
-        let mut rapid_cache = LFUCache::new(1000);
+        let mut rapid_cache = LfuCache::new(1000);
 
         let start = Instant::now();
         for i in 0..5000 {
@@ -1456,7 +1456,7 @@ mod insertion_performance {
         assert_eq!(rapid_cache.len(), 1000);
 
         // Test 8: Frequency bounds checking
-        let mut bounds_cache = LFUCache::new(100);
+        let mut bounds_cache = LfuCache::new(100);
 
         // Insert and access to create very high frequencies
         for i in 0..100 {
@@ -1492,8 +1492,8 @@ mod insertion_performance {
 }
 
 mod eviction_performance {
-    use cachekit::policy::lfu::LFUCache;
-    use cachekit::traits::{CoreCache, LFUCacheTrait};
+    use cachekit::policy::lfu::LfuCache;
+    use cachekit::traits::{CoreCache, LfuCacheTrait};
 
     use super::*;
 
@@ -1504,7 +1504,7 @@ mod eviction_performance {
     )]
     fn test_lfu_eviction_performance() {
         // Test 1: Basic LFU eviction performance
-        let mut cache = LFUCache::new(1000);
+        let mut cache = LfuCache::new(1000);
 
         // Fill cache to capacity
         for i in 0..1000 {
@@ -1550,7 +1550,7 @@ mod eviction_performance {
         let mut eviction_times = Vec::new();
 
         for &size in &sizes {
-            let mut test_cache = LFUCache::new(size);
+            let mut test_cache = LfuCache::new(size);
 
             // Fill cache
             for i in 0..size {
@@ -1582,7 +1582,7 @@ mod eviction_performance {
         }
 
         // Test 3: Eviction with uniform frequency distribution
-        let mut uniform_cache = LFUCache::new(500);
+        let mut uniform_cache = LfuCache::new(500);
 
         // Fill cache with uniform frequency
         for i in 0..500 {
@@ -1603,7 +1603,7 @@ mod eviction_performance {
         );
 
         // Test 4: Eviction with highly skewed frequency distribution
-        let mut skewed_cache = LFUCache::new(1000);
+        let mut skewed_cache = LfuCache::new(1000);
 
         // Fill cache
         for i in 0..1000 {
@@ -1631,7 +1631,7 @@ mod eviction_performance {
         assert!(skewed_cache.contains(&"skewed_0".to_string()));
 
         // Test 5: Repeated eviction performance consistency
-        let mut consistent_cache = LFUCache::new(100);
+        let mut consistent_cache = LfuCache::new(100);
         let mut eviction_durations = Vec::new();
 
         // Fill cache initially
@@ -1677,7 +1677,7 @@ mod eviction_performance {
     )]
     fn test_pop_lfu_performance() {
         // Test 1: Basic pop_lfu performance
-        let mut cache = LFUCache::new(2000);
+        let mut cache = LfuCache::new(2000);
 
         // Fill cache with items
         for i in 0..2000 {
@@ -1731,7 +1731,7 @@ mod eviction_performance {
         let mut pop_times = Vec::new();
 
         for &size in &sizes {
-            let mut test_cache = LFUCache::new(size);
+            let mut test_cache = LfuCache::new(size);
 
             // Fill cache
             for i in 0..size {
@@ -1768,7 +1768,7 @@ mod eviction_performance {
         }
 
         // Test 3: pop_lfu with uniform frequencies (worst case)
-        let mut uniform_cache = LFUCache::new(300);
+        let mut uniform_cache = LfuCache::new(300);
 
         // Fill cache with uniform frequency
         for i in 0..300 {
@@ -1798,7 +1798,7 @@ mod eviction_performance {
         );
 
         // Test 4: pop_lfu until empty
-        let mut empty_cache = LFUCache::new(100);
+        let mut empty_cache = LfuCache::new(100);
 
         // Fill cache
         for i in 0..100 {
@@ -1821,7 +1821,7 @@ mod eviction_performance {
         );
 
         // Test 5: pop_lfu performance with highly skewed distribution
-        let mut skewed_cache = LFUCache::new(1000);
+        let mut skewed_cache = LfuCache::new(1000);
 
         // Fill cache
         for i in 0..1000 {
@@ -1859,7 +1859,7 @@ mod eviction_performance {
         assert!(skewed_cache.contains(&"skewed_0".to_string()));
 
         // Test 6: pop_lfu performance consistency
-        let mut consistency_cache = LFUCache::new(200);
+        let mut consistency_cache = LfuCache::new(200);
         let mut pop_durations = Vec::new();
 
         // Fill cache
@@ -1895,7 +1895,7 @@ mod eviction_performance {
         }
 
         // Test 7: pop_lfu on empty cache
-        let mut empty_test_cache = LFUCache::<String, i32>::new(10);
+        let mut empty_test_cache = LfuCache::<String, i32>::new(10);
 
         let start = Instant::now();
         let result = empty_test_cache.pop_lfu();
@@ -1925,7 +1925,7 @@ mod eviction_performance {
     )]
     fn test_eviction_with_many_same_frequency() {
         // Test 1: All items have same frequency (frequency = 1)
-        let mut cache = LFUCache::new(1000);
+        let mut cache = LfuCache::new(1000);
 
         // Fill cache where all items have frequency 1
         for i in 0..1000 {
@@ -1952,7 +1952,7 @@ mod eviction_performance {
         );
 
         // Test 2: Multiple groups with same frequencies
-        let mut grouped_cache = LFUCache::new(1200);
+        let mut grouped_cache = LfuCache::new(1200);
 
         // Group 1: frequency 1 (400 items)
         for i in 0..400 {
@@ -2043,7 +2043,7 @@ mod eviction_performance {
         );
 
         // Test 3: Large number of items with identical frequency
-        let mut identical_cache = LFUCache::new(2000);
+        let mut identical_cache = LfuCache::new(2000);
 
         // Fill cache and make all items have frequency 3
         for i in 0..2000 {
@@ -2079,7 +2079,7 @@ mod eviction_performance {
         let mut ratio_times = Vec::new();
 
         for &ratio in &ratios {
-            let mut ratio_cache = LFUCache::new(500);
+            let mut ratio_cache = LfuCache::new(500);
             let same_freq_count = (500.0 * ratio) as usize;
 
             // Fill cache
@@ -2119,7 +2119,7 @@ mod eviction_performance {
         }
 
         // Test 5: Eviction pattern with same frequency items
-        let mut pattern_cache = LFUCache::new(300);
+        let mut pattern_cache = LfuCache::new(300);
 
         // Create alternating frequency pattern
         for i in 0..300 {
@@ -2183,7 +2183,7 @@ mod eviction_performance {
         );
 
         // Test 6: Worst case scenario - all items same frequency after access
-        let mut worst_case_cache = LFUCache::new(500);
+        let mut worst_case_cache = LfuCache::new(500);
 
         // Fill and access all items once to make them frequency 2
         for i in 0..500 {
@@ -2225,7 +2225,7 @@ mod eviction_performance {
     )]
     fn test_frequency_distribution_impact() {
         // Test 1: Uniform distribution impact
-        let mut uniform_cache = LFUCache::new(1000);
+        let mut uniform_cache = LfuCache::new(1000);
 
         // Create uniform frequency distribution (all items frequency 3)
         for i in 0..1000 {
@@ -2253,7 +2253,7 @@ mod eviction_performance {
         );
 
         // Test 2: Normal (bell curve) distribution impact
-        let mut normal_cache = LFUCache::new(1000);
+        let mut normal_cache = LfuCache::new(1000);
 
         // Create normal distribution of frequencies (center items higher frequency)
         for i in 0..1000 {
@@ -2288,7 +2288,7 @@ mod eviction_performance {
         assert!(normal_cache.contains(&"normal_550".to_string()));
 
         // Test 3: Exponential distribution impact
-        let mut exponential_cache = LFUCache::new(1000);
+        let mut exponential_cache = LfuCache::new(1000);
 
         // Create exponential frequency distribution
         for i in 0..1000 {
@@ -2322,7 +2322,7 @@ mod eviction_performance {
         assert!(exponential_cache.contains(&"exp_50".to_string()));
 
         // Test 4: Power law (Zipf) distribution impact
-        let mut zipf_cache = LFUCache::new(1000);
+        let mut zipf_cache = LfuCache::new(1000);
 
         // Create Zipf distribution (80/20 rule)
         for i in 0..1000 {
@@ -2365,7 +2365,7 @@ mod eviction_performance {
         assert!(zipf_cache.contains(&"zipf_100".to_string()));
 
         // Test 5: Bimodal distribution impact
-        let mut bimodal_cache = LFUCache::new(1000);
+        let mut bimodal_cache = LfuCache::new(1000);
 
         // Create bimodal distribution (two peaks)
         for i in 0..1000 {
@@ -2435,7 +2435,7 @@ mod eviction_performance {
         }
 
         // Test 7: Dynamic distribution change impact
-        let mut dynamic_cache = LFUCache::new(500);
+        let mut dynamic_cache = LfuCache::new(500);
 
         // Fill cache initially
         for i in 0..500 {
@@ -2470,8 +2470,8 @@ mod eviction_performance {
         );
 
         // Test 8: Sparse vs dense frequency ranges
-        let mut sparse_cache = LFUCache::new(400);
-        let mut dense_cache = LFUCache::new(400);
+        let mut sparse_cache = LfuCache::new(400);
+        let mut dense_cache = LfuCache::new(400);
 
         // Sparse: frequencies 1, 10, 20, 30 (big gaps)
         for i in 0..400 {
@@ -2577,8 +2577,8 @@ mod complexity {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use cachekit::policy::lfu::LFUCache;
-    use cachekit::traits::{CoreCache, LFUCacheTrait, MutableCache};
+    use cachekit::policy::lfu::LfuCache;
+    use cachekit::traits::{CoreCache, LfuCacheTrait, MutableCache};
 
     /// Helper function to measure execution time of a closure
     fn measure_time<F, R>(operation: F) -> (R, Duration)
@@ -2613,7 +2613,7 @@ mod complexity {
         let mut results = Vec::new();
 
         for &cache_size in &cache_sizes {
-            let mut cache = LFUCache::new(cache_size);
+            let mut cache = LfuCache::new(cache_size);
             let test_data = generate_test_data(cache_size);
 
             // Measure time to fill cache to capacity
@@ -2669,7 +2669,7 @@ mod complexity {
         let lookup_count = 1000;
 
         for &cache_size in &cache_sizes {
-            let mut cache = LFUCache::new(cache_size);
+            let mut cache = LfuCache::new(cache_size);
 
             // Pre-populate cache
             for i in 0..cache_size {
@@ -2732,7 +2732,7 @@ mod complexity {
         let mut results = Vec::new();
 
         for &cache_size in &cache_sizes {
-            let mut cache = LFUCache::new(cache_size);
+            let mut cache = LfuCache::new(cache_size);
 
             // Pre-populate cache with different frequencies
             for i in 0..cache_size {
@@ -2792,7 +2792,7 @@ mod complexity {
         let cache_sizes = vec![100, 500, 1000, 2000, 5000];
 
         for &cache_size in &cache_sizes {
-            let mut cache = LFUCache::new(cache_size);
+            let mut cache = LfuCache::new(cache_size);
 
             // Pre-populate cache
             for i in 0..cache_size {
@@ -2847,7 +2847,7 @@ mod complexity {
         let cache_sizes = vec![100, 1000, 5000, 10000];
 
         for &cache_size in &cache_sizes {
-            let mut cache = LFUCache::new(cache_size);
+            let mut cache = LfuCache::new(cache_size);
 
             // Pre-populate cache
             for i in 0..cache_size {
@@ -2938,7 +2938,7 @@ mod complexity {
         let cache_sizes = vec![100, 500, 1000, 2000, 5000];
 
         for &cache_size in &cache_sizes {
-            let mut cache = LFUCache::new(cache_size);
+            let mut cache = LfuCache::new(cache_size);
 
             // Fill cache to capacity
             for i in 0..cache_size {
@@ -2969,7 +2969,7 @@ mod complexity {
     fn test_memory_efficiency() {
         // Test memory efficiency of the LFU implementation
         let cache_size = 1000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // ==============================================
         // THEORETICAL MEMORY CALCULATION
@@ -3149,7 +3149,7 @@ mod complexity {
 
         let key_size_variants = vec![5, 20, 50, 100];
         for &key_len in &key_size_variants {
-            let mut test_cache = LFUCache::new(100);
+            let mut test_cache = LfuCache::new(100);
             let base_key = "x".repeat(key_len);
 
             // Fill with variable-sized keys
@@ -3223,7 +3223,7 @@ mod complexity {
         log::info!("  Testing capacity boundary behavior...");
 
         let boundary_cache_size = 50;
-        let mut boundary_cache = LFUCache::new(boundary_cache_size);
+        let mut boundary_cache = LfuCache::new(boundary_cache_size);
 
         // Fill exactly to capacity
         for i in 0..boundary_cache_size {
@@ -3289,7 +3289,7 @@ mod complexity {
         let cache_size = 1000;
 
         for &key_size in &key_sizes {
-            let mut cache = LFUCache::new(cache_size);
+            let mut cache = LfuCache::new(cache_size);
 
             // Generate keys of specified size
             let long_key = "x".repeat(key_size);
@@ -3340,7 +3340,7 @@ mod complexity {
         let cache_size = 2000;
         let operation_count = 5000;
 
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Pre-populate
         for i in 0..cache_size {
@@ -3414,7 +3414,7 @@ mod complexity {
     fn test_worst_case_performance() {
         // Test performance in worst-case scenarios
         let cache_size = 1000;
-        let mut cache = LFUCache::new(cache_size);
+        let mut cache = LfuCache::new(cache_size);
 
         // Worst case: all items have the same frequency
         for i in 0..cache_size {

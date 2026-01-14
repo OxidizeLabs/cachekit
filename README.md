@@ -51,11 +51,11 @@ cachekit = { git = "https://github.com/OxidizeLabs/cachekit" }
 ```
 ## example
 ```rust
-use cachekit::policy::lru::LRUCore;
+use cachekit::policy::lru::LruCore;
 
 fn main() {
     // Create an LRU cache with a capacity of 100 entries
-    let mut cache: LRUCore<u32, String> = LRUCore::new(100);
+    let mut cache: LruCore<u32, String> = LruCore::new(100);
 
     // Insert an item
     cache.insert(1, "value1");

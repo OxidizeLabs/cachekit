@@ -8,7 +8,7 @@
 //!
 //! ```text
 //!   ┌──────────────────────────────────────────────────────────────────────────┐
-//!   │                          LRUKCache<K, V>                                 │
+//!   │                          LrukCache<K, V>                                 │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
 //!   │   │  HashMap<K, usize> + Slot<K> (history + segment)                   │ │
@@ -110,13 +110,13 @@
 //!
 //! | Component        | Description                                        |
 //! |------------------|----------------------------------------------------|
-//! | `LRUKCache<K,V>` | Main cache struct with store + K value             |
+//! | `LrukCache<K,V>` | Main cache struct with store + K value             |
 //! | `index`          | `HashMap<K, usize>` to slot indices                |
 //! | `cold`/`hot`      | Segmented LRU lists (&lt;K and >=K accesses)       |
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!
-//! ## Core Operations (CoreCache + MutableCache + LRUKCacheTrait)
+//! ## Core Operations (CoreCache + MutableCache + LrukCacheTrait)
 //!
 //! | Method              | Complexity | Description                              |
 //! |---------------------|------------|------------------------------------------|
@@ -130,7 +130,7 @@
 //! | `capacity()`        | O(1)       | Maximum capacity                         |
 //! | `clear()`           | O(N)       | Remove all entries                       |
 //!
-//! ## LRU-K Specific Operations (LRUKCacheTrait)
+//! ## LRU-K Specific Operations (LrukCacheTrait)
 //!
 //! | Method               | Complexity | Description                             |
 //! |----------------------|------------|-----------------------------------------|
@@ -186,16 +186,16 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::lru_k::LRUKCache;
+//! use crate::storage::disk::async_disk::cache::lru_k::LrukCache;
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, MutableCache, LRUKCacheTrait,
+//!     CoreCache, MutableCache, LrukCacheTrait,
 //! };
 //!
 //! // Create LRU-2 cache (default K=2)
-//! let mut cache: LRUKCache<u32, String> = LRUKCache::new(100);
+//! let mut cache: LrukCache<u32, String> = LrukCache::new(100);
 //!
 //! // Or with custom K value
-//! let mut cache: LRUKCache<u32, String> = LRUKCache::with_k(100, 3);
+//! let mut cache: LrukCache<u32, String> = LrukCache::with_k(100, 3);
 //!
 //! // Insert items
 //! cache.insert(1, "page_data_1".to_string());
@@ -250,7 +250,7 @@
 //!
 //! ## Thread Safety
 //!
-//! - `LRUKCache` is **NOT thread-safe**
+//! - `LrukCache` is **NOT thread-safe**
 //! - Wrap in `Mutex` or `RwLock` for concurrent access
 //! - Or use single-threaded context
 //!
@@ -276,7 +276,7 @@ use crate::metrics::traits::{
 };
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{CoreCache, LRUKCacheTrait, MutableCache};
+use crate::traits::{CoreCache, LrukCacheTrait, MutableCache};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Segment {
@@ -296,7 +296,7 @@ struct Entry<K> {
 ///
 /// This cache evicts the item whose K-th most recent access is furthest in the past.
 #[derive(Debug)]
-pub struct LRUKCache<K, V>
+pub struct LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -311,7 +311,7 @@ where
     metrics: LruKMetrics,
 }
 
-impl<K, V> LRUKCache<K, V>
+impl<K, V> LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
@@ -324,7 +324,7 @@ where
     /// Creates a new LRU-K cache with the specified capacity and K value.
     pub fn with_k(capacity: usize, k: usize) -> Self {
         let k = k.max(1);
-        LRUKCache {
+        LrukCache {
             k,
             store: HashMapStore::new(capacity),
             entries: SlotArena::with_capacity(capacity),
@@ -443,7 +443,7 @@ where
 }
 
 // Implementation of the new specialized traits
-impl<K, V> CoreCache<K, V> for LRUKCache<K, V>
+impl<K, V> CoreCache<K, V> for LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
@@ -552,7 +552,7 @@ where
     }
 }
 
-impl<K, V> MutableCache<K, V> for LRUKCache<K, V>
+impl<K, V> MutableCache<K, V> for LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
@@ -570,7 +570,7 @@ where
     }
 }
 
-impl<K, V> LRUKCacheTrait<K, V> for LRUKCache<K, V>
+impl<K, V> LrukCacheTrait<K, V> for LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
@@ -724,7 +724,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> LRUKCache<K, V>
+impl<K, V> LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
@@ -764,7 +764,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> MetricsSnapshotProvider<LruKMetricsSnapshot> for LRUKCache<K, V>
+impl<K, V> MetricsSnapshotProvider<LruKMetricsSnapshot> for LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
@@ -784,7 +784,7 @@ mod tests {
 
         #[test]
         fn test_basic_lru_k_insertion_and_retrieval() {
-            let mut cache = LRUKCache::new(2);
+            let mut cache = LrukCache::new(2);
             cache.insert(1, "one");
             assert_eq!(cache.get(&1), Some(&"one"));
 
@@ -796,7 +796,7 @@ mod tests {
         #[test]
         fn test_lru_k_eviction_order() {
             // Capacity 3, K=2
-            let mut cache = LRUKCache::with_k(3, 2);
+            let mut cache = LrukCache::with_k(3, 2);
 
             // Access pattern:
             // 1: access (history: [t1]) -> < K accesses
@@ -845,7 +845,7 @@ mod tests {
 
         #[test]
         fn test_capacity_enforcement() {
-            let mut cache = LRUKCache::new(2);
+            let mut cache = LrukCache::new(2);
             cache.insert(1, 1);
             thread::sleep(Duration::from_millis(1));
             cache.insert(2, 2);
@@ -861,7 +861,7 @@ mod tests {
 
         #[test]
         fn test_update_existing_key() {
-            let mut cache = LRUKCache::new(2);
+            let mut cache = LrukCache::new(2);
             cache.insert(1, 10);
             cache.insert(1, 20);
 
@@ -872,7 +872,7 @@ mod tests {
 
         #[test]
         fn test_access_history_tracking() {
-            let mut cache = LRUKCache::with_k(2, 3); // K=3
+            let mut cache = LrukCache::with_k(2, 3); // K=3
             cache.insert(1, 10); // 1 access
             thread::sleep(Duration::from_millis(2));
 
@@ -896,13 +896,13 @@ mod tests {
 
         #[test]
         fn test_k_value_behavior() {
-            let cache = LRUKCache::<i32, i32>::with_k(10, 5);
+            let cache = LrukCache::<i32, i32>::with_k(10, 5);
             assert_eq!(cache.k_value(), 5);
         }
 
         #[test]
         fn test_key_operations_consistency() {
-            let mut cache = LRUKCache::new(2);
+            let mut cache = LrukCache::new(2);
             cache.insert(1, 10);
 
             assert!(cache.contains(&1));
@@ -912,7 +912,7 @@ mod tests {
 
         #[test]
         fn test_timestamp_ordering() {
-            let mut cache = LRUKCache::with_k(2, 1); // K=1 (LRU)
+            let mut cache = LrukCache::with_k(2, 1); // K=1 (LRU)
             cache.insert(1, 10);
             thread::sleep(Duration::from_millis(2));
             cache.insert(2, 20);
@@ -935,7 +935,7 @@ mod tests {
 
         #[test]
         fn test_empty_cache_operations() {
-            let mut cache = LRUKCache::<i32, i32>::new(5);
+            let mut cache = LrukCache::<i32, i32>::new(5);
             assert_eq!(cache.get(&1), None);
             assert_eq!(cache.remove(&1), None);
             assert_eq!(cache.len(), 0);
@@ -944,7 +944,7 @@ mod tests {
 
         #[test]
         fn test_single_item_cache() {
-            let mut cache = LRUKCache::new(1);
+            let mut cache = LrukCache::new(1);
             cache.insert(1, 10);
             assert_eq!(cache.len(), 1);
             assert_eq!(cache.get(&1), Some(&10));
@@ -957,7 +957,7 @@ mod tests {
 
         #[test]
         fn test_zero_capacity_cache() {
-            let mut cache = LRUKCache::new(0);
+            let mut cache = LrukCache::new(0);
             cache.insert(1, 10);
             assert_eq!(cache.len(), 0);
             assert!(!cache.contains(&1));
@@ -966,7 +966,7 @@ mod tests {
         #[test]
         fn test_k_equals_one() {
             // K=1 behaves like regular LRU
-            let mut cache = LRUKCache::with_k(2, 1);
+            let mut cache = LrukCache::with_k(2, 1);
 
             cache.insert(1, 10);
             thread::sleep(Duration::from_millis(2));
@@ -988,7 +988,7 @@ mod tests {
 
         #[test]
         fn test_k_larger_than_capacity() {
-            let mut cache = LRUKCache::with_k(2, 5); // K=5, Cap=2
+            let mut cache = LrukCache::with_k(2, 5); // K=5, Cap=2
 
             cache.insert(1, 10);
             thread::sleep(Duration::from_millis(1)); // Ensure t1 < t2
@@ -1015,7 +1015,7 @@ mod tests {
 
         #[test]
         fn test_same_key_rapid_accesses() {
-            let mut cache = LRUKCache::with_k(5, 3);
+            let mut cache = LrukCache::with_k(5, 3);
             cache.insert(1, 10);
             for _ in 0..10 {
                 cache.get(&1);
@@ -1025,7 +1025,7 @@ mod tests {
 
         #[test]
         fn test_duplicate_key_insertion() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
             cache.insert(1, 20);
             assert_eq!(cache.get(&1), Some(&20));
@@ -1035,7 +1035,7 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore)]
         fn test_large_cache_operations() {
-            let mut cache = LRUKCache::new(100);
+            let mut cache = LrukCache::new(100);
 
             // Insert 0 first and wait to ensure it has the distinctly oldest timestamp
             cache.insert(0, 0);
@@ -1053,7 +1053,7 @@ mod tests {
 
         #[test]
         fn test_access_history_overflow() {
-            let mut cache = LRUKCache::with_k(2, 3); // K=3
+            let mut cache = LrukCache::with_k(2, 3); // K=3
             cache.insert(1, 10);
             cache.get(&1);
             cache.get(&1);
@@ -1074,7 +1074,7 @@ mod tests {
 
         #[test]
         fn test_pop_lru_k_basic() {
-            let mut cache = LRUKCache::with_k(3, 2);
+            let mut cache = LrukCache::with_k(3, 2);
             cache.insert(1, 10);
             thread::sleep(Duration::from_millis(2));
             cache.insert(2, 20);
@@ -1088,7 +1088,7 @@ mod tests {
 
         #[test]
         fn test_peek_lru_k_basic() {
-            let mut cache = LRUKCache::with_k(3, 2);
+            let mut cache = LrukCache::with_k(3, 2);
             cache.insert(1, 10);
             thread::sleep(Duration::from_millis(2));
             cache.insert(2, 20);
@@ -1102,13 +1102,13 @@ mod tests {
 
         #[test]
         fn test_k_value_retrieval() {
-            let cache = LRUKCache::<i32, i32>::with_k(10, 4);
+            let cache = LrukCache::<i32, i32>::with_k(10, 4);
             assert_eq!(cache.k_value(), 4);
         }
 
         #[test]
         fn test_access_history_retrieval() {
-            let mut cache = LRUKCache::with_k(10, 3);
+            let mut cache = LrukCache::with_k(10, 3);
             cache.insert(1, 10);
             cache.get(&1);
 
@@ -1119,7 +1119,7 @@ mod tests {
 
         #[test]
         fn test_access_count() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
             assert_eq!(cache.access_count(&1), Some(1));
             cache.get(&1);
@@ -1128,7 +1128,7 @@ mod tests {
 
         #[test]
         fn test_k_distance() {
-            let mut cache = LRUKCache::with_k(5, 2);
+            let mut cache = LrukCache::with_k(5, 2);
             cache.insert(1, 10);
 
             // < K accesses, k_distance returns None
@@ -1141,7 +1141,7 @@ mod tests {
 
         #[test]
         fn test_touch_functionality() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
 
             assert!(cache.touch(&1));
@@ -1152,7 +1152,7 @@ mod tests {
 
         #[test]
         fn test_k_distance_rank() {
-            let mut cache = LRUKCache::with_k(5, 2);
+            let mut cache = LrukCache::with_k(5, 2);
 
             cache.insert(1, 10); // < K
             thread::sleep(Duration::from_millis(2));
@@ -1189,19 +1189,19 @@ mod tests {
 
         #[test]
         fn test_pop_lru_k_empty_cache() {
-            let mut cache = LRUKCache::<i32, i32>::new(5);
+            let mut cache = LrukCache::<i32, i32>::new(5);
             assert_eq!(cache.pop_lru_k(), None);
         }
 
         #[test]
         fn test_peek_lru_k_empty_cache() {
-            let cache = LRUKCache::<i32, i32>::new(5);
+            let cache = LrukCache::<i32, i32>::new(5);
             assert_eq!(cache.peek_lru_k(), None);
         }
 
         #[test]
         fn test_lru_k_tie_breaking() {
-            let mut cache = LRUKCache::with_k(5, 2);
+            let mut cache = LrukCache::with_k(5, 2);
             // Since we use a monotonic logical clock, true ties are unlikely without mocking.
             // But logic says: if same K-distance, result is undefined/implementation dependent
             // unless we have secondary sort key.
@@ -1218,7 +1218,7 @@ mod tests {
 
         #[test]
         fn test_access_history_after_removal() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
             cache.remove(&1);
 
@@ -1228,7 +1228,7 @@ mod tests {
 
         #[test]
         fn test_access_history_after_clear() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
             cache.clear();
 
@@ -1243,7 +1243,7 @@ mod tests {
 
         #[test]
         fn test_cache_access_history_consistency() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
 
             // Check if access history exists for inserted key
@@ -1256,7 +1256,7 @@ mod tests {
 
         #[test]
         fn test_len_consistency() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             assert_eq!(cache.len(), 0);
 
             cache.insert(1, 10);
@@ -1274,7 +1274,7 @@ mod tests {
 
         #[test]
         fn test_capacity_consistency() {
-            let mut cache = LRUKCache::new(2);
+            let mut cache = LrukCache::new(2);
             assert_eq!(cache.capacity(), 2);
 
             cache.insert(1, 10);
@@ -1286,7 +1286,7 @@ mod tests {
 
         #[test]
         fn test_clear_resets_all_state() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
             cache.insert(2, 20);
 
@@ -1300,7 +1300,7 @@ mod tests {
 
         #[test]
         fn test_remove_consistency() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
 
             let removed = cache.remove(&1);
@@ -1314,7 +1314,7 @@ mod tests {
 
         #[test]
         fn test_eviction_consistency() {
-            let mut cache = LRUKCache::new(1);
+            let mut cache = LrukCache::new(1);
             cache.insert(1, 10);
 
             // Should evict 1
@@ -1328,7 +1328,7 @@ mod tests {
 
         #[test]
         fn test_access_history_update_on_get() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
 
             let count_before = cache.access_count(&1).unwrap();
@@ -1340,7 +1340,7 @@ mod tests {
 
         #[test]
         fn test_invariants_after_operations() {
-            let mut cache = LRUKCache::with_k(2, 2);
+            let mut cache = LrukCache::with_k(2, 2);
             cache.insert(1, 10);
             cache.insert(2, 20);
 
@@ -1359,7 +1359,7 @@ mod tests {
 
         #[test]
         fn test_k_distance_calculation_consistency() {
-            let mut cache = LRUKCache::with_k(5, 2);
+            let mut cache = LrukCache::with_k(5, 2);
             cache.insert(1, 10); // 1 access
 
             assert_eq!(cache.k_distance(&1), None);
@@ -1370,7 +1370,7 @@ mod tests {
 
         #[test]
         fn test_timestamp_consistency() {
-            let mut cache = LRUKCache::new(5);
+            let mut cache = LrukCache::new(5);
             cache.insert(1, 10);
 
             let history = cache.access_history(&1).unwrap();

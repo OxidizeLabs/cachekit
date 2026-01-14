@@ -23,7 +23,7 @@
 //!                    │                           │                           │
 //!                    ▼                           ▼                           ▼
 //!   ┌────────────────────────────┐   ┌─────────────────────────┐
-//!   │   FIFOCacheTrait<K, V>     │   │   MutableCache<K, V>    │
+//!   │   FifoCacheTrait<K, V>     │   │   MutableCache<K, V>    │
 //!   │                            │   │                         │
 //!   │  pop_oldest() → (K, V)     │   │  remove(&K) → Option<V> │
 //!   │  peek_oldest() → (&K, &V)  │   │  remove_batch(&[K])     │
@@ -36,7 +36,7 @@
 //!                                    │                       │
 //!                                    ▼                       ▼
 //!                     ┌──────────────────────────┐  ┌────────────────────────┐
-//!                     │   LRUCacheTrait<K, V>    │  │   LFUCacheTrait<K, V>  │
+//!                     │   LruCacheTrait<K, V>    │  │   LfuCacheTrait<K, V>  │
 //!                     │                          │  │                        │
 //!                     │  pop_lru() → (K, V)      │  │  pop_lfu() → (K, V)    │
 //!                     │  peek_lru() → (&K, &V)   │  │  peek_lfu() → (&K, &V) │
@@ -47,7 +47,7 @@
 //!                                    │
 //!                                    ▼
 //!                     ┌──────────────────────────┐
-//!                     │  LRUKCacheTrait<K, V>    │
+//!                     │  LrukCacheTrait<K, V>    │
 //!                     │                          │
 //!                     │  pop_lru_k() → (K, V)    │
 //!                     │  peek_lru_k() → (&K,&V)  │
@@ -89,10 +89,10 @@
 //! |----------------------|-----------------|--------------------------------------|
 //! | `CoreCache`          | -               | Universal cache operations           |
 //! | `MutableCache`       | `CoreCache`     | Adds arbitrary key removal           |
-//! | `FIFOCacheTrait`     | `CoreCache`     | FIFO-specific (no remove!)           |
-//! | `LRUCacheTrait`      | `MutableCache`  | LRU-specific with recency tracking   |
-//! | `LFUCacheTrait`      | `MutableCache`  | LFU-specific with frequency tracking |
-//! | `LRUKCacheTrait`     | `MutableCache`  | LRU-K with K-distance tracking       |
+//! | `FifoCacheTrait`     | `CoreCache`     | FIFO-specific (no remove!)           |
+//! | `LruCacheTrait`      | `MutableCache`  | LRU-specific with recency tracking   |
+//! | `LfuCacheTrait`      | `MutableCache`  | LFU-specific with frequency tracking |
+//! | `LrukCacheTrait`     | `MutableCache`  | LRU-K with K-distance tracking       |
 //! | `ConcurrentCache`    | `Send + Sync`   | Marker for thread-safe caches        |
 //! | -                    | -               | -                                    |
 //! | `CacheTierManager`   | -               | Multi-tier cache management          |
@@ -117,7 +117,7 @@
 //!   - age_rank() becomes O(n) scanning for valid entries
 //!   - FIFO semantics become muddled
 //!
-//!   Solution: FIFOCacheTrait extends CoreCache directly, ensuring
+//!   Solution: FifoCacheTrait extends CoreCache directly, ensuring
 //!   only FIFO-appropriate operations are available.
 //!
 //!   ═══════════════════════════════════════════════════════════════════════════
@@ -153,14 +153,14 @@
 //!   │   ┌──────────────┐    promote()    ┌──────────────┐    promote()        │
 //!   │   │  Cold Tier   │ ───────────────►│  Warm Tier   │───────────────►     │
 //!   │   │              │                 │              │                     │
-//!   │   │  FIFOCache   │◄─────────────── │  LFUCache    │◄───────────────     │
+//!   │   │  FifoCache   │◄─────────────── │  LfuCache    │◄───────────────     │
 //!   │   │              │    demote()     │              │    demote()         │
 //!   │   └──────────────┘                 └──────────────┘                     │
 //!   │         │                                │                              │
 //!   │         │                                │          ┌──────────────┐    │
 //!   │         │                                │          │   Hot Tier   │    │
 //!   │         │                                └─────────►│              │    │
-//!   │         │                                           │  LRUCache    │    │
+//!   │         │                                           │  LruCache    │    │
 //!   │         └──────────────────────────────────────────►│              │    │
 //!   │                                                     └──────────────┘    │
 //!   │                                                                         │
@@ -182,7 +182,7 @@
 //!
 //! ```rust,ignore
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, MutableCache, FIFOCacheTrait, LRUCacheTrait, LFUCacheTrait,
+//!     CoreCache, MutableCache, FifoCacheTrait, LruCacheTrait, LfuCacheTrait,
 //! };
 //!
 //! // Function accepting any cache
@@ -200,7 +200,7 @@
 //! }
 //!
 //! // FIFO-specific function
-//! fn evict_oldest_batch<C: FIFOCacheTrait<u64, Vec<u8>>>(
+//! fn evict_oldest_batch<C: FifoCacheTrait<u64, Vec<u8>>>(
 //!     cache: &mut C,
 //!     count: usize,
 //! ) -> Vec<(u64, Vec<u8>)> {
@@ -208,23 +208,23 @@
 //! }
 //!
 //! // LRU-specific function
-//! fn touch_hot_keys<C: LRUCacheTrait<u64, Vec<u8>>>(cache: &mut C, keys: &[u64]) {
+//! fn touch_hot_keys<C: LruCacheTrait<u64, Vec<u8>>>(cache: &mut C, keys: &[u64]) {
 //!     for key in keys {
 //!         cache.touch(key); // Mark as recently used without retrieving
 //!     }
 //! }
 //!
 //! // LFU-specific function with frequency-based prioritization
-//! fn boost_key_priority<C: LFUCacheTrait<u64, Vec<u8>>>(cache: &mut C, key: &u64) {
+//! fn boost_key_priority<C: LfuCacheTrait<u64, Vec<u8>>>(cache: &mut C, key: &u64) {
 //!     // Increment frequency without accessing value
 //!     cache.increment_frequency(key);
 //! }
 //!
 //! // Thread-safe cache usage
 //! use std::sync::{Arc, RwLock};
-//! use crate::storage::disk::async_disk::cache::lru::ConcurrentLRUCache;
+//! use crate::storage::disk::async_disk::cache::lru::ConcurrentLruCache;
 //!
-//! let shared_cache = Arc::new(ConcurrentLRUCache::<u64, Vec<u8>>::new(1000));
+//! let shared_cache = Arc::new(ConcurrentLruCache::<u64, Vec<u8>>::new(1000));
 //!
 //! // Safe to use from multiple threads
 //! let cache_clone = shared_cache.clone();
@@ -238,7 +238,7 @@
 //! - Individual cache implementations are **NOT thread-safe** by default
 //! - Use `ConcurrentCache` marker trait to identify thread-safe implementations
 //! - Wrap non-concurrent caches in `Arc<RwLock<C>>` for shared access
-//! - Some implementations (e.g., `ConcurrentLRUCache`) provide built-in concurrency
+//! - Some implementations (e.g., `ConcurrentLruCache`) provide built-in concurrency
 //!
 //! ## Implementation Notes
 //!
@@ -291,7 +291,7 @@ pub trait MutableCache<K, V>: CoreCache<K, V> {
 
 /// FIFO-specific operations that respect insertion order
 /// No arbitrary removal - only ordered operations that maintain FIFO semantics
-pub trait FIFOCacheTrait<K, V>: CoreCache<K, V> {
+pub trait FifoCacheTrait<K, V>: CoreCache<K, V> {
     /// Remove and return the oldest entry (first inserted)
     fn pop_oldest(&mut self) -> Option<(K, V)>;
 
@@ -309,7 +309,7 @@ pub trait FIFOCacheTrait<K, V>: CoreCache<K, V> {
 }
 
 /// LRU-specific operations that respect access order
-pub trait LRUCacheTrait<K, V>: MutableCache<K, V> {
+pub trait LruCacheTrait<K, V>: MutableCache<K, V> {
     /// Remove and return the least recently used entry
     fn pop_lru(&mut self) -> Option<(K, V)>;
 
@@ -326,7 +326,7 @@ pub trait LRUCacheTrait<K, V>: MutableCache<K, V> {
 }
 
 /// LFU-specific operations that respect frequency order
-pub trait LFUCacheTrait<K, V>: MutableCache<K, V> {
+pub trait LfuCacheTrait<K, V>: MutableCache<K, V> {
     /// Remove and return the least frequently used entry
     fn pop_lfu(&mut self) -> Option<(K, V)>;
 
@@ -346,7 +346,7 @@ pub trait LFUCacheTrait<K, V>: MutableCache<K, V> {
 }
 
 /// LRU-K specific operations that respect K-distance access patterns
-pub trait LRUKCacheTrait<K, V>: MutableCache<K, V> {
+pub trait LrukCacheTrait<K, V>: MutableCache<K, V> {
     /// Remove and return the entry with the oldest K-th access time
     fn pop_lru_k(&mut self) -> Option<(K, V)>;
 
@@ -383,9 +383,9 @@ pub trait ConcurrentCache: Send + Sync {}
 
 /// High-level cache tier management
 pub trait CacheTierManager<K, V> {
-    type HotCache: LRUCacheTrait<K, V> + ConcurrentCache;
-    type WarmCache: LFUCacheTrait<K, V> + ConcurrentCache;
-    type ColdCache: FIFOCacheTrait<K, V> + ConcurrentCache;
+    type HotCache: LruCacheTrait<K, V> + ConcurrentCache;
+    type WarmCache: LfuCacheTrait<K, V> + ConcurrentCache;
+    type ColdCache: FifoCacheTrait<K, V> + ConcurrentCache;
 
     /// Promote an entry from a lower tier to a higher tier
     fn promote(&mut self, key: &K, from_tier: CacheTier, to_tier: CacheTier) -> bool;
@@ -461,12 +461,12 @@ mod tests {
     use super::*;
 
     // Mock implementation for testing trait design
-    struct MockFIFOCache {
+    struct MockFifoCache {
         data: Vec<(i32, String)>,
         capacity: usize,
     }
 
-    impl CoreCache<i32, String> for MockFIFOCache {
+    impl CoreCache<i32, String> for MockFifoCache {
         fn insert(&mut self, key: i32, value: String) -> Option<String> {
             // Simple mock implementation
             if let Some((_, existing)) = self.data.iter_mut().find(|(k, _)| *k == key) {
@@ -500,7 +500,7 @@ mod tests {
         }
     }
 
-    impl FIFOCacheTrait<i32, String> for MockFIFOCache {
+    impl FifoCacheTrait<i32, String> for MockFifoCache {
         fn pop_oldest(&mut self) -> Option<(i32, String)> {
             if self.data.is_empty() {
                 None
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_fifo_trait_design() {
-        let mut cache = MockFIFOCache {
+        let mut cache = MockFifoCache {
             data: Vec::new(),
             capacity: 2,
         };
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_core_cache_insert_returns_previous_value() {
-        let mut cache = MockFIFOCache {
+        let mut cache = MockFifoCache {
             data: Vec::new(),
             capacity: 2,
         };

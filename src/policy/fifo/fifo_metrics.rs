@@ -8,13 +8,13 @@
 //!
 //! ```text
 //!   ┌──────────────────────────────────────────────────────────────────────────┐
-//!   │                          FIFOCache<K, V>                                 │
+//!   │                          FifoCache<K, V>                                 │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  cache: HashMap<K, Arc<V>>                                    │ │
+//!   │   │  cache: HashMap<K, Arc<V>>                                         │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────────┬────────────────────────────────────────────────┐  │ │
-//!   │   │  │   K    │  Arc<V>                                        │  │ │
+//!   │   │  │   K    │  Arc<V>                                             │  │ │
 //!   │   │  ├─────────────┼────────────────────────────────────────────────┤  │ │
 //!   │   │  │  Arc(key1)  │  Arc(value1)                                   │  │ │
 //!   │   │  │  Arc(key2)  │  Arc(value2)                                   │  │ │
@@ -25,7 +25,7 @@
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  insertion_order: VecDeque<K>                                 │ │
+//!   │   │  insertion_order: VecDeque<K>                                      │ │
 //!   │   │                                                                    │ │
 //!   │   │  front ──► [Arc(key1)] ─ [Arc(key2)] ─ [Arc(key3)] ◄── back        │ │
 //!   │   │            (oldest)                      (newest)                  │ │
@@ -123,8 +123,8 @@
 //!
 //! | Component         | Type                     | Purpose                       |
 //! |-------------------|--------------------------|-------------------------------|
-//! | `cache`           | `HashMap<K,Arc<V>>` | O(1) key-value storage        |
-//! | `insertion_order` | `VecDeque<K>`       | Tracks insertion order        |
+//! | `cache`           | `HashMap<K,Arc<V>>`      | O(1) key-value storage        |
+//! | `insertion_order` | `VecDeque<K>`            | Tracks insertion order        |
 //! | `capacity`        | `usize`                  | Maximum entries               |
 //!
 //! ## Core Operations (CoreCache)
@@ -141,7 +141,7 @@
 //!
 //! \* Amortized, may skip stale entries during eviction
 //!
-//! ## FIFO-Specific Operations (FIFOCacheTrait)
+//! ## FIFO-Specific Operations (FifoCacheTrait)
 //!
 //! | Method                | Complexity | Description                          |
 //! |-----------------------|------------|--------------------------------------|
@@ -191,13 +191,13 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::fifo::FIFOCache;
+//! use crate::storage::disk::async_disk::cache::fifo::FifoCache;
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, FIFOCacheTrait,
+//!     CoreCache, FifoCacheTrait,
 //! };
 //!
 //! // Create cache
-//! let mut cache: FIFOCache<String, i32> = FIFOCache::new(100);
+//! let mut cache: FifoCache<String, i32> = FifoCache::new(100);
 //!
 //! // Insert items
 //! cache.insert("key1".to_string(), 100);
@@ -229,7 +229,7 @@
 //!
 //! // Thread-safe usage
 //! use std::sync::{Arc, RwLock};
-//! let shared_cache = Arc::new(RwLock::new(FIFOCache::<u64, Vec<u8>>::new(1000)));
+//! let shared_cache = Arc::new(RwLock::new(FifoCache::<u64, Vec<u8>>::new(1000)));
 //!
 //! // Write access
 //! {
@@ -259,8 +259,8 @@
 //!
 //! ## Thread Safety
 //!
-//! - `FIFOCache` is **NOT thread-safe**
-//! - Use `ConcurrentFIFOCache` for thread-safe access
+//! - `FifoCache` is **NOT thread-safe**
+//! - Use `ConcurrentFifoCache` for thread-safe access
 //! - Designed for single-threaded use with external synchronization
 //! - Follows Rust's zero-cost abstractions principle
 //!
@@ -285,23 +285,23 @@ use crate::metrics::traits::{
 };
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{ConcurrentCache, CoreCache, FIFOCacheTrait};
+use crate::traits::{ConcurrentCache, CoreCache, FifoCacheTrait};
 
 /// FIFO (First In, First Out) Cache.
 ///
 /// Evicts the oldest (first inserted) item when capacity is reached.
 /// See module-level documentation for details.
 #[derive(Debug)]
-pub struct FIFOCache<K, V>
+pub struct FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    inner: FIFOCacheInner<K, V>,
+    inner: FifoCacheInner<K, V>,
     metrics: CacheMetrics,
 }
 
 #[derive(Debug)]
-pub struct FIFOCacheInner<K, V>
+pub struct FifoCacheInner<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -309,7 +309,7 @@ where
     insertion_order: VecDeque<K>, // Tracks the order of insertion
 }
 
-impl<K, V> FIFOCacheInner<K, V>
+impl<K, V> FifoCacheInner<K, V>
 where
     K: Eq + Hash + Clone,
 {
@@ -321,7 +321,7 @@ where
     }
 }
 
-impl<K, V> FIFOCache<K, V>
+impl<K, V> FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Debug,
@@ -329,7 +329,7 @@ where
     /// Creates a new FIFO cache with the given capacity
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: FIFOCacheInner::new(capacity),
+            inner: FifoCacheInner::new(capacity),
             metrics: CacheMetrics::new(),
         }
     }
@@ -429,21 +429,21 @@ where
 
 /// Thread-safe FIFO cache wrapper using RwLock.
 #[derive(Clone, Debug)]
-pub struct ConcurrentFIFOCache<K, V>
+pub struct ConcurrentFifoCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    inner: Arc<RwLock<FIFOCache<K, V>>>,
+    inner: Arc<RwLock<FifoCache<K, V>>>,
 }
 
-impl<K, V> ConcurrentFIFOCache<K, V>
+impl<K, V> ConcurrentFifoCache<K, V>
 where
     K: Eq + Hash + Clone + Debug,
     V: Debug,
 {
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(FIFOCache::new(capacity))),
+            inner: Arc::new(RwLock::new(FifoCache::new(capacity))),
         }
     }
 
@@ -515,14 +515,14 @@ where
     }
 }
 
-impl<K, V> ConcurrentCache for ConcurrentFIFOCache<K, V>
+impl<K, V> ConcurrentCache for ConcurrentFifoCache<K, V>
 where
     K: Eq + Hash + Clone + Debug + Send + Sync,
     V: Debug + Send + Sync,
 {
 }
 
-impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FIFOCache<K, V>
+impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Debug,
@@ -532,7 +532,7 @@ where
     }
 }
 
-impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFIFOCache<K, V>
+impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFifoCache<K, V>
 where
     K: Eq + Hash + Clone + Debug,
     V: Debug,
@@ -542,7 +542,7 @@ where
     }
 }
 
-impl<K, V> CoreCache<K, V> for FIFOCache<K, V>
+impl<K, V> CoreCache<K, V> for FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Debug,
@@ -613,7 +613,7 @@ where
     }
 }
 
-impl<K, V> FIFOCacheTrait<K, V> for FIFOCache<K, V>
+impl<K, V> FifoCacheTrait<K, V> for FifoCache<K, V>
 where
     K: Eq + Hash + Clone + Debug,
     V: Debug,
@@ -686,17 +686,17 @@ where
 mod tests {
     use std::collections::HashSet;
 
-    use crate::policy::fifo::FIFOCache;
-    use crate::traits::{CoreCache, FIFOCacheTrait};
+    use crate::policy::fifo::FifoCache;
+    use crate::traits::{CoreCache, FifoCacheTrait};
 
     // Basic FIFO Behavior Tests
     mod basic_behavior {
         use super::*;
-        use crate::traits::FIFOCacheTrait;
+        use crate::traits::FifoCacheTrait;
 
         #[test]
         fn test_basic_fifo_insertion_and_retrieval() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Test basic insertion and retrieval
             assert_eq!(cache.insert("key1", "value1"), None);
@@ -711,7 +711,7 @@ mod tests {
 
         #[test]
         fn test_fifo_eviction_order() {
-            let mut cache = FIFOCache::new(2);
+            let mut cache = FifoCache::new(2);
 
             // Fill cache to capacity
             cache.insert("first", "value1");
@@ -728,7 +728,7 @@ mod tests {
 
         #[test]
         fn test_capacity_enforcement() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Fill beyond capacity
             for i in 1..=5 {
@@ -746,7 +746,7 @@ mod tests {
 
         #[test]
         fn test_update_existing_key() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             cache.insert("key1", "original");
             cache.insert("key2", "value2");
@@ -760,7 +760,7 @@ mod tests {
 
         #[test]
         fn test_insertion_order_preservation() {
-            let mut cache = FIFOCache::new(4);
+            let mut cache = FifoCache::new(4);
 
             // Insert items in a specific order
             cache.insert("first", 1);
@@ -802,7 +802,7 @@ mod tests {
 
         #[test]
         fn test_key_operations_consistency() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Test consistency between contents, get, and len
             assert_eq!(cache.len(), 0);
@@ -878,7 +878,7 @@ mod tests {
 
         #[test]
         fn test_basic_fifo_metrics() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Test basic insertion and retrieval
             assert_eq!(cache.insert("key1", "value1"), None);
@@ -901,7 +901,7 @@ mod tests {
 
         #[test]
         fn test_empty_cache_operations() {
-            let mut cache: FIFOCache<String, String> = FIFOCache::new(5);
+            let mut cache: FifoCache<String, String> = FifoCache::new(5);
 
             assert_eq!(cache.get(&"nonexistent".to_string()), None);
             assert!(!cache.contains(&"nonexistent".to_string()));
@@ -915,7 +915,7 @@ mod tests {
 
         #[test]
         fn test_single_item_cache() {
-            let mut cache = FIFOCache::new(1);
+            let mut cache = FifoCache::new(1);
 
             cache.insert("only", "value1");
             assert_eq!(cache.len(), 1);
@@ -930,7 +930,7 @@ mod tests {
 
         #[test]
         fn test_zero_capacity_cache() {
-            let mut cache = FIFOCache::new(0);
+            let mut cache = FifoCache::new(0);
 
             // Should not be able to store anything
             cache.insert("key", "value");
@@ -941,7 +941,7 @@ mod tests {
 
         #[test]
         fn test_clear_operation() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             cache.insert("key1", "value1");
             cache.insert("key2", "value2");
@@ -956,7 +956,7 @@ mod tests {
 
         #[test]
         fn test_duplicate_key_handling() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Insert the initial key
             assert_eq!(cache.insert("key1", "value1"), None);
@@ -1010,7 +1010,7 @@ mod tests {
 
         #[test]
         fn test_boundary_conditions() {
-            let mut cache = FIFOCache::new(2);
+            let mut cache = FifoCache::new(2);
 
             // Test exactly at capacity
             cache.insert("key1", "value1");
@@ -1065,7 +1065,7 @@ mod tests {
 
         #[test]
         fn test_empty_to_full_transition() {
-            let mut cache = FIFOCache::new(4);
+            let mut cache = FifoCache::new(4);
 
             // Start empty
             assert_eq!(cache.len(), 0);
@@ -1136,7 +1136,7 @@ mod tests {
         fn test_full_to_empty_transition() {
             // Helper function to create cache with same initial state (avoids cloning)
             let create_test_cache = || {
-                let mut cache = FIFOCache::new(3);
+                let mut cache = FifoCache::new(3);
                 cache.insert("item1", 1);
                 cache.insert("item2", 2);
                 cache.insert("item3", 3);
@@ -1200,7 +1200,7 @@ mod tests {
             }
 
             // Test partial emptying and refilling
-            let mut partial_cache = FIFOCache::new(4);
+            let mut partial_cache = FifoCache::new(4);
             partial_cache.insert("a", 1);
             partial_cache.insert("b", 2);
             partial_cache.insert("c", 3);
@@ -1231,7 +1231,7 @@ mod tests {
 
         #[test]
         fn test_pop_oldest() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             cache.insert("first", "value1");
             cache.insert("second", "value2");
@@ -1249,7 +1249,7 @@ mod tests {
 
         #[test]
         fn test_peek_oldest() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             cache.insert("first", "value1");
             cache.insert("second", "value2");
@@ -1265,7 +1265,7 @@ mod tests {
 
         #[test]
         fn test_age_rank() {
-            let mut cache = FIFOCache::new(4);
+            let mut cache = FifoCache::new(4);
 
             cache.insert("first", "value1"); // rank 0 (oldest)
             cache.insert("second", "value2"); // rank 1
@@ -1281,7 +1281,7 @@ mod tests {
 
         #[test]
         fn test_pop_oldest_batch() {
-            let mut cache = FIFOCache::new(5);
+            let mut cache = FifoCache::new(5);
 
             for i in 1..=5 {
                 cache.insert(format!("key{}", i), format!("value{}", i));
@@ -1302,7 +1302,7 @@ mod tests {
 
         #[test]
         fn test_pop_oldest_batch_more_than_available() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             cache.insert("key1", "value1");
             cache.insert("key2", "value2");
@@ -1315,7 +1315,7 @@ mod tests {
 
         #[test]
         fn test_pop_oldest_empty_cache() {
-            let mut cache: FIFOCache<String, String> = FIFOCache::new(5);
+            let mut cache: FifoCache<String, String> = FifoCache::new(5);
 
             // Pop from the empty cache should return None
             assert_eq!(cache.pop_oldest(), None);
@@ -1341,7 +1341,7 @@ mod tests {
 
         #[test]
         fn test_peek_oldest_empty_cache() {
-            let cache: FIFOCache<String, String> = FIFOCache::new(5);
+            let cache: FifoCache<String, String> = FifoCache::new(5);
 
             // Peek at the empty cache should return None
             assert_eq!(cache.peek_oldest(), None);
@@ -1353,7 +1353,7 @@ mod tests {
             assert_eq!(cache.len(), 0);
 
             // Test peek after clear
-            let mut test_cache = FIFOCache::new(3);
+            let mut test_cache = FifoCache::new(3);
             test_cache.insert("key1".to_string(), "value1".to_string());
             test_cache.insert("key2".to_string(), "value2".to_string());
 
@@ -1369,7 +1369,7 @@ mod tests {
 
         #[test]
         fn test_age_rank_after_eviction() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Fill cache
             cache.insert("first", 1);
@@ -1427,7 +1427,7 @@ mod tests {
 
         #[test]
         fn test_batch_operations_edge_cases() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Test batch with count = 0
             cache.insert("key1", "value1");
@@ -1440,7 +1440,7 @@ mod tests {
             assert!(cache.contains(&"key2"));
 
             // Test batch on empty cache
-            let mut empty_cache: FIFOCache<String, String> = FIFOCache::new(5);
+            let mut empty_cache: FifoCache<String, String> = FifoCache::new(5);
             let empty_batch = empty_cache.pop_oldest_batch(3);
             assert_eq!(empty_batch.len(), 0);
             assert_eq!(empty_cache.len(), 0);
@@ -1496,7 +1496,7 @@ mod tests {
 
         #[test]
         fn test_stale_entry_skipping_during_eviction() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Fill cache to capacity
             cache.insert("key1", "value1");
@@ -1542,7 +1542,7 @@ mod tests {
 
         #[test]
         fn test_insertion_order_consistency_with_stale_entries() {
-            let mut cache = FIFOCache::new(4);
+            let mut cache = FifoCache::new(4);
 
             // Fill cache
             cache.insert("a", 1);
@@ -1593,7 +1593,7 @@ mod tests {
 
         #[test]
         fn test_lazy_deletion_behavior() {
-            let mut cache = FIFOCache::new(3);
+            let mut cache = FifoCache::new(3);
 
             // Test 1: Stale entries accumulate until cleanup operations
             cache.insert("temp1", "value1");
@@ -1668,7 +1668,7 @@ mod tests {
 
         #[test]
         fn test_stale_entry_cleanup_during_operations() {
-            let mut cache = FIFOCache::new(4);
+            let mut cache = FifoCache::new(4);
 
             // Setup: Create cache with mix of valid and future stale entries
             cache.insert("will_be_stale1", "stale1");

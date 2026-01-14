@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use cachekit::policy::heap_lfu::HeapLFUCache;
+use cachekit::policy::heap_lfu::HeapLfuCache;
 use cachekit::traits::CoreCache;
 
 fn main() {
-    let mut cache: HeapLFUCache<&str, String> = HeapLFUCache::new(2);
+    let mut cache: HeapLfuCache<&str, String> = HeapLfuCache::new(2);
 
     cache.insert("a", Arc::new("alpha".to_string()));
     cache.insert("b", Arc::new("beta".to_string()));

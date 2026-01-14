@@ -6,19 +6,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use cachekit::policy::lfu::LFUCache;
+use cachekit::policy::lfu::LfuCache;
 
-type ThreadSafeLFUCache<K, V> = Arc<Mutex<LFUCache<K, V>>>;
+type ThreadSafeLfuCache<K, V> = Arc<Mutex<LfuCache<K, V>>>;
 
 // Thread Safety Tests
 mod thread_safety {
-    use cachekit::traits::{CoreCache, LFUCacheTrait, MutableCache};
+    use cachekit::traits::{CoreCache, LfuCacheTrait, MutableCache};
 
     use super::*;
 
     #[test]
     fn test_concurrent_insertions() {
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(1000)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(1000)));
         let num_threads = 8;
         let items_per_thread = 100;
 
@@ -60,7 +60,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_gets() {
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(500)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(500)));
 
         // Pre-populate cache with test data
         {
@@ -121,7 +121,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_frequency_operations() {
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(100)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(100)));
 
         // Pre-populate cache
         {
@@ -203,7 +203,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_lfu_operations() {
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(200)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(200)));
 
         // Pre-populate cache with different frequency patterns
         {
@@ -313,7 +313,7 @@ mod thread_safety {
 
     #[test]
     fn test_mixed_concurrent_operations() {
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(300)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(300)));
         let num_threads = 8;
         let operations_per_thread = 200;
         let operation_counts = Arc::new(Mutex::new((0, 0, 0, 0, 0))); // (inserts, gets, removes, frequency_ops, lfu_ops)
@@ -435,7 +435,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_eviction_scenarios() {
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(100)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(100)));
         let num_insert_threads = 6;
         let num_access_threads = 3;
         let inserts_per_thread = 50;
@@ -582,7 +582,7 @@ mod thread_safety {
 
     #[test]
     fn test_thread_fairness() {
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(200)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(200)));
         let num_threads = 10;
         let operations_per_thread = 500;
         let success_counts = Arc::new(Mutex::new(vec![0; num_threads]));
@@ -726,14 +726,14 @@ mod stress_testing {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use cachekit::traits::{CoreCache, LFUCacheTrait};
+    use cachekit::traits::{CoreCache, LfuCacheTrait};
 
     use super::*;
 
     #[test]
     fn test_high_contention_scenario() {
         // Test many threads accessing same small set of keys
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(50)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(50)));
         let num_threads = 20;
         let operations_per_thread = 1000;
         let hot_keys = 5; // Small set of highly contended keys
@@ -868,8 +868,8 @@ mod stress_testing {
     fn test_cache_thrashing_scenario() {
         // Test rapid insertions causing constant evictions
         let capacity = 100;
-        let cache: ThreadSafeLFUCache<String, Vec<u8>> =
-            Arc::new(Mutex::new(LFUCache::new(capacity)));
+        let cache: ThreadSafeLfuCache<String, Vec<u8>> =
+            Arc::new(Mutex::new(LfuCache::new(capacity)));
         let num_threads = 8;
         let insertions_per_thread: usize = 500;
         let data_size = 1024; // 1KB per entry
@@ -991,7 +991,7 @@ mod stress_testing {
     #[test]
     fn test_long_running_stability() {
         // Test stability over extended periods with continuous load
-        let cache: ThreadSafeLFUCache<String, i64> = Arc::new(Mutex::new(LFUCache::new(200)));
+        let cache: ThreadSafeLfuCache<String, i64> = Arc::new(Mutex::new(LfuCache::new(200)));
         let duration = Duration::from_millis(2000); // 2 second test
         let num_threads = 6;
 
@@ -1174,8 +1174,8 @@ mod stress_testing {
     fn test_memory_pressure_scenario() {
         // Test behavior with large cache and memory-intensive operations
         let large_capacity = 1000;
-        let cache: ThreadSafeLFUCache<String, Vec<u8>> =
-            Arc::new(Mutex::new(LFUCache::new(large_capacity)));
+        let cache: ThreadSafeLfuCache<String, Vec<u8>> =
+            Arc::new(Mutex::new(LfuCache::new(large_capacity)));
         let num_threads = 4;
         let large_data_size = 8192; // 8KB per entry
         let operations_per_thread = 300;
@@ -1337,7 +1337,7 @@ mod stress_testing {
     #[test]
     fn test_rapid_thread_creation_destruction() {
         // Test with threads being created and destroyed rapidly
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(100)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(100)));
         let num_waves = 10;
         let threads_per_wave = 8;
         let operations_per_thread = 50;
@@ -1472,7 +1472,7 @@ mod stress_testing {
     #[test]
     fn test_burst_load_handling() {
         // Test handling of sudden burst loads
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(150)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(150)));
         let burst_threads = 15;
         let burst_operations = 200;
         let background_threads = 3;
@@ -1672,7 +1672,7 @@ mod stress_testing {
     #[test]
     fn test_gradual_load_increase() {
         // Test behavior as load gradually increases
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(100)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(100)));
         let max_threads = 12;
         let phase_duration = Duration::from_millis(100);
         let operations_per_phase = 50;
@@ -1872,7 +1872,7 @@ mod stress_testing {
     #[test]
     fn test_frequency_distribution_stress() {
         // Test stress scenarios with various frequency distributions
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(200)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(200)));
         let num_threads = 8;
         let operations_per_thread = 1200;
 
@@ -2169,7 +2169,7 @@ mod stress_testing {
     #[test]
     fn test_lfu_eviction_under_stress() {
         // Test LFU eviction correctness under high stress
-        let cache: ThreadSafeLFUCache<String, i32> = Arc::new(Mutex::new(LFUCache::new(100)));
+        let cache: ThreadSafeLfuCache<String, i32> = Arc::new(Mutex::new(LfuCache::new(100)));
         let num_threads = 10;
         let operations_per_thread = 1000; // Much higher for guaranteed eviction pressure
         // No time limit - let all operations complete

@@ -3,8 +3,8 @@ mod common;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cachekit::policy::lru::LRUCore;
-use cachekit::traits::{CoreCache, LRUCacheTrait};
+use cachekit::policy::lru::LruCore;
+use cachekit::traits::{CoreCache, LruCacheTrait};
 use common::workload::{Workload, WorkloadSpec, run_hit_rate};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
@@ -15,7 +15,7 @@ fn bench_lru_insert_get(c: &mut Criterion) {
     group.bench_function("insert_get", |b| {
         b.iter_batched(
             || {
-                let mut cache = LRUCore::new(1024);
+                let mut cache = LruCore::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -39,7 +39,7 @@ fn bench_lru_pop_lru(c: &mut Criterion) {
     group.bench_function("pop_lru", |b| {
         b.iter_batched(
             || {
-                let mut cache = LRUCore::new(1024);
+                let mut cache = LruCore::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -62,7 +62,7 @@ fn bench_lru_eviction_churn(c: &mut Criterion) {
     group.bench_function("eviction_churn", |b| {
         b.iter_batched(
             || {
-                let mut cache = LRUCore::new(1024);
+                let mut cache = LruCore::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -85,7 +85,7 @@ fn bench_lru_touch_hotset(c: &mut Criterion) {
     group.bench_function("touch_hotset", |b| {
         b.iter_batched(
             || {
-                let mut cache = LRUCore::new(4096);
+                let mut cache = LruCore::new(4096);
                 for i in 0..4096u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -106,7 +106,7 @@ fn bench_lru_get_hit_ns(c: &mut Criterion) {
     c.bench_function("lru_get_hit_ns", |b| {
         b.iter_custom(|iters| {
             let capacity = 16_384u64;
-            let mut cache = LRUCore::new(capacity as usize);
+            let mut cache = LruCore::new(capacity as usize);
             for i in 0..capacity {
                 cache.insert(i, Arc::new(i));
             }
@@ -124,7 +124,7 @@ fn bench_lru_insert_full_ns(c: &mut Criterion) {
     c.bench_function("lru_insert_full_ns", |b| {
         b.iter_custom(|iters| {
             let capacity = 4096u64;
-            let mut cache = LRUCore::new(capacity as usize);
+            let mut cache = LruCore::new(capacity as usize);
             for i in 0..capacity {
                 cache.insert(i, Arc::new(i));
             }
@@ -162,7 +162,7 @@ fn bench_lru_workload_hit_rate(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let mut total = std::time::Duration::default();
                 for _ in 0..iters {
-                    let mut cache = LRUCore::new(4096);
+                    let mut cache = LruCore::new(4096);
                     let mut generator = WorkloadSpec {
                         universe: 16_384,
                         workload,

@@ -1,9 +1,9 @@
-use cachekit::prelude::FIFOCache;
+use cachekit::prelude::FifoCache;
 use cachekit::traits::CoreCache;
 
 fn main() {
     // Create a FIFO cache with a capacity of 100 entries
-    let mut cache = FIFOCache::new(100);
+    let mut cache = FifoCache::new(100);
 
     // Insert an item
     cache.insert("key1", "value1");

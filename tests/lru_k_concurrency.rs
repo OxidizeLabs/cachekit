@@ -9,16 +9,16 @@ use std::time::Duration;
 
 // Thread Safety Tests
 mod thread_safety {
-    use cachekit::policy::lru_k::LRUKCache;
-    use cachekit::traits::{CoreCache, LRUKCacheTrait};
+    use cachekit::policy::lru_k::LrukCache;
+    use cachekit::traits::{CoreCache, LrukCacheTrait};
 
     use super::*;
 
-    type ThreadSafeLRUK<K, V> = Arc<Mutex<LRUKCache<K, V>>>;
+    type ThreadSafeLRUK<K, V> = Arc<Mutex<LrukCache<K, V>>>;
 
     #[test]
     fn test_concurrent_insertions() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(256, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(256, 2)));
         let threads = 8;
         let inserts_per_thread = 120;
         let inserted = Arc::new(AtomicUsize::new(0));
@@ -53,7 +53,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_gets() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(128, 3)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(128, 3)));
 
         {
             let mut guard = cache.lock().unwrap();
@@ -94,7 +94,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_history_operations() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(64, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(64, 2)));
 
         {
             let mut guard = cache.lock().unwrap();
@@ -140,7 +140,7 @@ mod thread_safety {
 
     #[test]
     fn test_concurrent_lru_k_operations() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(50, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(50, 2)));
 
         {
             let mut guard = cache.lock().unwrap();
@@ -180,7 +180,7 @@ mod thread_safety {
 
     #[test]
     fn test_mixed_concurrent_operations() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(120, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(120, 2)));
         {
             let mut guard = cache.lock().unwrap();
             for i in 0..80 {
@@ -238,16 +238,16 @@ mod thread_safety {
 
 // Stress Testing (kept lightweight to avoid long runtimes)
 mod stress_testing {
-    use cachekit::policy::lru_k::LRUKCache;
-    use cachekit::traits::{CoreCache, LRUKCacheTrait};
+    use cachekit::policy::lru_k::LrukCache;
+    use cachekit::traits::{CoreCache, LrukCacheTrait};
 
     use super::*;
 
-    type ThreadSafeLRUK<K, V> = Arc<Mutex<LRUKCache<K, V>>>;
+    type ThreadSafeLRUK<K, V> = Arc<Mutex<LrukCache<K, V>>>;
 
     #[test]
     fn test_high_contention_scenario() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(64, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(64, 2)));
         let threads = 16;
         let ops = 200;
         let hits = Arc::new(AtomicUsize::new(0));
@@ -282,7 +282,7 @@ mod stress_testing {
 
     #[test]
     fn test_cache_thrashing_scenario() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(50, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(50, 2)));
         let threads = 12;
         let ops = 150;
 
@@ -313,7 +313,7 @@ mod stress_testing {
 
     #[test]
     fn test_long_running_stability() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(80, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(80, 2)));
         let threads = 6;
         let ops = 400;
 
@@ -356,7 +356,7 @@ mod stress_testing {
 
     #[test]
     fn test_burst_load_handling() {
-        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LRUKCache::with_k(120, 2)));
+        let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(120, 2)));
         let steady_threads = 4;
         let burst_threads = 10;
         let steady_ops = 150;

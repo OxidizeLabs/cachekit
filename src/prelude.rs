@@ -6,4 +6,4 @@ pub use crate::ds::{
 };
 #[cfg(feature = "metrics")]
 pub use crate::metrics::snapshot::CacheMetricsSnapshot;
-pub use crate::policy::fifo::FIFOCache;
+pub use crate::policy::fifo::FifoCache;

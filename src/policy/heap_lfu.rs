@@ -2,13 +2,13 @@
 //!
 //! This module provides an alternative LFU cache implementation that uses a binary heap for
 //! O(log n) eviction operations instead of the O(n) scanning approach used by the standard
-//! `LFUCache`.
+//! `LfuCache`.
 //!
 //! ## Architecture
 //!
 //! ```text
 //!   ┌──────────────────────────────────────────────────────────────────────────┐
-//!   │                        HeapLFUCache<K, V>                                │
+//!   │                        HeapLfuCache<K, V>                                │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
 //!   │   │  HashMapStore<K, V>                                               │ │
@@ -97,7 +97,7 @@
 //! ## Comparison: Standard LFU vs. Heap LFU
 //!
 //! ```text
-//!   Standard LFUCache:
+//!   Standard LfuCache:
 //!   ┌────────────────────────────────────────────────────────────────────────┐
 //!   │  HashMap<K, (V, usize)>                                                │
 //!   │                                                                        │
@@ -107,7 +107,7 @@
 //!   │  Memory: 1 HashMap                                                     │
 //!   └────────────────────────────────────────────────────────────────────────┘
 //!
-//!   HeapLFUCache:
+//!   HeapLfuCache:
 //!   ┌────────────────────────────────────────────────────────────────────────┐
 //!   │  HashMapStore<K, V> + HashMap<K, u64> + BinaryHeap<(u64, K)>           │
 //!   │                                                                        │
@@ -165,13 +165,13 @@
 //!
 //! ## When to Use
 //!
-//! **Use HeapLFUCache when:**
+//! **Use HeapLfuCache when:**
 //! - Eviction operations are frequent (>10% of operations)
 //! - Consistent, predictable latency is critical
 //! - Cache sizes are large (>1000 items)
 //! - High-throughput, low-latency workloads
 //!
-//! **Use standard LFUCache when:**
+//! **Use standard LfuCache when:**
 //! - Memory usage is critical
 //! - Evictions are rare compared to gets
 //! - Cache sizes are small (<100 items)
@@ -180,14 +180,14 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::heap_lfu::HeapLFUCache;
+//! use crate::storage::disk::async_disk::cache::heap_lfu::HeapLfuCache;
 //! use std::sync::Arc;
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, MutableCache, LFUCacheTrait,
+//!     CoreCache, MutableCache, LfuCacheTrait,
 //! };
 //!
 //! // Create cache
-//! let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(100);
+//! let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(100);
 //!
 //! // Insert items (frequency starts at 1)
 //! cache.insert("key1".to_string(), Arc::new(100));
@@ -228,8 +228,8 @@
 //!
 //! ## Thread Safety
 //!
-//! - `HeapLFUCache` is **NOT thread-safe**
-//! - Wrap in `Arc<Mutex<HeapLFUCache>>` for concurrent access
+//! - `HeapLfuCache` is **NOT thread-safe**
+//! - Wrap in `Arc<Mutex<HeapLfuCache>>` for concurrent access
 //! - Shorter lock times than standard LFU due to O(log n) eviction
 //!
 //! ## Implementation Notes
@@ -247,7 +247,7 @@ use std::sync::Arc;
 
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
+use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 
 /// Heap-based LFU Cache with O(log n) eviction.
 ///
@@ -255,7 +255,7 @@ use crate::traits::{CoreCache, LFUCacheTrait, MutableCache};
 /// Values are stored as `Arc<V>` to avoid cloning on eviction.
 /// See module-level documentation for details.
 #[derive(Debug)]
-pub struct HeapLFUCache<K, V>
+pub struct HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
@@ -266,27 +266,27 @@ where
     freq_heap: BinaryHeap<Reverse<(u64, K)>>,
 }
 
-impl<K, V> HeapLFUCache<K, V>
+impl<K, V> HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
     const MAX_HEAP_FACTOR: usize = 4;
 
-    /// Creates a new HeapLFUCache with the specified capacity.
+    /// Creates a new HeapLfuCache with the specified capacity.
     ///
     /// # Arguments
     /// * `capacity` - Maximum number of items the cache can hold
     ///
     /// # Examples
     /// ```rust,no_run
-    /// use cachekit::policy::heap_lfu::HeapLFUCache;
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
     ///
-    /// let cache: HeapLFUCache<String, i32> = HeapLFUCache::new(100);
+    /// let cache: HeapLfuCache<String, i32> = HeapLfuCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
     /// assert_eq!(cache.len(), 0);
     /// ```
     pub fn new(capacity: usize) -> Self {
-        HeapLFUCache {
+        HeapLfuCache {
             store: HashMapStore::new(capacity),
             frequencies: HashMap::with_capacity(capacity),
             freq_heap: BinaryHeap::with_capacity(capacity),
@@ -398,7 +398,7 @@ where
 }
 
 // Implementation of CoreCache trait
-impl<K, V> CoreCache<K, Arc<V>> for HeapLFUCache<K, V>
+impl<K, V> CoreCache<K, Arc<V>> for HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
@@ -458,7 +458,7 @@ where
 }
 
 // Implementation of MutableCache trait for arbitrary key removal
-impl<K, V> MutableCache<K, Arc<V>> for HeapLFUCache<K, V>
+impl<K, V> MutableCache<K, Arc<V>> for HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
@@ -478,8 +478,8 @@ where
     }
 }
 
-// Implementation of LFUCacheTrait for specialized LFU operations
-impl<K, V> LFUCacheTrait<K, Arc<V>> for HeapLFUCache<K, V>
+// Implementation of LfuCacheTrait for specialized LFU operations
+impl<K, V> LfuCacheTrait<K, Arc<V>> for HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
@@ -552,11 +552,11 @@ where
 #[cfg(test)]
 mod heap_lfu_tests {
     use super::*;
-    use crate::policy::lfu::LFUCache;
+    use crate::policy::lfu::LfuCache;
 
     #[test]
     fn test_heap_lfu_basic_operations() {
-        let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(3);
+        let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(3);
 
         // Test basic insertion and retrieval
         assert_eq!(cache.insert("key1".to_string(), Arc::new(100)), None);
@@ -581,7 +581,7 @@ mod heap_lfu_tests {
 
     #[test]
     fn test_heap_lfu_eviction_order() {
-        let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(3);
+        let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(3);
 
         // Fill cache to capacity
         cache.insert("key1".to_string(), Arc::new(100));
@@ -619,7 +619,7 @@ mod heap_lfu_tests {
 
     #[test]
     fn test_heap_lfu_pop_lfu() {
-        let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(3);
+        let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(3);
 
         // Insert items with different frequencies
         cache.insert("low".to_string(), Arc::new(1));
@@ -660,7 +660,7 @@ mod heap_lfu_tests {
 
     #[test]
     fn test_heap_lfu_stale_entry_handling() {
-        let mut cache: HeapLFUCache<i32, i32> = HeapLFUCache::new(3);
+        let mut cache: HeapLfuCache<i32, i32> = HeapLfuCache::new(3);
 
         // Insert items
         cache.insert(1, Arc::new(10));
@@ -692,7 +692,7 @@ mod heap_lfu_tests {
 
     #[test]
     fn test_remove_clears_stale_frequency_entries() {
-        let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(2);
+        let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(2);
 
         cache.insert("key1".to_string(), Arc::new(10));
         cache.insert("key2".to_string(), Arc::new(20));
@@ -716,7 +716,7 @@ mod heap_lfu_tests {
 
     #[test]
     fn test_pop_lfu_internal_rebuilds_after_stale_pops() {
-        let mut cache: HeapLFUCache<String, i32> = HeapLFUCache::new(2);
+        let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(2);
 
         cache.insert("key1".to_string(), Arc::new(10));
         cache.insert("key2".to_string(), Arc::new(20));
@@ -747,7 +747,7 @@ mod heap_lfu_tests {
         let cache_size = 100;
 
         // Test standard LFU cache
-        let mut std_cache = LFUCache::new(cache_size);
+        let mut std_cache = LfuCache::new(cache_size);
 
         // Fill cache
         for i in 0..cache_size {
@@ -764,7 +764,7 @@ mod heap_lfu_tests {
         let std_duration = start.elapsed();
 
         // Test heap-based LFU cache
-        let mut heap_cache: HeapLFUCache<usize, usize> = HeapLFUCache::new(cache_size);
+        let mut heap_cache: HeapLfuCache<usize, usize> = HeapLfuCache::new(cache_size);
 
         // Fill cache
         for i in 0..cache_size {

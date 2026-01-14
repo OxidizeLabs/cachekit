@@ -8,14 +8,14 @@ use std::time::{Duration, Instant};
 // ==============================================
 
 mod thread_safety {
-    use cachekit::policy::lru::ConcurrentLRUCache;
+    use cachekit::policy::lru::ConcurrentLruCache;
 
     use super::*;
 
     #[test]
     fn test_concurrent_insert_operations() {
         let capacity = 1_600;
-        let cache = Arc::new(ConcurrentLRUCache::new(capacity));
+        let cache = Arc::new(ConcurrentLruCache::new(capacity));
 
         let num_threads = 8;
         let inserts_per_thread = 200;
@@ -50,7 +50,7 @@ mod thread_safety {
     #[test]
     fn test_concurrent_get_operations() {
         let capacity = 512;
-        let cache = Arc::new(ConcurrentLRUCache::new(capacity));
+        let cache = Arc::new(ConcurrentLruCache::new(capacity));
 
         for key in 0..capacity {
             cache.insert(key as u64, key as u64 * 2);
@@ -94,7 +94,7 @@ mod thread_safety {
     #[test]
     fn test_concurrent_remove_operations() {
         let total_keys = 400;
-        let cache = Arc::new(ConcurrentLRUCache::new(total_keys));
+        let cache = Arc::new(ConcurrentLruCache::new(total_keys));
 
         for key in 0..total_keys {
             cache.insert(key as u64, key as u64);
@@ -134,7 +134,7 @@ mod thread_safety {
     #[test]
     fn test_concurrent_mixed_operations() {
         let capacity = 300;
-        let cache = Arc::new(ConcurrentLRUCache::new(capacity));
+        let cache = Arc::new(ConcurrentLruCache::new(capacity));
 
         // Seed cache with some entries
         for key in 0..100 {
@@ -208,13 +208,13 @@ mod thread_safety {
 }
 
 mod stress_testing {
-    use cachekit::policy::lru::ConcurrentLRUCache;
+    use cachekit::policy::lru::ConcurrentLruCache;
 
     use super::*;
 
     #[test]
     fn test_high_throughput_operations() {
-        let cache = Arc::new(ConcurrentLRUCache::new(256));
+        let cache = Arc::new(ConcurrentLruCache::new(256));
         let num_threads = 16;
         let operations_per_thread = 1_000;
         let completed = Arc::new(AtomicUsize::new(0));
@@ -255,7 +255,7 @@ mod stress_testing {
 
     #[test]
     fn test_massive_concurrent_threads() {
-        let cache = Arc::new(ConcurrentLRUCache::new(512));
+        let cache = Arc::new(ConcurrentLruCache::new(512));
         let num_threads = 64;
         let operations_per_thread = 40;
         let operations_done = Arc::new(AtomicUsize::new(0));
@@ -295,7 +295,7 @@ mod stress_testing {
 
     #[test]
     fn test_burst_load_handling() {
-        let cache = Arc::new(ConcurrentLRUCache::new(400));
+        let cache = Arc::new(ConcurrentLruCache::new(400));
 
         let background_threads = 4;
         let background_ops = 200;

@@ -1,11 +1,11 @@
-use cachekit::policy::fifo::FIFOCache;
+use cachekit::policy::fifo::FifoCache;
 use cachekit::traits::CoreCache;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_fifo_insert_get(c: &mut Criterion) {
     c.bench_function("fifo_insert_get", |b| {
         b.iter(|| {
-            let mut c = FIFOCache::new(1024);
+            let mut c = FifoCache::new(1024);
             for i in 0..1024 {
                 c.insert(i, i);
             }

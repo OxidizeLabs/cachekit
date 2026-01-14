@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use cachekit::ds::FrequencyBucketsHandle;
-use cachekit::policy::lfu::LFUCache;
-use cachekit::traits::{CoreCache, LFUCacheTrait};
+use cachekit::policy::lfu::LfuCache;
+use cachekit::traits::{CoreCache, LfuCacheTrait};
 use common::workload::{Workload, WorkloadSpec, run_hit_rate};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
@@ -16,7 +16,7 @@ fn bench_lfu_insert_get_end_to_end(c: &mut Criterion) {
     group.bench_function("insert_get", |b| {
         b.iter_batched(
             || {
-                let mut cache = LFUCache::new(1024);
+                let mut cache = LfuCache::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -41,7 +41,7 @@ fn bench_lfu_insert_get_policy(c: &mut Criterion) {
     group.bench_function("insert_get", |b| {
         b.iter_batched(
             || {
-                let mut cache = LFUCache::new(1024);
+                let mut cache = LfuCache::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -66,7 +66,7 @@ fn bench_lfu_get_hotset_policy(c: &mut Criterion) {
     group.bench_function("get_hotset", |b| {
         b.iter_batched(
             || {
-                let mut cache = LFUCache::new(4096);
+                let mut cache = LfuCache::new(4096);
                 for i in 0..4096u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -89,7 +89,7 @@ fn bench_lfu_eviction_churn_end_to_end(c: &mut Criterion) {
     group.bench_function("eviction_churn", |b| {
         b.iter_batched(
             || {
-                let mut cache = LFUCache::new(1024);
+                let mut cache = LfuCache::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -112,7 +112,7 @@ fn bench_lfu_eviction_churn_policy(c: &mut Criterion) {
     group.bench_function("eviction_churn", |b| {
         b.iter_batched(
             || {
-                let mut cache = LFUCache::new(1024);
+                let mut cache = LfuCache::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -141,7 +141,7 @@ fn bench_lfu_eviction_churn_policy_sizes(c: &mut Criterion) {
             |b, &capacity| {
                 b.iter_batched(
                     || {
-                        let mut cache = LFUCache::new(capacity);
+                        let mut cache = LfuCache::new(capacity);
                         for i in 0..capacity as u64 {
                             cache.insert(i, Arc::new(i));
                         }
@@ -168,7 +168,7 @@ fn bench_lfu_frequency_updates(c: &mut Criterion) {
     c.bench_function("lfu_frequency_updates", |b| {
         b.iter_batched(
             || {
-                let mut cache = LFUCache::new(4096);
+                let mut cache = LfuCache::new(4096);
                 for i in 0..4096u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -189,7 +189,7 @@ fn bench_lfu_pop_lfu_policy(c: &mut Criterion) {
     c.bench_function("lfu_pop_lfu_policy", |b| {
         b.iter_batched(
             || {
-                let mut cache = LFUCache::new(1024);
+                let mut cache = LfuCache::new(1024);
                 for i in 0..1024u64 {
                     cache.insert(i, Arc::new(i));
                 }
@@ -209,7 +209,7 @@ fn bench_lfu_get_hit_ns(c: &mut Criterion) {
     c.bench_function("lfu_get_hit_ns", |b| {
         b.iter_custom(|iters| {
             let capacity = 16_384u64;
-            let mut cache = LFUCache::new(capacity as usize);
+            let mut cache = LfuCache::new(capacity as usize);
             for i in 0..capacity {
                 cache.insert(i, Arc::new(i));
             }
@@ -227,7 +227,7 @@ fn bench_lfu_insert_full_ns(c: &mut Criterion) {
     c.bench_function("lfu_insert_full_ns", |b| {
         b.iter_custom(|iters| {
             let capacity = 4096u64;
-            let mut cache = LFUCache::new(capacity as usize);
+            let mut cache = LfuCache::new(capacity as usize);
             for i in 0..capacity {
                 cache.insert(i, Arc::new(i));
             }
@@ -283,7 +283,7 @@ fn bench_lfu_workload_hit_rate(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let mut total = std::time::Duration::default();
                 for _ in 0..iters {
-                    let mut cache = LFUCache::new(4096);
+                    let mut cache = LfuCache::new(4096);
                     let mut generator = WorkloadSpec {
                         universe: 16_384,
                         workload,
