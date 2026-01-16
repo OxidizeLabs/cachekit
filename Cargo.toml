@@ -30,6 +30,55 @@ log = "0.4"
 [dev-dependencies]
 criterion = "0.8"
 
+# Development profile - optimized for fast compilation and good debugging
+[profile.dev]
+opt-level = 0
+debug = true
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = "unwind"
+incremental = true
+codegen-units = 256
+
+# Test profile - balanced for test execution speed vs debugging
+[profile.test]
+opt-level = 1
+debug = true
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = "unwind"
+incremental = true
+codegen-units = 256
+
+# Release profile - maximum performance for production database
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = "fat"
+panic = "abort"
+codegen-units = 1
+strip = true
+
+# Benchmark profile - optimized for consistent performance measurement
+[profile.bench]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = "thin"
+panic = "abort"
+codegen-units = 1
+strip = true
+
+[profile.samply]
+inherits = "release"
+debug = true
+strip = false
+
 [[bench]]
 name = "fifo"
 harness = false
