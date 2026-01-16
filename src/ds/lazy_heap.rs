@@ -31,7 +31,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct HeapEntry<K, S> {
     score: S,
     seq: u64,
@@ -241,7 +241,7 @@ where
 }
 
 #[cfg(any(test, debug_assertions))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LazyHeapSnapshot {
     pub len: usize,
     pub heap_len: usize,

@@ -31,7 +31,7 @@
 ///
 /// `SlotId` values remain valid until the referenced slot is removed; after
 /// removal, the numeric index may be reused by a later `insert`.
-pub struct SlotId(pub(crate) usize);
+pub struct SlotId(usize);
 
 impl SlotId {
     /// Returns the underlying slot index.

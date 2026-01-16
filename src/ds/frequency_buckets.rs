@@ -74,7 +74,7 @@ pub struct FrequencyBuckets<K> {
     epoch: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Read-only view of a frequency bucket entry.
 pub struct FrequencyBucketEntryMeta<'a, K> {
     pub key: &'a K,
@@ -82,7 +82,7 @@ pub struct FrequencyBucketEntryMeta<'a, K> {
     pub last_epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Owned view of a frequency bucket entry for sharded readers.
 pub struct ShardedFrequencyBucketEntryMeta<K> {
     pub key: K,
@@ -90,7 +90,7 @@ pub struct ShardedFrequencyBucketEntryMeta<K> {
     pub last_epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Debug view of a bucket entry for snapshots.
 pub struct FrequencyBucketEntryDebug<K> {
     pub id: SlotId,
@@ -786,7 +786,7 @@ where
 }
 
 #[cfg(any(test, debug_assertions))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct FrequencyBucketsSnapshot<K> {
     pub min_freq: Option<u64>,
     pub entries_len: usize,
@@ -1439,11 +1439,11 @@ mod tests {
 
         let entries: Vec<_> = buckets.iter_bucket_entries(1).collect();
         assert_eq!(entries.len(), 1);
-        let (id, meta) = entries[0];
+        let (id, meta) = entries.first().unwrap();
         assert_eq!(meta.key, &"b");
         assert_eq!(meta.freq, 1);
         assert_eq!(meta.last_epoch, 0);
-        assert_eq!(buckets.entries.get(id).unwrap().freq, 1);
+        assert_eq!(buckets.entries.get(*id).unwrap().freq, 1);
     }
 
     #[test]

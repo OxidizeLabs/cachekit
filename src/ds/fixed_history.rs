@@ -27,7 +27,7 @@
 //! - `to_vec_mru`: O(K)
 //!
 //! `debug_validate_invariants()` is available in debug/test builds.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 /// Fixed-size ring buffer of the last `K` timestamps.
 pub struct FixedHistory<const K: usize> {
     data: [u64; K],
