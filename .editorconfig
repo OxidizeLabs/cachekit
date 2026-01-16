@@ -42,10 +42,6 @@ indent_size = 2
 [Makefile]
 indent_style = tab
 
-# SQL files
-[*.sql]
-indent_size = 2
-
 # Git configuration
 [.git*]
 indent_size = 4
