@@ -153,12 +153,15 @@ enum QueueKind {
     Protected,
 }
 
-/// Internal entry storing key, value, and queue membership.
+/// Internal entry storing key, value, queue membership, and list position.
 #[derive(Debug)]
 struct Entry<K, V> {
     key: K,
     value: V,
     queue: QueueKind,
+    /// SlotId of this entry's node in the probation or protected list.
+    /// None if not yet attached to any list.
+    list_node: Option<SlotId>,
 }
 
 /// LRU queue backed by an intrusive doubly-linked list.
@@ -491,23 +494,53 @@ where
     /// assert_eq!(cache.get(&"missing"), None);
     /// ```
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let id = self.index.get(key)?;
+        let store_id = *self.index.get(key)?;
 
-        let queue = self.store.get(*id)?.queue;
+        let entry = self.store.get(store_id)?;
+        let queue = entry.queue;
+        let list_node = entry.list_node;
+
         match queue {
             QueueKind::Probation => {
-                self.probation.remove(*id);
-                self.probation.push_front(*id);
-                if let Some(e) = self.store.get_mut(*id) {
-                    e.queue = QueueKind::Protected;
-                }
+                // Promote from probation FIFO to protected LRU
+                self.detach_from_probation(store_id, list_node);
+                self.attach_to_protected(store_id);
             },
             QueueKind::Protected => {
-                self.protected.move_to_front(*id);
+                if let Some(node_id) = list_node {
+                    self.protected.move_to_front(node_id);
+                }
             },
         }
 
-        self.store.get(*id).map(|e| &e.value)
+        self.store.get(store_id).map(|e| &e.value)
+    }
+
+    /// Detaches an entry from the probation list.
+    fn detach_from_probation(&mut self, store_id: SlotId, list_node: Option<SlotId>) {
+        if let Some(node_id) = list_node {
+            let _ = self.probation.remove(node_id);
+        }
+        if let Some(entry) = self.store.get_mut(store_id) {
+            entry.list_node = None;
+        }
+    }
+
+    /// Attaches an entry to the protected queue (LRU).
+    fn attach_to_protected(&mut self, store_id: SlotId) {
+        let node_id = self.protected.push_front(store_id);
+        if let Some(entry) = self.store.get_mut(store_id) {
+            entry.queue = QueueKind::Protected;
+            entry.list_node = Some(node_id);
+        }
+    }
+
+    /// Attaches an entry to the probation queue (FIFO).
+    fn attach_to_probation(&mut self, store_id: SlotId) {
+        let node_id = self.probation.push_back(store_id);
+        if let Some(entry) = self.store.get_mut(store_id) {
+            entry.list_node = Some(node_id);
+        }
     }
 
     /// Inserts or updates a key-value pair.
@@ -540,30 +573,42 @@ where
             return;
         }
 
+        // Evict BEFORE inserting to ensure space is available
+        self.evict_if_needed();
+
+        // Create entry with no list attachment yet
         let entry = Entry {
             key: key.clone(),
             value,
             queue: QueueKind::Probation,
+            list_node: None,
         };
-        let id = self.store.insert(entry);
+        let store_id = self.store.insert(entry);
 
+        // Add to index
         self.index
-            .try_insert(key, id)
+            .try_insert(key, store_id)
             .expect("Failed to insert entry");
-        self.probation.push_back(id);
 
-        self.evict_if_needed();
+        // Attach to probation queue
+        self.attach_to_probation(store_id);
     }
 
-    /// Evicts entries until within capacity.
+    /// Evicts entries until there is room for a new entry.
     fn evict_if_needed(&mut self) {
-        while self.len() > self.protected_cap {
+        while self.len() >= self.protected_cap {
             if self.probation.len() > self.probation_cap {
                 if let Some(id) = self.probation.pop_front() {
                     self.remove_id(id);
                 }
             } else if let Some(id) = self.protected.pop_back() {
                 self.remove_id(id);
+            } else if let Some(id) = self.probation.pop_front() {
+                // Fallback: evict from probation even if under cap
+                self.remove_id(id);
+            } else {
+                // No entries to evict
+                break;
             }
         }
     }
@@ -722,5 +767,898 @@ where
         self.store.clear();
         self.probation.clear();
         self.protected.list.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::CoreCache;
+
+    // ==============================================
+    // LruQueue Tests
+    // ==============================================
+
+    mod lru_queue_tests {
+        use super::*;
+
+        #[test]
+        fn new_queue_is_empty() {
+            let lru: LruQueue<i32> = LruQueue::new();
+            assert!(lru.is_empty());
+            assert_eq!(lru.len(), 0);
+        }
+
+        #[test]
+        fn default_creates_empty_queue() {
+            let lru: LruQueue<&str> = LruQueue::default();
+            assert!(lru.is_empty());
+        }
+
+        #[test]
+        fn insert_increases_length() {
+            let mut lru = LruQueue::new();
+            lru.insert(1);
+            assert_eq!(lru.len(), 1);
+            assert!(!lru.is_empty());
+
+            lru.insert(2);
+            lru.insert(3);
+            assert_eq!(lru.len(), 3);
+        }
+
+        #[test]
+        fn evict_returns_lru_item() {
+            let mut lru = LruQueue::new();
+            lru.insert("first");
+            lru.insert("second");
+            lru.insert("third");
+
+            // "first" is the LRU (inserted first, never touched)
+            assert_eq!(lru.evict(), Some("first"));
+            assert_eq!(lru.evict(), Some("second"));
+            assert_eq!(lru.evict(), Some("third"));
+            assert_eq!(lru.evict(), None);
+        }
+
+        #[test]
+        fn touch_moves_to_mru() {
+            let mut lru = LruQueue::new();
+            let first = lru.insert("first");
+            lru.insert("second");
+            lru.insert("third");
+
+            // Touch "first" - moves it to MRU
+            assert!(lru.touch(first));
+
+            // Now "second" is LRU
+            assert_eq!(lru.evict(), Some("second"));
+            assert_eq!(lru.evict(), Some("third"));
+            assert_eq!(lru.evict(), Some("first")); // "first" is now MRU, evicted last
+        }
+
+        #[test]
+        fn remove_returns_item() {
+            let mut lru = LruQueue::new();
+            let id = lru.insert("item");
+            assert_eq!(lru.len(), 1);
+
+            assert_eq!(lru.remove(id), Some("item"));
+            assert!(lru.is_empty());
+        }
+
+        #[test]
+        fn remove_from_middle() {
+            let mut lru = LruQueue::new();
+            lru.insert("first");
+            let middle = lru.insert("middle");
+            lru.insert("last");
+
+            assert_eq!(lru.remove(middle), Some("middle"));
+            assert_eq!(lru.len(), 2);
+
+            // Remaining items evict in LRU order
+            assert_eq!(lru.evict(), Some("first"));
+            assert_eq!(lru.evict(), Some("last"));
+        }
+
+        #[test]
+        fn evict_from_empty_returns_none() {
+            let mut lru: LruQueue<i32> = LruQueue::new();
+            assert_eq!(lru.evict(), None);
+        }
+
+        #[test]
+        fn push_front_alias_works() {
+            let mut lru = LruQueue::new();
+            lru.push_front("a");
+            lru.push_front("b");
+            assert_eq!(lru.len(), 2);
+            // "a" is LRU since "b" was pushed front after
+            assert_eq!(lru.pop_back(), Some("a"));
+        }
+
+        #[test]
+        fn move_to_front_alias_works() {
+            let mut lru = LruQueue::new();
+            let a = lru.insert("a");
+            lru.insert("b");
+
+            assert!(lru.move_to_front(a));
+            // Now "b" is LRU
+            assert_eq!(lru.pop_back(), Some("b"));
+        }
+    }
+
+    // ==============================================
+    // TwoQCore Basic Operations
+    // ==============================================
+
+    mod basic_operations {
+        use super::*;
+
+        #[test]
+        fn new_cache_is_empty() {
+            let cache: TwoQCore<&str, i32> = TwoQCore::new(100, 0.25);
+            assert!(cache.is_empty());
+            assert_eq!(cache.len(), 0);
+            assert_eq!(cache.capacity(), 100);
+        }
+
+        #[test]
+        fn insert_and_get() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            cache.insert("key1", "value1");
+
+            assert_eq!(cache.len(), 1);
+            assert_eq!(cache.get(&"key1"), Some(&"value1"));
+        }
+
+        #[test]
+        fn insert_multiple_items() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            assert_eq!(cache.len(), 3);
+            assert_eq!(cache.get(&"a"), Some(&1));
+            assert_eq!(cache.get(&"b"), Some(&2));
+            assert_eq!(cache.get(&"c"), Some(&3));
+        }
+
+        #[test]
+        fn get_missing_key_returns_none() {
+            let mut cache: TwoQCore<&str, i32> = TwoQCore::new(100, 0.25);
+            cache.insert("exists", 42);
+
+            assert_eq!(cache.get(&"missing"), None);
+        }
+
+        #[test]
+        fn update_existing_key() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            cache.insert("key", "initial");
+            cache.insert("key", "updated");
+
+            assert_eq!(cache.len(), 1);
+            assert_eq!(cache.get(&"key"), Some(&"updated"));
+        }
+
+        #[test]
+        fn contains_returns_correct_result() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            cache.insert("exists", 1);
+
+            assert!(cache.contains(&"exists"));
+            assert!(!cache.contains(&"missing"));
+        }
+
+        #[test]
+        fn contains_does_not_promote() {
+            let mut cache: TwoQCore<String, i32> = TwoQCore::new(10, 0.3);
+            cache.insert("a".to_string(), 1);
+            cache.insert("b".to_string(), 2);
+            cache.insert("c".to_string(), 3);
+
+            // Contains check should not promote
+            assert!(cache.contains(&"a".to_string()));
+            assert!(cache.contains(&"b".to_string()));
+            assert!(cache.contains(&"c".to_string()));
+
+            // Fill up to trigger eviction
+            for i in 0..10 {
+                cache.insert(format!("new{}", i), i);
+            }
+
+            // Original items should be evicted (they were only in probation)
+            assert!(!cache.contains(&"a".to_string()));
+            assert!(!cache.contains(&"b".to_string()));
+            assert!(!cache.contains(&"c".to_string()));
+        }
+
+        #[test]
+        fn clear_removes_all_entries() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.get(&"a"); // Promote "a" to protected
+
+            cache.clear();
+
+            assert!(cache.is_empty());
+            assert_eq!(cache.len(), 0);
+            assert!(!cache.contains(&"a"));
+            assert!(!cache.contains(&"b"));
+        }
+
+        #[test]
+        fn capacity_returns_correct_value() {
+            let cache: TwoQCore<i32, i32> = TwoQCore::new(500, 0.25);
+            assert_eq!(cache.capacity(), 500);
+        }
+    }
+
+    // ==============================================
+    // Queue Behavior (Probation vs Protected)
+    // ==============================================
+
+    mod queue_behavior {
+        use super::*;
+
+        #[test]
+        fn new_insert_goes_to_probation() {
+            let mut cache = TwoQCore::new(10, 0.3);
+            cache.insert("key", "value");
+
+            assert!(cache.contains(&"key"));
+            assert_eq!(cache.len(), 1);
+        }
+
+        #[test]
+        fn get_promotes_from_probation_to_protected() {
+            let mut cache: TwoQCore<String, i32> = TwoQCore::new(10, 0.3);
+            cache.insert("key".to_string(), 0);
+
+            // First get promotes to protected
+            let _ = cache.get(&"key".to_string());
+
+            // Insert enough items to fill probation and exceed capacity
+            for i in 0..12 {
+                cache.insert(format!("new{}", i), i);
+            }
+
+            // "key" should still exist because it was promoted to protected
+            assert!(cache.contains(&"key".to_string()));
+        }
+
+        #[test]
+        fn item_in_protected_stays_in_protected() {
+            let mut cache = TwoQCore::new(10, 0.3);
+            cache.insert("key", "value");
+
+            // Promote to protected
+            cache.get(&"key");
+
+            // Access again - should stay in protected, move to MRU
+            cache.get(&"key");
+            cache.get(&"key");
+
+            assert_eq!(cache.get(&"key"), Some(&"value"));
+        }
+
+        #[test]
+        fn multiple_accesses_keep_item_alive() {
+            let mut cache: TwoQCore<String, i32> = TwoQCore::new(10, 0.3);
+
+            cache.insert("hot".to_string(), 0);
+            cache.get(&"hot".to_string());
+
+            for i in 0..15 {
+                cache.insert(format!("cold{}", i), i);
+                cache.get(&"hot".to_string());
+            }
+
+            assert!(cache.contains(&"hot".to_string()));
+        }
+    }
+
+    // ==============================================
+    // Eviction Behavior
+    // ==============================================
+
+    mod eviction_behavior {
+        use super::*;
+
+        #[test]
+        fn eviction_occurs_when_over_capacity() {
+            let mut cache = TwoQCore::new(5, 0.2);
+
+            for i in 0..10 {
+                cache.insert(i, i * 10);
+            }
+
+            assert_eq!(cache.len(), 5);
+        }
+
+        #[test]
+        fn probation_evicts_fifo_order() {
+            let mut cache = TwoQCore::new(5, 0.4);
+
+            cache.insert("first", 1);
+            cache.insert("second", 2);
+            cache.insert("third", 3);
+            cache.insert("fourth", 4);
+            cache.insert("fifth", 5);
+            cache.insert("sixth", 6);
+
+            assert!(!cache.contains(&"first"));
+            assert_eq!(cache.len(), 5);
+        }
+
+        #[test]
+        fn protected_evicts_lru_when_probation_under_cap() {
+            let mut cache = TwoQCore::new(5, 0.4);
+
+            cache.insert("p1", 1);
+            cache.get(&"p1");
+            cache.insert("p2", 2);
+            cache.get(&"p2");
+            cache.insert("p3", 3);
+            cache.get(&"p3");
+
+            cache.insert("new1", 10);
+            cache.insert("new2", 20);
+            cache.insert("new3", 30);
+
+            assert!(!cache.contains(&"p1"));
+            assert_eq!(cache.len(), 5);
+        }
+
+        #[test]
+        fn scan_items_evicted_before_hot_items() {
+            let mut cache: TwoQCore<String, i32> = TwoQCore::new(10, 0.3);
+
+            cache.insert("hot1".to_string(), 1);
+            cache.get(&"hot1".to_string());
+            cache.insert("hot2".to_string(), 2);
+            cache.get(&"hot2".to_string());
+
+            for i in 0..20 {
+                cache.insert(format!("scan{}", i), i);
+            }
+
+            assert!(cache.contains(&"hot1".to_string()));
+            assert!(cache.contains(&"hot2".to_string()));
+            assert_eq!(cache.len(), 10);
+        }
+
+        #[test]
+        fn eviction_removes_from_index() {
+            let mut cache = TwoQCore::new(3, 0.33);
+
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            assert!(cache.contains(&"a"));
+
+            cache.insert("d", 4);
+
+            assert!(!cache.contains(&"a"));
+            assert_eq!(cache.get(&"a"), None);
+        }
+    }
+
+    // ==============================================
+    // Scan Resistance
+    // ==============================================
+
+    mod scan_resistance {
+        use super::*;
+
+        #[test]
+        fn scan_does_not_pollute_protected() {
+            let mut cache = TwoQCore::new(100, 0.25);
+
+            for i in 0..50 {
+                let key = format!("working{}", i);
+                cache.insert(key.clone(), i);
+                cache.get(&key);
+            }
+
+            for i in 0..200 {
+                cache.insert(format!("scan{}", i), i);
+            }
+
+            let mut working_set_hits = 0;
+            for i in 0..50 {
+                if cache.contains(&format!("working{}", i)) {
+                    working_set_hits += 1;
+                }
+            }
+
+            assert!(
+                working_set_hits >= 40,
+                "Working set should survive scan, but only {} items remained",
+                working_set_hits
+            );
+        }
+
+        #[test]
+        fn one_time_access_stays_in_probation() {
+            let mut cache: TwoQCore<String, i32> = TwoQCore::new(10, 0.3);
+
+            cache.insert("once".to_string(), 1);
+
+            for i in 0..5 {
+                cache.insert(format!("other{}", i), i);
+            }
+
+            cache.get(&"once".to_string());
+
+            for i in 0..10 {
+                cache.insert(format!("new{}", i), i);
+            }
+
+            assert!(cache.contains(&"once".to_string()));
+        }
+
+        #[test]
+        fn repeated_scans_dont_evict_hot_items() {
+            let mut cache = TwoQCore::new(20, 0.25);
+
+            for i in 0..10 {
+                let key = format!("hot{}", i);
+                cache.insert(key.clone(), i);
+                cache.get(&key);
+                cache.get(&key);
+                cache.get(&key);
+            }
+
+            for scan in 0..3 {
+                for i in 0..30 {
+                    cache.insert(format!("scan{}_{}", scan, i), i);
+                }
+            }
+
+            let mut hot_survivors = 0;
+            for i in 0..10 {
+                if cache.contains(&format!("hot{}", i)) {
+                    hot_survivors += 1;
+                }
+            }
+
+            assert!(
+                hot_survivors >= 8,
+                "Hot items should survive scans, but only {} survived",
+                hot_survivors
+            );
+        }
+    }
+
+    // ==============================================
+    // CoreCache Trait Implementation
+    // ==============================================
+
+    mod core_cache_trait {
+        use super::*;
+
+        #[test]
+        fn trait_insert_returns_old_value() {
+            let mut cache: TwoQCore<&str, i32> = TwoQCore::new(100, 0.25);
+
+            let old = CoreCache::insert(&mut cache, "key", 1);
+            assert_eq!(old, None);
+
+            let old = CoreCache::insert(&mut cache, "key", 2);
+            assert_eq!(old, Some(1));
+
+            assert_eq!(CoreCache::get(&mut cache, &"key"), Some(&2));
+        }
+
+        #[test]
+        fn trait_get_works() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            CoreCache::insert(&mut cache, "key", 42);
+
+            assert_eq!(CoreCache::get(&mut cache, &"key"), Some(&42));
+            assert_eq!(CoreCache::get(&mut cache, &"missing"), None);
+        }
+
+        #[test]
+        fn trait_contains_works() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            CoreCache::insert(&mut cache, "key", 1);
+
+            assert!(CoreCache::contains(&cache, &"key"));
+            assert!(!CoreCache::contains(&cache, &"missing"));
+        }
+
+        #[test]
+        fn trait_len_and_capacity() {
+            let mut cache: TwoQCore<i32, i32> = TwoQCore::new(50, 0.25);
+
+            assert_eq!(CoreCache::len(&cache), 0);
+            assert_eq!(CoreCache::capacity(&cache), 50);
+
+            for i in 0..30 {
+                CoreCache::insert(&mut cache, i, i * 10);
+            }
+
+            assert_eq!(CoreCache::len(&cache), 30);
+        }
+
+        #[test]
+        fn trait_clear_works() {
+            let mut cache = TwoQCore::new(100, 0.25);
+            CoreCache::insert(&mut cache, "a", 1);
+            CoreCache::insert(&mut cache, "b", 2);
+
+            CoreCache::clear(&mut cache);
+
+            assert_eq!(CoreCache::len(&cache), 0);
+            assert!(!CoreCache::contains(&cache, &"a"));
+        }
+    }
+
+    // ==============================================
+    // Edge Cases
+    // ==============================================
+
+    mod edge_cases {
+        use super::*;
+
+        #[test]
+        fn single_capacity_cache() {
+            let mut cache = TwoQCore::new(1, 0.5);
+
+            cache.insert("a", 1);
+            assert_eq!(cache.get(&"a"), Some(&1));
+
+            cache.insert("b", 2);
+            assert!(!cache.contains(&"a"));
+            assert_eq!(cache.get(&"b"), Some(&2));
+        }
+
+        #[test]
+        fn zero_probation_fraction() {
+            let mut cache = TwoQCore::new(10, 0.0);
+
+            for i in 0..10 {
+                cache.insert(i, i * 10);
+            }
+
+            assert_eq!(cache.len(), 10);
+
+            cache.insert(100, 1000);
+            assert_eq!(cache.len(), 10);
+        }
+
+        #[test]
+        fn one_hundred_percent_probation() {
+            let mut cache = TwoQCore::new(10, 1.0);
+
+            for i in 0..10 {
+                cache.insert(i, i * 10);
+            }
+
+            for i in 0..10 {
+                cache.get(&i);
+            }
+
+            assert_eq!(cache.len(), 10);
+        }
+
+        #[test]
+        fn get_after_update() {
+            let mut cache = TwoQCore::new(100, 0.25);
+
+            cache.insert("key", "v1");
+            assert_eq!(cache.get(&"key"), Some(&"v1"));
+
+            cache.insert("key", "v2");
+            assert_eq!(cache.get(&"key"), Some(&"v2"));
+
+            cache.insert("key", "v3");
+            cache.insert("key", "v4");
+            assert_eq!(cache.get(&"key"), Some(&"v4"));
+        }
+
+        #[test]
+        fn large_capacity() {
+            let mut cache = TwoQCore::new(10000, 0.25);
+
+            for i in 0..10000 {
+                cache.insert(i, i * 2);
+            }
+
+            assert_eq!(cache.len(), 10000);
+
+            assert_eq!(cache.get(&5000), Some(&10000));
+            assert_eq!(cache.get(&9999), Some(&19998));
+        }
+
+        #[test]
+        fn empty_cache_operations() {
+            let mut cache: TwoQCore<i32, i32> = TwoQCore::new(100, 0.25);
+
+            assert!(cache.is_empty());
+            assert_eq!(cache.get(&1), None);
+            assert!(!cache.contains(&1));
+
+            cache.clear();
+            assert!(cache.is_empty());
+        }
+
+        #[test]
+        fn small_fractions() {
+            let mut cache = TwoQCore::new(100, 0.01);
+
+            for i in 0..10 {
+                cache.insert(i, i);
+            }
+
+            assert_eq!(cache.len(), 10);
+        }
+
+        #[test]
+        fn string_keys_and_values() {
+            let mut cache = TwoQCore::new(100, 0.25);
+
+            cache.insert(String::from("hello"), String::from("world"));
+            cache.insert(String::from("foo"), String::from("bar"));
+
+            assert_eq!(
+                cache.get(&String::from("hello")),
+                Some(&String::from("world"))
+            );
+            assert_eq!(cache.get(&String::from("foo")), Some(&String::from("bar")));
+        }
+
+        #[test]
+        fn integer_keys() {
+            let mut cache = TwoQCore::new(100, 0.25);
+
+            for i in 0..50 {
+                cache.insert(i, format!("value_{}", i));
+            }
+
+            assert_eq!(cache.get(&25), Some(&String::from("value_25")));
+            assert_eq!(cache.get(&49), Some(&String::from("value_49")));
+        }
+    }
+
+    // ==============================================
+    // Capacity and Eviction Boundary Tests
+    // ==============================================
+
+    mod boundary_tests {
+        use super::*;
+
+        #[test]
+        fn exact_capacity_no_eviction() {
+            let mut cache = TwoQCore::new(10, 0.3);
+
+            for i in 0..10 {
+                cache.insert(i, i);
+            }
+
+            assert_eq!(cache.len(), 10);
+            for i in 0..10 {
+                assert!(cache.contains(&i));
+            }
+        }
+
+        #[test]
+        fn one_over_capacity_triggers_eviction() {
+            let mut cache = TwoQCore::new(10, 0.3);
+
+            for i in 0..10 {
+                cache.insert(i, i);
+            }
+
+            cache.insert(10, 10);
+
+            assert_eq!(cache.len(), 10);
+            assert!(!cache.contains(&0));
+            assert!(cache.contains(&10));
+        }
+
+        #[test]
+        fn probation_cap_boundary() {
+            let mut cache = TwoQCore::new(10, 0.3);
+
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            assert_eq!(cache.len(), 3);
+
+            cache.insert("d", 4);
+            assert_eq!(cache.len(), 4);
+
+            for key in &["a", "b", "c", "d"] {
+                assert!(cache.contains(key));
+            }
+        }
+
+        #[test]
+        fn promotion_fills_protected() {
+            let mut cache = TwoQCore::new(10, 0.3);
+
+            for i in 0..5 {
+                cache.insert(i, i);
+            }
+
+            for i in 0..5 {
+                cache.get(&i);
+            }
+
+            for i in 5..10 {
+                cache.insert(i, i);
+            }
+
+            assert_eq!(cache.len(), 10);
+
+            cache.insert(10, 10);
+            assert_eq!(cache.len(), 10);
+        }
+    }
+
+    // ==============================================
+    // Regression Tests
+    // ==============================================
+
+    mod regression_tests {
+        use super::*;
+
+        #[test]
+        fn promotion_actually_moves_to_protected_queue() {
+            let mut cache: TwoQCore<String, i32> = TwoQCore::new(5, 0.4);
+
+            cache.insert("key".to_string(), 0);
+            cache.get(&"key".to_string());
+
+            cache.insert("p1".to_string(), 1);
+            cache.insert("p2".to_string(), 2);
+            cache.insert("p3".to_string(), 3);
+            cache.insert("p4".to_string(), 4);
+
+            assert!(
+                cache.contains(&"key".to_string()),
+                "Promoted item should be in protected queue and survive probation eviction"
+            );
+        }
+
+        #[test]
+        fn update_preserves_queue_position() {
+            let mut cache: TwoQCore<String, i32> = TwoQCore::new(10, 0.3);
+
+            cache.insert("key".to_string(), 1);
+            cache.get(&"key".to_string());
+
+            cache.insert("key".to_string(), 2);
+
+            assert_eq!(cache.get(&"key".to_string()), Some(&2));
+
+            for i in 0..15 {
+                cache.insert(format!("other{}", i), i);
+            }
+
+            assert!(cache.contains(&"key".to_string()));
+        }
+
+        #[test]
+        fn eviction_order_consistency() {
+            for _ in 0..10 {
+                let mut cache = TwoQCore::new(5, 0.4);
+
+                cache.insert("a", 1);
+                cache.insert("b", 2);
+                cache.insert("c", 3);
+                cache.insert("d", 4);
+                cache.insert("e", 5);
+                cache.insert("f", 6);
+
+                assert!(!cache.contains(&"a"), "First item should be evicted");
+                assert!(cache.contains(&"f"), "New item should exist");
+            }
+        }
+    }
+
+    // ==============================================
+    // Workload Simulation
+    // ==============================================
+
+    mod workload_simulation {
+        use super::*;
+
+        #[test]
+        fn database_buffer_pool_workload() {
+            let mut cache = TwoQCore::new(100, 0.25);
+
+            for i in 0..10 {
+                let key = format!("index_page_{}", i);
+                cache.insert(key.clone(), format!("index_data_{}", i));
+                cache.get(&key);
+                cache.get(&key);
+            }
+
+            for i in 0..200 {
+                cache.insert(format!("table_page_{}", i), format!("row_data_{}", i));
+            }
+
+            let mut index_hits = 0;
+            for i in 0..10 {
+                if cache.contains(&format!("index_page_{}", i)) {
+                    index_hits += 1;
+                }
+            }
+
+            assert!(
+                index_hits >= 8,
+                "Index pages should survive table scan, got {} hits",
+                index_hits
+            );
+        }
+
+        #[test]
+        fn web_cache_simulation() {
+            let mut cache: TwoQCore<String, String> = TwoQCore::new(50, 0.3);
+
+            let popular = vec!["home", "about", "products", "contact"];
+            for page in &popular {
+                cache.insert(page.to_string(), format!("{}_content", page));
+                cache.get(&page.to_string());
+                cache.get(&page.to_string());
+            }
+
+            for i in 0..100 {
+                cache.insert(format!("blog_post_{}", i), format!("content_{}", i));
+            }
+
+            for page in &popular {
+                assert!(
+                    cache.contains(&page.to_string()),
+                    "Popular page '{}' should survive",
+                    page
+                );
+            }
+        }
+
+        #[test]
+        fn mixed_workload() {
+            let mut cache = TwoQCore::new(100, 0.25);
+
+            for i in 0..30 {
+                let key = format!("working_{}", i);
+                cache.insert(key.clone(), i);
+                cache.get(&key);
+            }
+
+            for round in 0..5 {
+                for i in (0..30).step_by(3) {
+                    cache.get(&format!("working_{}", i));
+                }
+
+                for i in 0..20 {
+                    cache.insert(format!("round_{}_{}", round, i), i);
+                }
+            }
+
+            let mut working_set_hits = 0;
+            for i in (0..30).step_by(3) {
+                if cache.contains(&format!("working_{}", i)) {
+                    working_set_hits += 1;
+                }
+            }
+
+            assert!(
+                working_set_hits >= 8,
+                "Frequently accessed working set should survive, got {} hits",
+                working_set_hits
+            );
+        }
     }
 }
