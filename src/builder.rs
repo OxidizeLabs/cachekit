@@ -1,16 +1,84 @@
 //! Unified cache builder for all eviction policies.
 //!
 //! Provides a simple API to create caches with different eviction policies
-//! while hiding the internal implementation details (like `Arc<V>` wrapping).
+//! while hiding internal implementation details (like `Arc<V>` wrapping).
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────────────────┐
+//! │                              CacheBuilder                                   │
+//! │                                                                             │
+//! │   CacheBuilder::new(capacity)                                               │
+//! │         │                                                                   │
+//! │         ▼                                                                   │
+//! │   .build::<K, V>(policy)                                                    │
+//! │         │                                                                   │
+//! │         ├─── CachePolicy::Fifo ────► FifoCache<K, V>                       │
+//! │         ├─── CachePolicy::Lru ─────► LruCore<K, V>                         │
+//! │         ├─── CachePolicy::LruK ────► LrukCache<K, V>                       │
+//! │         ├─── CachePolicy::Lfu ─────► LfuCache<K, V>                        │
+//! │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                    │
+//! │         └─── CachePolicy::TwoQ ────► TwoQCore<K, V>                        │
+//! │                                                                             │
+//! │         ▼                                                                   │
+//! │   Cache<K, V>  (unified wrapper)                                            │
+//! │   ┌─────────────────────────────────────────────────────────────────────┐   │
+//! │   │  .insert(key, value)  → Option<V>                                   │   │
+//! │   │  .get(&key)           → Option<&V>                                  │   │
+//! │   │  .contains(&key)      → bool                                        │   │
+//! │   │  .len() / .is_empty() → usize / bool                                │   │
+//! │   │  .capacity()          → usize                                       │   │
+//! │   │  .clear()                                                           │   │
+//! │   └─────────────────────────────────────────────────────────────────────┘   │
+//! └─────────────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Policy Comparison
+//!
+//! | Policy    | Best For                          | Eviction Basis      |
+//! |-----------|-----------------------------------|---------------------|
+//! | FIFO      | Simple, predictable workloads     | Insertion order     |
+//! | LRU       | Temporal locality                 | Recency             |
+//! | LRU-K     | Scan-resistant workloads          | K-th access time    |
+//! | LFU       | Stable access patterns            | Frequency (O(1))    |
+//! | HeapLFU   | Frequent evictions, large caches  | Frequency (O(log n))|
+//! | 2Q        | Mixed workloads                   | Two-queue promotion |
 //!
 //! ## Example
 //!
-//! ```rust
+//! ```
 //! use cachekit::builder::{CacheBuilder, CachePolicy};
 //!
+//! // Create an LRU cache
 //! let mut cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
 //! cache.insert(1, "hello".to_string());
 //! assert_eq!(cache.get(&1), Some(&"hello".to_string()));
+//!
+//! // Create an LRU-K cache for scan resistance
+//! let mut cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::LruK { k: 2 });
+//! cache.insert(1, "value".to_string());
+//!
+//! // Create a 2Q cache with 25% probation queue
+//! let mut cache = CacheBuilder::new(100).build::<u64, String>(
+//!     CachePolicy::TwoQ { probation_frac: 0.25 }
+//! );
+//! ```
+//!
+//! ## Type Constraints
+//!
+//! ```text
+//! K: Copy + Eq + Hash + Ord
+//!    │      │     │      │
+//!    │      │     │      └── Required for HeapLFU (heap ordering)
+//!    │      │     └───────── Required for HashMap indexing
+//!    │      └─────────────── Required for key comparison
+//!    └────────────────────── Required for efficient key handling
+//!
+//! V: Clone + Debug
+//!    │       │
+//!    │       └── Required for debug formatting
+//!    └────────── Required for value extraction from Arc<V>
 //! ```
 
 use std::fmt::Debug;
@@ -26,23 +94,125 @@ use crate::policy::two_q::TwoQCore;
 use crate::traits::CoreCache;
 
 /// Available cache eviction policies.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::builder::{CacheBuilder, CachePolicy};
+///
+/// // Simple FIFO for predictable eviction
+/// let fifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Fifo);
+///
+/// // LRU for temporal locality
+/// let lru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
+///
+/// // LRU-K for scan resistance (K=2 is common)
+/// let lru_k = CacheBuilder::new(100).build::<u64, String>(CachePolicy::LruK { k: 2 });
+///
+/// // LFU for stable access patterns
+/// let lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu);
+///
+/// // HeapLFU for large caches with frequent evictions
+/// let heap_lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::HeapLfu);
+///
+/// // 2Q for mixed workloads (25% probation queue)
+/// let two_q = CacheBuilder::new(100).build::<u64, String>(
+///     CachePolicy::TwoQ { probation_frac: 0.25 }
+/// );
+/// ```
 #[derive(Debug, Clone)]
 pub enum CachePolicy {
     /// First In, First Out eviction.
+    ///
+    /// Evicts the oldest inserted item. Simple and predictable.
+    /// Good for: streaming data, simple caching needs.
     Fifo,
+
     /// Least Recently Used eviction.
+    ///
+    /// Evicts the item that hasn't been accessed for the longest time.
+    /// Good for: temporal locality, general-purpose caching.
     Lru,
-    /// LRU-K policy with configurable K value (number of accesses to track).
+
+    /// LRU-K policy with configurable K value.
+    ///
+    /// Tracks the K-th most recent access time for eviction decisions.
+    /// Provides scan resistance (one-time accesses don't pollute cache).
+    ///
+    /// - `k: usize` - Number of accesses to track (K=2 is common)
+    ///
+    /// Good for: database buffer pools, scan-heavy workloads.
     LruK { k: usize },
-    /// Least Frequently Used eviction (bucket-based).
+
+    /// Least Frequently Used eviction (bucket-based, O(1)).
+    ///
+    /// Evicts the item with the lowest access count.
+    /// Uses frequency buckets for O(1) operations.
+    ///
+    /// Good for: stable access patterns, reference data.
     Lfu,
-    /// Least Frequently Used eviction (heap-based, requires `K: Ord`).
+
+    /// Least Frequently Used eviction (heap-based, O(log n)).
+    ///
+    /// Like LFU but uses a min-heap for eviction.
+    /// Better for large caches with frequent evictions.
+    ///
+    /// Good for: high-throughput systems, large caches.
     HeapLfu,
-    /// 2Q policy with configurable probation fraction.
+
+    /// Two-Queue policy with configurable probation fraction.
+    ///
+    /// Uses two queues: probation (for new items) and protected (for promoted items).
+    /// Items are promoted after a second access.
+    ///
+    /// - `probation_frac: f64` - Fraction of capacity for probation queue (0.0-1.0)
+    ///
+    /// Good for: mixed workloads, scan resistance.
     TwoQ { probation_frac: f64 },
 }
 
 /// Unified cache wrapper that provides a consistent API regardless of policy.
+///
+/// Wraps different cache implementations behind a single interface.
+/// All policy-specific details (like `Arc<V>` wrapping) are handled internally.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Copy + Eq + Hash + Ord`
+/// - `V`: Value type, must be `Clone + Debug`
+///
+/// # Example
+///
+/// ```
+/// use cachekit::builder::{CacheBuilder, CachePolicy};
+///
+/// let mut cache = CacheBuilder::new(3).build::<u64, String>(CachePolicy::Lru);
+///
+/// // Insert items
+/// cache.insert(1, "one".to_string());
+/// cache.insert(2, "two".to_string());
+/// cache.insert(3, "three".to_string());
+///
+/// // Check existence (doesn't update LRU order)
+/// assert!(cache.contains(&1));
+/// assert!(cache.contains(&2));
+///
+/// // Check size
+/// assert_eq!(cache.len(), 3);
+/// assert_eq!(cache.capacity(), 3);
+///
+/// // Access key 2 to make it MRU
+/// cache.get(&2);
+///
+/// // Eviction on insert: key 1 is now LRU
+/// cache.insert(4, "four".to_string());
+/// assert!(!cache.contains(&1));  // LRU item evicted
+/// assert!(cache.contains(&2));   // Was accessed, survived
+///
+/// // Clear
+/// cache.clear();
+/// assert!(cache.is_empty());
+/// ```
 pub struct Cache<K, V>
 where
     K: Copy + Eq + Hash + Ord,
@@ -69,7 +239,24 @@ where
     K: Copy + Eq + Hash + Ord,
     V: Clone + Debug,
 {
-    /// Insert a key-value pair. Returns the previous value if the key existed.
+    /// Inserts a key-value pair, returning the previous value if the key existed.
+    ///
+    /// If the cache is at capacity, evicts an item according to the policy.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    ///
+    /// let mut cache = CacheBuilder::new(10).build::<u64, String>(CachePolicy::Lru);
+    ///
+    /// // New insertion returns None
+    /// assert_eq!(cache.insert(1, "one".to_string()), None);
+    ///
+    /// // Update returns previous value
+    /// assert_eq!(cache.insert(1, "ONE".to_string()), Some("one".to_string()));
+    /// assert_eq!(cache.get(&1), Some(&"ONE".to_string()));
+    /// ```
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         match &mut self.inner {
             CacheInner::Fifo(fifo) => CoreCache::insert(fifo, key, value),
@@ -94,7 +281,21 @@ where
         }
     }
 
-    /// Get a reference to a value by key.
+    /// Gets a reference to a value by key.
+    ///
+    /// Updates access metadata (recency/frequency) according to the policy.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    ///
+    /// let mut cache = CacheBuilder::new(10).build::<u64, String>(CachePolicy::Lru);
+    /// cache.insert(1, "value".to_string());
+    ///
+    /// assert_eq!(cache.get(&1), Some(&"value".to_string()));
+    /// assert_eq!(cache.get(&99), None);  // Missing key
+    /// ```
     pub fn get(&mut self, key: &K) -> Option<&V> {
         match &mut self.inner {
             CacheInner::Fifo(fifo) => fifo.get(key),
@@ -106,7 +307,21 @@ where
         }
     }
 
-    /// Check if a key exists.
+    /// Checks if a key exists in the cache.
+    ///
+    /// Does not update access metadata.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    ///
+    /// let mut cache = CacheBuilder::new(10).build::<u64, String>(CachePolicy::Lru);
+    /// cache.insert(1, "value".to_string());
+    ///
+    /// assert!(cache.contains(&1));
+    /// assert!(!cache.contains(&99));
+    /// ```
     pub fn contains(&self, key: &K) -> bool {
         match &self.inner {
             CacheInner::Fifo(fifo) => fifo.contains(key),
@@ -118,7 +333,20 @@ where
         }
     }
 
-    /// Return the number of entries.
+    /// Returns the number of entries in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    ///
+    /// let mut cache = CacheBuilder::new(10).build::<u64, String>(CachePolicy::Lru);
+    /// assert_eq!(cache.len(), 0);
+    ///
+    /// cache.insert(1, "one".to_string());
+    /// cache.insert(2, "two".to_string());
+    /// assert_eq!(cache.len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         match &self.inner {
             CacheInner::Fifo(fifo) => CoreCache::len(fifo),
@@ -130,12 +358,33 @@ where
         }
     }
 
-    /// Check if the cache is empty.
+    /// Returns `true` if the cache contains no entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    ///
+    /// let mut cache = CacheBuilder::new(10).build::<u64, String>(CachePolicy::Lru);
+    /// assert!(cache.is_empty());
+    ///
+    /// cache.insert(1, "value".to_string());
+    /// assert!(!cache.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Return the maximum capacity.
+    /// Returns the maximum capacity of the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    ///
+    /// let cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
+    /// assert_eq!(cache.capacity(), 100);
+    /// ```
     pub fn capacity(&self) -> usize {
         match &self.inner {
             CacheInner::Fifo(fifo) => CoreCache::capacity(fifo),
@@ -147,7 +396,22 @@ where
         }
     }
 
-    /// Clear all entries.
+    /// Clears all entries from the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    ///
+    /// let mut cache = CacheBuilder::new(10).build::<u64, String>(CachePolicy::Lru);
+    /// cache.insert(1, "one".to_string());
+    /// cache.insert(2, "two".to_string());
+    /// assert_eq!(cache.len(), 2);
+    ///
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// assert!(!cache.contains(&1));
+    /// ```
     pub fn clear(&mut self) {
         match &mut self.inner {
             CacheInner::Fifo(fifo) => fifo.clear(),
@@ -161,12 +425,33 @@ where
 }
 
 /// Builder for creating cache instances.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::builder::{CacheBuilder, CachePolicy};
+///
+/// // Create builder with capacity
+/// let builder = CacheBuilder::new(1000);
+///
+/// // Build different cache types from the same builder pattern
+/// let lru_cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
+/// let lfu_cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu);
+/// ```
 pub struct CacheBuilder {
     capacity: usize,
 }
 
 impl CacheBuilder {
-    /// Create a new cache builder with the specified capacity.
+    /// Creates a new cache builder with the specified capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::CacheBuilder;
+    ///
+    /// let builder = CacheBuilder::new(100);
+    /// ```
     pub fn new(capacity: usize) -> Self {
         Self { capacity }
     }
