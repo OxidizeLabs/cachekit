@@ -193,6 +193,25 @@ where
         }
     }
 
+    /// Creates an interner with pre-allocated capacity.
+    ///
+    /// Pre-allocates space for `capacity` keys to avoid rehashing during growth.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::KeyInterner;
+    ///
+    /// let interner: KeyInterner<String> = KeyInterner::with_capacity(1000);
+    /// assert!(interner.is_empty());
+    /// ```
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            index: HashMap::with_capacity(capacity),
+            keys: Vec::with_capacity(capacity),
+        }
+    }
+
     /// Returns the handle for `key`, inserting it if missing.
     ///
     /// If the key is already interned, returns the existing handle.

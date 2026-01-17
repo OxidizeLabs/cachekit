@@ -437,7 +437,33 @@ where
     pub fn new(capacity: usize) -> Self {
         LfuCache {
             store: HashMapStore::new(capacity),
-            buckets: FrequencyBuckets::new(),
+            buckets: FrequencyBuckets::with_capacity(capacity),
+            #[cfg(feature = "metrics")]
+            metrics: LfuMetrics::default(),
+        }
+    }
+
+    /// Creates an LFU cache with custom bucket pre-allocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - Maximum number of entries
+    /// * `bucket_hint` - Pre-allocated frequency buckets (number of distinct frequencies)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// // Expect many distinct frequencies (long-running cache)
+    /// let cache: LfuCache<String, i32> = LfuCache::with_bucket_hint(100, 64);
+    /// assert_eq!(cache.capacity(), 100);
+    /// ```
+    pub fn with_bucket_hint(capacity: usize, bucket_hint: usize) -> Self {
+        LfuCache {
+            store: HashMapStore::new(capacity),
+            buckets: FrequencyBuckets::with_capacity_and_bucket_hint(capacity, bucket_hint),
             #[cfg(feature = "metrics")]
             metrics: LfuMetrics::default(),
         }
@@ -569,7 +595,7 @@ where
     pub fn new(capacity: usize) -> Self {
         LFUHandleCache {
             store: HashMapStore::new(capacity),
-            buckets: FrequencyBucketsHandle::new(),
+            buckets: FrequencyBucketsHandle::with_capacity(capacity),
             #[cfg(feature = "metrics")]
             metrics: LfuMetrics::default(),
         }

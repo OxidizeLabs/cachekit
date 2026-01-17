@@ -330,7 +330,7 @@ where
     /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
-            map: HashMap::new(),
+            map: HashMap::with_capacity(capacity),
             capacity,
             metrics: StoreCounters::default(),
         }
@@ -618,7 +618,7 @@ where
     /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
-            map: RwLock::new(HashMap::new()),
+            map: RwLock::new(HashMap::with_capacity(capacity)),
             capacity,
             metrics: ConcurrentStoreCounters::default(),
         }
