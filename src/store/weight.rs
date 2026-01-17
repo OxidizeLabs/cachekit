@@ -1,54 +1,155 @@
-//! Weight-aware store with entry and byte-based limits.
+//! Weight-aware store with dual entry-count and byte-based capacity limits.
+//!
+//! Enforces both a maximum number of entries and a maximum total weight
+//! (e.g., bytes). Ideal for caches where values vary significantly in size
+//! and you want fair eviction pressure based on actual memory usage.
 //!
 //! ## Architecture
-//! - Stores `Arc<V>` values in a `HashMap<K, WeightEntry<V>>`.
-//! - Tracks total weight to enforce a weight capacity.
-//! - Uses a caller-provided weight function `F: Fn(&V) -> usize`.
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────────────────┐
+//! │                         Weight Store Layout                                 │
+//! │                                                                             │
+//! │   ┌──────────────────────────────────────────────────────────────────────┐ │
+//! │   │  Dual Capacity Limits                                                │ │
+//! │   │                                                                      │ │
+//! │   │   Entry Limit: max 100 entries    Weight Limit: max 10MB total      │ │
+//! │   │        │                                │                            │ │
+//! │   │        ▼                                ▼                            │ │
+//! │   │   ┌─────────┐                    ┌─────────────┐                     │ │
+//! │   │   │ len()   │                    │total_weight │                     │ │
+//! │   │   │  = 3    │                    │  = 2.5MB    │                     │ │
+//! │   │   └─────────┘                    └─────────────┘                     │ │
+//! │   └──────────────────────────────────────────────────────────────────────┘ │
+//! │                                                                             │
+//! │   ┌──────────────────────────────────────────────────────────────────────┐ │
+//! │   │  Storage: HashMap<K, WeightEntry<V>>                                 │ │
+//! │   │                                                                      │ │
+//! │   │   key        WeightEntry                                             │ │
+//! │   │   ────       ───────────────────────────                             │ │
+//! │   │   "img1" ──► { value: Arc<[u8; 1MB]>, weight: 1_000_000 }           │ │
+//! │   │   "img2" ──► { value: Arc<[u8; 1MB]>, weight: 1_000_000 }           │ │
+//! │   │   "icon" ──► { value: Arc<[u8; 500KB]>, weight: 500_000 }           │ │
+//! │   │                                                                      │ │
+//! │   │   Weight is precomputed on insert to avoid repeated computation.     │ │
+//! │   └──────────────────────────────────────────────────────────────────────┘ │
+//! │                                                                             │
+//! │   ┌──────────────────────────────────────────────────────────────────────┐ │
+//! │   │  Weight Function: F: Fn(&V) -> usize                                 │ │
+//! │   │                                                                      │ │
+//! │   │   Examples:                                                          │ │
+//! │   │   • |s: &String| s.len()           // String byte length            │ │
+//! │   │   • |v: &Vec<u8>| v.len()          // Vec capacity                  │ │
+//! │   │   • |img: &Image| img.width * img.height * 4  // RGBA pixels        │ │
+//! │   │   • |_: &T| 1                      // Treat as entry-count only     │ │
+//! │   └──────────────────────────────────────────────────────────────────────┘ │
+//! └─────────────────────────────────────────────────────────────────────────────┘
+//!
+//! Capacity Enforcement
+//! ────────────────────
+//!
+//!   try_insert(key, value):
+//!     │
+//!     ├─► Existing key (UPDATE)
+//!     │     │
+//!     │     ├── new_weight = weight_fn(&value)
+//!     │     ├── next_total = total_weight - old_weight + new_weight
+//!     │     │
+//!     │     └── next_total > capacity_weight? ──► Err(StoreFull)
+//!     │                                     └──► Ok(Some(old_value))
+//!     │
+//!     └─► New key (INSERT)
+//!           │
+//!           ├── len() >= capacity_entries? ──► Err(StoreFull)
+//!           │
+//!           ├── new_weight = weight_fn(&value)
+//!           ├── total_weight + new_weight > capacity_weight? ──► Err(StoreFull)
+//!           │
+//!           └── Ok(None)
+//!
+//! Component Comparison
+//! ────────────────────
+//!
+//!   │ Store                  │ Entry Limit │ Weight Limit │ Thread Safety │
+//!   │────────────────────────│─────────────│──────────────│───────────────│
+//!   │ WeightStore            │ ✓           │ ✓            │ Single-thread │
+//!   │ ConcurrentWeightStore  │ ✓           │ ✓            │ Send + Sync   │
+//! ```
 //!
 //! ## Key Components
-//! - `WeightStore`: single-threaded weight-aware store.
-//! - `ConcurrentWeightStore`: thread-safe wrapper using `RwLock`.
-//! - `WeightEntry`: stores value plus its computed weight.
+//!
+//! - [`WeightStore`]: Single-threaded store with entry + weight limits
+//! - [`ConcurrentWeightStore`]: Thread-safe wrapper using `RwLock`
+//! - `WeightEntry`: Internal struct storing value + precomputed weight
 //!
 //! ## Core Operations
-//! - `try_insert`: insert/update while enforcing entry + weight limits.
-//! - `get`: fetch by key (updates hit/miss metrics).
-//! - `remove`: delete by key and adjust total weight.
-//! - `clear`: drop all entries and reset weight to zero.
+//!
+//! | Operation       | Description                             | Complexity |
+//! |-----------------|-----------------------------------------|------------|
+//! | `try_insert`    | Insert/update with dual limit checks    | O(1) avg   |
+//! | `get`           | Lookup by key (updates metrics)         | O(1) avg   |
+//! | `peek`          | Lookup without metrics                  | O(1) avg   |
+//! | `remove`        | Remove and adjust total weight          | O(1) avg   |
+//! | `total_weight`  | Current sum of all entry weights        | O(1)       |
 //!
 //! ## Performance Trade-offs
-//! - Weight checks add a small constant cost on insert/update.
-//! - Weight function can be as cheap or expensive as you choose.
-//! - Keeps eviction policy logic separate from size accounting.
+//!
+//! **Advantages:**
+//! - Fair eviction pressure based on actual size, not entry count
+//! - Weight precomputed on insert—reads don't recompute
+//! - Dual limits prevent both entry-count and memory exhaustion
+//! - Weight function is caller-defined for maximum flexibility
+//!
+//! **Costs:**
+//! - Weight function called on every insert/update
+//! - Uses `Arc<V>` even for single-threaded store (needed for weight_fn)
+//! - Slightly more state to track than simple HashMap stores
 //!
 //! ## When to Use
-//! - You want size-based capacity instead of entry-count limits.
-//! - Values vary widely in size and you want fair eviction pressure.
-//! - You need to report total bytes/weight for observability.
+//!
+//! - Values vary significantly in size (images, documents, serialized data)
+//! - Memory budget matters more than entry count
+//! - You need observability into total cached bytes
+//! - Eviction policy should consider size, not just access patterns
 //!
 //! ## Example Usage
+//!
 //! ```rust
 //! use std::sync::Arc;
-//!
 //! use cachekit::store::weight::WeightStore;
 //!
-//! let mut store = WeightStore::with_capacity(10, 64, |v: &String| v.len());
-//! store.try_insert("k1", Arc::new("value".to_string())).unwrap();
-//! assert_eq!(store.total_weight(), 5);
+//! // Cache with max 100 entries OR 1MB total, whichever is hit first
+//! let mut store = WeightStore::with_capacity(100, 1_000_000, |v: &Vec<u8>| v.len());
+//!
+//! // Insert entries
+//! store.try_insert("small", Arc::new(vec![0u8; 100])).unwrap();
+//! store.try_insert("large", Arc::new(vec![0u8; 10_000])).unwrap();
+//!
+//! assert_eq!(store.len(), 2);
+//! assert_eq!(store.total_weight(), 10_100);
+//!
+//! // Remove adjusts weight
+//! store.remove(&"large");
+//! assert_eq!(store.total_weight(), 100);
 //! ```
 //!
 //! ## Type Constraints
-//! - `K: Eq + Hash` for key lookup.
-//! - `F: Fn(&V) -> usize` to compute weight.
+//!
+//! - `K: Eq + Hash` — keys must be hashable
+//! - `F: Fn(&V) -> usize` — weight function computes size from value
+//! - Concurrent: `K: Send + Sync`, `V: Send + Sync`, `F: Send + Sync`
 //!
 //! ## Thread Safety
-//! - `WeightStore` is single-threaded.
-//! - `ConcurrentWeightStore` is `Send + Sync` via `RwLock`.
+//!
+//! - [`WeightStore`] is **not** thread-safe (single-threaded only)
+//! - [`ConcurrentWeightStore`] is `Send + Sync` via `parking_lot::RwLock`
 //!
 //! ## Implementation Notes
-//! - Weight is stored per entry to avoid recomputation on reads.
-//! - Updates recompute weight and adjust `total_weight`.
-//! - Does NOT implement `StoreCore`/`StoreMut` traits (uses `Arc<V>` API for weight computation).
+//!
+//! - Weight is stored per entry in `WeightEntry` to avoid recomputation
+//! - Updates recompute weight and adjust `total_weight` atomically
+//! - Does **not** implement `StoreCore`/`StoreMut` (uses `Arc<V>` API)
+//! - Metrics use atomic counters for concurrent compatibility
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -59,21 +160,34 @@ use parking_lot::RwLock;
 
 use crate::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull, StoreMetrics};
 
-/// Entry with precomputed weight for fast accounting.
+/// Internal entry storing value and its precomputed weight.
+///
+/// Weight is computed once on insert/update to avoid repeated weight
+/// function calls during reads or accounting operations.
 #[derive(Debug)]
 struct WeightEntry<V> {
+    /// The cached value, wrapped in Arc for shared access.
     value: Arc<V>,
+    /// Precomputed weight from the weight function.
     weight: usize,
 }
 
-/// Store metrics counters for weight stores.
+/// Metrics counters using atomics for thread-safe updates.
+///
+/// All counters use `Ordering::Relaxed` for low-overhead increments.
 #[derive(Debug, Default)]
 struct StoreCounters {
+    /// Successful lookups via `get()`.
     hits: AtomicU64,
+    /// Failed lookups via `get()`.
     misses: AtomicU64,
+    /// New key insertions.
     inserts: AtomicU64,
+    /// Value updates for existing keys.
     updates: AtomicU64,
+    /// Explicit removals via `remove()`.
     removes: AtomicU64,
+    /// Policy-driven evictions via `record_eviction()`.
     evictions: AtomicU64,
 }
 
@@ -118,9 +232,70 @@ impl StoreCounters {
 // Single-threaded WeightStore
 // =============================================================================
 
-/// HashMap-backed store that tracks total weight (bytes) for values.
+/// Single-threaded store with dual entry-count and weight-based capacity limits.
 ///
-/// Uses `Arc<V>` for values to enable weight computation on shared data.
+/// Enforces both a maximum number of entries and a maximum total weight.
+/// Weight is computed via a caller-provided function and cached per entry.
+/// Uses `Arc<V>` for values to enable weight function access.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash`
+/// - `V`: Value type, wrapped in `Arc<V>`
+/// - `F`: Weight function, `Fn(&V) -> usize`
+///
+/// # Example
+///
+/// ```
+/// use std::sync::Arc;
+/// use cachekit::store::weight::WeightStore;
+///
+/// // Image cache: max 50 images OR 100MB, whichever is hit first
+/// let mut store = WeightStore::with_capacity(
+///     50,           // max entries
+///     100_000_000,  // max weight (100MB)
+///     |img: &Vec<u8>| img.len(),  // weight = byte length
+/// );
+///
+/// // Insert images
+/// let small_img = Arc::new(vec![0u8; 1_000]);      // 1KB
+/// let large_img = Arc::new(vec![0u8; 10_000_000]); // 10MB
+///
+/// store.try_insert("thumbnail", small_img).unwrap();
+/// store.try_insert("fullsize", large_img).unwrap();
+///
+/// assert_eq!(store.len(), 2);
+/// assert_eq!(store.total_weight(), 10_001_000);
+/// assert_eq!(store.capacity_weight(), 100_000_000);
+///
+/// // Check metrics
+/// let _ = store.get(&"thumbnail");
+/// let _ = store.get(&"missing");
+/// assert_eq!(store.metrics().hits, 1);
+/// assert_eq!(store.metrics().misses, 1);
+/// ```
+///
+/// # Weight Function Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use cachekit::store::weight::WeightStore;
+///
+/// // String length
+/// let mut s1: WeightStore<&str, String, _> =
+///     WeightStore::with_capacity(100, 10_000, |s: &String| s.len());
+///
+/// // Fixed weight (degrades to entry-count only)
+/// let mut s2: WeightStore<&str, i32, _> =
+///     WeightStore::with_capacity(100, 100, |_: &i32| 1);
+///
+/// // Struct with custom size calculation
+/// struct Document { content: String, metadata: Vec<u8> }
+/// let mut s3: WeightStore<&str, Document, _> = WeightStore::with_capacity(
+///     100, 1_000_000,
+///     |doc: &Document| doc.content.len() + doc.metadata.len()
+/// );
+/// ```
 #[derive(Debug)]
 pub struct WeightStore<K, V, F>
 where
@@ -139,7 +314,30 @@ where
     K: Eq + Hash,
     F: Fn(&V) -> usize,
 {
-    /// Create a store with entry and weight limits plus a weight function.
+    /// Creates a store with entry and weight limits plus a weight function.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity_entries` - Maximum number of entries
+    /// * `capacity_weight` - Maximum total weight across all entries
+    /// * `weight_fn` - Function to compute weight from a value
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// // Max 1000 entries or 50MB total
+    /// let store: WeightStore<String, Vec<u8>, _> = WeightStore::with_capacity(
+    ///     1000,
+    ///     50_000_000,
+    ///     |data: &Vec<u8>| data.len(),
+    /// );
+    ///
+    /// assert_eq!(store.capacity(), 1000);
+    /// assert_eq!(store.capacity_weight(), 50_000_000);
+    /// assert_eq!(store.total_weight(), 0);
+    /// ```
     pub fn with_capacity(capacity_entries: usize, capacity_weight: usize, weight_fn: F) -> Self {
         Self {
             map: HashMap::with_capacity(capacity_entries),
@@ -151,22 +349,54 @@ where
         }
     }
 
-    /// Returns the current total weight.
+    /// Returns the current total weight of all entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    ///
+    /// store.try_insert("a", Arc::new("hello".into())).unwrap();  // weight 5
+    /// store.try_insert("b", Arc::new("world!".into())).unwrap(); // weight 6
+    ///
+    /// assert_eq!(store.total_weight(), 11);
+    /// ```
     pub fn total_weight(&self) -> usize {
         self.total_weight
     }
 
-    /// Returns the configured weight capacity.
+    /// Returns the configured maximum weight capacity.
     pub fn capacity_weight(&self) -> usize {
         self.capacity_weight
     }
 
-    /// Compute the weight for a value.
+    /// Computes the weight for a value using the configured weight function.
     fn compute_weight(&self, value: &V) -> usize {
         (self.weight_fn)(value)
     }
 
-    /// Fetch a value by key.
+    /// Returns a clone of the value for the given key.
+    ///
+    /// Updates hit/miss metrics. Use [`peek`](Self::peek) to avoid metric updates.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// store.try_insert("key", Arc::new("value".into())).unwrap();
+    ///
+    /// assert_eq!(store.get(&"key"), Some(Arc::new("value".into())));
+    /// assert_eq!(store.get(&"missing"), None);
+    ///
+    /// assert_eq!(store.metrics().hits, 1);
+    /// assert_eq!(store.metrics().misses, 1);
+    /// ```
     pub fn get(&self, key: &K) -> Option<Arc<V>> {
         match self.map.get(key).map(|entry| Arc::clone(&entry.value)) {
             Some(value) => {
@@ -180,42 +410,91 @@ where
         }
     }
 
-    /// Fetch a value by key without updating metrics.
+    /// Returns a reference to the value without updating metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// store.try_insert("key", Arc::new("value".into())).unwrap();
+    ///
+    /// // Peek doesn't affect metrics
+    /// assert!(store.peek(&"key").is_some());
+    /// assert_eq!(store.metrics().hits, 0);
+    /// ```
     pub fn peek(&self, key: &K) -> Option<&Arc<V>> {
         self.map.get(key).map(|entry| &entry.value)
     }
 
-    /// Check whether a key exists.
+    /// Returns `true` if the key exists in the store.
     pub fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
-    /// Return the number of entries.
+    /// Returns the current number of entries.
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
-    /// Check if the store is empty.
+    /// Returns `true` if the store contains no entries.
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
-    /// Return the maximum entry capacity.
+    /// Returns the maximum entry capacity.
     pub fn capacity(&self) -> usize {
         self.capacity_entries
     }
 
-    /// Snapshot store metrics.
+    /// Returns a snapshot of the store's metrics.
     pub fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
 
-    /// Record an eviction.
+    /// Records an eviction in the metrics.
+    ///
+    /// Call when the policy evicts an entry. Separate from `remove()` to
+    /// distinguish user-initiated removals from policy-driven evictions.
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
 
-    /// Insert or update an entry while enforcing weight limits.
+    /// Inserts or updates a value while enforcing dual capacity limits.
+    ///
+    /// For updates, the weight is recomputed and the total adjusted. The
+    /// update fails if the new total would exceed `capacity_weight`.
+    ///
+    /// For new insertions, both entry count and weight limits are checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreFull`] if:
+    /// - Entry count would exceed `capacity_entries` (new key only)
+    /// - Total weight would exceed `capacity_weight`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
+    ///
+    /// let mut store = WeightStore::with_capacity(10, 100, |s: &String| s.len());
+    ///
+    /// // Insert succeeds
+    /// assert!(store.try_insert("a", Arc::new("hello".into())).is_ok());
+    ///
+    /// // Update returns old value
+    /// let old = store.try_insert("a", Arc::new("hi".into())).unwrap();
+    /// assert_eq!(old, Some(Arc::new("hello".into())));
+    ///
+    /// // Weight limit exceeded
+    /// let huge = Arc::new("x".repeat(200));
+    /// assert_eq!(store.try_insert("b", huge), Err(StoreFull));
+    /// ```
     pub fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let new_weight = self.compute_weight(value.as_ref());
         if let Some(entry) = self.map.get_mut(&key) {
@@ -250,7 +529,23 @@ where
         Ok(None)
     }
 
-    /// Remove a value by key and update total weight.
+    /// Removes and returns the value for the given key.
+    ///
+    /// Adjusts `total_weight` by subtracting the entry's weight.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// store.try_insert("key", Arc::new("value".into())).unwrap();
+    ///
+    /// assert_eq!(store.total_weight(), 5);
+    /// store.remove(&"key");
+    /// assert_eq!(store.total_weight(), 0);
+    /// ```
     pub fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let entry = self.map.remove(key)?;
         self.total_weight = self.total_weight.saturating_sub(entry.weight);
@@ -258,7 +553,7 @@ where
         Some(entry.value)
     }
 
-    /// Clear all entries and reset weight to zero.
+    /// Removes all entries and resets total weight to zero.
     pub fn clear(&mut self) {
         self.map.clear();
         self.total_weight = 0;
@@ -269,7 +564,50 @@ where
 // Concurrent WeightStore
 // =============================================================================
 
-/// Concurrent weight store using a `parking_lot::RwLock`.
+/// Thread-safe store with dual entry-count and weight-based capacity limits.
+///
+/// Wraps [`WeightStore`] with a `parking_lot::RwLock` for thread-safe access.
+/// Implements [`ConcurrentStore`] and [`ConcurrentStoreRead`] traits.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Send + Sync`
+/// - `V`: Value type, must be `Send + Sync`
+/// - `F`: Weight function, must be `Fn(&V) -> usize + Send + Sync`
+///
+/// # Example
+///
+/// ```
+/// use std::sync::Arc;
+/// use std::thread;
+/// use cachekit::store::weight::ConcurrentWeightStore;
+/// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead};
+///
+/// let store = Arc::new(ConcurrentWeightStore::with_capacity(
+///     100,        // max entries
+///     1_000_000,  // max weight (1MB)
+///     |data: &Vec<u8>| data.len(),
+/// ));
+///
+/// // Spawn writers
+/// let handles: Vec<_> = (0..4).map(|t| {
+///     let store = Arc::clone(&store);
+///     thread::spawn(move || {
+///         for i in 0..25 {
+///             let key = format!("key_{}_{}", t, i);
+///             let data = Arc::new(vec![0u8; 100]);  // 100 bytes each
+///             let _ = store.try_insert(key, data);
+///         }
+///     })
+/// }).collect();
+///
+/// for h in handles {
+///     h.join().unwrap();
+/// }
+///
+/// assert_eq!(store.len(), 100);
+/// assert_eq!(store.total_weight(), 10_000);  // 100 entries × 100 bytes
+/// ```
 #[derive(Debug)]
 pub struct ConcurrentWeightStore<K, V, F>
 where
@@ -285,7 +623,29 @@ where
     V: Send + Sync,
     F: Fn(&V) -> usize,
 {
-    /// Create a concurrent store with entry and weight limits.
+    /// Creates a concurrent store with entry and weight limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity_entries` - Maximum number of entries
+    /// * `capacity_weight` - Maximum total weight across all entries
+    /// * `weight_fn` - Function to compute weight from a value
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::ConcurrentWeightStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentWeightStore<String, String, _> = ConcurrentWeightStore::with_capacity(
+    ///     1000,
+    ///     50_000_000,
+    ///     |s: &String| s.len(),
+    /// );
+    ///
+    /// assert_eq!(store.capacity(), 1000);
+    /// assert_eq!(store.capacity_weight(), 50_000_000);
+    /// ```
     pub fn with_capacity(capacity_entries: usize, capacity_weight: usize, weight_fn: F) -> Self {
         Self {
             inner: RwLock::new(WeightStore::with_capacity(
@@ -297,28 +657,53 @@ where
         }
     }
 
-    /// Returns the current total weight.
+    /// Returns the current total weight of all entries.
+    ///
+    /// Acquires read lock. Value may be stale under concurrent modifications.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::ConcurrentWeightStore;
+    /// use cachekit::store::traits::ConcurrentStore;
+    ///
+    /// let store = ConcurrentWeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// store.try_insert("key", Arc::new("hello".into())).unwrap();
+    ///
+    /// assert_eq!(store.total_weight(), 5);
+    /// ```
     pub fn total_weight(&self) -> usize {
         self.inner.read().total_weight()
     }
 
-    /// Returns the configured weight capacity.
+    /// Returns the configured maximum weight capacity.
+    ///
+    /// Acquires read lock.
     pub fn capacity_weight(&self) -> usize {
         self.inner.read().capacity_weight()
     }
 
-    /// Record an eviction.
+    /// Records an eviction in the metrics.
+    ///
+    /// Thread-safe via atomic increment.
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
 }
 
+/// Read operations for [`ConcurrentWeightStore`].
+///
+/// All methods acquire a read lock on the inner store.
 impl<K, V, F> ConcurrentStoreRead<K, V> for ConcurrentWeightStore<K, V, F>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
     F: Fn(&V) -> usize + Send + Sync,
 {
+    /// Returns a clone of the value for the given key.
+    ///
+    /// Acquires read lock. Updates hit/miss metrics atomically.
     fn get(&self, key: &K) -> Option<Arc<V>> {
         let store = self.inner.read();
         match store.map.get(key).map(|entry| Arc::clone(&entry.value)) {
@@ -333,39 +718,61 @@ where
         }
     }
 
+    /// Returns `true` if the key exists. Acquires read lock.
     fn contains(&self, key: &K) -> bool {
         self.inner.read().contains(key)
     }
 
+    /// Returns the current number of entries.
+    ///
+    /// Acquires read lock. Value may be stale under concurrency.
     fn len(&self) -> usize {
         self.inner.read().len()
     }
 
+    /// Returns the maximum entry capacity.
     fn capacity(&self) -> usize {
         self.inner.read().capacity()
     }
 
+    /// Returns a snapshot of the store's metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
 }
 
+/// Write operations for [`ConcurrentWeightStore`].
+///
+/// All methods acquire a write lock on the inner store.
 impl<K, V, F> ConcurrentStore<K, V> for ConcurrentWeightStore<K, V, F>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
     F: Fn(&V) -> usize + Send + Sync,
 {
+    /// Inserts or updates a value while enforcing dual capacity limits.
+    ///
+    /// Acquires write lock. Weight is computed during the operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreFull`] if entry count or weight limit would be exceeded.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut store = self.inner.write();
         store.try_insert(key, value)
     }
 
+    /// Removes and returns the value for the given key.
+    ///
+    /// Acquires write lock. Adjusts total weight.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
         let mut store = self.inner.write();
         store.remove(key)
     }
 
+    /// Removes all entries and resets total weight.
+    ///
+    /// Acquires write lock.
     fn clear(&self) {
         let mut store = self.inner.write();
         store.clear();
