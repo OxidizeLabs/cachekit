@@ -2,7 +2,7 @@
 //!
 //! Provides deterministic key-to-shard mapping used by sharded data structures
 //! like [`ShardedSlotArena`](crate::ds::ShardedSlotArena) and
-//! [`ShardedHashMapStore`](crate::store::ShardedHashMapStore).
+//! [`ShardedHashMapStore`](crate::store::hashmap::ShardedHashMapStore).
 //!
 //! ## Architecture
 //!

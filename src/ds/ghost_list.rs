@@ -1,7 +1,7 @@
 //! Bounded recency list for ghost entries.
 //!
 //! Used by adaptive policies (ARC/2Q-style) to track recently evicted keys
-//! without storing values. Implemented as an [`IntrusiveList`](crate::ds::IntrusiveList)
+//! without storing values. Implemented as an [`IntrusiveList`]
 //! plus a [`HashMap`] index for O(1) lookups.
 //!
 //! ## Architecture
@@ -130,7 +130,7 @@
 //!
 //! ## Implementation Notes
 //!
-//! - Backed by [`IntrusiveList`](crate::ds::IntrusiveList) for O(1) reordering
+//! - Backed by [`IntrusiveList`] for O(1) reordering
 //! - Keys are stored in both the list and index (requires `Clone`)
 //! - Zero-capacity ghost lists are no-ops (record does nothing)
 //! - `debug_validate_invariants()` available in debug/test builds

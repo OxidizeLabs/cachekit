@@ -1,7 +1,7 @@
-//! Intrusive doubly linked list backed by [`SlotArena`](crate::ds::SlotArena).
+//! Intrusive doubly linked list backed by [`SlotArena`].
 //!
-//! Stores list nodes in a [`SlotArena`](crate::ds::SlotArena) and links them via
-//! [`SlotId`](crate::ds::SlotId), enabling stable handles and O(1) splice/move
+//! Stores list nodes in a [`SlotArena`] and links them via
+//! [`SlotId`], enabling stable handles and O(1) splice/move
 //! operations. Ideal for LRU ordering, eviction queues, and policy metadata.
 //!
 //! ## Architecture
@@ -62,7 +62,7 @@
 //!
 //! - [`IntrusiveList`]: Single-threaded doubly linked list
 //! - [`ConcurrentIntrusiveList`]: Thread-safe wrapper with `RwLock`
-//! - [`SlotId`](crate::ds::SlotId): Stable handle for O(1) node access
+//! - [`SlotId`]: Stable handle for O(1) node access
 //!
 //! ## Operations
 //!
@@ -130,7 +130,7 @@
 //!
 //! ## Implementation Notes
 //!
-//! - Backed by [`SlotArena`](crate::ds::SlotArena) for stable handles
+//! - Backed by [`SlotArena`] for stable handles
 //! - No pointer chasing; links are `SlotId` indices
 //! - `debug_validate_invariants()` available in debug/test builds
 use parking_lot::RwLock;
@@ -145,10 +145,10 @@ struct Node<T> {
     epoch: u64,
 }
 
-/// Doubly linked list backed by [`SlotArena`](crate::ds::SlotArena).
+/// Doubly linked list backed by [`SlotArena`].
 ///
 /// Provides O(1) insertion, removal, and reordering operations. Each node
-/// is identified by a stable [`SlotId`](crate::ds::SlotId) that remains valid
+/// is identified by a stable [`SlotId`] that remains valid
 /// until the node is removed.
 ///
 /// # Example
@@ -312,7 +312,7 @@ impl<T> IntrusiveList<T> {
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
     }
 
-    /// Returns the [`SlotId`](crate::ds::SlotId) at the front.
+    /// Returns the [`SlotId`] at the front.
     ///
     /// # Example
     ///
@@ -344,7 +344,7 @@ impl<T> IntrusiveList<T> {
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
     }
 
-    /// Returns the [`SlotId`](crate::ds::SlotId) at the back.
+    /// Returns the [`SlotId`] at the back.
     ///
     /// # Example
     ///
@@ -382,7 +382,7 @@ impl<T> IntrusiveList<T> {
         }
     }
 
-    /// Returns an iterator of [`SlotId`](crate::ds::SlotId)s from front to back.
+    /// Returns an iterator of [`SlotId`]s from front to back.
     ///
     /// # Example
     ///
@@ -425,7 +425,7 @@ impl<T> IntrusiveList<T> {
         }
     }
 
-    /// Returns the value for a node by its [`SlotId`](crate::ds::SlotId).
+    /// Returns the value for a node by its [`SlotId`].
     ///
     /// # Example
     ///
@@ -460,7 +460,7 @@ impl<T> IntrusiveList<T> {
         self.arena.get_mut(id).map(|node| &mut node.value)
     }
 
-    /// Inserts a value at the front and returns its [`SlotId`](crate::ds::SlotId).
+    /// Inserts a value at the front and returns its [`SlotId`].
     ///
     /// # Example
     ///
@@ -477,7 +477,7 @@ impl<T> IntrusiveList<T> {
         self.push_front_with_epoch(value, 0)
     }
 
-    /// Inserts a value at the front with an epoch and returns its [`SlotId`](crate::ds::SlotId).
+    /// Inserts a value at the front with an epoch and returns its [`SlotId`].
     ///
     /// # Example
     ///
@@ -507,7 +507,7 @@ impl<T> IntrusiveList<T> {
         id
     }
 
-    /// Inserts a value at the back and returns its [`SlotId`](crate::ds::SlotId).
+    /// Inserts a value at the back and returns its [`SlotId`].
     ///
     /// # Example
     ///
@@ -524,7 +524,7 @@ impl<T> IntrusiveList<T> {
         self.push_back_with_epoch(value, 0)
     }
 
-    /// Inserts a value at the back with an epoch and returns its [`SlotId`](crate::ds::SlotId).
+    /// Inserts a value at the back with an epoch and returns its [`SlotId`].
     ///
     /// # Example
     ///
@@ -906,7 +906,7 @@ impl<'a, T> Iterator for IntrusiveListIter<'a, T> {
     }
 }
 
-/// Iterator over [`SlotId`](crate::ds::SlotId)s from front to back.
+/// Iterator over [`SlotId`]s from front to back.
 pub struct IntrusiveListIdIter<'a, T> {
     list: &'a IntrusiveList<T>,
     current: Option<SlotId>,
@@ -1095,7 +1095,7 @@ impl<T> ConcurrentIntrusiveList<T> {
         list.contains(id)
     }
 
-    /// Inserts a value at the front and returns its [`SlotId`](crate::ds::SlotId).
+    /// Inserts a value at the front and returns its [`SlotId`].
     ///
     /// # Example
     ///
@@ -1129,7 +1129,7 @@ impl<T> ConcurrentIntrusiveList<T> {
         Some(list.push_front_with_epoch(value, epoch))
     }
 
-    /// Inserts a value at the back and returns its [`SlotId`](crate::ds::SlotId).
+    /// Inserts a value at the back and returns its [`SlotId`].
     ///
     /// # Example
     ///
