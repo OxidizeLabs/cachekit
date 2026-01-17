@@ -8,14 +8,7 @@ These documents describe how to implement common cache eviction policies, with a
 - LRU-K: `src/policy/lru_k.rs`
 - LFU: `src/policy/lfu.rs`
 - Heap LFU: `src/policy/heap_lfu.rs`
-
-**Index (Implemented)**
-
-- `fifo.md` — FIFO
-- `lru.md` — LRU
-- `lru-k.md` — LRU-K
-- `lfu.md` — LFU (bucketed)
-- `heap-lfu.md` — LFU via heap (lazy stale entries)
+- 2Q: `src/policy/two_q.rs`
 
 **Roadmap (Not Implemented Yet)**
 
@@ -27,7 +20,6 @@ These documents describe how to implement common cache eviction policies, with a
 - `roadmap/nru.md` — NRU
 - `roadmap/mfu.md` — MFU
 - `roadmap/lfu-aging.md` — Aging / decayed LFU patterns
-- `roadmap/2q.md` — 2Q
 - `roadmap/slru.md` — Segmented LRU (SLRU)
 - `roadmap/arc.md` — ARC
 - `roadmap/car.md` — CAR (Clock with Adaptive Replacement)

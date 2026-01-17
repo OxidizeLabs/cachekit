@@ -281,11 +281,18 @@ pub struct FrequencyBucketEntryDebug<K> {
     pub last_epoch: u64,
 }
 
+/// Default bucket pre-allocation for typical frequency distributions.
+/// Most items cluster at low frequencies (1-32), so 32 buckets covers most cases.
+pub const DEFAULT_BUCKET_PREALLOC: usize = 32;
+
 impl<K> FrequencyBuckets<K>
 where
     K: Eq + Hash + Clone,
 {
     /// Creates an empty tracker with reserved capacity for entries and index.
+    ///
+    /// Uses [`DEFAULT_BUCKET_PREALLOC`] for the bucket map. For custom bucket
+    /// pre-allocation, use [`with_capacity_and_bucket_hint`](Self::with_capacity_and_bucket_hint).
     ///
     /// # Example
     ///
@@ -296,10 +303,30 @@ where
     /// assert!(freq.is_empty());
     /// ```
     pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_and_bucket_hint(capacity, DEFAULT_BUCKET_PREALLOC)
+    }
+
+    /// Creates an empty tracker with reserved capacity and custom bucket pre-allocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - Pre-allocated space for entries and index
+    /// * `bucket_hint` - Pre-allocated space for frequency buckets (number of distinct frequencies)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// // Expect many distinct frequencies (e.g., long-running cache with varied access patterns)
+    /// let freq: FrequencyBuckets<String> = FrequencyBuckets::with_capacity_and_bucket_hint(1000, 64);
+    /// assert!(freq.is_empty());
+    /// ```
+    pub fn with_capacity_and_bucket_hint(capacity: usize, bucket_hint: usize) -> Self {
         Self {
             entries: SlotArena::with_capacity(capacity),
             index: HashMap::with_capacity(capacity),
-            buckets: HashMap::new(),
+            buckets: HashMap::with_capacity(bucket_hint),
             min_freq: 0,
             epoch: 0,
         }
@@ -2078,6 +2105,47 @@ where
     pub fn new() -> Self {
         Self {
             inner: FrequencyBuckets::new(),
+        }
+    }
+
+    /// Creates a tracker with pre-allocated capacity.
+    ///
+    /// Uses [`DEFAULT_BUCKET_PREALLOC`] for the bucket map. For custom bucket
+    /// pre-allocation, use [`with_capacity_and_bucket_hint`](Self::with_capacity_and_bucket_hint).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::with_capacity(1000);
+    /// assert!(freq.is_empty());
+    /// ```
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: FrequencyBuckets::with_capacity(capacity),
+        }
+    }
+
+    /// Creates a tracker with pre-allocated capacity and custom bucket pre-allocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - Pre-allocated space for entries and index
+    /// * `bucket_hint` - Pre-allocated space for frequency buckets (number of distinct frequencies)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// // Expect many distinct frequencies
+    /// let freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::with_capacity_and_bucket_hint(1000, 64);
+    /// assert!(freq.is_empty());
+    /// ```
+    pub fn with_capacity_and_bucket_hint(capacity: usize, bucket_hint: usize) -> Self {
+        Self {
+            inner: FrequencyBuckets::with_capacity_and_bucket_hint(capacity, bucket_hint),
         }
     }
 

@@ -11,7 +11,7 @@ pub mod slot_arena;
 pub use clock_ring::{ClockRing, ConcurrentClockRing};
 pub use fixed_history::FixedHistory;
 pub use frequency_buckets::{
-    FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
+    DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
     ShardedFrequencyBucketEntryMeta, ShardedFrequencyBuckets,
 };
 pub use ghost_list::GhostList;

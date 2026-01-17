@@ -22,13 +22,16 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 manager = []
 metrics = []
+dhat-heap = ["dhat"]
 
 [dependencies]
 parking_lot = "0.12"
 log = "0.4"
+dhat = { version = "0.3", optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
+dhat = "0.3"
 
 [[bench]]
 name = "fifo"
@@ -45,3 +48,8 @@ harness = false
 [[bench]]
 name = "lru_k"
 harness = false
+
+[[bin]]
+name = "dhat_profile"
+path = "src/bin/dhat_profile.rs"
+required-features = ["dhat-heap"]

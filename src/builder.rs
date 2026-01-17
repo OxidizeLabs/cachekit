@@ -85,6 +85,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
 
+use crate::ds::frequency_buckets::DEFAULT_BUCKET_PREALLOC;
 use crate::policy::fifo::FifoCache;
 use crate::policy::heap_lfu::HeapLfuCache;
 use crate::policy::lfu::LfuCache;
@@ -109,8 +110,11 @@ use crate::traits::CoreCache;
 /// // LRU-K for scan resistance (K=2 is common)
 /// let lru_k = CacheBuilder::new(100).build::<u64, String>(CachePolicy::LruK { k: 2 });
 ///
-/// // LFU for stable access patterns
-/// let lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu);
+/// // LFU for stable access patterns (default bucket allocation)
+/// let lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu { bucket_hint: None });
+///
+/// // LFU with custom bucket pre-allocation for high-frequency workloads
+/// let lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu { bucket_hint: Some(64) });
 ///
 /// // HeapLFU for large caches with frequent evictions
 /// let heap_lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::HeapLfu);
@@ -149,8 +153,15 @@ pub enum CachePolicy {
     /// Evicts the item with the lowest access count.
     /// Uses frequency buckets for O(1) operations.
     ///
+    /// - `bucket_hint: Option<usize>` - Pre-allocated frequency buckets (default: 32)
+    ///
     /// Good for: stable access patterns, reference data.
-    Lfu,
+    Lfu {
+        /// Pre-allocated frequency buckets. Most items cluster at low frequencies,
+        /// so the default (32) covers typical workloads. Increase for long-running
+        /// caches with varied access patterns.
+        bucket_hint: Option<usize>,
+    },
 
     /// Least Frequently Used eviction (heap-based, O(log n)).
     ///
@@ -436,7 +447,7 @@ where
 ///
 /// // Build different cache types from the same builder pattern
 /// let lru_cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
-/// let lfu_cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu);
+/// let lfu_cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu { bucket_hint: None });
 /// ```
 pub struct CacheBuilder {
     capacity: usize,
@@ -486,7 +497,10 @@ impl CacheBuilder {
             CachePolicy::Fifo => CacheInner::Fifo(FifoCache::new(self.capacity)),
             CachePolicy::Lru => CacheInner::Lru(LruCore::new(self.capacity)),
             CachePolicy::LruK { k } => CacheInner::LruK(LrukCache::with_k(self.capacity, k)),
-            CachePolicy::Lfu => CacheInner::Lfu(LfuCache::new(self.capacity)),
+            CachePolicy::Lfu { bucket_hint } => {
+                let hint = bucket_hint.unwrap_or(DEFAULT_BUCKET_PREALLOC);
+                CacheInner::Lfu(LfuCache::with_bucket_hint(self.capacity, hint))
+            },
             CachePolicy::HeapLfu => CacheInner::HeapLfu(HeapLfuCache::new(self.capacity)),
             CachePolicy::TwoQ { probation_frac } => {
                 CacheInner::TwoQ(TwoQCore::new(self.capacity, probation_frac))
@@ -507,7 +521,7 @@ mod tests {
             CachePolicy::Fifo,
             CachePolicy::Lru,
             CachePolicy::LruK { k: 2 },
-            CachePolicy::Lfu,
+            CachePolicy::Lfu { bucket_hint: None },
             CachePolicy::HeapLfu,
             CachePolicy::TwoQ {
                 probation_frac: 0.25,

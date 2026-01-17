@@ -67,7 +67,7 @@ fn main() {
 
     // Example 4: LFU Cache
     println!("4. LFU Cache");
-    let mut lfu = CacheBuilder::new(3).build::<u64, String>(CachePolicy::Lfu);
+    let mut lfu = CacheBuilder::new(3).build::<u64, String>(CachePolicy::Lfu { bucket_hint: None });
 
     lfu.insert(1, "one".to_string());
     lfu.insert(2, "two".to_string());

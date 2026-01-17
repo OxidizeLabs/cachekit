@@ -297,6 +297,24 @@ impl<T> LruQueue<T> {
         }
     }
 
+    /// Creates an LRU queue with pre-allocated capacity.
+    ///
+    /// Pre-allocates space to avoid reallocation during growth.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::two_q::LruQueue;
+    ///
+    /// let lru: LruQueue<i32> = LruQueue::with_capacity(1000);
+    /// assert!(lru.is_empty());
+    /// ```
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            list: IntrusiveList::with_capacity(capacity),
+        }
+    }
+
     /// Returns `true` if the queue is empty.
     ///
     /// # Example
@@ -459,12 +477,13 @@ where
     /// ```
     pub fn new(protected_cap: usize, a1_frac: f64) -> Self {
         let probation_cap = (protected_cap as f64 * a1_frac) as usize;
+        let total_cap = protected_cap + probation_cap;
 
         Self {
-            index: HashMapStore::new(protected_cap),
-            store: SlotArena::new(),
-            probation: IntrusiveList::new(),
-            protected: LruQueue::new(),
+            index: HashMapStore::new(total_cap),
+            store: SlotArena::with_capacity(total_cap),
+            probation: IntrusiveList::with_capacity(probation_cap),
+            protected: LruQueue::with_capacity(protected_cap),
             probation_cap,
             protected_cap,
         }
