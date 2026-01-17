@@ -1,32 +1,139 @@
 //! Lazy min-heap with stale entry skipping.
 //!
-//! Maintains a `BinaryHeap` of `(score, seq)` plus a `scores` map for the
-//! latest value. Updates push new heap entries; `pop_best` skips stale ones.
+//! A priority queue that supports O(1) updates by deferring cleanup. Instead
+//! of modifying heap entries in place, updates push new entries and mark old
+//! ones as stale. The [`pop_best`](LazyMinHeap::pop_best) operation skips
+//! stale entries automatically.
 //!
 //! ## Architecture
 //!
 //! ```text
-//!   scores (authoritative)
-//!   ┌─────────┬──────┐
-//!   │  key A  │  10  │
-//!   │  key B  │   3  │
-//!   └─────────┴──────┘
+//! ┌─────────────────────────────────────────────────────────────────────────────┐
+//! │                         LazyMinHeap Layout                                  │
+//! │                                                                             │
+//! │   ┌───────────────────────────────────────────────────────────────────┐    │
+//! │   │  scores: HashMap<K, S>   (authoritative source of truth)          │    │
+//! │   │                                                                   │    │
+//! │   │    ┌─────────┬─────────┐                                         │    │
+//! │   │    │  key    │  score  │                                         │    │
+//! │   │    ├─────────┼─────────┤                                         │    │
+//! │   │    │  "A"    │   10    │                                         │    │
+//! │   │    │  "B"    │    3    │                                         │    │
+//! │   │    │  "C"    │    7    │                                         │    │
+//! │   │    └─────────┴─────────┘                                         │    │
+//! │   │                                                                   │    │
+//! │   │    len() = 3 (live entries)                                      │    │
+//! │   └───────────────────────────────────────────────────────────────────┘    │
+//! │                                                                             │
+//! │   ┌───────────────────────────────────────────────────────────────────┐    │
+//! │   │  heap: BinaryHeap<Reverse<HeapEntry>>   (may have stale entries) │    │
+//! │   │                                                                   │    │
+//! │   │    Min-heap order (smallest score first):                        │    │
+//! │   │                                                                   │    │
+//! │   │    ┌────────────────────────────────────────────────────────┐   │    │
+//! │   │    │ ("B", 3, seq=5)  ← current min, matches scores["B"]    │   │    │
+//! │   │    │ ("C", 7, seq=4)  ← valid                                │   │    │
+//! │   │    │ ("A", 10, seq=3) ← valid                                │   │    │
+//! │   │    │ ("A", 15, seq=1) ← STALE: scores["A"]=10, not 15       │   │    │
+//! │   │    │ ("B", 8, seq=2)  ← STALE: scores["B"]=3, not 8         │   │    │
+//! │   │    └────────────────────────────────────────────────────────┘   │    │
+//! │   │                                                                   │    │
+//! │   │    heap_len() = 5 (includes stale entries)                       │    │
+//! │   └───────────────────────────────────────────────────────────────────┘    │
+//! │                                                                             │
+//! │   seq: 6  (monotonic counter for tie-breaking)                             │
+//! └─────────────────────────────────────────────────────────────────────────────┘
 //!
-//!   heap (may contain stale entries)
-//!   min: (B,3,seq=5), (A,10,seq=2), (A,12,seq=1 stale)
+//! Update Flow
+//! ───────────
+//!   update("A", 10):
+//!     1. scores["A"] = 10          (authoritative update)
+//!     2. heap.push(("A", 10, seq)) (new entry, old entries become stale)
+//!     3. seq += 1
+//!
+//! Pop Flow
+//! ────────
+//!   pop_best():
+//!     loop:
+//!       entry = heap.pop()         → ("A", 15, seq=1)
+//!       if scores["A"] == 15?      → No! scores["A"]=10
+//!         skip (stale)
+//!       ...
+//!       entry = heap.pop()         → ("B", 3, seq=5)
+//!       if scores["B"] == 3?       → Yes!
+//!         scores.remove("B")
+//!         return ("B", 3)
+//!
+//! Rebuild
+//! ───────
+//!   When heap_len >> len(), call rebuild() to clear stale entries:
+//!     heap.clear()
+//!     for (key, score) in scores:
+//!       heap.push((key, score, seq++))
 //! ```
 //!
+//! ## Key Concepts
+//!
+//! - **Lazy deletion**: Old heap entries aren't removed; they're skipped when
+//!   their score doesn't match the authoritative `scores` map
+//! - **Sequence numbers**: Break ties for equal scores (FIFO order)
+//! - **Periodic rebuild**: When stale entries accumulate, `rebuild()` or
+//!   `maybe_rebuild()` cleans up the heap
+//!
 //! ## Operations
-//! - `update(k, s)`: updates map and pushes a heap entry
-//! - `pop_best()`: pops until top matches current score
-//! - `rebuild()`: rebuilds heap from authoritative map
 //!
-//! ## Performance
-//! - `update` / `remove`: O(1) average
-//! - `pop_best`: amortized O(log n)
-//! - `rebuild`: O(n) when heap grows too stale
+//! | Operation      | Description                           | Complexity      |
+//! |----------------|---------------------------------------|-----------------|
+//! | `update`       | Set/update score, push heap entry     | O(log n)        |
+//! | `remove`       | Remove from scores map only           | O(1)            |
+//! | `pop_best`     | Pop min, skipping stale entries       | Amortized O(log n) |
+//! | `score_of`     | Get current score for key             | O(1)            |
+//! | `rebuild`      | Rebuild heap from scores map          | O(n log n)      |
+//! | `maybe_rebuild`| Rebuild if heap too stale             | O(1) or O(n log n) |
 //!
-//! `debug_validate_invariants()` is available in debug/test builds.
+//! ## Use Cases
+//!
+//! - **LFU eviction**: Track access frequencies, pop least-frequently-used
+//! - **Priority scheduling**: Tasks with changing priorities
+//! - **Expiration tracking**: Items with updatable TTLs
+//!
+//! ## Example Usage
+//!
+//! ```
+//! use cachekit::ds::LazyMinHeap;
+//!
+//! let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+//!
+//! // Insert items with scores (lower = higher priority)
+//! heap.update("task_a", 5);
+//! heap.update("task_b", 2);
+//! heap.update("task_c", 8);
+//!
+//! // Update a score (creates stale entry, doesn't remove old one)
+//! heap.update("task_a", 1);  // task_a now has priority 1
+//!
+//! // Pop returns minimum score, skipping stale entries
+//! assert_eq!(heap.pop_best(), Some(("task_a", 1)));
+//! assert_eq!(heap.pop_best(), Some(("task_b", 2)));
+//! assert_eq!(heap.pop_best(), Some(("task_c", 8)));
+//! assert_eq!(heap.pop_best(), None);
+//! ```
+//!
+//! ## Performance Trade-offs
+//!
+//! - **Fast updates**: O(log n) push, no removal needed
+//! - **Memory overhead**: Stale entries consume space until rebuilt
+//! - **Rebuild cost**: O(n log n) but only when heap grows too stale
+//!
+//! ## Thread Safety
+//!
+//! `LazyMinHeap` is not thread-safe. Wrap in a mutex for concurrent access.
+//!
+//! ## Implementation Notes
+//!
+//! - Uses `BinaryHeap<Reverse<_>>` for min-heap behavior
+//! - Tie-breaking uses sequence numbers for FIFO among equal scores
+//! - `debug_validate_invariants()` available in debug/test builds
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
@@ -70,8 +177,55 @@ where
     }
 }
 
+/// Min-heap with O(1) score updates via lazy deletion.
+///
+/// Maintains an authoritative `scores` map and a heap that may contain stale
+/// entries. Updates modify the map and push new heap entries; old entries
+/// are skipped during [`pop_best`](Self::pop_best).
+///
+/// # Type Parameters
+///
+/// - `K`: Key type (must be `Eq + Hash + Clone`)
+/// - `S`: Score type (must be `Ord + Clone`)
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::LazyMinHeap;
+///
+/// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+///
+/// // Track item priorities
+/// heap.update("low", 10);
+/// heap.update("high", 1);
+/// heap.update("medium", 5);
+///
+/// // Pop in priority order (lowest score first)
+/// assert_eq!(heap.pop_best(), Some(("high", 1)));
+/// assert_eq!(heap.pop_best(), Some(("medium", 5)));
+/// assert_eq!(heap.pop_best(), Some(("low", 10)));
+/// ```
+///
+/// # Use Case: LFU Cache Eviction
+///
+/// ```
+/// use cachekit::ds::LazyMinHeap;
+///
+/// // Track access counts (lower = less frequently used)
+/// let mut freq: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+///
+/// // Record accesses
+/// freq.update("page_a", 1);
+/// freq.update("page_b", 1);
+/// freq.update("page_a", 2);  // accessed again
+/// freq.update("page_c", 1);
+/// freq.update("page_a", 3);  // accessed again
+///
+/// // Evict least frequently used
+/// let (victim, _count) = freq.pop_best().unwrap();
+/// assert!(victim == "page_b" || victim == "page_c");  // Both have count 1
+/// ```
 #[derive(Debug)]
-/// Min-heap that supports cheap updates via lazy deletion.
 pub struct LazyMinHeap<K, S> {
     scores: HashMap<K, S>,
     heap: BinaryHeap<Reverse<HeapEntry<K, S>>>,
@@ -84,6 +238,15 @@ where
     S: Ord + Clone,
 {
     /// Creates an empty heap.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let heap: LazyMinHeap<String, u32> = LazyMinHeap::new();
+    /// assert!(heap.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self {
             scores: HashMap::new(),
@@ -92,7 +255,16 @@ where
         }
     }
 
-    /// Creates an empty heap with reserved capacity for map + heap.
+    /// Creates an empty heap with pre-allocated capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let heap: LazyMinHeap<i32, i32> = LazyMinHeap::with_capacity(1000);
+    /// assert!(heap.is_empty());
+    /// ```
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             scores: HashMap::with_capacity(capacity),
@@ -102,18 +274,50 @@ where
     }
 
     /// Reserves capacity for at least `additional` more entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<i32, i32> = LazyMinHeap::new();
+    /// heap.reserve(100);
+    /// ```
     pub fn reserve(&mut self, additional: usize) {
         self.scores.reserve(additional);
         self.heap.reserve(additional);
     }
 
     /// Shrinks internal storage to fit current contents.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<i32, i32> = LazyMinHeap::with_capacity(1000);
+    /// heap.update(1, 10);
+    /// heap.shrink_to_fit();
+    /// ```
     pub fn shrink_to_fit(&mut self) {
         self.scores.shrink_to_fit();
         self.heap.shrink_to_fit();
     }
 
     /// Clears all entries and shrinks internal storage.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("a", 1);
+    /// heap.update("b", 2);
+    ///
+    /// heap.clear_shrink();
+    /// assert!(heap.is_empty());
+    /// ```
     pub fn clear_shrink(&mut self) {
         self.scores.clear();
         self.heap.clear();
@@ -122,28 +326,95 @@ where
     }
 
     /// Returns the number of live keys.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// assert_eq!(heap.len(), 0);
+    ///
+    /// heap.update("a", 1);
+    /// heap.update("b", 2);
+    /// assert_eq!(heap.len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         self.scores.len()
     }
 
     /// Returns `true` if there are no live keys.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<i32, i32> = LazyMinHeap::new();
+    /// assert!(heap.is_empty());
+    ///
+    /// heap.update(1, 10);
+    /// assert!(!heap.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.scores.is_empty()
     }
 
     /// Returns the underlying heap length (may exceed `len()` due to stale entries).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("a", 5);
+    /// heap.update("a", 3);  // Creates stale entry
+    /// heap.update("a", 1);  // Creates another stale entry
+    ///
+    /// assert_eq!(heap.len(), 1);       // 1 live key
+    /// assert_eq!(heap.heap_len(), 3);  // 3 heap entries (2 stale)
+    /// ```
     pub fn heap_len(&self) -> usize {
         self.heap.len()
     }
 
     /// Returns the current score for `key`, if present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("task", 5);
+    ///
+    /// assert_eq!(heap.score_of(&"task"), Some(&5));
+    /// assert_eq!(heap.score_of(&"missing"), None);
+    /// ```
     pub fn score_of(&self, key: &K) -> Option<&S> {
         self.scores.get(key)
     }
 
     /// Updates `key`'s score and returns the previous score, if any.
     ///
-    /// Pushes a new heap entry; old entries become stale and are ignored by `pop_best`.
+    /// Pushes a new heap entry; old entries become stale and are skipped
+    /// by [`pop_best`](Self::pop_best).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    ///
+    /// // First insert
+    /// assert_eq!(heap.update("item", 10), None);
+    ///
+    /// // Update returns old score
+    /// assert_eq!(heap.update("item", 5), Some(10));
+    /// assert_eq!(heap.score_of(&"item"), Some(&5));
+    /// ```
     pub fn update(&mut self, key: K, score: S) -> Option<S> {
         let previous = self.scores.insert(key.clone(), score.clone());
         self.push_entry(key, score);
@@ -152,12 +423,44 @@ where
 
     /// Removes `key` and returns its score, if present.
     ///
-    /// This does not remove any stale heap entries; they will be skipped by `pop_best`.
+    /// This only removes from the authoritative map; stale heap entries
+    /// will be skipped by [`pop_best`](Self::pop_best).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("a", 1);
+    /// heap.update("b", 2);
+    ///
+    /// assert_eq!(heap.remove(&"a"), Some(1));
+    /// assert_eq!(heap.remove(&"a"), None);  // Already removed
+    ///
+    /// // "b" is still there
+    /// assert_eq!(heap.pop_best(), Some(("b", 2)));
+    /// ```
     pub fn remove(&mut self, key: &K) -> Option<S> {
         self.scores.remove(key)
     }
 
-    /// Pops and returns the current minimum `(key, score)`, skipping stale entries.
+    /// Pops and returns the minimum `(key, score)`, skipping stale entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("high", 1);
+    /// heap.update("low", 10);
+    ///
+    /// // Returns minimum score first
+    /// assert_eq!(heap.pop_best(), Some(("high", 1)));
+    /// assert_eq!(heap.pop_best(), Some(("low", 10)));
+    /// assert_eq!(heap.pop_best(), None);
+    /// ```
     pub fn pop_best(&mut self) -> Option<(K, S)> {
         loop {
             let Reverse(entry) = self.heap.pop()?;
@@ -172,6 +475,27 @@ where
     }
 
     /// Rebuilds the heap from the authoritative `scores` map.
+    ///
+    /// Removes all stale entries. Call this periodically or when
+    /// `heap_len()` greatly exceeds `len()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    ///
+    /// // Create many stale entries
+    /// for i in 0..10 {
+    ///     heap.update("key", i);
+    /// }
+    /// assert_eq!(heap.len(), 1);
+    /// assert_eq!(heap.heap_len(), 10);  // 9 stale entries
+    ///
+    /// heap.rebuild();
+    /// assert_eq!(heap.heap_len(), 1);   // Stale entries removed
+    /// ```
     pub fn rebuild(&mut self) {
         self.heap.clear();
         let entries: Vec<(K, S)> = self
@@ -184,7 +508,24 @@ where
         }
     }
 
-    /// Rebuilds if the heap has grown too stale relative to the map size.
+    /// Rebuilds if the heap has grown too stale relative to map size.
+    ///
+    /// Triggers rebuild when `heap_len() > len() * factor`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("a", 1);
+    /// heap.update("a", 2);
+    /// heap.update("a", 3);  // heap_len=3, len=1
+    ///
+    /// // Rebuild if heap_len > len * 2
+    /// heap.maybe_rebuild(2);
+    /// assert_eq!(heap.heap_len(), 1);
+    /// ```
     pub fn maybe_rebuild(&mut self, factor: usize) {
         let factor = factor.max(1);
         if self.heap.len() > self.scores.len().saturating_mul(factor) {
@@ -202,6 +543,16 @@ where
     }
 
     /// Returns an approximate memory footprint in bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let heap: LazyMinHeap<u64, u64> = LazyMinHeap::with_capacity(100);
+    /// let bytes = heap.approx_bytes();
+    /// assert!(bytes > 0);
+    /// ```
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.scores.capacity() * std::mem::size_of::<(K, S)>()
@@ -222,6 +573,7 @@ where
     }
 
     #[cfg(any(test, debug_assertions))]
+    /// Validates internal invariants (debug/test builds only).
     pub fn debug_validate_invariants(&self) {
         assert_eq!(self.len(), self.scores.len());
         if self.is_empty() {
