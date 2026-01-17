@@ -1,12 +1,12 @@
 //! HashMap-backed store implementations.
 //!
 //! ## Architecture
-//! - Keys are stored in a `HashMap<K, Arc<V>>` for O(1) lookup.
+//! - Single-threaded `HashMapStore` stores `V` directly (no `Arc` overhead).
+//! - Concurrent variants use `Arc<V>` for safe shared access across threads.
 //! - Capacity is enforced by entry count, not byte size.
-//! - Concurrent variants use `RwLock` (single) or sharded locks.
 //!
 //! ## Key Components
-//! - `HashMapStore`: single-threaded store.
+//! - `HashMapStore`: single-threaded store with zero-overhead value access.
 //! - `ConcurrentHashMapStore`: thread-safe store with a global `RwLock`.
 //! - `ShardedHashMapStore`: thread-safe store with per-shard locks.
 //!
@@ -17,26 +17,24 @@
 //! - `clear`: drop all entries.
 //!
 //! ## Performance Trade-offs
-//! - Fast lookup and update with predictable O(1) average cost.
-//! - Uses `Arc<V>`; cloning is cheap but insert still allocates.
+//! - Single-threaded: returns `&V` references, no allocation on access.
+//! - Concurrent: returns `Arc<V>`, requires atomic ref-count increment.
 //! - Sharding reduces contention at the cost of extra hashing.
 //!
 //! ## When to Use
-//! - General-purpose storage where keys are owned by the store.
-//! - You need straightforward capacity enforcement by entry count.
-//! - You want a concurrent store with optional sharding.
+//! - `HashMapStore`: single-threaded hot paths where allocation matters.
+//! - `ConcurrentHashMapStore`: simple thread-safe caching.
+//! - `ShardedHashMapStore`: high-contention concurrent workloads.
 //!
 //! ## Example Usage
 //! ```rust
-//! use std::sync::Arc;
-//!
 //! use cachekit::store::hashmap::HashMapStore;
 //! use cachekit::store::traits::StoreMut;
-//! use crate::cachekit::store::traits::StoreCore;
+//! use cachekit::store::traits::StoreCore;
 //!
 //! let mut store: HashMapStore<u64, String> = HashMapStore::new(2);
-//! store.try_insert(1, Arc::new("a".to_string())).unwrap();
-//! assert!(store.contains(&1));
+//! store.try_insert(1, "hello".to_string()).unwrap();
+//! assert_eq!(store.get(&1), Some(&"hello".to_string()));
 //! ```
 //!
 //! ## Type Constraints
@@ -50,6 +48,7 @@
 //! ## Implementation Notes
 //! - Sharded store uses the configured hasher to pick shards.
 //! - Metrics are tracked with atomics for concurrent access.
+
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
@@ -59,12 +58,17 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use parking_lot::RwLock;
 
 use crate::store::traits::{
-    ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
+    ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead, StoreCore, StoreFactory,
+    StoreFull, StoreMetrics, StoreMut,
 };
 
-/// Store metrics counters for concurrent hash map stores.
+// =============================================================================
+// Metrics counters
+// =============================================================================
+
+/// Store metrics counters using atomics for thread-safe updates.
 #[derive(Debug, Default)]
-struct ConcurrentStoreCounters {
+struct StoreCounters {
     hits: AtomicU64,
     misses: AtomicU64,
     inserts: AtomicU64,
@@ -73,8 +77,7 @@ struct ConcurrentStoreCounters {
     evictions: AtomicU64,
 }
 
-impl ConcurrentStoreCounters {
-    /// Snapshot current store metrics.
+impl StoreCounters {
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
             hits: self.hits.load(Ordering::Relaxed),
@@ -86,43 +89,43 @@ impl ConcurrentStoreCounters {
         }
     }
 
-    /// Increment hit counter.
     fn inc_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment miss counter.
     fn inc_miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment insert counter.
     fn inc_insert(&self) {
         self.inserts.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment update counter.
     fn inc_update(&self) {
         self.updates.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment remove counter.
     fn inc_remove(&self) {
         self.removes.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment eviction counter.
     fn inc_eviction(&self) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
     }
 }
 
+// =============================================================================
+// Single-threaded HashMapStore
+// =============================================================================
+
 /// Single-threaded HashMap-backed store.
+///
+/// Stores values directly without `Arc` wrapper for zero-overhead access.
 #[derive(Debug)]
 pub struct HashMapStore<K, V, S = RandomState> {
-    map: HashMap<K, Arc<V>, S>,
+    map: HashMap<K, V, S>,
     capacity: usize,
-    metrics: ConcurrentStoreCounters,
+    metrics: StoreCounters,
 }
 
 impl<K, V> HashMapStore<K, V, RandomState>
@@ -145,15 +148,37 @@ where
         Self {
             map: HashMap::with_capacity_and_hasher(capacity, hasher),
             capacity,
-            metrics: ConcurrentStoreCounters::default(),
+            metrics: StoreCounters::default(),
         }
     }
 
-    /// Fetch a value by key without updating metrics.
-    pub fn get_ref(&self, key: &K) -> Option<&Arc<V>>
-    where
-        K: Eq + Hash,
-    {
+    /// Fetch a value by key without touching metrics.
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    /// Fetch a mutable reference to a value without touching metrics.
+    pub fn peek_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.map.get_mut(key)
+    }
+
+    /// Return the backing hash map capacity.
+    pub fn map_capacity(&self) -> usize {
+        self.map.capacity()
+    }
+
+    /// Record that the policy evicted an entry.
+    pub fn record_eviction(&self) {
+        self.metrics.inc_eviction();
+    }
+}
+
+impl<K, V, S> StoreCore<K, V> for HashMapStore<K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn get(&self, key: &K) -> Option<&V> {
         match self.map.get(key) {
             Some(value) => {
                 self.metrics.inc_hit();
@@ -166,62 +191,20 @@ where
         }
     }
 
-    /// Fetch a value by key without touching access counters.
-    pub fn peek_ref(&self, key: &K) -> Option<&Arc<V>>
-    where
-        K: Eq + Hash,
-    {
-        self.map.get(key)
-    }
-
-    /// Return the backing hash map capacity.
-    pub fn map_capacity(&self) -> usize {
-        self.map.capacity()
-    }
-}
-
-impl<K, V, S> StoreCore<K, V> for HashMapStore<K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    /// Fetch a value by key.
-    fn get(&self, key: &K) -> Option<Arc<V>> {
-        match self.map.get(key).cloned() {
-            Some(value) => {
-                self.metrics.inc_hit();
-                Some(value)
-            },
-            None => {
-                self.metrics.inc_miss();
-                None
-            },
-        }
-    }
-
-    /// Check whether a key exists.
     fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
-    /// Return the number of entries.
     fn len(&self) -> usize {
         self.map.len()
     }
 
-    /// Return the maximum capacity.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// Snapshot store metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
-    }
-
-    /// Record an eviction.
-    fn record_eviction(&self) {
-        self.metrics.inc_eviction();
     }
 }
 
@@ -230,8 +213,7 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    /// Insert or update an entry.
-    fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
+    fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreFull> {
         if !self.map.contains_key(&key) && self.map.len() >= self.capacity {
             return Err(StoreFull);
         }
@@ -244,8 +226,7 @@ where
         Ok(previous)
     }
 
-    /// Remove a value by key.
-    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
+    fn remove(&mut self, key: &K) -> Option<V> {
         let removed = self.map.remove(key);
         if removed.is_some() {
             self.metrics.inc_remove();
@@ -253,7 +234,6 @@ where
         removed
     }
 
-    /// Clear all entries.
     fn clear(&mut self) {
         self.map.clear();
     }
@@ -261,22 +241,27 @@ where
 
 impl<K, V> StoreFactory<K, V> for HashMapStore<K, V, RandomState>
 where
-    K: Eq + Hash + Send,
+    K: Eq + Hash,
 {
     type Store = HashMapStore<K, V, RandomState>;
 
-    /// Create a new store with the given capacity.
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
     }
 }
 
+// =============================================================================
+// Concurrent HashMap store (global lock)
+// =============================================================================
+
 /// Concurrent HashMap-backed store using interior mutability.
+///
+/// Uses `Arc<V>` for values since references can't outlive lock guards.
 #[derive(Debug)]
 pub struct ConcurrentHashMapStore<K, V, S = RandomState> {
     map: RwLock<HashMap<K, Arc<V>, S>>,
     capacity: usize,
-    metrics: ConcurrentStoreCounters,
+    metrics: StoreCounters,
 }
 
 impl<K, V> ConcurrentHashMapStore<K, V, RandomState>
@@ -299,17 +284,22 @@ where
         Self {
             map: RwLock::new(HashMap::with_capacity_and_hasher(capacity, hasher)),
             capacity,
-            metrics: ConcurrentStoreCounters::default(),
+            metrics: StoreCounters::default(),
         }
+    }
+
+    /// Record that the policy evicted an entry.
+    pub fn record_eviction(&self) {
+        self.metrics.inc_eviction();
     }
 }
 
-impl<K, V, S> StoreCore<K, V> for ConcurrentHashMapStore<K, V, S>
+impl<K, V, S> ConcurrentStoreRead<K, V> for ConcurrentHashMapStore<K, V, S>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Send + Sync,
+    V: Send + Sync,
     S: BuildHasher + Send + Sync,
 {
-    /// Fetch a value by key.
     fn get(&self, key: &K) -> Option<Arc<V>> {
         match self.map.read().get(key).cloned() {
             Some(value) => {
@@ -323,39 +313,29 @@ where
         }
     }
 
-    /// Check whether a key exists.
     fn contains(&self, key: &K) -> bool {
         self.map.read().contains_key(key)
     }
 
-    /// Return the number of entries.
     fn len(&self) -> usize {
         self.map.read().len()
     }
 
-    /// Return the maximum capacity.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// Snapshot store metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
-    }
-
-    /// Record an eviction.
-    fn record_eviction(&self) {
-        self.metrics.inc_eviction();
     }
 }
 
 impl<K, V, S> ConcurrentStore<K, V> for ConcurrentHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
-    V: Sync + Send,
+    V: Send + Sync,
     S: BuildHasher + Send + Sync,
 {
-    /// Insert or update an entry.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut map = self.map.write();
         if !map.contains_key(&key) && map.len() >= self.capacity {
@@ -370,7 +350,6 @@ where
         Ok(previous)
     }
 
-    /// Remove a value by key.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
         let removed = self.map.write().remove(key);
         if removed.is_some() {
@@ -379,31 +358,36 @@ where
         removed
     }
 
-    /// Clear all entries.
     fn clear(&self) {
         self.map.write().clear()
     }
 }
 
-impl<K, V> StoreFactory<K, V> for ConcurrentHashMapStore<K, V, RandomState>
+impl<K, V> ConcurrentStoreFactory<K, V> for ConcurrentHashMapStore<K, V, RandomState>
 where
-    K: Eq + Hash + Send,
+    K: Eq + Hash + Send + Sync,
+    V: Send + Sync,
 {
     type Store = ConcurrentHashMapStore<K, V, RandomState>;
 
-    /// Create a new store with the given capacity.
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
     }
 }
 
+// =============================================================================
+// Sharded HashMap store
+// =============================================================================
+
 /// Concurrent HashMap-backed store with sharded locking.
+///
+/// Reduces contention by distributing keys across multiple independent shards.
 #[derive(Debug)]
 pub struct ShardedHashMapStore<K, V, S = RandomState> {
     shards: Vec<RwLock<HashMap<K, Arc<V>, S>>>,
     capacity: usize,
     size: AtomicUsize,
-    metrics: ConcurrentStoreCounters,
+    metrics: StoreCounters,
     hasher: S,
 }
 
@@ -433,7 +417,7 @@ where
             shards: shard_vec,
             capacity,
             size: AtomicUsize::new(0),
-            metrics: ConcurrentStoreCounters::default(),
+            metrics: StoreCounters::default(),
             hasher,
         }
     }
@@ -447,14 +431,19 @@ where
     fn shard_index(&self, key: &K) -> usize {
         (self.hasher.hash_one(key) as usize) % self.shards.len()
     }
+
+    /// Record that the policy evicted an entry.
+    pub fn record_eviction(&self) {
+        self.metrics.inc_eviction();
+    }
 }
 
-impl<K, V, S> StoreCore<K, V> for ShardedHashMapStore<K, V, S>
+impl<K, V, S> ConcurrentStoreRead<K, V> for ShardedHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
-    S: BuildHasher + Clone,
+    V: Send + Sync,
+    S: BuildHasher + Clone + Send + Sync,
 {
-    /// Fetch a value by key.
     fn get(&self, key: &K) -> Option<Arc<V>> {
         let idx = self.shard_index(key);
         match self.shards[idx].read().get(key).cloned() {
@@ -469,30 +458,21 @@ where
         }
     }
 
-    /// Check whether a key exists.
     fn contains(&self, key: &K) -> bool {
         let idx = self.shard_index(key);
         self.shards[idx].read().contains_key(key)
     }
 
-    /// Return the number of entries.
     fn len(&self) -> usize {
         self.size.load(Ordering::Relaxed)
     }
 
-    /// Return the maximum capacity.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// Snapshot store metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
-    }
-
-    /// Record an eviction.
-    fn record_eviction(&self) {
-        self.metrics.inc_eviction();
     }
 }
 
@@ -502,7 +482,6 @@ where
     V: Send + Sync,
     S: BuildHasher + Clone + Send + Sync,
 {
-    /// Insert or update an entry.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let idx = self.shard_index(&key);
         let mut map = self.shards[idx].write();
@@ -538,7 +517,6 @@ where
         }
     }
 
-    /// Remove a value by key.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
         let idx = self.shard_index(key);
         let removed = self.shards[idx].write().remove(key);
@@ -549,7 +527,6 @@ where
         removed
     }
 
-    /// Clear all entries.
     fn clear(&self) {
         let mut guards = Vec::with_capacity(self.shards.len());
         for shard in &self.shards {
@@ -562,14 +539,13 @@ where
     }
 }
 
-impl<K, V> StoreFactory<K, V> for ShardedHashMapStore<K, V, RandomState>
+impl<K, V> ConcurrentStoreFactory<K, V> for ShardedHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
     type Store = ShardedHashMapStore<K, V, RandomState>;
 
-    /// Create a new store with capacity and a default shard count.
     fn create(capacity: usize) -> Self::Store {
         let shards = std::thread::available_parallelism()
             .map(|count| count.get())
@@ -578,6 +554,10 @@ where
     }
 }
 
+// =============================================================================
+// Tests
+// =============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,14 +565,70 @@ mod tests {
     #[test]
     fn hashmap_store_basic_ops() {
         let mut store = HashMapStore::new(2);
-        let value = Arc::new("v1".to_string());
-        assert_eq!(store.try_insert("k1", value.clone()), Ok(None));
-        assert_eq!(store.get(&"k1"), Some(value.clone()));
+        assert_eq!(store.try_insert("k1", "v1".to_string()), Ok(None));
+        assert_eq!(store.get(&"k1"), Some(&"v1".to_string()));
         assert!(store.contains(&"k1"));
         assert_eq!(store.len(), 1);
         assert_eq!(store.capacity(), 2);
-        assert_eq!(store.remove(&"k1"), Some(value));
+        assert_eq!(store.remove(&"k1"), Some("v1".to_string()));
         assert!(!store.contains(&"k1"));
+    }
+
+    #[test]
+    fn hashmap_store_returns_reference() {
+        let mut store = HashMapStore::new(2);
+        store.try_insert("k1", "hello".to_string()).unwrap();
+
+        // get() returns &V, no allocation
+        let value: &String = store.get(&"k1").unwrap();
+        assert_eq!(value, "hello");
+
+        // peek() also returns &V without metrics
+        let peeked: &String = store.peek(&"k1").unwrap();
+        assert_eq!(peeked, "hello");
+    }
+
+    #[test]
+    fn hashmap_store_capacity_enforced() {
+        let mut store = HashMapStore::new(1);
+        assert_eq!(store.try_insert("k1", "v1".to_string()), Ok(None));
+        assert_eq!(store.try_insert("k2", "v2".to_string()), Err(StoreFull));
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn hashmap_store_update_returns_previous() {
+        let mut store = HashMapStore::new(2);
+        assert_eq!(store.try_insert("k1", "v1".to_string()), Ok(None));
+        assert_eq!(
+            store.try_insert("k1", "v2".to_string()),
+            Ok(Some("v1".to_string()))
+        );
+        assert_eq!(store.get(&"k1"), Some(&"v2".to_string()));
+    }
+
+    #[test]
+    fn hashmap_store_metrics_counts() {
+        let mut store = HashMapStore::new(2);
+
+        assert_eq!(store.metrics(), StoreMetrics::default());
+        assert_eq!(store.get(&"missing"), None);
+        assert_eq!(store.try_insert("k1", "v1".to_string()), Ok(None));
+        assert_eq!(
+            store.try_insert("k1", "v2".to_string()),
+            Ok(Some("v1".to_string()))
+        );
+        assert_eq!(store.get(&"k1"), Some(&"v2".to_string()));
+        assert_eq!(store.remove(&"k1"), Some("v2".to_string()));
+        store.record_eviction();
+
+        let metrics = store.metrics();
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.misses, 1);
+        assert_eq!(metrics.inserts, 1);
+        assert_eq!(metrics.updates, 1);
+        assert_eq!(metrics.removes, 1);
+        assert_eq!(metrics.evictions, 1);
     }
 
     #[test]
@@ -606,17 +642,6 @@ mod tests {
         assert_eq!(store.capacity(), 2);
         assert_eq!(store.remove(&"k1"), Some(value));
         assert!(!store.contains(&"k1"));
-    }
-
-    #[test]
-    fn hashmap_store_capacity_enforced() {
-        let mut store = HashMapStore::new(1);
-        assert_eq!(store.try_insert("k1", Arc::new("v1".to_string())), Ok(None));
-        assert_eq!(
-            store.try_insert("k2", Arc::new("v2".to_string())),
-            Err(StoreFull)
-        );
-        assert_eq!(store.len(), 1);
     }
 
     #[test]
@@ -641,30 +666,5 @@ mod tests {
             Err(StoreFull)
         );
         assert_eq!(store.len(), 1);
-    }
-
-    #[test]
-    fn hashmap_store_metrics_counts() {
-        let mut store = HashMapStore::new(2);
-        let value = Arc::new("v1".to_string());
-
-        assert_eq!(store.metrics(), StoreMetrics::default());
-        assert_eq!(store.get(&"missing"), None);
-        assert_eq!(store.try_insert("k1", value.clone()), Ok(None));
-        assert_eq!(
-            store.try_insert("k1", value.clone()),
-            Ok(Some(value.clone()))
-        );
-        assert_eq!(store.get(&"k1"), Some(value.clone()));
-        assert_eq!(store.remove(&"k1"), Some(value));
-        store.record_eviction();
-
-        let metrics = store.metrics();
-        assert_eq!(metrics.hits, 1);
-        assert_eq!(metrics.misses, 1);
-        assert_eq!(metrics.inserts, 1);
-        assert_eq!(metrics.updates, 1);
-        assert_eq!(metrics.removes, 1);
-        assert_eq!(metrics.evictions, 1);
     }
 }

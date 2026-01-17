@@ -355,7 +355,7 @@ where
     /// This is only for testing purposes to simulate stale entry conditions.
     /// Accepts a raw key and removes the corresponding entry from the store.
     #[cfg(test)]
-    pub fn remove_from_cache_only(&mut self, key: &K) -> Option<Arc<V>> {
+    pub fn remove_from_cache_only(&mut self, key: &K) -> Option<V> {
         self.inner.store.remove(key)
     }
 
@@ -489,10 +489,8 @@ where
         }
 
         if self.inner.store.contains(&key) {
-            if let Ok(previous) = self.inner.store.try_insert(key, Arc::new(value)) {
-                return previous.map(|old_value_arc| {
-                    Arc::try_unwrap(old_value_arc).expect("external Arc<V> references detected")
-                });
+            if let Ok(previous) = self.inner.store.try_insert(key, value) {
+                return previous;
             }
             return None;
         }
@@ -503,7 +501,7 @@ where
 
         // Add the new key to the insertion order and cache
         let key_for_queue = key.clone();
-        if self.inner.store.try_insert(key, Arc::new(value)).is_ok() {
+        if self.inner.store.try_insert(key, value).is_ok() {
             self.inner.insertion_order.push_back(key_for_queue);
         }
         None
@@ -511,7 +509,7 @@ where
 
     fn get(&mut self, key: &K) -> Option<&V> {
         // In FIFO, getting an item doesn't change its position
-        self.inner.store.get_ref(key).map(|value| value.as_ref())
+        self.inner.store.get(key)
     }
 
     fn contains(&self, key: &K) -> bool {
@@ -540,10 +538,8 @@ where
     fn pop_oldest(&mut self) -> Option<(K, V)> {
         // Use the existing evict_oldest logic but return the key-value pair
         while let Some(oldest_key) = self.inner.insertion_order.pop_front() {
-            if let Some(value_arc) = self.inner.store.remove(&oldest_key) {
+            if let Some(value) = self.inner.store.remove(&oldest_key) {
                 self.inner.store.record_eviction();
-                let value =
-                    Arc::try_unwrap(value_arc).expect("external Arc<V> references detected");
                 return Some((oldest_key, value));
             }
             // Skip stale entries (keys that were already removed from the cache)
@@ -554,8 +550,8 @@ where
     fn peek_oldest(&self) -> Option<(&K, &V)> {
         // Find the first valid entry in the insertion order
         for key in &self.inner.insertion_order {
-            if let Some(value_arc) = self.inner.store.peek_ref(key) {
-                return Some((key, value_arc.as_ref()));
+            if let Some(value) = self.inner.store.peek(key) {
+                return Some((key, value));
             }
         }
         None

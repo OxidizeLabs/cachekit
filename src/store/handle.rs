@@ -36,15 +36,11 @@
 //!
 //! use cachekit::ds::KeyInterner;
 //! use cachekit::store::handle::HandleStore;
-//! use cachekit::store::traits::StoreMut;
-//! use cachekit::store::traits::StoreCore;
 //!
 //! let mut interner = KeyInterner::new();
 //! let handle = interner.intern(&"alpha".to_string());
 //! let mut store: HandleStore<u64, String> = HandleStore::new(2);
-//! store
-//!     .try_insert(handle, Arc::new("value".to_string()))
-//!     .unwrap();
+//! store.try_insert(handle, Arc::new("value".to_string())).unwrap();
 //! assert!(store.contains(&handle));
 //! assert_eq!(store.get(&handle), Some(Arc::new("value".to_string())));
 //! assert_eq!(store.remove(&handle), Some(Arc::new("value".to_string())));
@@ -62,6 +58,8 @@
 //! ## Implementation Notes
 //! - Handles must remain stable for the lifetime of stored entries.
 //! - Metrics are stored separately to keep the hot path simple.
+//! - Does NOT implement `StoreCore`/`StoreMut` traits (uses `Arc<V>` API).
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -71,7 +69,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::RwLock;
 
 use crate::store::traits::{
-    ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
+    ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead, StoreFull, StoreMetrics,
 };
 
 /// Store metrics counters for single-threaded handle stores.
@@ -86,7 +84,6 @@ struct StoreCounters {
 }
 
 impl StoreCounters {
-    /// Snapshot current store metrics.
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
             hits: self.hits.get(),
@@ -98,32 +95,26 @@ impl StoreCounters {
         }
     }
 
-    /// Increment hit counter.
     fn inc_hit(&self) {
         self.hits.set(self.hits.get() + 1);
     }
 
-    /// Increment miss counter.
     fn inc_miss(&self) {
         self.misses.set(self.misses.get() + 1);
     }
 
-    /// Increment insert counter.
     fn inc_insert(&self) {
         self.inserts.set(self.inserts.get() + 1);
     }
 
-    /// Increment update counter.
     fn inc_update(&self) {
         self.updates.set(self.updates.get() + 1);
     }
 
-    /// Increment remove counter.
     fn inc_remove(&self) {
         self.removes.set(self.removes.get() + 1);
     }
 
-    /// Increment eviction counter.
     fn inc_eviction(&self) {
         self.evictions.set(self.evictions.get() + 1);
     }
@@ -141,7 +132,6 @@ struct ConcurrentStoreCounters {
 }
 
 impl ConcurrentStoreCounters {
-    /// Snapshot current store metrics.
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
             hits: self.hits.load(Ordering::Relaxed),
@@ -153,38 +143,38 @@ impl ConcurrentStoreCounters {
         }
     }
 
-    /// Increment hit counter.
     fn inc_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment miss counter.
     fn inc_miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment insert counter.
     fn inc_insert(&self) {
         self.inserts.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment update counter.
     fn inc_update(&self) {
         self.updates.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment remove counter.
     fn inc_remove(&self) {
         self.removes.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment eviction counter.
     fn inc_eviction(&self) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
     }
 }
 
+// =============================================================================
+// Single-threaded HandleStore
+// =============================================================================
+
 /// Store keyed by compact handles (IDs) instead of full keys.
+///
+/// Uses `Arc<V>` for value sharing with interner patterns.
 #[derive(Debug)]
 pub struct HandleStore<H, V> {
     map: HashMap<H, Arc<V>>,
@@ -205,19 +195,9 @@ where
         }
     }
 
-    /// Fetch a value by handle without updating metrics.
-    pub fn peek_by_handle(&self, handle: &H) -> Option<&Arc<V>> {
-        self.map.get(handle)
-    }
-}
-
-impl<H, V> StoreCore<H, V> for HandleStore<H, V>
-where
-    H: Copy + Eq + Hash,
-{
     /// Fetch a value by handle.
-    fn get(&self, key: &H) -> Option<Arc<V>> {
-        match self.map.get(key).cloned() {
+    pub fn get(&self, handle: &H) -> Option<Arc<V>> {
+        match self.map.get(handle).cloned() {
             Some(value) => {
                 self.metrics.inc_hit();
                 Some(value)
@@ -229,42 +209,22 @@ where
         }
     }
 
+    /// Fetch a value by handle without updating metrics.
+    pub fn peek(&self, handle: &H) -> Option<&Arc<V>> {
+        self.map.get(handle)
+    }
+
     /// Check whether a handle exists.
-    fn contains(&self, key: &H) -> bool {
-        self.map.contains_key(key)
+    pub fn contains(&self, handle: &H) -> bool {
+        self.map.contains_key(handle)
     }
 
-    /// Return the number of entries.
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// Return the maximum capacity.
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    /// Snapshot store metrics.
-    fn metrics(&self) -> StoreMetrics {
-        self.metrics.snapshot()
-    }
-
-    /// Record an eviction.
-    fn record_eviction(&self) {
-        self.metrics.inc_eviction();
-    }
-}
-
-impl<H, V> StoreMut<H, V> for HandleStore<H, V>
-where
-    H: Copy + Eq + Hash,
-{
     /// Insert or update an entry.
-    fn try_insert(&mut self, key: H, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
-        if !self.map.contains_key(&key) && self.map.len() >= self.capacity {
+    pub fn try_insert(&mut self, handle: H, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
+        if !self.map.contains_key(&handle) && self.map.len() >= self.capacity {
             return Err(StoreFull);
         }
-        let previous = self.map.insert(key, value);
+        let previous = self.map.insert(handle, value);
         if previous.is_some() {
             self.metrics.inc_update();
         } else {
@@ -274,8 +234,8 @@ where
     }
 
     /// Remove a value by handle.
-    fn remove(&mut self, key: &H) -> Option<Arc<V>> {
-        let removed = self.map.remove(key);
+    pub fn remove(&mut self, handle: &H) -> Option<Arc<V>> {
+        let removed = self.map.remove(handle);
         if removed.is_some() {
             self.metrics.inc_remove();
         }
@@ -283,22 +243,39 @@ where
     }
 
     /// Clear all entries.
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.map.clear();
     }
-}
 
-impl<H, V> StoreFactory<H, V> for HandleStore<H, V>
-where
-    H: Copy + Eq + Hash + Send,
-{
-    type Store = HandleStore<H, V>;
+    /// Return the number of entries.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
 
-    /// Create a new store with the given capacity.
-    fn create(capacity: usize) -> Self::Store {
-        Self::new(capacity)
+    /// Check if the store is empty.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Return the maximum capacity.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Snapshot store metrics.
+    pub fn metrics(&self) -> StoreMetrics {
+        self.metrics.snapshot()
+    }
+
+    /// Record an eviction.
+    pub fn record_eviction(&self) {
+        self.metrics.inc_eviction();
     }
 }
+
+// =============================================================================
+// Concurrent HandleStore
+// =============================================================================
 
 /// Concurrent handle store using a `parking_lot::RwLock`.
 #[derive(Debug)]
@@ -320,13 +297,18 @@ where
             metrics: ConcurrentStoreCounters::default(),
         }
     }
+
+    /// Record an eviction.
+    pub fn record_eviction(&self) {
+        self.metrics.inc_eviction();
+    }
 }
 
-impl<H, V> StoreCore<H, V> for ConcurrentHandleStore<H, V>
+impl<H, V> ConcurrentStoreRead<H, V> for ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
+    V: Send + Sync,
 {
-    /// Fetch a value by handle.
     fn get(&self, key: &H) -> Option<Arc<V>> {
         match self.map.read().get(key).cloned() {
             Some(value) => {
@@ -340,29 +322,20 @@ where
         }
     }
 
-    /// Check whether a handle exists.
     fn contains(&self, key: &H) -> bool {
         self.map.read().contains_key(key)
     }
 
-    /// Return the number of entries.
     fn len(&self) -> usize {
         self.map.read().len()
     }
 
-    /// Return the maximum capacity.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// Snapshot store metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
-    }
-
-    /// Record an eviction.
-    fn record_eviction(&self) {
-        self.metrics.inc_eviction();
     }
 }
 
@@ -371,7 +344,6 @@ where
     H: Copy + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
-    /// Insert or update an entry.
     fn try_insert(&self, key: H, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut map = self.map.write();
         if !map.contains_key(&key) && map.len() >= self.capacity {
@@ -386,7 +358,6 @@ where
         Ok(previous)
     }
 
-    /// Remove a value by handle.
     fn remove(&self, key: &H) -> Option<Arc<V>> {
         let removed = self.map.write().remove(key);
         if removed.is_some() {
@@ -395,23 +366,26 @@ where
         removed
     }
 
-    /// Clear all entries.
     fn clear(&self) {
         self.map.write().clear();
     }
 }
 
-impl<H, V> StoreFactory<H, V> for ConcurrentHandleStore<H, V>
+impl<H, V> ConcurrentStoreFactory<H, V> for ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
+    V: Send + Sync,
 {
     type Store = ConcurrentHandleStore<H, V>;
 
-    /// Create a new store with the given capacity.
     fn create(capacity: usize) -> Self::Store {
         Self::new(capacity)
     }
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {

@@ -10,5 +10,6 @@ pub mod store;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 
+pub mod builder;
 pub mod prelude;
 pub mod traits;

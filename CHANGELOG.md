@@ -8,22 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Nothing yet
+- Unified cache builder (`CacheBuilder`) with support for all eviction policies (FIFO, LRU, LRU-K, LFU, HeapLFU, 2Q).
+- New 2Q eviction policy (`TwoQCore`) with configurable probation/protected queue ratios.
+- `ConcurrentStoreRead` trait for read-only concurrent store operations.
+- `StoreFactory` and `ConcurrentStoreFactory` traits for creating store instances.
 
 ### Changed
-- Nothing yet
-
-### Deprecated
-- Nothing yet
+- Refactored store traits to separate single-threaded and concurrent ownership models:
+  - `StoreCore`/`StoreMut` now use direct value ownership (`&V`, `V`) for zero-overhead single-threaded access.
+  - `ConcurrentStore` uses `Arc<V>` for safe shared ownership across threads.
+- `HashMapStore` and `SlabStore` now store values directly (not `Arc`-wrapped) for single-threaded use.
+- `HandleStore` and `WeightStore` no longer implement generic store traits; they expose specialized `Arc<V>` APIs directly.
+- All cache policies updated to work with the new trait structure.
 
 ### Removed
-- Nothing yet
-
-### Fixed
-- Nothing yet
-
-### Security
-- Nothing yet
+- `StoreEvictionHook` struct (eviction recording moved to direct method calls).
+- `#[must_use]` attributes on `try_insert` methods (redundant with `Result`).
 
 ## [0.1.0-alpha] - 2026-01-13
 

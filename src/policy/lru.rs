@@ -358,7 +358,7 @@ pub struct LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    store: HashMapStore<K, V>,
+    store: HashMapStore<K, Arc<V>>,
     entries: SlotArena<Entry<K>>,
     index: HashMap<K, SlotId>,
     list: IntrusiveList<SlotId>,
@@ -534,7 +534,7 @@ where
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
-                let _ = self.store.get_ref(key);
+                let _ = self.store.get(key);
                 return None;
             },
         };
@@ -548,7 +548,7 @@ where
         #[cfg(debug_assertions)]
         self.validate_invariants();
 
-        self.store.get_ref(key)
+        self.store.get(key)
     }
 
     fn contains(&self, key: &K) -> bool {
@@ -587,13 +587,10 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
-        if self.index.contains_key(key) && self.store.peek_ref(key).is_some() {
+        if self.index.contains_key(key) && self.store.peek(key).is_some() {
             #[cfg(feature = "metrics")]
             (&self.metrics).record_peek_lru_found();
-            let value = self
-                .store
-                .peek_ref(key)
-                .expect("lru entry missing from store");
+            let value = self.store.peek(key).expect("lru entry missing from store");
             return Some(Arc::clone(value));
         }
         None
@@ -653,7 +650,7 @@ where
         (&self.metrics).record_peek_lru_found();
         let value = self
             .store
-            .peek_ref(&entry.key)
+            .peek(&entry.key)
             .expect("lru entry missing from store");
         Some((&entry.key, value))
     }
@@ -5138,7 +5135,7 @@ mod tests {
                     let id = *cache.index.get(&i).unwrap();
                     let entry = cache.entries.get(id).unwrap();
                     assert_eq!(entry.key, i);
-                    let value = cache.store.peek_ref(&i).unwrap();
+                    let value = cache.store.peek(&i).unwrap();
                     assert_eq!(**value, i * 10);
                 }
             }
@@ -5404,7 +5401,7 @@ mod tests {
                 let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(10));
 
-                let map_val = cache.store.peek_ref(&1).unwrap().clone();
+                let map_val = cache.store.peek(&1).unwrap().clone();
                 let head_key = head_key(&cache).unwrap();
                 assert_eq!(head_key, 1);
                 assert_eq!(*map_val, 10);
