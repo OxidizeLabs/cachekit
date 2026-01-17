@@ -1,7 +1,7 @@
 //! DHAT heap profiler for cachekit.
 //!
 //! Run with: cargo run --bin dhat_profile --release --features dhat-heap
-//! View results: Open dhat-heap.json in https://nnethercote.github.io/dh_view/dh_view.html
+//! View results: Open dhat-heap.json in <https://nnethercote.github.io/dh_view/dh_view.html>
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -200,6 +200,6 @@ fn main() {
     println!("\n============================");
     println!("Profiling complete!");
     println!(
-        "View results: Open dhat-heap.json in https://nnethercote.github.io/dh_view/dh_view.html"
+        "View results: Open dhat-heap.json in <https://nnethercote.github.io/dh_view/dh_view.html>"
     );
 }
