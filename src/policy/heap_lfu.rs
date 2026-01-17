@@ -259,7 +259,7 @@ pub struct HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
-    store: HashMapStore<K, V>,
+    store: HashMapStore<K, Arc<V>>,
     frequencies: HashMap<K, u64>,
     // Min-heap: smallest frequency first
     // Reverse wrapper converts max-heap to min-heap
@@ -432,7 +432,7 @@ where
             // Add new frequency entry to heap (old entry becomes stale)
             self.add_to_heap(key, new_freq);
 
-            self.store.get_ref(key)
+            self.store.get(key)
         } else {
             None
         }
@@ -511,7 +511,7 @@ where
         // Find a key with the minimum frequency
         for (key, &freq) in &self.frequencies {
             if freq == min_freq {
-                return self.store.peek_ref(key).map(|value| (key, value));
+                return self.store.peek(key).map(|value| (key, value));
             }
         }
 

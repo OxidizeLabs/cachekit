@@ -303,6 +303,7 @@
 //! - Values: `Arc<V>` in the store enables safe sharing across threads
 
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -357,7 +358,7 @@ pub struct LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    store: HashMapStore<K, V>,
+    store: HashMapStore<K, Arc<V>>,
     entries: SlotArena<Entry<K>>,
     index: HashMap<K, SlotId>,
     list: IntrusiveList<SlotId>,
@@ -369,10 +370,15 @@ impl<K, V> LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    /// Creates a new LRU cache core with the given capacity
+    /// Creates a new LRU cache core with the given capacity.
     ///
     /// # Arguments
-    /// * `capacity` - Maximum number of items the cache can hold
+    /// * `capacity` - Maximum number of items the cache can hold. A capacity of 0
+    ///   creates a cache that accepts no items (all inserts are no-ops).
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
     ///
     /// # Example
     /// ```
@@ -528,7 +534,7 @@ where
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
-                let _ = self.store.get_ref(key);
+                let _ = self.store.get(key);
                 return None;
             },
         };
@@ -542,7 +548,7 @@ where
         #[cfg(debug_assertions)]
         self.validate_invariants();
 
-        self.store.get_ref(key)
+        self.store.get(key)
     }
 
     fn contains(&self, key: &K) -> bool {
@@ -581,13 +587,10 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
-        if self.index.contains_key(key) && self.store.peek_ref(key).is_some() {
+        if self.index.contains_key(key) && self.store.peek(key).is_some() {
             #[cfg(feature = "metrics")]
             (&self.metrics).record_peek_lru_found();
-            let value = self
-                .store
-                .peek_ref(key)
-                .expect("lru entry missing from store");
+            let value = self.store.peek(key).expect("lru entry missing from store");
             return Some(Arc::clone(value));
         }
         None
@@ -647,7 +650,7 @@ where
         (&self.metrics).record_peek_lru_found();
         let value = self
             .store
-            .peek_ref(&entry.key)
+            .peek(&entry.key)
             .expect("lru entry missing from store");
         Some((&entry.key, value))
     }
@@ -730,6 +733,39 @@ where
     }
 }
 
+impl<K, V> fmt::Debug for LruCore<K, V>
+where
+    K: Copy + Eq + Hash + fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LruCore")
+            .field("len", &self.len())
+            .field("capacity", &self.capacity())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<K, V> Default for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    /// Creates an LRU cache with a default capacity of 16.
+    fn default() -> Self {
+        Self::new(16)
+    }
+}
+
+impl<K, V> Extend<(K, Arc<V>)> for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    fn extend<T: IntoIterator<Item = (K, Arc<V>)>>(&mut self, iter: T) {
+        for (key, value) in iter {
+            self.insert(key, value);
+        }
+    }
+}
+
 // Send + Sync analysis:
 // - LruCore is Send if K and V are Send (no shared references)
 // - LruCore is NOT Sync (requires &mut for modifications)
@@ -746,20 +782,53 @@ where
     inner: Arc<RwLock<LruCore<K, V>>>,
 }
 
+impl<K, V> fmt::Debug for ConcurrentLruCache<K, V>
+where
+    K: Copy + Eq + Hash + fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cache = self.inner.read();
+        f.debug_struct("ConcurrentLruCache")
+            .field("len", &cache.len())
+            .field("capacity", &cache.capacity())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<K, V> Default for ConcurrentLruCache<K, V>
+where
+    K: Copy + Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    /// Creates a concurrent LRU cache with a default capacity of 16.
+    fn default() -> Self {
+        Self::new(16)
+    }
+}
+
 impl<K, V> ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
-    /// Create a new concurrent LRU cache with the given capacity
+    /// Creates a new thread-safe LRU cache with the given capacity.
+    ///
+    /// # Arguments
+    /// * `capacity` - Maximum number of items the cache can hold. A capacity of 0
+    ///   creates a cache that accepts no items.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
     pub fn new(capacity: usize) -> Self {
         ConcurrentLruCache {
             inner: Arc::new(RwLock::new(LruCore::new(capacity))),
         }
     }
 
-    /// Insert with value ownership transfer to `Arc<V>`
-    /// Returns the previous `Arc<V>` if key existed
+    /// Inserts a value, wrapping it in `Arc<V>` internally.
+    ///
+    /// Returns the previous `Arc<V>` if the key existed.
     pub fn insert(&self, key: K, value: V) -> Option<Arc<V>> {
         let value_arc = Arc::new(value); // Wrap in Arc once
         let mut cache = self.inner.write();
@@ -5066,7 +5135,7 @@ mod tests {
                     let id = *cache.index.get(&i).unwrap();
                     let entry = cache.entries.get(id).unwrap();
                     assert_eq!(entry.key, i);
-                    let value = cache.store.peek_ref(&i).unwrap();
+                    let value = cache.store.peek(&i).unwrap();
                     assert_eq!(**value, i * 10);
                 }
             }
@@ -5332,7 +5401,7 @@ mod tests {
                 let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(10));
 
-                let map_val = cache.store.peek_ref(&1).unwrap().clone();
+                let map_val = cache.store.peek(&1).unwrap().clone();
                 let head_key = head_key(&cache).unwrap();
                 assert_eq!(head_key, 1);
                 assert_eq!(*map_val, 10);

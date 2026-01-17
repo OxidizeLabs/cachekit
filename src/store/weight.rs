@@ -30,13 +30,11 @@
 //! ```rust
 //! use std::sync::Arc;
 //!
-//! use cachekit::store::traits::StoreMut;
 //! use cachekit::store::weight::WeightStore;
 //!
 //! let mut store = WeightStore::with_capacity(10, 64, |v: &String| v.len());
-//! store
-//!     .try_insert("k1", Arc::new("value".to_string()))
-//!     .unwrap();
+//! store.try_insert("k1", Arc::new("value".to_string())).unwrap();
+//! assert_eq!(store.total_weight(), 5);
 //! ```
 //!
 //! ## Type Constraints
@@ -50,6 +48,8 @@
 //! ## Implementation Notes
 //! - Weight is stored per entry to avoid recomputation on reads.
 //! - Updates recompute weight and adjust `total_weight`.
+//! - Does NOT implement `StoreCore`/`StoreMut` traits (uses `Arc<V>` API for weight computation).
+
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -57,9 +57,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
-use crate::store::traits::{
-    ConcurrentStore, StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut,
-};
+use crate::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull, StoreMetrics};
 
 /// Entry with precomputed weight for fast accounting.
 #[derive(Debug)]
@@ -80,7 +78,6 @@ struct StoreCounters {
 }
 
 impl StoreCounters {
-    /// Snapshot current store metrics.
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
             hits: self.hits.load(Ordering::Relaxed),
@@ -92,38 +89,38 @@ impl StoreCounters {
         }
     }
 
-    /// Increment hit counter.
     fn inc_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment miss counter.
     fn inc_miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment insert counter.
     fn inc_insert(&self) {
         self.inserts.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment update counter.
     fn inc_update(&self) {
         self.updates.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment remove counter.
     fn inc_remove(&self) {
         self.removes.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment eviction counter.
     fn inc_eviction(&self) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
     }
 }
 
+// =============================================================================
+// Single-threaded WeightStore
+// =============================================================================
+
 /// HashMap-backed store that tracks total weight (bytes) for values.
+///
+/// Uses `Arc<V>` for values to enable weight computation on shared data.
 #[derive(Debug)]
 pub struct WeightStore<K, V, F>
 where
@@ -168,15 +165,9 @@ where
     fn compute_weight(&self, value: &V) -> usize {
         (self.weight_fn)(value)
     }
-}
 
-impl<K, V, F> StoreCore<K, V> for WeightStore<K, V, F>
-where
-    K: Eq + Hash,
-    F: Fn(&V) -> usize,
-{
     /// Fetch a value by key.
-    fn get(&self, key: &K) -> Option<Arc<V>> {
+    pub fn get(&self, key: &K) -> Option<Arc<V>> {
         match self.map.get(key).map(|entry| Arc::clone(&entry.value)) {
             Some(value) => {
                 self.metrics.inc_hit();
@@ -189,39 +180,43 @@ where
         }
     }
 
+    /// Fetch a value by key without updating metrics.
+    pub fn peek(&self, key: &K) -> Option<&Arc<V>> {
+        self.map.get(key).map(|entry| &entry.value)
+    }
+
     /// Check whether a key exists.
-    fn contains(&self, key: &K) -> bool {
+    pub fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
     /// Return the number of entries.
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    /// Check if the store is empty.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
     /// Return the maximum entry capacity.
-    fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.capacity_entries
     }
 
     /// Snapshot store metrics.
-    fn metrics(&self) -> StoreMetrics {
+    pub fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
 
     /// Record an eviction.
-    fn record_eviction(&self) {
+    pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
-}
 
-impl<K, V, F> StoreMut<K, V> for WeightStore<K, V, F>
-where
-    K: Eq + Hash,
-    F: Fn(&V) -> usize,
-{
     /// Insert or update an entry while enforcing weight limits.
-    fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
+    pub fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let new_weight = self.compute_weight(value.as_ref());
         if let Some(entry) = self.map.get_mut(&key) {
             let next_total = self.total_weight - entry.weight + new_weight;
@@ -256,7 +251,7 @@ where
     }
 
     /// Remove a value by key and update total weight.
-    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
+    pub fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let entry = self.map.remove(key)?;
         self.total_weight = self.total_weight.saturating_sub(entry.weight);
         self.metrics.inc_remove();
@@ -264,27 +259,15 @@ where
     }
 
     /// Clear all entries and reset weight to zero.
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.map.clear();
         self.total_weight = 0;
     }
 }
 
-fn unit_weight<V>(_: &V) -> usize {
-    1
-}
-
-impl<K, V> StoreFactory<K, V> for WeightStore<K, V, fn(&V) -> usize>
-where
-    K: Eq + Hash + Send,
-{
-    type Store = WeightStore<K, V, fn(&V) -> usize>;
-
-    /// Create a store with entry capacity and unlimited weight.
-    fn create(capacity: usize) -> Self::Store {
-        WeightStore::with_capacity(capacity, usize::MAX, unit_weight::<V>)
-    }
-}
+// =============================================================================
+// Concurrent WeightStore
+// =============================================================================
 
 /// Concurrent weight store using a `parking_lot::RwLock`.
 #[derive(Debug)]
@@ -293,6 +276,7 @@ where
     F: Fn(&V) -> usize,
 {
     inner: RwLock<WeightStore<K, V, F>>,
+    metrics: StoreCounters,
 }
 
 impl<K, V, F> ConcurrentWeightStore<K, V, F>
@@ -309,62 +293,60 @@ where
                 capacity_weight,
                 weight_fn,
             )),
+            metrics: StoreCounters::default(),
         }
     }
 
     /// Returns the current total weight.
     pub fn total_weight(&self) -> usize {
-        let store = self.inner.read();
-        store.total_weight()
+        self.inner.read().total_weight()
     }
 
     /// Returns the configured weight capacity.
     pub fn capacity_weight(&self) -> usize {
-        let store = self.inner.read();
-        store.capacity_weight()
+        self.inner.read().capacity_weight()
+    }
+
+    /// Record an eviction.
+    pub fn record_eviction(&self) {
+        self.metrics.inc_eviction();
     }
 }
 
-impl<K, V, F> StoreCore<K, V> for ConcurrentWeightStore<K, V, F>
+impl<K, V, F> ConcurrentStoreRead<K, V> for ConcurrentWeightStore<K, V, F>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
     F: Fn(&V) -> usize + Send + Sync,
 {
-    /// Fetch a value by key.
     fn get(&self, key: &K) -> Option<Arc<V>> {
-        let store = self.inner.write();
-        store.get(key)
+        let store = self.inner.read();
+        match store.map.get(key).map(|entry| Arc::clone(&entry.value)) {
+            Some(value) => {
+                self.metrics.inc_hit();
+                Some(value)
+            },
+            None => {
+                self.metrics.inc_miss();
+                None
+            },
+        }
     }
 
-    /// Check whether a key exists.
     fn contains(&self, key: &K) -> bool {
-        let store = self.inner.read();
-        store.contains(key)
+        self.inner.read().contains(key)
     }
 
-    /// Return the number of entries.
     fn len(&self) -> usize {
-        let store = self.inner.read();
-        store.len()
+        self.inner.read().len()
     }
 
-    /// Return the maximum entry capacity.
     fn capacity(&self) -> usize {
-        let store = self.inner.read();
-        store.capacity()
+        self.inner.read().capacity()
     }
 
-    /// Snapshot store metrics.
     fn metrics(&self) -> StoreMetrics {
-        let store = self.inner.read();
-        store.metrics()
-    }
-
-    /// Record an eviction.
-    fn record_eviction(&self) {
-        let store = self.inner.write();
-        store.record_eviction();
+        self.metrics.snapshot()
     }
 }
 
@@ -374,24 +356,25 @@ where
     V: Send + Sync,
     F: Fn(&V) -> usize + Send + Sync,
 {
-    /// Insert or update an entry while enforcing weight limits.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut store = self.inner.write();
         store.try_insert(key, value)
     }
 
-    /// Remove a value by key and update total weight.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
         let mut store = self.inner.write();
         store.remove(key)
     }
 
-    /// Clear all entries and reset weight to zero.
     fn clear(&self) {
         let mut store = self.inner.write();
         store.clear();
     }
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {

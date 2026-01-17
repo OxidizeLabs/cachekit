@@ -335,7 +335,7 @@ pub struct LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    store: HashMapStore<K, V>,
+    store: HashMapStore<K, Arc<V>>,
     buckets: FrequencyBuckets<K>,
     #[cfg(feature = "metrics")]
     metrics: LfuMetrics,
@@ -350,7 +350,7 @@ pub struct LFUHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
-    store: HashMapStore<H, V>,
+    store: HashMapStore<H, Arc<V>>,
     buckets: FrequencyBucketsHandle<H>,
     #[cfg(feature = "metrics")]
     metrics: LfuMetrics,
@@ -527,7 +527,7 @@ where
         if !self.buckets.contains(key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_get_miss();
-            let _ = self.store.get_ref(key);
+            let _ = self.store.get(key);
             return None;
         }
 
@@ -536,7 +536,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        self.store.get_ref(key)
+        self.store.get(key)
     }
 
     fn contains(&self, key: &K) -> bool {
@@ -604,7 +604,7 @@ where
         if !self.buckets.contains(handle) {
             #[cfg(feature = "metrics")]
             self.metrics.record_get_miss();
-            let _ = self.store.get_ref(handle);
+            let _ = self.store.get(handle);
             return None;
         }
 
@@ -613,7 +613,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        self.store.get_ref(handle)
+        self.store.get(handle)
     }
 
     fn contains(&self, handle: &H) -> bool {
@@ -679,7 +679,7 @@ where
         (&self.metrics).record_peek_lfu_call();
 
         let (key, _freq) = self.buckets.peek_min()?;
-        let value = self.store.peek_ref(key)?;
+        let value = self.store.peek(key)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_found();
@@ -750,7 +750,7 @@ where
         (&self.metrics).record_peek_lfu_call();
 
         let (handle, _freq) = self.buckets.peek_min_ref()?;
-        let value = self.store.peek_ref(handle)?;
+        let value = self.store.peek(handle)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_found();

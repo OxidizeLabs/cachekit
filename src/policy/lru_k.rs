@@ -301,7 +301,7 @@ where
     K: Eq + Hash + Clone,
 {
     k: usize,
-    store: HashMapStore<K, V>,
+    store: HashMapStore<K, Arc<V>>,
     entries: SlotArena<Entry<K>>,
     index: HashMap<K, SlotId>,
     cold: IntrusiveList<SlotId>,
@@ -513,7 +513,7 @@ where
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
-                let _ = self.store.get_ref(key);
+                let _ = self.store.get(key);
                 return None;
             },
         };
@@ -525,7 +525,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        self.store.get_ref(key).map(|value| value.as_ref())
+        self.store.get(key).map(|value| value.as_ref())
     }
 
     fn contains(&self, key: &K) -> bool {
@@ -595,7 +595,7 @@ where
 
         let idx = self.peek_candidate()?;
         let entry = self.entries.get(idx)?;
-        let value = self.store.peek_ref(&entry.key)?;
+        let value = self.store.peek(&entry.key)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_k_found();
