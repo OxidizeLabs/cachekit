@@ -28,19 +28,6 @@ This crate is designed for systems programming, microservices, and performance-c
 - Benchmarks to compare policy performance under real-world workloads.
 - Idiomatic Rust API with `no_std` compatibility where appropriate.
 
-## Documentation Index
-
-- `docs/design.md` — Architectural overview and design goals.
-- `docs/policies/README.md` — Implemented policies and roadmap.
-- `docs/policy-ds/README.md` — Data structure implementations used by policies.
-- `docs/policies.md` — Policy survey and tradeoffs.
-- `docs/style-guide.md` — Documentation style guide.
-- `docs/release-checklist.md` — Release readiness checklist.
-- `docs/releasing.md` — How to cut a release (tag, CI, publish, docs).
-- `docs/ci-cd-release-cycle.md` — CI/CD overview for releases.
-- `docs/integration.md` — Integration notes (placeholder).
-- `docs/metrics.md` — Metrics notes (placeholder).
-
 ## Installation
 
 Add `cachekit` as a dependency in your `Cargo.toml`:
@@ -49,20 +36,88 @@ Add `cachekit` as a dependency in your `Cargo.toml`:
 [dependencies]
 cachekit = { git = "https://github.com/OxidizeLabs/cachekit" }
 ```
-## example
+
+## Quick Start
+
+### Using the Builder (Recommended)
+
+The `CacheBuilder` provides a unified API for creating caches with any eviction policy:
+
 ```rust
-use cachekit::policy::lru::LruCore;
+use cachekit::builder::{CacheBuilder, CachePolicy};
 
 fn main() {
     // Create an LRU cache with a capacity of 100 entries
-    let mut cache: LruCore<u32, String> = LruCore::new(100);
+    let mut cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
 
-    // Insert an item
-    cache.insert(1, "value1");
+    // Insert items
+    cache.insert(1, "value1".to_string());
+    cache.insert(2, "value2".to_string());
 
     // Retrieve an item
     if let Some(value) = cache.get(&1) {
         println!("Got from cache: {}", value);
+    }
+
+    // Check existence and size
+    assert!(cache.contains(&1));
+    assert_eq!(cache.len(), 2);
+}
+```
+
+### Available Policies
+
+```rust
+use cachekit::builder::{CacheBuilder, CachePolicy};
+
+// FIFO - First In, First Out
+let fifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Fifo);
+
+// LRU - Least Recently Used
+let lru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
+
+// LRU-K - Scan-resistant LRU (K=2 is common)
+let lru_k = CacheBuilder::new(100).build::<u64, String>(CachePolicy::LruK { k: 2 });
+
+// LFU - Least Frequently Used (bucket-based, O(1))
+let lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu);
+
+// HeapLFU - Least Frequently Used (heap-based, O(log n))
+let heap_lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::HeapLfu);
+
+// 2Q - Two-Queue with configurable probation fraction
+let two_q = CacheBuilder::new(100).build::<u64, String>(
+    CachePolicy::TwoQ { probation_frac: 0.25 }
+);
+```
+
+### Policy Selection Guide
+
+| Policy  | Best For | Eviction Basis |
+|---------|----------|----------------|
+| FIFO    | Simple, predictable workloads | Insertion order |
+| LRU     | Temporal locality | Recency |
+| LRU-K   | Scan-resistant workloads | K-th access time |
+| LFU     | Stable access patterns | Frequency (O(1)) |
+| HeapLFU | Large caches, frequent evictions | Frequency (O(log n)) |
+| 2Q      | Mixed workloads | Two-queue promotion |
+
+### Direct Policy Access
+
+For advanced use cases requiring policy-specific operations, use the underlying implementations directly:
+
+```rust
+use std::sync::Arc;
+use cachekit::policy::lru::LruCore;
+use cachekit::traits::{CoreCache, LruCacheTrait};
+
+fn main() {
+    let mut cache: LruCore<u64, &str> = LruCore::new(100);
+    cache.insert(1, Arc::new("value"));
+
+    // Policy-specific operations
+    if let Some((key, _)) = cache.peek_lru() {
+        println!("LRU key: {}", key);
     }
 }
 ```

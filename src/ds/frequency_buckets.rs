@@ -1,47 +1,176 @@
 //! Frequency buckets for O(1) LFU tracking.
 //!
-//! Maintains:
-//! - `HashMap<K, SlotId>` index for key lookup
-//! - `SlotArena<Entry<K>>` for per-key frequency + links
-//! - `HashMap<u64, Bucket>` for per-frequency FIFO lists
-//! - `min_freq` pointer for O(1) eviction
+//! Provides LFU (Least Frequently Used) eviction metadata tracking with O(1)
+//! insert, touch, remove, and eviction operations. Uses frequency buckets with
+//! FIFO tie-breaking within each frequency level.
 //!
 //! ## Architecture
 //!
 //! ```text
-//!   index (key -> SlotId)          entries (SlotArena<Entry<K>>)
-//!   ┌─────────┬─────────┐          ┌───────────────────────────────┐
-//!   │  key A  │  id_7   │          │ Entry { key: A, freq: 2, ... }│
-//!   │  key B  │  id_3   │  ──────► │ Entry { key: B, freq: 1, ... }│
-//!   └─────────┴─────────┘          └───────────────────────────────┘
+//! ┌─────────────────────────────────────────────────────────────────────────────┐
+//! │                        FrequencyBuckets<K> Layout                           │
+//! │                                                                             │
+//! │   ┌─────────────────────────────┐   ┌─────────────────────────────────┐   │
+//! │   │  index: HashMap<K, SlotId>  │   │  entries: SlotArena<Entry<K>>   │   │
+//! │   │                             │   │                                 │   │
+//! │   │  ┌───────────┬──────────┐  │   │  ┌──────┬───────────────────┐  │   │
+//! │   │  │    Key    │  SlotId  │  │   │  │ Slot │ Entry             │  │   │
+//! │   │  ├───────────┼──────────┤  │   │  ├──────┼───────────────────┤  │   │
+//! │   │  │  "page_a" │   id_0   │──┼───┼──►│ id_0 │ freq:2, prev/next │  │   │
+//! │   │  │  "page_b" │   id_1   │──┼───┼──►│ id_1 │ freq:1, prev/next │  │   │
+//! │   │  │  "page_c" │   id_2   │──┼───┼──►│ id_2 │ freq:1, prev/next │  │   │
+//! │   │  └───────────┴──────────┘  │   │  └──────┴───────────────────┘  │   │
+//! │   └─────────────────────────────┘   └─────────────────────────────────┘   │
+//! │                                                                             │
+//! │   ┌───────────────────────────────────────────────────────────────────┐   │
+//! │   │  buckets: HashMap<u64, Bucket>  (frequency → doubly-linked list)  │   │
+//! │   │                                                                   │   │
+//! │   │  min_freq = 1                                                     │   │
+//! │   │       │                                                           │   │
+//! │   │       ▼                                                           │   │
+//! │   │  freq=1: head ──► [id_2] ◄──► [id_1] ◄── tail  (FIFO order)      │   │
+//! │   │                     MRU          LRU (evict first)                │   │
+//! │   │                                                                   │   │
+//! │   │  freq=2: head ──► [id_0] ◄── tail                                │   │
+//! │   │                                                                   │   │
+//! │   │  Bucket links: freq=1 ──next──► freq=2                           │   │
+//! │   │                freq=2 ◄──prev── freq=1                           │   │
+//! │   └───────────────────────────────────────────────────────────────────┘   │
+//! │                                                                             │
+//! └─────────────────────────────────────────────────────────────────────────────┘
 //!
-//!   buckets (freq -> list of SlotId)
-//!   freq=1: head ─► [id_3] ◄──► [id_9] ◄── tail  (FIFO within bucket)
-//!   freq=2: head ─► [id_7] ◄── tail
-//!   min_freq → 1
-//! ```
+//! Touch Flow (increment frequency)
+//! ─────────────────────────────────
 //!
-//! ## Eviction Flow
+//!   touch("page_b"):
+//!     1. Lookup id_1 in index
+//!     2. Remove id_1 from freq=1 bucket list
+//!     3. If freq=1 bucket empty → remove bucket, update min_freq
+//!     4. Create freq=2 bucket if needed
+//!     5. Push id_1 to front of freq=2 bucket (MRU)
+//!     6. Update entry.freq = 2
 //!
-//! ```text
+//! Eviction Flow (pop_min)
+//! ───────────────────────
+//!
 //!   pop_min():
 //!     1. Use min_freq to find lowest bucket
-//!     2. Pop tail SlotId (oldest in that bucket)
-//!     3. Remove entry + update min_freq if bucket empties
+//!     2. Pop tail of that bucket (oldest at that frequency)
+//!     3. Remove entry from index and entries
+//!     4. If bucket empty → remove bucket, update min_freq
+//!     5. Return (key, freq)
 //! ```
 //!
-//! ## Performance
-//! - `insert` / `touch` / `remove` / `pop_min`: O(1) average
-//! - FIFO tie-breaking within a frequency bucket
-//! - `decay_halve` / `rebase_min_freq`: O(n) rebuild of bucket structure
+//! ## Key Components
+//!
+//! - [`FrequencyBuckets`]: Single-threaded O(1) LFU tracker
+//! - [`ShardedFrequencyBuckets`]: Concurrent sharded variant
+//! - [`FrequencyBucketsHandle`]: Handle-based variant for interned keys
+//!
+//! ## Operations
+//!
+//! | Operation      | Time        | Notes                                  |
+//! |----------------|-------------|----------------------------------------|
+//! | `insert`       | O(1)        | New key starts at freq=1               |
+//! | `touch`        | O(1)        | Increment frequency, move to MRU       |
+//! | `remove`       | O(1)        | Remove from tracking                   |
+//! | `pop_min`      | O(1)        | Evict LFU (FIFO tie-break)             |
+//! | `frequency`    | O(1)        | Query current frequency                |
+//! | `decay_halve`  | O(n)        | Halve all frequencies                  |
+//! | `rebase_min_freq` | O(n)     | Rebase so min becomes 1                |
+//!
+//! ## Use Cases
+//!
+//! - **LFU cache policy**: Track access frequency for eviction
+//! - **Hot/cold detection**: Identify frequently accessed items
+//! - **Admission control**: Filter one-hit wonders
+//!
+//! ## Example Usage
+//!
+//! ```
+//! use cachekit::ds::FrequencyBuckets;
+//!
+//! let mut freq = FrequencyBuckets::new();
+//!
+//! // Insert keys (all start at frequency 1)
+//! freq.insert("page_a");
+//! freq.insert("page_b");
+//! freq.insert("page_c");
+//!
+//! // Access increases frequency
+//! freq.touch(&"page_a");  // freq=2
+//! freq.touch(&"page_a");  // freq=3
+//!
+//! // Evict LFU (lowest frequency, FIFO among ties)
+//! let evicted = freq.pop_min();
+//! assert_eq!(evicted, Some(("page_b", 1)));  // First inserted at freq=1
+//! ```
+//!
+//! ## Use Case: LFU Cache with Frequency Decay
+//!
+//! ```
+//! use cachekit::ds::FrequencyBuckets;
+//!
+//! struct LfuCache {
+//!     freq: FrequencyBuckets<String>,
+//!     decay_interval: u64,
+//!     ops_since_decay: u64,
+//! }
+//!
+//! impl LfuCache {
+//!     fn new(decay_interval: u64) -> Self {
+//!         Self {
+//!             freq: FrequencyBuckets::new(),
+//!             decay_interval,
+//!             ops_since_decay: 0,
+//!         }
+//!     }
+//!
+//!     fn access(&mut self, key: &str) {
+//!         if !self.freq.contains(&key.to_string()) {
+//!             self.freq.insert(key.to_string());
+//!         } else {
+//!             self.freq.touch(&key.to_string());
+//!         }
+//!
+//!         self.ops_since_decay += 1;
+//!         if self.ops_since_decay >= self.decay_interval {
+//!             self.freq.decay_halve();  // Prevent frequency inflation
+//!             self.ops_since_decay = 0;
+//!         }
+//!     }
+//!
+//!     fn evict(&mut self) -> Option<String> {
+//!         self.freq.pop_min().map(|(k, _)| k)
+//!     }
+//! }
+//!
+//! let mut cache = LfuCache::new(100);
+//! cache.access("hot_page");
+//! cache.access("hot_page");
+//! cache.access("cold_page");
+//!
+//! assert_eq!(cache.freq.frequency(&"hot_page".to_string()), Some(2));
+//! ```
 //!
 //! ## Handle-Based Usage
 //!
 //! For large keys, consider interning keys in a higher layer and using
-//! `FrequencyBucketsHandle<Handle>` where `Handle: Copy + Eq + Hash`.
+//! [`FrequencyBucketsHandle<Handle>`] where `Handle: Copy + Eq + Hash`.
 //! This stores the handle (not the full key) in buckets and index maps.
 //!
-//! `debug_validate_invariants()` is available in debug/test builds.
+//! ## Thread Safety
+//!
+//! - [`FrequencyBuckets`]: Not thread-safe
+//! - [`ShardedFrequencyBuckets`]: Thread-safe via sharding with `RwLock`
+//!
+//! ## Implementation Notes
+//!
+//! - Buckets are doubly-linked for O(1) navigation
+//! - FIFO within bucket: head=MRU, tail=LRU (evict from tail)
+//! - `min_freq` pointer enables O(1) eviction
+//! - `debug_validate_invariants()` available in debug/test builds
+
 use std::collections::HashMap;
 use std::hash::Hash;
 
@@ -64,8 +193,61 @@ struct Bucket {
     next: Option<u64>,
 }
 
-#[derive(Debug)]
 /// O(1) LFU metadata tracker with FIFO tie-breaking within a frequency.
+///
+/// Tracks key frequencies for LFU eviction. Keys are organized into frequency
+/// buckets, with FIFO ordering within each bucket for tie-breaking.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Clone`
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::FrequencyBuckets;
+///
+/// let mut freq = FrequencyBuckets::new();
+///
+/// // Insert and touch
+/// freq.insert("a");
+/// freq.insert("b");
+/// freq.touch(&"a");  // "a" now at freq=2
+///
+/// // Query state
+/// assert_eq!(freq.frequency(&"a"), Some(2));
+/// assert_eq!(freq.frequency(&"b"), Some(1));
+/// assert_eq!(freq.min_freq(), Some(1));
+///
+/// // Evict LFU
+/// let (key, freq_val) = freq.pop_min().unwrap();
+/// assert_eq!(key, "b");
+/// assert_eq!(freq_val, 1);
+/// ```
+///
+/// # Use Case: Admission Filter
+///
+/// ```
+/// use cachekit::ds::FrequencyBuckets;
+///
+/// // Only admit keys that have been seen multiple times
+/// let mut freq: FrequencyBuckets<String> = FrequencyBuckets::new();
+///
+/// fn should_admit(freq: &mut FrequencyBuckets<String>, key: &str) -> bool {
+///     let key_str = key.to_string();
+///     if freq.contains(&key_str) {
+///         let new_freq = freq.touch(&key_str).unwrap();
+///         new_freq >= 2  // Admit after 2nd access
+///     } else {
+///         freq.insert(key_str);
+///         false  // Don't admit on first access
+///     }
+/// }
+///
+/// assert!(!should_admit(&mut freq, "page_x"));  // First access
+/// assert!(should_admit(&mut freq, "page_x"));   // Second access - admit!
+/// ```
+#[derive(Debug)]
 pub struct FrequencyBuckets<K> {
     entries: SlotArena<Entry<K>>,
     index: HashMap<K, SlotId>,
@@ -104,6 +286,15 @@ where
     K: Eq + Hash + Clone,
 {
     /// Creates an empty tracker with reserved capacity for entries and index.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let freq: FrequencyBuckets<String> = FrequencyBuckets::with_capacity(1000);
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: SlotArena::with_capacity(capacity),
@@ -113,7 +304,17 @@ where
             epoch: 0,
         }
     }
+
     /// Creates an empty tracker.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let freq: FrequencyBuckets<&str> = FrequencyBuckets::new();
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self {
             entries: SlotArena::new(),
@@ -125,49 +326,156 @@ where
     }
 
     /// Returns the number of tracked keys.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// assert_eq!(freq.len(), 0);
+    ///
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// assert_eq!(freq.len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Returns `true` if there are no tracked keys.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq: FrequencyBuckets<&str> = FrequencyBuckets::new();
+    /// assert!(freq.is_empty());
+    ///
+    /// freq.insert("key");
+    /// assert!(!freq.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Returns `true` if `key` is present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("key");
+    ///
+    /// assert!(freq.contains(&"key"));
+    /// assert!(!freq.contains(&"missing"));
+    /// ```
     pub fn contains(&self, key: &K) -> bool {
         self.index.contains_key(key)
     }
 
     /// Returns the current epoch.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let freq: FrequencyBuckets<&str> = FrequencyBuckets::new();
+    /// assert_eq!(freq.current_epoch(), 0);
+    /// ```
     pub fn current_epoch(&self) -> u64 {
         self.epoch
     }
 
     /// Advances the epoch counter and returns the new value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq: FrequencyBuckets<&str> = FrequencyBuckets::new();
+    /// assert_eq!(freq.advance_epoch(), 1);
+    /// assert_eq!(freq.advance_epoch(), 2);
+    /// assert_eq!(freq.current_epoch(), 2);
+    /// ```
     pub fn advance_epoch(&mut self) -> u64 {
         self.epoch = self.epoch.wrapping_add(1);
         self.epoch
     }
 
     /// Sets the epoch counter.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq: FrequencyBuckets<&str> = FrequencyBuckets::new();
+    /// freq.set_epoch(100);
+    /// assert_eq!(freq.current_epoch(), 100);
+    /// ```
     pub fn set_epoch(&mut self, epoch: u64) {
         self.epoch = epoch;
     }
 
     /// Returns the current frequency for `key`, if present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("key");
+    /// freq.touch(&"key");
+    ///
+    /// assert_eq!(freq.frequency(&"key"), Some(2));
+    /// assert_eq!(freq.frequency(&"missing"), None);
+    /// ```
     pub fn frequency(&self, key: &K) -> Option<u64> {
         let id = *self.index.get(key)?;
         self.entries.get(id).map(|entry| entry.freq)
     }
 
     /// Returns the last epoch recorded for `key`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.set_epoch(10);
+    /// freq.insert("key");
+    ///
+    /// assert_eq!(freq.entry_epoch(&"key"), Some(10));
+    /// assert_eq!(freq.entry_epoch(&"missing"), None);
+    /// ```
     pub fn entry_epoch(&self, key: &K) -> Option<u64> {
         let id = *self.index.get(key)?;
         self.entries.get(id).map(|entry| entry.last_epoch)
     }
 
     /// Sets the last epoch for `key`; returns `false` if missing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("key");
+    ///
+    /// assert!(freq.set_entry_epoch(&"key", 42));
+    /// assert_eq!(freq.entry_epoch(&"key"), Some(42));
+    ///
+    /// assert!(!freq.set_entry_epoch(&"missing", 42));
+    /// ```
     pub fn set_entry_epoch(&mut self, key: &K, epoch: u64) -> bool {
         let id = match self.index.get(key) {
             Some(id) => *id,
@@ -181,6 +489,18 @@ where
     }
 
     /// Returns `true` if a borrowed key is present (avoids cloning).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("hello".to_string());
+    ///
+    /// // Query with &str instead of String
+    /// assert!(freq.contains_borrowed("hello"));
+    /// ```
     pub fn contains_borrowed<Q>(&self, key: &Q) -> bool
     where
         K: std::borrow::Borrow<Q>,
@@ -190,6 +510,20 @@ where
     }
 
     /// Returns the frequency for a borrowed key if present (avoids cloning).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("hello".to_string());
+    /// freq.touch(&"hello".to_string());
+    ///
+    /// // Query with &str instead of String
+    /// assert_eq!(freq.frequency_borrowed("hello"), Some(2));
+    /// assert_eq!(freq.frequency_borrowed("missing"), None);
+    /// ```
     pub fn frequency_borrowed<Q>(&self, key: &Q) -> Option<u64>
     where
         K: std::borrow::Borrow<Q>,
@@ -200,6 +534,21 @@ where
     }
 
     /// Returns the minimum frequency currently present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// assert_eq!(freq.min_freq(), None);
+    ///
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"a");  // "a" at freq=2, "b" at freq=1
+    ///
+    /// assert_eq!(freq.min_freq(), Some(1));
+    /// ```
     pub fn min_freq(&self) -> Option<u64> {
         if self.min_freq == 0 {
             None
@@ -209,6 +558,23 @@ where
     }
 
     /// Peeks the eviction candidate `(key, freq)` (tail of the min-frequency bucket).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"b");  // "b" at freq=2
+    ///
+    /// // "a" is the eviction candidate (freq=1, oldest)
+    /// let (key, freq_val) = freq.peek_min().unwrap();
+    /// assert_eq!(*key, "a");
+    /// assert_eq!(freq_val, 1);
+    /// assert_eq!(freq.len(), 2);  // Not removed
+    /// ```
     pub fn peek_min(&self) -> Option<(&K, u64)> {
         if self.min_freq == 0 {
             return None;
@@ -221,6 +587,21 @@ where
     }
 
     /// Peeks the SlotId for the eviction candidate (tail of the min-frequency bucket).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// assert!(freq.peek_min_id().is_none());
+    ///
+    /// freq.insert("a");
+    /// freq.insert("b");
+    ///
+    /// let id = freq.peek_min_id().unwrap();
+    /// // The SlotId can be used to look up entry metadata
+    /// ```
     pub fn peek_min_id(&self) -> Option<SlotId> {
         if self.min_freq == 0 {
             return None;
@@ -230,12 +611,43 @@ where
     }
 
     /// Peeks the key for the eviction candidate (tail of the min-frequency bucket).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"b");
+    ///
+    /// // "a" is the eviction candidate (lowest freq, oldest)
+    /// assert_eq!(freq.peek_min_key(), Some(&"a"));
+    /// ```
     pub fn peek_min_key(&self) -> Option<&K> {
         let id = self.peek_min_id()?;
         self.entries.get(id).map(|entry| &entry.key)
     }
 
     /// Returns an iterator of SlotIds for a given frequency, from head to tail.
+    ///
+    /// Head is the most recently touched entry at that frequency (MRU),
+    /// tail is the oldest (LRU, evict first).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.insert("c");
+    ///
+    /// let ids: Vec<_> = freq.iter_bucket_ids(1).collect();
+    /// assert_eq!(ids.len(), 3);
+    /// ```
     pub fn iter_bucket_ids(&self, freq: u64) -> FrequencyBucketIdIter<'_, K> {
         let head = self.buckets.get(&freq).and_then(|bucket| bucket.head);
         FrequencyBucketIdIter {
@@ -245,6 +657,22 @@ where
     }
 
     /// Returns an iterator of `(SlotId, meta)` for a given frequency.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"a");  // "a" moves to freq=2
+    ///
+    /// // Only "b" is at frequency 1
+    /// let entries: Vec<_> = freq.iter_bucket_entries(1).collect();
+    /// assert_eq!(entries.len(), 1);
+    /// assert_eq!(*entries[0].1.key, "b");
+    /// ```
     pub fn iter_bucket_entries(&self, freq: u64) -> FrequencyBucketEntryIter<'_, K> {
         let head = self.buckets.get(&freq).and_then(|bucket| bucket.head);
         FrequencyBucketEntryIter {
@@ -254,6 +682,25 @@ where
     }
 
     /// Returns an iterator over all `(SlotId, meta)` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"a");
+    ///
+    /// let entries: Vec<_> = freq.iter_entries().collect();
+    /// assert_eq!(entries.len(), 2);
+    ///
+    /// // Check we have both keys
+    /// let keys: Vec<_> = entries.iter().map(|(_, m)| *m.key).collect();
+    /// assert!(keys.contains(&"a"));
+    /// assert!(keys.contains(&"b"));
+    /// ```
     pub fn iter_entries(&self) -> impl Iterator<Item = (SlotId, FrequencyBucketEntryMeta<'_, K>)> {
         self.entries.iter().map(|(id, entry)| {
             (
@@ -269,7 +716,19 @@ where
 
     /// Inserts a new key with frequency 1.
     ///
-    /// Returns `false` if the key already exists.
+    /// Returns `false` if the key already exists (no update performed).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    ///
+    /// assert!(freq.insert("a"));   // New key
+    /// assert!(!freq.insert("a"));  // Already exists
+    /// assert_eq!(freq.frequency(&"a"), Some(1));
+    /// ```
     pub fn insert(&mut self, key: K) -> bool {
         if self.index.contains_key(&key) {
             return false;
@@ -301,6 +760,18 @@ where
     }
 
     /// Inserts a batch of keys; returns number of newly inserted keys.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// let inserted = freq.insert_batch(["a", "b", "c", "a"]);  // "a" duplicated
+    ///
+    /// assert_eq!(inserted, 3);  // Only 3 unique keys inserted
+    /// assert_eq!(freq.len(), 3);
+    /// ```
     pub fn insert_batch<I>(&mut self, keys: I) -> usize
     where
         I: IntoIterator<Item = K>,
@@ -318,6 +789,19 @@ where
     ///
     /// Returns `None` if `key` is missing. Within each frequency bucket,
     /// the key is treated as MRU by being pushed to the front.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("key");
+    ///
+    /// assert_eq!(freq.touch(&"key"), Some(2));
+    /// assert_eq!(freq.touch(&"key"), Some(3));
+    /// assert_eq!(freq.touch(&"missing"), None);
+    /// ```
     pub fn touch(&mut self, key: &K) -> Option<u64> {
         let id = *self.index.get(key)?;
         let current_freq = self.entries.get(id)?.freq;
@@ -369,6 +853,18 @@ where
     }
 
     /// Touches a batch of keys; returns number of keys found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert_batch(["a", "b", "c"]);
+    ///
+    /// let touched = freq.touch_batch(["a", "b", "missing"]);
+    /// assert_eq!(touched, 2);  // Only "a" and "b" found
+    /// ```
     pub fn touch_batch<I>(&mut self, keys: I) -> usize
     where
         I: IntoIterator<Item = K>,
@@ -385,7 +881,21 @@ where
     /// Increments frequency for `key`, clamping at `max_freq`.
     ///
     /// If the key is already at `max_freq`, it is moved to the front of its
-    /// bucket and the frequency is unchanged.
+    /// bucket (MRU position) and the frequency is unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("key");
+    ///
+    /// assert_eq!(freq.touch_capped(&"key", 3), Some(2));
+    /// assert_eq!(freq.touch_capped(&"key", 3), Some(3));
+    /// assert_eq!(freq.touch_capped(&"key", 3), Some(3));  // Capped
+    /// assert_eq!(freq.frequency(&"key"), Some(3));
+    /// ```
     pub fn touch_capped(&mut self, key: &K, max_freq: u64) -> Option<u64> {
         let max_freq = max_freq.max(1);
         let id = *self.index.get(key)?;
@@ -440,6 +950,26 @@ where
     /// Halves all frequencies (rounding down), clamping at 1.
     ///
     /// This is an O(n) rebuild and will reorder tie-breaks within buckets.
+    /// Useful for preventing frequency inflation over time.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    ///
+    /// // Build up frequencies
+    /// for _ in 0..9 { freq.touch(&"a"); }  // "a" at freq=10
+    /// for _ in 0..3 { freq.touch(&"b"); }  // "b" at freq=4
+    ///
+    /// freq.decay_halve();
+    ///
+    /// assert_eq!(freq.frequency(&"a"), Some(5));  // 10 / 2 = 5
+    /// assert_eq!(freq.frequency(&"b"), Some(2));  // 4 / 2 = 2
+    /// ```
     pub fn decay_halve(&mut self) {
         if self.is_empty() {
             return;
@@ -450,6 +980,29 @@ where
     /// Rebases frequencies so the current minimum becomes 1.
     ///
     /// This is an O(n) rebuild and will reorder tie-breaks within buckets.
+    /// Useful after evicting low-frequency items to reclaim frequency space.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    ///
+    /// for _ in 0..4 { freq.touch(&"a"); }  // "a" at freq=5
+    /// for _ in 0..2 { freq.touch(&"b"); }  // "b" at freq=3
+    ///
+    /// assert_eq!(freq.min_freq(), Some(3));
+    ///
+    /// freq.rebase_min_freq();
+    ///
+    /// // min_freq rebased to 1: subtract (3-1)=2 from all
+    /// assert_eq!(freq.frequency(&"a"), Some(3));  // 5 - 2 = 3
+    /// assert_eq!(freq.frequency(&"b"), Some(1));  // 3 - 2 = 1
+    /// assert_eq!(freq.min_freq(), Some(1));
+    /// ```
     pub fn rebase_min_freq(&mut self) {
         if self.min_freq <= 1 {
             return;
@@ -459,6 +1012,20 @@ where
     }
 
     /// Removes `key` from tracking and returns its previous frequency.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("key");
+    /// freq.touch(&"key");
+    ///
+    /// assert_eq!(freq.remove(&"key"), Some(2));
+    /// assert_eq!(freq.remove(&"key"), None);  // Already removed
+    /// assert!(!freq.contains(&"key"));
+    /// ```
     pub fn remove(&mut self, key: &K) -> Option<u64> {
         let id = self.index.remove(key)?;
         let freq = self.entries.get(id)?.freq;
@@ -481,6 +1048,19 @@ where
     }
 
     /// Removes a batch of keys; returns number of keys removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert_batch(["a", "b", "c"]);
+    ///
+    /// let removed = freq.remove_batch(["a", "c", "missing"]);
+    /// assert_eq!(removed, 2);  // Only "a" and "c" found
+    /// assert_eq!(freq.len(), 1);
+    /// ```
     pub fn remove_batch<I>(&mut self, keys: I) -> usize
     where
         I: IntoIterator<Item = K>,
@@ -497,6 +1077,25 @@ where
     /// Removes and returns the eviction candidate `(key, freq)`.
     ///
     /// Eviction is O(1) using `min_freq` and the tail of that bucket.
+    /// Within a frequency bucket, FIFO ordering is used (oldest evicted first).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.insert("c");
+    /// freq.touch(&"c");  // "c" at freq=2
+    ///
+    /// // Evict in FIFO order at min frequency
+    /// assert_eq!(freq.pop_min(), Some(("a", 1)));  // First inserted at freq=1
+    /// assert_eq!(freq.pop_min(), Some(("b", 1)));  // Second inserted at freq=1
+    /// assert_eq!(freq.pop_min(), Some(("c", 2)));  // Only one left
+    /// assert_eq!(freq.pop_min(), None);            // Empty
+    /// ```
     pub fn pop_min(&mut self) -> Option<(K, u64)> {
         let freq = self.min_freq;
         if freq == 0 {
@@ -524,6 +1123,20 @@ where
     }
 
     /// Clears all state.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::new();
+    /// freq.insert("a");
+    /// freq.insert("b");
+    ///
+    /// freq.clear();
+    /// assert!(freq.is_empty());
+    /// assert_eq!(freq.min_freq(), None);
+    /// ```
     pub fn clear(&mut self) {
         self.entries.clear();
         self.index.clear();
@@ -533,6 +1146,18 @@ where
     }
 
     /// Clears all state and shrinks internal storage.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let mut freq = FrequencyBuckets::with_capacity(100);
+    /// freq.insert("a");
+    ///
+    /// freq.clear_shrink();
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn clear_shrink(&mut self) {
         self.clear();
         self.entries.shrink_to_fit();
@@ -541,6 +1166,16 @@ where
     }
 
     /// Returns an approximate memory footprint in bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBuckets;
+    ///
+    /// let freq: FrequencyBuckets<u64> = FrequencyBuckets::new();
+    /// let bytes = freq.approx_bytes();
+    /// assert!(bytes > 0);
+    /// ```
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.entries.approx_bytes()
@@ -797,8 +1432,58 @@ pub struct FrequencyBucketsSnapshot<K> {
     pub bucket_entries: Vec<(u64, Vec<FrequencyBucketEntryDebug<K>>)>,
 }
 
-#[derive(Debug)]
 /// Sharded frequency buckets for reduced contention.
+///
+/// Distributes keys across multiple shards, each protected by its own `RwLock`.
+/// Reduces lock contention in concurrent workloads at the cost of approximate
+/// global LFU (eviction selects from the shard with the lowest `min_freq`).
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Clone`
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::ShardedFrequencyBuckets;
+///
+/// let freq = ShardedFrequencyBuckets::new(4);  // 4 shards
+///
+/// freq.insert("a");
+/// freq.insert("b");
+/// freq.touch(&"a");
+///
+/// assert_eq!(freq.frequency(&"a"), Some(2));
+/// assert_eq!(freq.len(), 2);
+/// ```
+///
+/// # Multi-threaded Example
+///
+/// ```
+/// use std::sync::Arc;
+/// use std::thread;
+/// use cachekit::ds::ShardedFrequencyBuckets;
+///
+/// let freq = Arc::new(ShardedFrequencyBuckets::new(4));
+///
+/// let handles: Vec<_> = (0..4).map(|t| {
+///     let freq = Arc::clone(&freq);
+///     thread::spawn(move || {
+///         for i in 0..25 {
+///             let key = format!("key_{}_{}", t, i);
+///             freq.insert(key.clone());
+///             freq.touch(&key);
+///         }
+///     })
+/// }).collect();
+///
+/// for h in handles {
+///     h.join().unwrap();
+/// }
+///
+/// assert_eq!(freq.len(), 100);
+/// ```
+#[derive(Debug)]
 pub struct ShardedFrequencyBuckets<K> {
     shards: Vec<parking_lot::RwLock<FrequencyBuckets<K>>>,
     selector: crate::ds::ShardSelector,
@@ -809,6 +1494,16 @@ where
     K: Eq + Hash + Clone,
 {
     /// Creates a sharded tracker with `shards` shards.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq: ShardedFrequencyBuckets<String> = ShardedFrequencyBuckets::new(4);
+    /// assert_eq!(freq.shard_count(), 4);
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn new(shards: usize) -> Self {
         let shards = shards.max(1);
         let mut vec = Vec::with_capacity(shards);
@@ -822,6 +1517,15 @@ where
     }
 
     /// Creates a sharded tracker with `shards` and `capacity_per_shard`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq: ShardedFrequencyBuckets<String> = ShardedFrequencyBuckets::with_shards(4, 1000);
+    /// assert_eq!(freq.shard_count(), 4);
+    /// ```
     pub fn with_shards(shards: usize, capacity_per_shard: usize) -> Self {
         let shards = shards.max(1);
         let mut vec = Vec::with_capacity(shards);
@@ -837,6 +1541,18 @@ where
     }
 
     /// Creates a sharded tracker with `shards`, `capacity_per_shard`, and a hash seed.
+    ///
+    /// The seed allows deterministic shard assignment for testing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq: ShardedFrequencyBuckets<String> =
+    ///     ShardedFrequencyBuckets::with_shards_seed(4, 100, 42);
+    /// assert_eq!(freq.shard_count(), 4);
+    /// ```
     pub fn with_shards_seed(shards: usize, capacity_per_shard: usize, seed: u64) -> Self {
         let shards = shards.max(1);
         let mut vec = Vec::with_capacity(shards);
@@ -852,6 +1568,15 @@ where
     }
 
     /// Returns the number of shards.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq: ShardedFrequencyBuckets<&str> = ShardedFrequencyBuckets::new(8);
+    /// assert_eq!(freq.shard_count(), 8);
+    /// ```
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
@@ -861,11 +1586,31 @@ where
     }
 
     /// Returns the shard index for `key` using the configured selector.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq: ShardedFrequencyBuckets<&str> = ShardedFrequencyBuckets::new(4);
+    /// let shard = freq.shard_for_key(&"my_key");
+    /// assert!(shard < 4);
+    /// ```
     pub fn shard_for_key(&self, key: &K) -> usize {
         self.selector.shard_for_key(key)
     }
 
     /// Inserts a key into its shard.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// assert!(freq.insert("key"));
+    /// assert!(!freq.insert("key"));  // Already exists
+    /// ```
     pub fn insert(&self, key: K) -> bool {
         let shard = self.shard_for(&key);
         let mut buckets = self.shards[shard].write();
@@ -873,6 +1618,18 @@ where
     }
 
     /// Touches a key in its shard.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("key");
+    ///
+    /// assert_eq!(freq.touch(&"key"), Some(2));
+    /// assert_eq!(freq.touch(&"missing"), None);
+    /// ```
     pub fn touch(&self, key: &K) -> Option<u64> {
         let shard = self.shard_for(key);
         let mut buckets = self.shards[shard].write();
@@ -880,6 +1637,18 @@ where
     }
 
     /// Removes a key from its shard.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("key");
+    ///
+    /// assert_eq!(freq.remove(&"key"), Some(1));
+    /// assert_eq!(freq.remove(&"key"), None);
+    /// ```
     pub fn remove(&self, key: &K) -> Option<u64> {
         let shard = self.shard_for(key);
         let mut buckets = self.shards[shard].write();
@@ -887,6 +1656,18 @@ where
     }
 
     /// Returns the frequency for a key in its shard.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("key");
+    /// freq.touch(&"key");
+    ///
+    /// assert_eq!(freq.frequency(&"key"), Some(2));
+    /// ```
     pub fn frequency(&self, key: &K) -> Option<u64> {
         let shard = self.shard_for(key);
         let buckets = self.shards[shard].read();
@@ -894,6 +1675,18 @@ where
     }
 
     /// Returns `true` if the key exists in its shard.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("key");
+    ///
+    /// assert!(freq.contains(&"key"));
+    /// assert!(!freq.contains(&"missing"));
+    /// ```
     pub fn contains(&self, key: &K) -> bool {
         let shard = self.shard_for(key);
         let buckets = self.shards[shard].read();
@@ -901,16 +1694,54 @@ where
     }
 
     /// Returns the total number of keys across all shards.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.insert("c");
+    ///
+    /// assert_eq!(freq.len(), 3);
+    /// ```
     pub fn len(&self) -> usize {
         self.shards.iter().map(|b| b.read().len()).sum()
     }
 
     /// Returns `true` if all shards are empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq: ShardedFrequencyBuckets<&str> = ShardedFrequencyBuckets::new(4);
+    /// assert!(freq.is_empty());
+    ///
+    /// freq.insert("key");
+    /// assert!(!freq.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Clears all shards.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    ///
+    /// freq.clear();
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn clear(&self) {
         for shard in &self.shards {
             shard.write().clear();
@@ -918,13 +1749,43 @@ where
     }
 
     /// Clears all shards and shrinks internal storage.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::with_shards(4, 100);
+    /// freq.insert("a");
+    ///
+    /// freq.clear_shrink();
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn clear_shrink(&self) {
         for shard in &self.shards {
             shard.write().clear_shrink();
         }
     }
 
-    /// Returns an iterator-like snapshot of `(SlotId, meta)` for a given frequency.
+    /// Returns a snapshot of `(SlotId, meta)` for a given frequency.
+    ///
+    /// Collects entries from all shards at the specified frequency.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"a");  // "a" at freq=2
+    ///
+    /// // Get all entries at frequency 1
+    /// let at_freq_1 = freq.iter_bucket_entries(1);
+    /// assert_eq!(at_freq_1.len(), 1);
+    /// assert_eq!(at_freq_1[0].1.key, "b");
+    /// ```
     pub fn iter_bucket_entries(
         &self,
         freq: u64,
@@ -946,7 +1807,21 @@ where
         entries
     }
 
-    /// Returns an iterator-like snapshot of all `(SlotId, meta)` entries.
+    /// Returns a snapshot of all `(SlotId, meta)` entries across all shards.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"a");
+    ///
+    /// let all = freq.iter_entries();
+    /// assert_eq!(all.len(), 2);
+    /// ```
     pub fn iter_entries(&self) -> Vec<(SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
         let mut entries = Vec::new();
         for shard in &self.shards {
@@ -966,6 +1841,27 @@ where
     }
 
     /// Returns a snapshot of `(shard_idx, SlotId, meta)` for a given frequency.
+    ///
+    /// Includes the shard index for each entry.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    ///
+    /// let entries = freq.iter_bucket_entries_with_shard(1);
+    /// assert_eq!(entries.len(), 2);
+    ///
+    /// // Each entry includes its shard index
+    /// for (shard_idx, _slot_id, meta) in &entries {
+    ///     assert!(*shard_idx < 4);
+    ///     assert_eq!(meta.freq, 1);
+    /// }
+    /// ```
     pub fn iter_bucket_entries_with_shard(
         &self,
         freq: u64,
@@ -989,6 +1885,26 @@ where
     }
 
     /// Returns a snapshot of all `(shard_idx, SlotId, meta)` entries.
+    ///
+    /// Includes the shard index for each entry.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"a");
+    ///
+    /// let all = freq.iter_entries_with_shard();
+    /// assert_eq!(all.len(), 2);
+    ///
+    /// // Find the entry for "a" and verify its frequency
+    /// let a_entry = all.iter().find(|(_, _, m)| m.key == "a").unwrap();
+    /// assert_eq!(a_entry.2.freq, 2);
+    /// ```
     pub fn iter_entries_with_shard(
         &self,
     ) -> Vec<(usize, SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
@@ -1011,6 +1927,16 @@ where
     }
 
     /// Returns an approximate memory footprint in bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq: ShardedFrequencyBuckets<u64> = ShardedFrequencyBuckets::new(4);
+    /// let bytes = freq.approx_bytes();
+    /// assert!(bytes > 0);
+    /// ```
     pub fn approx_bytes(&self) -> usize {
         self.shards
             .iter()
@@ -1019,6 +1945,25 @@ where
     }
 
     /// Peeks the global min across shards by cloning the candidate.
+    ///
+    /// Scans all shards to find the one with the lowest `min_freq`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"b");  // "b" at freq=2
+    ///
+    /// // Peek returns "a" (lowest frequency)
+    /// let (key, freq_val) = freq.peek_min().unwrap();
+    /// assert_eq!(key, "a");
+    /// assert_eq!(freq_val, 1);
+    /// assert_eq!(freq.len(), 2);  // Not removed
+    /// ```
     pub fn peek_min(&self) -> Option<(K, u64)> {
         let mut best: Option<(usize, u64)> = None;
         for (idx, shard) in self.shards.iter().enumerate() {
@@ -1037,6 +1982,26 @@ where
     }
 
     /// Pops the global min across shards (scan by min_freq).
+    ///
+    /// Scans all shards, finds the one with the lowest `min_freq`, and
+    /// evicts from that shard.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedFrequencyBuckets;
+    ///
+    /// let freq = ShardedFrequencyBuckets::new(4);
+    /// freq.insert("a");
+    /// freq.insert("b");
+    /// freq.touch(&"b");  // "b" at freq=2
+    ///
+    /// // Pop evicts "a" (lowest frequency)
+    /// let (key, freq_val) = freq.pop_min().unwrap();
+    /// assert_eq!(key, "a");
+    /// assert_eq!(freq_val, 1);
+    /// assert_eq!(freq.len(), 1);
+    /// ```
     pub fn pop_min(&self) -> Option<(K, u64)> {
         let mut best: Option<(usize, u64)> = None;
         for (idx, shard) in self.shards.iter().enumerate() {
@@ -1055,8 +2020,43 @@ where
     }
 }
 
-#[derive(Debug)]
 /// Frequency buckets keyed by a compact handle (for interned keys).
+///
+/// Wraps [`FrequencyBuckets`] for use with interned keys where `H: Copy`.
+/// Avoids cloning large keys by using compact handles (e.g., `u64`) that
+/// are interned elsewhere (see [`KeyInterner`](crate::ds::KeyInterner)).
+///
+/// # Type Parameters
+///
+/// - `H`: Handle type, must be `Eq + Hash + Copy`
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::{FrequencyBucketsHandle, KeyInterner};
+///
+/// // Use KeyInterner to map string keys to u64 handles
+/// let mut interner = KeyInterner::new();
+/// let mut freq = FrequencyBucketsHandle::new();
+///
+/// let h1 = interner.intern(&"long_key_name".to_string());
+/// let h2 = interner.intern(&"another_key".to_string());
+///
+/// freq.insert(h1);
+/// freq.insert(h2);
+/// freq.touch(&h1);
+///
+/// assert_eq!(freq.frequency(&h1), Some(2));
+/// assert_eq!(freq.frequency(&h2), Some(1));
+///
+/// // Evict LFU (handle h2)
+/// let (evicted_handle, freq_val) = freq.pop_min().unwrap();
+/// assert_eq!(evicted_handle, h2);
+///
+/// // Resolve handle back to key if needed
+/// assert_eq!(interner.resolve(evicted_handle), Some(&"another_key".to_string()));
+/// ```
+#[derive(Debug)]
 pub struct FrequencyBucketsHandle<H> {
     inner: FrequencyBuckets<H>,
 }
@@ -1066,6 +2066,15 @@ where
     H: Eq + Hash + Copy,
 {
     /// Creates an empty tracker.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::new();
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self {
             inner: FrequencyBuckets::new(),
@@ -1073,126 +2082,446 @@ where
     }
 
     /// Returns the number of tracked handles.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// assert_eq!(freq.len(), 0);
+    ///
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    /// assert_eq!(freq.len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
     /// Returns `true` if there are no tracked handles.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::new();
+    /// assert!(freq.is_empty());
+    ///
+    /// freq.insert(1);
+    /// assert!(!freq.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
     /// Returns `true` if `handle` is present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(42u64);
+    ///
+    /// assert!(freq.contains(&42));
+    /// assert!(!freq.contains(&99));
+    /// ```
     pub fn contains(&self, handle: &H) -> bool {
         self.inner.contains(handle)
     }
 
     /// Returns the current frequency for `handle`, if present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.touch(&1);
+    ///
+    /// assert_eq!(freq.frequency(&1), Some(2));
+    /// assert_eq!(freq.frequency(&99), None);
+    /// ```
     pub fn frequency(&self, handle: &H) -> Option<u64> {
         self.inner.frequency(handle)
     }
 
     /// Returns the current epoch.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::new();
+    /// assert_eq!(freq.current_epoch(), 0);
+    /// ```
     pub fn current_epoch(&self) -> u64 {
         self.inner.current_epoch()
     }
 
     /// Advances the epoch counter and returns the new value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::new();
+    /// assert_eq!(freq.advance_epoch(), 1);
+    /// assert_eq!(freq.advance_epoch(), 2);
+    /// assert_eq!(freq.current_epoch(), 2);
+    /// ```
     pub fn advance_epoch(&mut self) -> u64 {
         self.inner.advance_epoch()
     }
 
     /// Sets the epoch counter.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::new();
+    /// freq.set_epoch(100);
+    /// assert_eq!(freq.current_epoch(), 100);
+    /// ```
     pub fn set_epoch(&mut self, epoch: u64) {
         self.inner.set_epoch(epoch);
     }
 
     /// Returns the last epoch recorded for `handle`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.set_epoch(10);
+    /// freq.insert(1u64);
+    ///
+    /// assert_eq!(freq.entry_epoch(&1), Some(10));
+    /// ```
     pub fn entry_epoch(&self, handle: &H) -> Option<u64> {
         self.inner.entry_epoch(handle)
     }
 
     /// Sets the last epoch for `handle`; returns `false` if missing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    ///
+    /// assert!(freq.set_entry_epoch(&1, 42));
+    /// assert_eq!(freq.entry_epoch(&1), Some(42));
+    /// ```
     pub fn set_entry_epoch(&mut self, handle: &H, epoch: u64) -> bool {
         self.inner.set_entry_epoch(handle, epoch)
     }
 
     /// Returns the minimum frequency currently present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// assert_eq!(freq.min_freq(), None);
+    ///
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    /// freq.touch(&1);
+    ///
+    /// assert_eq!(freq.min_freq(), Some(1));  // Handle 2 is at freq=1
+    /// ```
     pub fn min_freq(&self) -> Option<u64> {
         self.inner.min_freq()
     }
 
     /// Peeks the eviction candidate `(handle, freq)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    /// freq.touch(&2);
+    ///
+    /// let (handle, freq_val) = freq.peek_min().unwrap();
+    /// assert_eq!(handle, 1);  // Handle 1 has lowest freq
+    /// assert_eq!(freq_val, 1);
+    /// ```
     pub fn peek_min(&self) -> Option<(H, u64)> {
         self.inner.peek_min().map(|(handle, freq)| (*handle, freq))
     }
 
     /// Peeks the eviction candidate by reference `(handle, freq)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    ///
+    /// let (handle_ref, freq_val) = freq.peek_min_ref().unwrap();
+    /// assert_eq!(*handle_ref, 1);
+    /// assert_eq!(freq_val, 1);
+    /// ```
     pub fn peek_min_ref(&self) -> Option<(&H, u64)> {
         self.inner.peek_min()
     }
 
     /// Returns an iterator of SlotIds for a given frequency, from head to tail.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    ///
+    /// let ids: Vec<_> = freq.iter_bucket_ids(1).collect();
+    /// assert_eq!(ids.len(), 2);
+    /// ```
     pub fn iter_bucket_ids(&self, freq: u64) -> FrequencyBucketIdIter<'_, H> {
         self.inner.iter_bucket_ids(freq)
     }
 
     /// Returns an iterator of `(SlotId, meta)` for a given frequency.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    /// freq.touch(&1);
+    ///
+    /// // Only handle 2 is at frequency 1
+    /// let entries: Vec<_> = freq.iter_bucket_entries(1).collect();
+    /// assert_eq!(entries.len(), 1);
+    /// assert_eq!(*entries[0].1.key, 2);
+    /// ```
     pub fn iter_bucket_entries(&self, freq: u64) -> FrequencyBucketEntryIter<'_, H> {
         self.inner.iter_bucket_entries(freq)
     }
 
     /// Returns an iterator over all `(SlotId, meta)` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    ///
+    /// let entries: Vec<_> = freq.iter_entries().collect();
+    /// assert_eq!(entries.len(), 2);
+    /// ```
     pub fn iter_entries(&self) -> impl Iterator<Item = (SlotId, FrequencyBucketEntryMeta<'_, H>)> {
         self.inner.iter_entries()
     }
 
     /// Inserts a new handle with frequency 1.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    ///
+    /// assert!(freq.insert(1u64));   // New handle
+    /// assert!(!freq.insert(1u64));  // Already exists
+    /// assert_eq!(freq.frequency(&1), Some(1));
+    /// ```
     pub fn insert(&mut self, handle: H) -> bool {
         self.inner.insert(handle)
     }
 
     /// Increments frequency for `handle` and returns the new frequency.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    ///
+    /// assert_eq!(freq.touch(&1), Some(2));
+    /// assert_eq!(freq.touch(&1), Some(3));
+    /// assert_eq!(freq.touch(&99), None);  // Missing
+    /// ```
     pub fn touch(&mut self, handle: &H) -> Option<u64> {
         self.inner.touch(handle)
     }
 
     /// Increments frequency for `handle`, clamping at `max_freq`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    ///
+    /// assert_eq!(freq.touch_capped(&1, 3), Some(2));
+    /// assert_eq!(freq.touch_capped(&1, 3), Some(3));
+    /// assert_eq!(freq.touch_capped(&1, 3), Some(3));  // Capped
+    /// ```
     pub fn touch_capped(&mut self, handle: &H, max_freq: u64) -> Option<u64> {
         self.inner.touch_capped(handle, max_freq)
     }
 
     /// Removes `handle` from tracking and returns its previous frequency.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.touch(&1);
+    ///
+    /// assert_eq!(freq.remove(&1), Some(2));
+    /// assert_eq!(freq.remove(&1), None);  // Already removed
+    /// ```
     pub fn remove(&mut self, handle: &H) -> Option<u64> {
         self.inner.remove(handle)
     }
 
     /// Removes and returns the eviction candidate `(handle, freq)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    /// freq.touch(&2);
+    ///
+    /// let (handle, freq_val) = freq.pop_min().unwrap();
+    /// assert_eq!(handle, 1);  // Handle 1 evicted (lowest freq)
+    /// assert_eq!(freq_val, 1);
+    /// ```
     pub fn pop_min(&mut self) -> Option<(H, u64)> {
         self.inner.pop_min()
     }
 
     /// Halves all frequencies (rounding down), clamping at 1.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// for _ in 0..9 { freq.touch(&1); }  // freq=10
+    ///
+    /// freq.decay_halve();
+    /// assert_eq!(freq.frequency(&1), Some(5));
+    /// ```
     pub fn decay_halve(&mut self) {
         self.inner.decay_halve();
     }
 
     /// Rebases frequencies so the current minimum becomes 1.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    /// for _ in 0..4 { freq.touch(&1); }  // handle 1 at freq=5
+    /// for _ in 0..2 { freq.touch(&2); }  // handle 2 at freq=3
+    ///
+    /// freq.rebase_min_freq();
+    /// assert_eq!(freq.frequency(&2), Some(1));  // 3 - 2 = 1
+    /// assert_eq!(freq.frequency(&1), Some(3));  // 5 - 2 = 3
+    /// ```
     pub fn rebase_min_freq(&mut self) {
         self.inner.rebase_min_freq();
     }
 
     /// Clears all state.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    ///
+    /// freq.clear();
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn clear(&mut self) {
         self.inner.clear();
     }
 
     /// Clears all state and shrinks internal storage.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    ///
+    /// freq.clear_shrink();
+    /// assert!(freq.is_empty());
+    /// ```
     pub fn clear_shrink(&mut self) {
         self.inner.clear_shrink();
     }
 
     /// Returns an approximate memory footprint in bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FrequencyBucketsHandle;
+    ///
+    /// let freq: FrequencyBucketsHandle<u64> = FrequencyBucketsHandle::new();
+    /// let bytes = freq.approx_bytes();
+    /// assert!(bytes > 0);
+    /// ```
     pub fn approx_bytes(&self) -> usize {
         self.inner.approx_bytes()
     }
@@ -1220,6 +2549,9 @@ where
 }
 
 /// Iterator over SlotIds for a given frequency bucket.
+///
+/// Created by [`FrequencyBuckets::iter_bucket_ids`]. Yields entries from
+/// head (MRU) to tail (LRU) within a single frequency bucket.
 pub struct FrequencyBucketIdIter<'a, K> {
     buckets: &'a FrequencyBuckets<K>,
     current: Option<SlotId>,
@@ -1237,6 +2569,10 @@ impl<'a, K> Iterator for FrequencyBucketIdIter<'a, K> {
 }
 
 /// Iterator over `(SlotId, meta)` for a given frequency bucket.
+///
+/// Created by [`FrequencyBuckets::iter_bucket_entries`]. Yields entries from
+/// head (MRU) to tail (LRU) within a single frequency bucket, including
+/// metadata like key, frequency, and last_epoch.
 pub struct FrequencyBucketEntryIter<'a, K> {
     buckets: &'a FrequencyBuckets<K>,
     current: Option<SlotId>,

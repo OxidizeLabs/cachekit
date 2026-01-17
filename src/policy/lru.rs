@@ -581,8 +581,31 @@ impl<K, V> LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    /// Zero-copy peek: read-only lookup without LRU update (allows concurrent reads)
-    /// Returns `Arc<V>` clone for zero-copy sharing
+    /// Zero-copy peek: read-only lookup without LRU update.
+    ///
+    /// Returns `Arc<V>` clone for zero-copy sharing. Unlike [`get`](CoreCache::get),
+    /// this does not move the item to the MRU position.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::LruCore;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LruCore<u32, String> = LruCore::new(3);
+    /// cache.insert(1, Arc::new("first".to_string()));
+    /// cache.insert(2, Arc::new("second".to_string()));
+    ///
+    /// // Peek doesn't affect LRU order
+    /// let value = cache.peek(&1);
+    /// assert_eq!(*value.unwrap(), "first");
+    ///
+    /// // Key 1 is still LRU (will be evicted first)
+    /// cache.insert(3, Arc::new("third".to_string()));
+    /// cache.insert(4, Arc::new("fourth".to_string()));
+    /// assert!(!cache.contains(&1));  // Evicted
+    /// ```
     pub fn peek(&self, key: &K) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
@@ -814,12 +837,19 @@ where
     /// Creates a new thread-safe LRU cache with the given capacity.
     ///
     /// # Arguments
+    ///
     /// * `capacity` - Maximum number of items the cache can hold. A capacity of 0
     ///   creates a cache that accepts no items.
     ///
-    /// # Panics
+    /// # Example
     ///
-    /// This function does not panic.
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// assert_eq!(cache.capacity(), 100);
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn new(capacity: usize) -> Self {
         ConcurrentLruCache {
             inner: Arc::new(RwLock::new(LruCore::new(capacity))),
@@ -829,81 +859,283 @@ where
     /// Inserts a value, wrapping it in `Arc<V>` internally.
     ///
     /// Returns the previous `Arc<V>` if the key existed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    ///
+    /// // Insert new value
+    /// let old = cache.insert(1, "first".to_string());
+    /// assert!(old.is_none());
+    ///
+    /// // Update existing value
+    /// let old = cache.insert(1, "updated".to_string());
+    /// assert_eq!(*old.unwrap(), "first");
+    /// ```
     pub fn insert(&self, key: K, value: V) -> Option<Arc<V>> {
         let value_arc = Arc::new(value); // Wrap in Arc once
         let mut cache = self.inner.write();
         cache.insert(key, value_arc)
     }
 
-    /// Insert `Arc<V>` directly (zero-copy if already Arc-wrapped)
+    /// Inserts an `Arc<V>` directly (zero-copy if already Arc-wrapped).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    /// use std::sync::Arc;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    ///
+    /// // Share the same Arc across multiple places
+    /// let shared = Arc::new("shared_data".to_string());
+    /// cache.insert_arc(1, Arc::clone(&shared));
+    ///
+    /// // Retrieved value is the same Arc instance
+    /// let retrieved = cache.get(&1).unwrap();
+    /// assert!(Arc::ptr_eq(&shared, &retrieved));
+    /// ```
     pub fn insert_arc(&self, key: K, value: Arc<V>) -> Option<Arc<V>> {
         let mut cache = self.inner.write();
         cache.insert(key, value)
     }
 
-    /// Get with LRU update (requires write lock)
-    /// Returns `Arc<V>` for zero-copy sharing
+    /// Gets a value by key, moving it to MRU position.
+    ///
+    /// Requires write lock because it updates LRU order.
+    /// Returns `Arc<V>` for zero-copy sharing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// cache.insert(1, "value".to_string());
+    ///
+    /// // Get moves item to MRU position
+    /// let value = cache.get(&1);
+    /// assert_eq!(*value.unwrap(), "value");
+    ///
+    /// // Missing key returns None
+    /// assert!(cache.get(&999).is_none());
+    /// ```
     pub fn get(&self, key: &K) -> Option<Arc<V>> {
         let mut cache = self.inner.write();
         cache.get(key).map(Arc::clone)
     }
 
-    /// Peek without LRU update (allows concurrent reads)
-    /// Perfect for read-heavy buffer pool workloads
+    /// Peeks a value without affecting LRU order.
+    ///
+    /// Only requires read lock, allowing concurrent reads.
+    /// Perfect for read-heavy workloads.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(3);
+    /// cache.insert(1, "first".to_string());
+    /// cache.insert(2, "second".to_string());
+    ///
+    /// // Peek doesn't change LRU order
+    /// assert_eq!(*cache.peek(&1).unwrap(), "first");
+    ///
+    /// // Key 1 is still LRU (oldest), will be evicted first
+    /// cache.insert(3, "third".to_string());
+    /// cache.insert(4, "fourth".to_string());  // Evicts key 1
+    /// assert!(!cache.contains(&1));
+    /// ```
     pub fn peek(&self, key: &K) -> Option<Arc<V>> {
         let cache = self.inner.read();
         cache.peek(key)
     }
 
-    /// Remove entry and return `Arc<V>`
+    /// Removes an entry and returns its `Arc<V>`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// cache.insert(1, "value".to_string());
+    ///
+    /// let removed = cache.remove(&1);
+    /// assert_eq!(*removed.unwrap(), "value");
+    /// assert!(!cache.contains(&1));
+    /// ```
     pub fn remove(&self, key: &K) -> Option<Arc<V>> {
         let mut cache = self.inner.write();
         cache.remove(key)
     }
 
-    /// Touch entry to mark as recently used
+    /// Touches an entry to mark it as recently used without retrieving its value.
+    ///
+    /// Returns `true` if the key was found, `false` otherwise.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(3);
+    /// cache.insert(1, "first".to_string());
+    /// cache.insert(2, "second".to_string());
+    /// cache.insert(3, "third".to_string());
+    ///
+    /// // Touch key 1 to make it MRU
+    /// assert!(cache.touch(&1));
+    ///
+    /// // Now key 2 is LRU (will be evicted first)
+    /// cache.insert(4, "fourth".to_string());
+    /// assert!(cache.contains(&1));  // Still present (was touched)
+    /// assert!(!cache.contains(&2)); // Evicted
+    ///
+    /// // Touch non-existent key
+    /// assert!(!cache.touch(&999));
+    /// ```
     pub fn touch(&self, key: &K) -> bool {
         let mut cache = self.inner.write();
         cache.touch(key)
     }
 
-    /// Get current cache length
+    /// Returns the current number of entries in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// assert_eq!(cache.len(), 0);
+    ///
+    /// cache.insert(1, "a".to_string());
+    /// cache.insert(2, "b".to_string());
+    /// assert_eq!(cache.len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         let cache = self.inner.read();
         cache.len()
     }
 
-    /// Check if cache is empty
+    /// Returns `true` if the cache is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// assert!(cache.is_empty());
+    ///
+    /// cache.insert(1, "value".to_string());
+    /// assert!(!cache.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         let cache = self.inner.read();
         cache.len() == 0
     }
 
-    /// Get cache capacity
+    /// Returns the maximum capacity of the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(256);
+    /// assert_eq!(cache.capacity(), 256);
+    /// ```
     pub fn capacity(&self) -> usize {
         let cache = self.inner.read();
         cache.capacity()
     }
 
-    /// Check if key exists (read-only)
+    /// Returns `true` if the key exists in the cache.
+    ///
+    /// This is a read-only operation that doesn't affect LRU order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// cache.insert(1, "value".to_string());
+    ///
+    /// assert!(cache.contains(&1));
+    /// assert!(!cache.contains(&2));
+    /// ```
     pub fn contains(&self, key: &K) -> bool {
         let cache = self.inner.read();
         cache.contains(key)
     }
 
-    /// Clear all entries
+    /// Clears all entries from the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// cache.insert(1, "a".to_string());
+    /// cache.insert(2, "b".to_string());
+    ///
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn clear(&self) {
         let mut cache = self.inner.write();
         cache.clear()
     }
 
-    /// Pop least recently used entry
+    /// Removes and returns the least recently used entry.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// cache.insert(1, "first".to_string());
+    /// cache.insert(2, "second".to_string());
+    /// cache.insert(3, "third".to_string());
+    ///
+    /// // Key 1 is LRU (oldest)
+    /// let (key, value) = cache.pop_lru().unwrap();
+    /// assert_eq!(key, 1);
+    /// assert_eq!(*value, "first");
+    /// assert_eq!(cache.len(), 2);
+    /// ```
     pub fn pop_lru(&self) -> Option<(K, Arc<V>)> {
         let mut cache = self.inner.write();
         cache.pop_lru()
     }
 
-    /// Peek at least recently used entry
+    /// Peeks at the least recently used entry without removing it.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::ConcurrentLruCache;
+    ///
+    /// let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+    /// cache.insert(1, "first".to_string());
+    /// cache.insert(2, "second".to_string());
+    ///
+    /// // Peek at LRU without removing
+    /// let (key, value) = cache.peek_lru().unwrap();
+    /// assert_eq!(key, 1);
+    /// assert_eq!(*value, "first");
+    /// assert_eq!(cache.len(), 2);  // Still 2 entries
+    /// ```
     pub fn peek_lru(&self) -> Option<(K, Arc<V>)> {
         let cache = self.inner.read();
         cache.peek_lru().map(|(k, v)| (*k, Arc::clone(v)))

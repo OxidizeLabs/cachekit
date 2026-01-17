@@ -253,7 +253,43 @@ use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 ///
 /// Uses a binary min-heap for efficient LFU item identification.
 /// Values are stored as `Arc<V>` to avoid cloning on eviction.
-/// See module-level documentation for details.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Clone + Ord`
+/// - `V`: Value type (stored as `Arc<V>`)
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::heap_lfu::HeapLfuCache;
+/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use std::sync::Arc;
+///
+/// let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(3);
+///
+/// // Insert items (frequency starts at 1)
+/// cache.insert("a".to_string(), Arc::new(1));
+/// cache.insert("b".to_string(), Arc::new(2));
+/// cache.insert("c".to_string(), Arc::new(3));
+///
+/// // Access increases frequency (O(log n) heap update)
+/// cache.get(&"a".to_string());  // freq: 1 → 2
+/// cache.get(&"a".to_string());  // freq: 2 → 3
+///
+/// assert_eq!(cache.frequency(&"a".to_string()), Some(3));
+/// assert_eq!(cache.frequency(&"b".to_string()), Some(1));
+///
+/// // New insert evicts LFU item (O(log n))
+/// cache.insert("d".to_string(), Arc::new(4));
+/// assert!(!cache.contains(&"b".to_string()));  // b was evicted (freq=1)
+/// ```
+///
+/// # Stale Entry Handling
+///
+/// The heap may contain stale entries with outdated frequencies. These are
+/// lazily cleaned during `pop_lfu()` operations. Periodic heap rebuilds
+/// bound memory growth.
 #[derive(Debug)]
 pub struct HeapLfuCache<K, V>
 where
@@ -270,20 +306,20 @@ impl<K, V> HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
+    /// Maximum ratio of heap size to live entries before rebuild.
     const MAX_HEAP_FACTOR: usize = 4;
 
     /// Creates a new HeapLfuCache with the specified capacity.
     ///
-    /// # Arguments
-    /// * `capacity` - Maximum number of items the cache can hold
+    /// # Example
     ///
-    /// # Examples
-    /// ```rust,no_run
+    /// ```
     /// use cachekit::policy::heap_lfu::HeapLfuCache;
     ///
     /// let cache: HeapLfuCache<String, i32> = HeapLfuCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
     /// assert_eq!(cache.len(), 0);
+    /// assert!(cache.is_empty());
     /// ```
     pub fn new(capacity: usize) -> Self {
         HeapLfuCache {
@@ -294,58 +330,140 @@ where
     }
 
     /// Returns the maximum capacity of the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
+    ///
+    /// let cache: HeapLfuCache<String, i32> = HeapLfuCache::new(50);
+    /// assert_eq!(cache.capacity(), 50);
+    /// ```
     pub fn capacity(&self) -> usize {
         self.store.capacity()
     }
 
     /// Returns the current number of items in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
+    /// assert_eq!(cache.len(), 0);
+    ///
+    /// cache.insert("a", Arc::new(1));
+    /// assert_eq!(cache.len(), 1);
+    /// ```
     pub fn len(&self) -> usize {
         self.store.len()
     }
 
     /// Returns true if the cache is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
+    /// assert!(cache.is_empty());
+    ///
+    /// cache.insert("a", Arc::new(1));
+    /// assert!(!cache.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.store.is_empty()
     }
 
     /// Checks if the cache contains the specified key.
     ///
-    /// This operation is O(1) and does not affect access frequencies.
+    /// O(1) operation that does not affect access frequencies.
     ///
-    /// # Arguments
-    /// * `key` - The key to check for
+    /// # Example
     ///
-    /// # Returns
-    /// `true` if the key exists in the cache, `false` otherwise
+    /// ```
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
+    /// cache.insert("key", Arc::new(42));
+    ///
+    /// assert!(cache.contains(&"key"));
+    /// assert!(!cache.contains(&"missing"));
+    /// ```
     pub fn contains(&self, key: &K) -> bool {
         self.store.contains(key)
     }
 
     /// Gets the current access frequency for a key.
     ///
-    /// # Arguments
-    /// * `key` - The key to get frequency for
+    /// # Example
     ///
-    /// # Returns
-    /// `Some(frequency)` if the key exists, `None` otherwise
+    /// ```
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
+    /// cache.insert("key", Arc::new(42));
+    /// assert_eq!(cache.frequency(&"key"), Some(1));
+    ///
+    /// cache.get(&"key");
+    /// assert_eq!(cache.frequency(&"key"), Some(2));
+    ///
+    /// assert_eq!(cache.frequency(&"missing"), None);
+    /// ```
     pub fn frequency(&self, key: &K) -> Option<u64> {
         self.frequencies.get(key).copied()
     }
 
     /// Clears all items from the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
+    /// cache.insert("a", Arc::new(1));
+    /// cache.insert("b", Arc::new(2));
+    ///
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn clear(&mut self) {
         self.store.clear();
         self.frequencies.clear();
         self.freq_heap.clear();
     }
 
-    /// Private helper to add a frequency entry to the heap.
+    /// Adds a frequency entry to the heap.
+    ///
+    /// Creates a new heap entry for the key. Old entries become stale
+    /// and are cleaned lazily during `pop_lfu_internal()`.
+    ///
+    /// Complexity: O(log n).
     fn add_to_heap(&mut self, key: &K, frequency: u64) {
         self.freq_heap.push(Reverse((frequency, key.clone())));
         self.maybe_rebuild_heap();
     }
 
-    /// Bound the heap size by rebuilding from the authoritative frequencies map.
+    /// Rebuilds heap if it exceeds `MAX_HEAP_FACTOR * live_entries`.
+    ///
+    /// Drops all stale entries by rebuilding from the authoritative
+    /// `frequencies` map. This bounds memory growth from accumulated
+    /// stale entries.
+    ///
+    /// Complexity: O(n) when triggered, amortized O(1).
     fn maybe_rebuild_heap(&mut self) {
         let live_entries = self.store.len().max(1);
         let max_heap_len = live_entries.saturating_mul(Self::MAX_HEAP_FACTOR);
@@ -361,8 +479,13 @@ where
         }
     }
 
-    /// Private helper to remove stale entries from the front of the heap.
-    /// Returns the current minimum frequency key, or None if cache is empty.
+    /// Pops the minimum frequency entry, skipping stale entries.
+    ///
+    /// Returns the key and frequency of the LFU item. Stale entries
+    /// (where heap frequency != current frequency) are discarded.
+    /// May trigger heap rebuild after many stale pops.
+    ///
+    /// Complexity: O(log n) amortized.
     fn pop_lfu_internal(&mut self) -> Option<(K, u64)> {
         let mut stale_pops = 0usize;
         while let Some(Reverse((heap_freq, key))) = self.freq_heap.peek() {
@@ -386,8 +509,11 @@ where
         None
     }
 
-    /// Private helper to ensure cache doesn't exceed capacity.
-    /// Evicts the least frequently used item if necessary.
+    /// Evicts LFU item if cache is at capacity.
+    ///
+    /// Called before inserting new items to maintain capacity constraint.
+    ///
+    /// Complexity: O(log n) when eviction occurs.
     fn ensure_capacity(&mut self) -> Option<(K, Arc<V>)> {
         if self.store.len() >= self.store.capacity() {
             self.pop_lfu()
@@ -397,7 +523,32 @@ where
     }
 }
 
-// Implementation of CoreCache trait
+/// Core cache operations for heap-based LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::heap_lfu::HeapLfuCache;
+/// use cachekit::traits::CoreCache;
+/// use std::sync::Arc;
+///
+/// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(3);
+///
+/// // Insert items
+/// cache.insert("a", Arc::new(1));
+/// cache.insert("b", Arc::new(2));
+///
+/// // Get returns reference
+/// assert_eq!(**cache.get(&"a").unwrap(), 1);
+///
+/// // Contains check
+/// assert!(cache.contains(&"a"));
+/// assert!(!cache.contains(&"z"));
+///
+/// // Length and capacity
+/// assert_eq!(cache.len(), 2);
+/// assert_eq!(cache.capacity(), 3);
+/// ```
 impl<K, V> CoreCache<K, Arc<V>> for HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
@@ -457,7 +608,22 @@ where
     }
 }
 
-// Implementation of MutableCache trait for arbitrary key removal
+/// Mutable cache operations for heap-based LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::heap_lfu::HeapLfuCache;
+/// use cachekit::traits::{CoreCache, MutableCache};
+/// use std::sync::Arc;
+///
+/// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
+/// cache.insert("key", Arc::new(42));
+///
+/// let removed = cache.remove(&"key");
+/// assert_eq!(*removed.unwrap(), 42);
+/// assert!(!cache.contains(&"key"));
+/// ```
 impl<K, V> MutableCache<K, Arc<V>> for HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
@@ -478,7 +644,39 @@ where
     }
 }
 
-// Implementation of LfuCacheTrait for specialized LFU operations
+/// LFU-specific operations for heap-based cache.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::heap_lfu::HeapLfuCache;
+/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use std::sync::Arc;
+///
+/// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(3);
+/// cache.insert("a", Arc::new(1));
+/// cache.insert("b", Arc::new(2));
+/// cache.get(&"a");  // freq: 1 → 2
+///
+/// // Check frequencies
+/// assert_eq!(cache.frequency(&"a"), Some(2));
+/// assert_eq!(cache.frequency(&"b"), Some(1));
+///
+/// // Peek at LFU victim (O(n) scan)
+/// let (key, _) = cache.peek_lfu().unwrap();
+/// assert_eq!(*key, "b");  // lowest frequency
+///
+/// // Pop LFU (O(log n) amortized)
+/// let (key, value) = cache.pop_lfu().unwrap();
+/// assert_eq!(key, "b");
+/// assert_eq!(*value, 2);
+///
+/// // Manual frequency control
+/// cache.insert("c", Arc::new(3));
+/// cache.increment_frequency(&"c");  // freq: 1 → 2
+/// cache.reset_frequency(&"a");      // freq: 2 → 1
+/// assert_eq!(cache.frequency(&"a"), Some(1));
+/// ```
 impl<K, V> LfuCacheTrait<K, Arc<V>> for HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
