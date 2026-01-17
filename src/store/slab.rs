@@ -1,61 +1,159 @@
-//! Slab-backed store with EntryId indirection.
+//! Slab-backed store with stable `EntryId` indirection.
+//!
+//! Provides arena-style storage where values are accessed via stable handles
+//! ([`EntryId`]) rather than direct pointers. Handles remain valid across
+//! internal reallocations, making this ideal for policy metadata that needs
+//! to reference entries without pointer chasing.
 //!
 //! ## Architecture
-//! - Values are stored in a `Vec<Option<Entry<...>>>` with a free-list for reuse.
-//! - A `HashMap<K, EntryId>` provides key-to-slot lookup.
-//! - `EntryId` is a stable handle that survives internal reallocations.
 //!
 //! ```text
-//! entries: Vec<Option<Entry<K,V>>>
-//! index:   HashMap<K, EntryId>
-//! free:    Vec<usize>
+//! ┌─────────────────────────────────────────────────────────────────────────────┐
+//! │                          Slab Store Layout                                  │
+//! │                                                                             │
+//! │   ┌─────────────────────────────────────────────────────────────────────┐  │
+//! │   │  Key Lookup                              Slot Access                │  │
+//! │   │                                                                     │  │
+//! │   │   "user:1"  ──┐                    ┌─► ┌─────────────────────┐     │  │
+//! │   │               │    ┌───────────┐   │   │ entries[0]          │     │  │
+//! │   │   "user:2"  ──┼──► │  index    │ ──┤   │   key: "user:1"     │     │  │
+//! │   │               │    │ HashMap   │   │   │   value: {...}      │     │  │
+//! │   │   "user:3"  ──┘    │ <K,EntryId>   │   ├─────────────────────┤     │  │
+//! │   │                    └───────────┘   ├─► │ entries[1]          │     │  │
+//! │   │                          │         │   │   key: "user:2"     │     │  │
+//! │   │                          ▼         │   │   value: {...}      │     │  │
+//! │   │                    ┌───────────┐   │   ├─────────────────────┤     │  │
+//! │   │                    │  EntryId  │ ──┘   │ entries[2]: None    │◄──┐ │  │
+//! │   │                    │  (usize)  │       │   (free slot)       │   │ │  │
+//! │   │                    └───────────┘       ├─────────────────────┤   │ │  │
+//! │   │                                        │ entries[3]          │   │ │  │
+//! │   │                                        │   key: "user:3"     │   │ │  │
+//! │   │                                        │   value: {...}      │   │ │  │
+//! │   │                                        └─────────────────────┘   │ │  │
+//! │   │                                                                  │ │  │
+//! │   │   ┌────────────────┐                                             │ │  │
+//! │   │   │   free_list    │  [2] ───────────────────────────────────────┘ │  │
+//! │   │   │   Vec<usize>   │  Tracks empty slots for reuse                 │  │
+//! │   │   └────────────────┘                                               │  │
+//! │   └─────────────────────────────────────────────────────────────────────┘  │
+//! └─────────────────────────────────────────────────────────────────────────────┘
 //!
-//! EntryId -> entries[idx] -> { key, value }
-//! key -> index[key] -> EntryId
+//! Data Flow
+//! ─────────
+//!
+//!   INSERT (new key):
+//!     1. Check capacity
+//!     2. Allocate slot: pop from free_list OR push new entry
+//!     3. Store Entry { key, value } at slot
+//!     4. index.insert(key, EntryId(slot))
+//!
+//!   LOOKUP by key:
+//!     key ──► index.get(key) ──► EntryId ──► entries[id.0] ──► value
+//!
+//!   LOOKUP by EntryId:
+//!     EntryId ──► entries[id.0] ──► value   (O(1), no hash)
+//!
+//!   REMOVE:
+//!     1. index.remove(key) ──► EntryId
+//!     2. entries[id.0].take() ──► Entry
+//!     3. free_list.push(id.0)
+//!
+//! Slot Lifecycle
+//! ──────────────
+//!
+//!   [Allocated] ──remove()──► [Free] ──insert()──► [Reused]
+//!        │                       │                     │
+//!        │                       └── free_list ────────┘
+//!        │
+//!        └── entries[idx] = Some(Entry { key, value })
+//!
+//! Component Comparison
+//! ────────────────────
+//!
+//!   │ Store              │ Value Type │ EntryId Access │ Thread Safety │
+//!   │────────────────────│────────────│────────────────│───────────────│
+//!   │ SlabStore          │ V (owned)  │ O(1) &V        │ Single-thread │
+//!   │ ConcurrentSlabStore│ Arc<V>     │ O(1) Arc<V>    │ Send + Sync   │
 //! ```
 //!
 //! ## Key Components
-//! - `EntryId`: opaque handle for stable slot access.
-//! - `SlabStore<K, V>`: single-threaded store with direct value ownership.
-//! - `ConcurrentSlabStore`: thread-safe wrapper using `Arc<V>`.
+//!
+//! - [`EntryId`]: Opaque handle for stable O(1) slot access
+//! - [`SlabStore`]: Single-threaded store with direct `V` ownership
+//! - [`ConcurrentSlabStore`]: Thread-safe store with `Arc<V>` values
 //!
 //! ## Core Operations
-//! - `try_insert`: inserts or updates; reuses free slots when possible.
-//! - `remove`: removes by key and returns the stored value.
-//! - `entry_id` + `get_by_id` / `key_by_id`: stable handle lookup.
-//! - `clear`: clears all entries and free list.
+//!
+//! | Operation       | Description                           | Complexity |
+//! |-----------------|---------------------------------------|------------|
+//! | `try_insert`    | Insert/update, reuses free slots      | O(1) avg   |
+//! | `get`           | Lookup by key (updates metrics)       | O(1) avg   |
+//! | `get_by_id`     | Lookup by EntryId (no hash)           | O(1)       |
+//! | `entry_id`      | Get stable handle for a key           | O(1) avg   |
+//! | `remove`        | Remove by key, slot goes to free list | O(1) avg   |
+//! | `remove_by_id`  | Remove by handle (for eviction)       | O(1)       |
 //!
 //! ## Performance Trade-offs
-//! - Stable `EntryId` handles avoid pointer chasing and allow O(1) access.
-//! - Extra indirection vs direct hash map lookup.
-//! - Memory reuse reduces allocation churn in eviction-heavy workloads.
+//!
+//! **Advantages:**
+//! - Stable handles survive internal Vec reallocations
+//! - O(1) access by `EntryId` without hashing
+//! - Slot reuse reduces allocation churn in eviction-heavy workloads
+//! - Ideal for policy metadata (LRU lists, frequency counters)
+//!
+//! **Costs:**
+//! - Extra indirection: key → index → EntryId → entries
+//! - Keys must be `Clone` for insertion (stored in entry)
+//! - Stale `EntryId` after removal may access wrong/empty slot
 //!
 //! ## When to Use
-//! - You want stable IDs for policy metadata (e.g., LRU/LFU lists).
-//! - You need to store values once and reference them by handle.
-//! - You want predictable memory reuse under churn.
+//!
+//! - Policy metadata needs stable references to entries
+//! - Eviction patterns benefit from slot reuse
+//! - You need O(1) lookup by handle (e.g., for LRU list nodes)
+//! - Memory locality matters (entries in contiguous Vec)
 //!
 //! ## Example Usage
-//! ```rust
-//! use cachekit::store::slab::SlabStore;
-//! use cachekit::store::traits::StoreMut;
 //!
-//! let mut store: SlabStore<u64, String> = SlabStore::new(4);
-//! store.try_insert(1, "hello".to_string()).unwrap();
-//! let id = store.entry_id(&1).unwrap();
-//! assert_eq!(store.get_by_id(id), Some(&"hello".to_string()));
+//! ```rust
+//! use cachekit::store::slab::{SlabStore, EntryId};
+//! use cachekit::store::traits::{StoreCore, StoreMut};
+//!
+//! let mut store: SlabStore<String, Vec<u8>> = SlabStore::new(100);
+//!
+//! // Insert and get stable handle
+//! store.try_insert("image.png".into(), vec![0x89, 0x50]).unwrap();
+//! let id: EntryId = store.entry_id(&"image.png".into()).unwrap();
+//!
+//! // Access by handle (O(1), no hash lookup)
+//! assert_eq!(store.get_by_id(id), Some(&vec![0x89, 0x50]));
+//!
+//! // Access key from handle
+//! assert_eq!(store.key_by_id(id), Some(&"image.png".into()));
+//!
+//! // Remove and verify slot reuse
+//! store.remove(&"image.png".into());
+//! store.try_insert("icon.png".into(), vec![0x00]).unwrap();
+//! let new_id = store.entry_id(&"icon.png".into()).unwrap();
+//! assert_eq!(id.index(), new_id.index());  // Same slot reused
 //! ```
 //!
 //! ## Type Constraints
-//! - `K: Eq + Hash` for key lookup.
+//!
+//! - `K: Eq + Hash` — keys must be hashable for index lookup
+//! - `K: Clone` — keys are stored in entries (required for `StoreMut`)
+//! - Concurrent: `K: Send + Sync`, `V: Send + Sync`
 //!
 //! ## Thread Safety
-//! - `SlabStore` is single-threaded (no interior mutability).
-//! - `ConcurrentSlabStore` wraps with `RwLock` and is `Send + Sync`.
+//!
+//! - [`SlabStore`] is **not** thread-safe (single-threaded only)
+//! - [`ConcurrentSlabStore`] is `Send + Sync` via `parking_lot::RwLock`
 //!
 //! ## Implementation Notes
-//! - `EntryId` indices are reused; stale IDs are invalid after removal.
-//! - Metrics are collected via atomic counters for compatibility with concurrent use.
+//!
+//! - `EntryId` indices are reused; stale IDs after removal are undefined
+//! - Metrics use atomic counters for concurrent compatibility
+//! - `remove_by_id` enables O(1) eviction without key lookup
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -69,30 +167,77 @@ use crate::store::traits::{
     StoreFull, StoreMetrics, StoreMut,
 };
 
-/// Opaque entry handle for slab-based storage.
+/// Opaque handle for stable O(1) access to slab entries.
+///
+/// An `EntryId` is a lightweight identifier (wrapping a `usize` index) that
+/// provides direct access to a slab slot without hashing. Handles remain
+/// valid as long as the entry exists—removal invalidates the handle.
+///
+/// # Stability
+///
+/// Unlike pointers, `EntryId` values survive internal `Vec` reallocations.
+/// The index points to a slot, not a memory address.
+///
+/// # Invalidation
+///
+/// After `remove()` or `remove_by_id()`, the slot is returned to the free
+/// list and may be reused. Accessing a stale `EntryId` may return `None`
+/// or a different entry's data.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::store::slab::{SlabStore, EntryId};
+/// use cachekit::store::traits::StoreMut;
+///
+/// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
+/// store.try_insert("key", 42).unwrap();
+///
+/// // Get stable handle
+/// let id: EntryId = store.entry_id(&"key").unwrap();
+///
+/// // Access by handle (O(1))
+/// assert_eq!(store.get_by_id(id), Some(&42));
+///
+/// // Inspect raw index (for debugging/logging)
+/// println!("Entry at slot {}", id.index());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntryId(usize);
 
 impl EntryId {
-    /// Get the raw index value.
+    /// Returns the raw slot index.
+    ///
+    /// Useful for debugging, logging, or custom data structures that need
+    /// to track slot positions.
     pub fn index(&self) -> usize {
         self.0
     }
 }
 
+/// Internal entry holding key-value pair in a slab slot.
 #[derive(Debug)]
 struct Entry<K, V> {
     key: K,
     value: V,
 }
 
+/// Metrics counters using atomics for thread-safe updates.
+///
+/// All counters use `Ordering::Relaxed` for low-overhead increments.
 #[derive(Debug, Default)]
 struct StoreCounters {
+    /// Successful lookups via `get()`.
     hits: AtomicU64,
+    /// Failed lookups via `get()`.
     misses: AtomicU64,
+    /// New key insertions.
     inserts: AtomicU64,
+    /// Value updates for existing keys.
     updates: AtomicU64,
+    /// Explicit removals via `remove()` or `remove_by_id()`.
     removes: AtomicU64,
+    /// Policy-driven evictions via `record_eviction()`.
     evictions: AtomicU64,
 }
 
@@ -137,9 +282,66 @@ impl StoreCounters {
 // Single-threaded SlabStore
 // =============================================================================
 
-/// Slab-backed store with EntryId indirection.
+/// Single-threaded slab-backed store with stable `EntryId` handles.
 ///
-/// Stores values directly without `Arc` wrapper for zero-overhead access.
+/// Stores values directly (no `Arc`) in a contiguous `Vec` with a free-list
+/// for slot reuse. Provides O(1) access by [`EntryId`] without hashing,
+/// making it ideal for policy metadata that needs stable references.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Clone`
+/// - `V`: Value type, stored directly (owned)
+///
+/// # Example
+///
+/// ```
+/// use cachekit::store::slab::{SlabStore, EntryId};
+/// use cachekit::store::traits::{StoreCore, StoreMut};
+///
+/// let mut store: SlabStore<String, Vec<u8>> = SlabStore::new(100);
+///
+/// // Insert entries
+/// store.try_insert("file1.txt".into(), vec![1, 2, 3]).unwrap();
+/// store.try_insert("file2.txt".into(), vec![4, 5, 6]).unwrap();
+///
+/// // Get stable handle for policy metadata
+/// let id1 = store.entry_id(&"file1.txt".into()).unwrap();
+///
+/// // O(1) access by handle (no hash lookup)
+/// assert_eq!(store.get_by_id(id1), Some(&vec![1, 2, 3]));
+///
+/// // Mutable access by handle
+/// if let Some(data) = store.get_by_id_mut(id1) {
+///     data.push(99);
+/// }
+///
+/// // Remove and observe slot reuse
+/// store.remove(&"file1.txt".into());
+/// store.try_insert("file3.txt".into(), vec![7, 8, 9]).unwrap();
+/// let id3 = store.entry_id(&"file3.txt".into()).unwrap();
+/// assert_eq!(id1.index(), id3.index());  // Same slot reused
+/// ```
+///
+/// # Policy Integration
+///
+/// ```
+/// use cachekit::store::slab::{SlabStore, EntryId};
+/// use cachekit::store::traits::StoreMut;
+///
+/// let mut store: SlabStore<u64, String> = SlabStore::new(10);
+/// store.try_insert(1, "value".into()).unwrap();
+///
+/// // Policy tracks EntryId for O(1) eviction
+/// let victim_id = store.entry_id(&1).unwrap();
+///
+/// // Evict by handle (no key lookup needed)
+/// let (key, value) = store.remove_by_id(victim_id).unwrap();
+/// store.record_eviction();
+///
+/// assert_eq!(key, 1);
+/// assert_eq!(value, "value");
+/// ```
 #[derive(Debug)]
 pub struct SlabStore<K, V> {
     entries: Vec<Option<Entry<K, V>>>,
@@ -153,7 +355,20 @@ impl<K, V> SlabStore<K, V>
 where
     K: Eq + Hash,
 {
-    /// Create a slab store with a fixed capacity.
+    /// Creates a slab store with the specified maximum capacity.
+    ///
+    /// Pre-allocates internal structures for the given capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::StoreCore;
+    ///
+    /// let store: SlabStore<String, i32> = SlabStore::new(1000);
+    /// assert_eq!(store.capacity(), 1000);
+    /// assert!(store.is_empty());
+    /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: Vec::with_capacity(capacity),
@@ -164,38 +379,119 @@ where
         }
     }
 
-    /// Return the EntryId for a key if it exists.
+    /// Returns the `EntryId` handle for a key.
+    ///
+    /// The handle provides O(1) access to the entry without further hashing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::StoreMut;
+    ///
+    /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
+    /// store.try_insert("key", 42).unwrap();
+    ///
+    /// let id = store.entry_id(&"key").unwrap();
+    /// assert_eq!(store.get_by_id(id), Some(&42));
+    ///
+    /// assert!(store.entry_id(&"missing").is_none());
+    /// ```
     pub fn entry_id(&self, key: &K) -> Option<EntryId> {
         self.index.get(key).copied()
     }
 
-    /// Fetch a value by EntryId without touching metrics.
+    /// Returns a reference to the value at the given `EntryId`.
+    ///
+    /// O(1) direct slot access without hashing. Does not update metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::StoreMut;
+    ///
+    /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
+    /// store.try_insert("key", 100).unwrap();
+    /// let id = store.entry_id(&"key").unwrap();
+    ///
+    /// assert_eq!(store.get_by_id(id), Some(&100));
+    /// ```
     pub fn get_by_id(&self, id: EntryId) -> Option<&V> {
         self.entries
             .get(id.0)
             .and_then(|slot| slot.as_ref().map(|entry| &entry.value))
     }
 
-    /// Fetch a mutable reference to a value by EntryId.
+    /// Returns a mutable reference to the value at the given `EntryId`.
+    ///
+    /// Allows in-place modification without remove/insert cycle.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::StoreMut;
+    ///
+    /// let mut store: SlabStore<&str, Vec<i32>> = SlabStore::new(10);
+    /// store.try_insert("nums", vec![1, 2, 3]).unwrap();
+    /// let id = store.entry_id(&"nums").unwrap();
+    ///
+    /// // Modify in place
+    /// if let Some(nums) = store.get_by_id_mut(id) {
+    ///     nums.push(4);
+    /// }
+    ///
+    /// assert_eq!(store.get_by_id(id), Some(&vec![1, 2, 3, 4]));
+    /// ```
     pub fn get_by_id_mut(&mut self, id: EntryId) -> Option<&mut V> {
         self.entries
             .get_mut(id.0)
             .and_then(|slot| slot.as_mut().map(|entry| &mut entry.value))
     }
 
-    /// Fetch a key by EntryId.
+    /// Returns a reference to the key at the given `EntryId`.
+    ///
+    /// Useful for logging or callbacks that need the original key.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::StoreMut;
+    ///
+    /// let mut store: SlabStore<String, i32> = SlabStore::new(10);
+    /// store.try_insert("my_key".into(), 42).unwrap();
+    /// let id = store.entry_id(&"my_key".into()).unwrap();
+    ///
+    /// assert_eq!(store.key_by_id(id), Some(&"my_key".into()));
+    /// ```
     pub fn key_by_id(&self, id: EntryId) -> Option<&K> {
         self.entries
             .get(id.0)
             .and_then(|slot| slot.as_ref().map(|entry| &entry.key))
     }
 
-    /// Fetch a value by key without touching metrics.
+    /// Returns a reference to the value without updating metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::{StoreCore, StoreMut};
+    ///
+    /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
+    /// store.try_insert("key", 42).unwrap();
+    ///
+    /// // Peek doesn't update metrics
+    /// assert_eq!(store.peek(&"key"), Some(&42));
+    /// assert_eq!(store.metrics().hits, 0);
+    /// ```
     pub fn peek(&self, key: &K) -> Option<&V> {
         self.index.get(key).and_then(|id| self.get_by_id(*id))
     }
 
-    /// Reserve a slot, reusing the free list when possible.
+    /// Allocates a slot, reusing from free list when possible.
     fn allocate_slot(&mut self) -> usize {
         if let Some(idx) = self.free_list.pop() {
             idx
@@ -205,12 +501,55 @@ where
         }
     }
 
-    /// Record that the policy evicted an entry.
+    /// Records an eviction in the metrics.
+    ///
+    /// Call when the policy evicts an entry. Separate from `remove()` to
+    /// distinguish user-initiated removals from policy-driven evictions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::{StoreCore, StoreMut};
+    ///
+    /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
+    /// store.try_insert("victim", 1).unwrap();
+    /// let id = store.entry_id(&"victim").unwrap();
+    ///
+    /// // Policy evicts
+    /// store.remove_by_id(id);
+    /// store.record_eviction();
+    ///
+    /// let m = store.metrics();
+    /// assert_eq!(m.removes, 1);
+    /// assert_eq!(m.evictions, 1);
+    /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
 
-    /// Remove by EntryId directly (used by policies for O(1) eviction).
+    /// Removes an entry by `EntryId`, returning the key and value.
+    ///
+    /// Enables O(1) eviction when the policy tracks handles. The slot is
+    /// returned to the free list for reuse.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::{StoreCore, StoreMut};
+    ///
+    /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
+    /// store.try_insert("key", 42).unwrap();
+    /// let id = store.entry_id(&"key").unwrap();
+    ///
+    /// let (key, value) = store.remove_by_id(id).unwrap();
+    /// assert_eq!(key, "key");
+    /// assert_eq!(value, 42);
+    ///
+    /// // Slot is now free for reuse
+    /// assert!(!store.contains(&"key"));
+    /// ```
     pub fn remove_by_id(&mut self, id: EntryId) -> Option<(K, V)> {
         let entry = self.entries.get_mut(id.0)?.take()?;
         self.index.remove(&entry.key);
@@ -220,10 +559,17 @@ where
     }
 }
 
+/// Read operations for [`SlabStore`].
+///
+/// Returns borrowed `&V` references for zero-copy access.
 impl<K, V> StoreCore<K, V> for SlabStore<K, V>
 where
     K: Eq + Hash,
 {
+    /// Returns a reference to the value for the given key.
+    ///
+    /// Updates hit/miss metrics. Use [`peek`](SlabStore::peek) or
+    /// [`get_by_id`](SlabStore::get_by_id) to avoid metric updates.
     fn get(&self, key: &K) -> Option<&V> {
         match self.index.get(key).and_then(|id| self.get_by_id(*id)) {
             Some(value) => {
@@ -237,27 +583,43 @@ where
         }
     }
 
+    /// Returns `true` if the key exists. Does not update metrics.
     fn contains(&self, key: &K) -> bool {
         self.index.contains_key(key)
     }
 
+    /// Returns the current number of entries.
     fn len(&self) -> usize {
         self.index.len()
     }
 
+    /// Returns the logical capacity limit.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Returns a snapshot of the store's metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
 }
 
+/// Write operations for [`SlabStore`].
+///
+/// Takes and returns owned `V` values. Keys must be `Clone` since they're
+/// stored alongside values in the slab.
 impl<K, V> StoreMut<K, V> for SlabStore<K, V>
 where
     K: Eq + Hash + Clone,
 {
+    /// Inserts or updates a value.
+    ///
+    /// For new keys, allocates a slot (reusing from free list if available).
+    /// For existing keys, updates in place and returns the old value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreFull`] if at capacity and the key is new.
     fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreFull> {
         if let Some(id) = self.index.get(&key).copied() {
             let entry = self.entries[id.0].as_mut().expect("slab entry missing");
@@ -280,6 +642,9 @@ where
         Ok(None)
     }
 
+    /// Removes and returns the value for the given key.
+    ///
+    /// The slot is returned to the free list for reuse.
     fn remove(&mut self, key: &K) -> Option<V> {
         let id = self.index.remove(key)?;
         let entry = self.entries[id.0].take()?;
@@ -288,6 +653,7 @@ where
         Some(entry.value)
     }
 
+    /// Removes all entries and clears the free list.
     fn clear(&mut self) {
         self.entries.clear();
         self.free_list.clear();
@@ -295,6 +661,21 @@ where
     }
 }
 
+/// Factory for creating [`SlabStore`] instances.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::store::slab::SlabStore;
+/// use cachekit::store::traits::{StoreFactory, StoreCore};
+///
+/// fn create_store<F: StoreFactory<String, i32>>(cap: usize) -> F::Store {
+///     F::create(cap)
+/// }
+///
+/// let store = create_store::<SlabStore<String, i32>>(100);
+/// assert_eq!(store.capacity(), 100);
+/// ```
 impl<K, V> StoreFactory<K, V> for SlabStore<K, V>
 where
     K: Eq + Hash + Clone,
@@ -310,9 +691,55 @@ where
 // Concurrent SlabStore
 // =============================================================================
 
-/// Concurrent slab-backed store using a `parking_lot::RwLock`.
+/// Thread-safe slab-backed store with stable `EntryId` handles.
 ///
-/// Uses `Arc<V>` for values since references can't outlive lock guards.
+/// Provides the same functionality as [`SlabStore`] but safe for concurrent
+/// access. Uses `Arc<V>` for values since references cannot outlive lock
+/// guards. Each internal structure (`entries`, `index`, `free_list`) has
+/// its own `RwLock` for fine-grained locking.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Clone + Send + Sync`
+/// - `V`: Value type, must be `Send + Sync` (wrapped in `Arc<V>`)
+///
+/// # Synchronization
+///
+/// - Read operations acquire read locks on `index` and `entries`
+/// - Write operations acquire write locks as needed
+/// - Metrics use atomic counters (lock-free)
+///
+/// # Example
+///
+/// ```
+/// use std::sync::Arc;
+/// use std::thread;
+/// use cachekit::store::slab::ConcurrentSlabStore;
+/// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead};
+///
+/// let store = Arc::new(ConcurrentSlabStore::<u64, String>::new(100));
+///
+/// // Spawn writers
+/// let handles: Vec<_> = (0..4).map(|t| {
+///     let store = Arc::clone(&store);
+///     thread::spawn(move || {
+///         for i in 0..25 {
+///             let key = (t * 25 + i) as u64;
+///             store.try_insert(key, Arc::new(format!("v{}", key))).unwrap();
+///         }
+///     })
+/// }).collect();
+///
+/// for h in handles {
+///     h.join().unwrap();
+/// }
+///
+/// assert_eq!(store.len(), 100);
+///
+/// // Access by EntryId (key 0 is guaranteed to exist)
+/// let id = store.entry_id(&0).unwrap();
+/// assert!(store.get_by_id(id).is_some());
+/// ```
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
 pub struct ConcurrentSlabStore<K, V> {
@@ -327,7 +754,18 @@ impl<K, V> ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash,
 {
-    /// Create a concurrent slab store with a fixed capacity.
+    /// Creates a concurrent slab store with the specified capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentSlabStore<String, Vec<u8>> =
+    ///     ConcurrentSlabStore::new(1000);
+    /// assert_eq!(store.capacity(), 1000);
+    /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: RwLock::new(Vec::with_capacity(capacity)),
@@ -338,12 +776,46 @@ where
         }
     }
 
-    /// Return the EntryId for a key if it exists.
+    /// Returns the `EntryId` handle for a key.
+    ///
+    /// Acquires read lock on index.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::ConcurrentStore;
+    ///
+    /// let store: ConcurrentSlabStore<&str, i32> = ConcurrentSlabStore::new(10);
+    /// store.try_insert("key", Arc::new(42)).unwrap();
+    ///
+    /// let id = store.entry_id(&"key").unwrap();
+    /// assert!(store.get_by_id(id).is_some());
+    /// ```
     pub fn entry_id(&self, key: &K) -> Option<EntryId> {
         self.index.read().get(key).copied()
     }
 
-    /// Fetch a value by EntryId.
+    /// Returns a clone of the value at the given `EntryId`.
+    ///
+    /// Acquires read lock on entries. Returns `Arc<V>` that can be held
+    /// after the lock is released.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::ConcurrentStore;
+    ///
+    /// let store: ConcurrentSlabStore<&str, i32> = ConcurrentSlabStore::new(10);
+    /// store.try_insert("key", Arc::new(42)).unwrap();
+    /// let id = store.entry_id(&"key").unwrap();
+    ///
+    /// let value: Arc<i32> = store.get_by_id(id).unwrap();
+    /// assert_eq!(*value, 42);
+    /// ```
     pub fn get_by_id(&self, id: EntryId) -> Option<Arc<V>> {
         self.entries
             .read()
@@ -351,7 +823,23 @@ where
             .and_then(|slot| slot.as_ref().map(|entry| Arc::clone(&entry.value)))
     }
 
-    /// Fetch a key by EntryId.
+    /// Returns a clone of the key at the given `EntryId`.
+    ///
+    /// Acquires read lock on entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::ConcurrentStore;
+    ///
+    /// let store: ConcurrentSlabStore<String, i32> = ConcurrentSlabStore::new(10);
+    /// store.try_insert("my_key".into(), Arc::new(42)).unwrap();
+    /// let id = store.entry_id(&"my_key".into()).unwrap();
+    ///
+    /// assert_eq!(store.key_by_id(id), Some("my_key".into()));
+    /// ```
     pub fn key_by_id(&self, id: EntryId) -> Option<K>
     where
         K: Clone,
@@ -362,11 +850,14 @@ where
             .and_then(|slot| slot.as_ref().map(|entry| entry.key.clone()))
     }
 
-    /// Record that the policy evicted an entry.
+    /// Records an eviction in the metrics.
+    ///
+    /// Thread-safe via atomic increment.
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
 
+    /// Allocates a slot, reusing from free list when possible.
     fn allocate_slot(&self) -> usize {
         let mut free_list = self.free_list.write();
         if let Some(idx) = free_list.pop() {
@@ -379,11 +870,17 @@ where
     }
 }
 
+/// Read operations for [`ConcurrentSlabStore`].
+///
+/// Acquires read locks on internal structures as needed.
 impl<K, V> ConcurrentStoreRead<K, V> for ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
+    /// Returns a clone of the value for the given key.
+    ///
+    /// Acquires read locks on index and entries sequentially.
     fn get(&self, key: &K) -> Option<Arc<V>> {
         let index = self.index.read();
         let id = index.get(key)?;
@@ -400,28 +897,48 @@ where
         }
     }
 
+    /// Returns `true` if the key exists. Acquires read lock on index.
     fn contains(&self, key: &K) -> bool {
         self.index.read().contains_key(key)
     }
 
+    /// Returns the current number of entries.
+    ///
+    /// Acquires read lock on index. Value may be stale under concurrency.
     fn len(&self) -> usize {
         self.index.read().len()
     }
 
+    /// Returns the logical capacity limit.
     fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Returns a snapshot of the store's metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
 }
 
+/// Write operations for [`ConcurrentSlabStore`].
+///
+/// Uses fine-grained locking—different internal structures are locked
+/// independently to minimize contention.
 impl<K, V> ConcurrentStore<K, V> for ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash + Send + Sync + Clone,
     V: Send + Sync,
 {
+    /// Inserts or updates a value.
+    ///
+    /// Acquires locks in stages to minimize hold time:
+    /// 1. Read lock on index to check for existing key
+    /// 2. Write lock on entries for update (if key exists)
+    /// 3. Write locks on free_list, entries, index for new insert
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreFull`] if at capacity and the key is new.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         // Check for update case first
         {
@@ -463,6 +980,9 @@ where
         Ok(None)
     }
 
+    /// Removes and returns the value for the given key.
+    ///
+    /// Acquires write locks on index, entries, and free_list in sequence.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
         let id = {
             let mut index = self.index.write();
@@ -480,6 +1000,9 @@ where
         Some(entry.value)
     }
 
+    /// Removes all entries.
+    ///
+    /// Acquires write locks on all internal structures.
     fn clear(&self) {
         self.entries.write().clear();
         self.free_list.write().clear();
@@ -487,6 +1010,21 @@ where
     }
 }
 
+/// Factory for creating [`ConcurrentSlabStore`] instances.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::store::slab::ConcurrentSlabStore;
+/// use cachekit::store::traits::{ConcurrentStoreFactory, ConcurrentStoreRead};
+///
+/// fn create<F: ConcurrentStoreFactory<String, i32>>(cap: usize) -> F::Store {
+///     F::create(cap)
+/// }
+///
+/// let store = create::<ConcurrentSlabStore<String, i32>>(100);
+/// assert_eq!(store.capacity(), 100);
+/// ```
 impl<K, V> ConcurrentStoreFactory<K, V> for ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash + Send + Sync + Clone,
