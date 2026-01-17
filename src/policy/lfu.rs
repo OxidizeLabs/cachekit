@@ -329,7 +329,39 @@ use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 /// LFU (Least Frequently Used) Cache.
 ///
 /// Evicts the item with the lowest access frequency when capacity is reached.
-/// See module-level documentation for details.
+/// Tie-breaking uses FIFO within the same frequency bucket.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Clone`
+/// - `V`: Value type (stored as `Arc<V>`)
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LfuCache;
+/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use std::sync::Arc;
+///
+/// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
+///
+/// // Insert items (frequency starts at 1)
+/// cache.insert("a", Arc::new(1));
+/// cache.insert("b", Arc::new(2));
+/// cache.insert("c", Arc::new(3));
+///
+/// // Access increases frequency
+/// cache.get(&"a");  // freq: 1 → 2
+/// cache.get(&"a");  // freq: 2 → 3
+///
+/// assert_eq!(cache.frequency(&"a"), Some(3));
+/// assert_eq!(cache.frequency(&"b"), Some(1));
+///
+/// // New insert evicts LFU item (b or c, both freq=1)
+/// cache.insert("d", Arc::new(4));
+/// assert!(!cache.contains(&"b"));  // b was evicted (FIFO tie-break)
+/// assert!(cache.contains(&"a"));   // a survives (freq=3)
+/// ```
 #[derive(Debug)]
 pub struct LfuCache<K, V>
 where
@@ -344,7 +376,33 @@ where
 /// LFU cache variant keyed by compact handles (interned keys).
 ///
 /// Use this when you already have a stable handle (e.g., interner id) and want
-/// to avoid cloning large keys on the hot path.
+/// to avoid cloning large keys on the hot path. Handles must be `Copy`.
+///
+/// # Type Parameters
+///
+/// - `H`: Handle type, must be `Eq + Hash + Copy` (typically `u64` or newtype)
+/// - `V`: Value type (stored as `Arc<V>`)
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use std::sync::Arc;
+///
+/// // Using u64 handles (e.g., from a KeyInterner)
+/// let mut cache: LFUHandleCache<u64, String> = LFUHandleCache::new(100);
+///
+/// let handle_a: u64 = 1;
+/// let handle_b: u64 = 2;
+///
+/// cache.insert(handle_a, Arc::new("value_a".to_string()));
+/// cache.insert(handle_b, Arc::new("value_b".to_string()));
+///
+/// // Access by handle
+/// cache.get(&handle_a);
+/// assert_eq!(cache.frequency(&handle_a), Some(2));
+/// ```
 #[derive(Debug)]
 pub struct LFUHandleCache<H, V>
 where
@@ -360,6 +418,22 @@ impl<K, V> LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
+    /// Creates a new LFU cache with the specified capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let cache: LfuCache<String, i32> = LfuCache::new(100);
+    /// assert_eq!(cache.capacity(), 100);
+    /// assert_eq!(cache.len(), 0);
+    ///
+    /// // Zero capacity is supported (rejects all insertions)
+    /// let zero_cache: LfuCache<String, i32> = LfuCache::new(0);
+    /// assert_eq!(zero_cache.capacity(), 0);
+    /// ```
     pub fn new(capacity: usize) -> Self {
         LfuCache {
             store: HashMapStore::new(capacity),
@@ -369,7 +443,28 @@ where
         }
     }
 
-    /// Inserts a batch of entries; returns number of entries inserted/updated.
+    /// Inserts a batch of entries; returns number of entries processed.
+    ///
+    /// Each entry is inserted individually, potentially triggering evictions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
+    /// let entries = vec![
+    ///     ("a", Arc::new(1)),
+    ///     ("b", Arc::new(2)),
+    ///     ("c", Arc::new(3)),
+    /// ];
+    ///
+    /// let count = cache.insert_batch(entries);
+    /// assert_eq!(count, 3);
+    /// assert_eq!(cache.len(), 3);
+    /// ```
     pub fn insert_batch<I>(&mut self, entries: I) -> usize
     where
         I: IntoIterator<Item = (K, Arc<V>)>,
@@ -382,7 +477,23 @@ where
         count
     }
 
-    /// Removes a batch of keys; returns number of keys removed.
+    /// Removes a batch of keys; returns number of keys actually removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
+    /// cache.insert("a", Arc::new(1));
+    /// cache.insert("b", Arc::new(2));
+    ///
+    /// let removed = cache.remove_batch(["a", "b", "missing"]);
+    /// assert_eq!(removed, 2);  // "missing" wasn't in cache
+    /// assert_eq!(cache.len(), 0);
+    /// ```
     pub fn remove_batch<I>(&mut self, keys: I) -> usize
     where
         I: IntoIterator<Item = K>,
@@ -396,7 +507,23 @@ where
         removed
     }
 
-    /// Touches a batch of keys; returns number of keys found.
+    /// Increments frequency for a batch of keys; returns number found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuCache;
+    /// use cachekit::traits::{CoreCache, LfuCacheTrait};
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
+    /// cache.insert("a", Arc::new(1));
+    /// cache.insert("b", Arc::new(2));
+    ///
+    /// let touched = cache.touch_batch(["a", "b", "missing"]);
+    /// assert_eq!(touched, 2);
+    /// assert_eq!(cache.frequency(&"a"), Some(2));
+    /// ```
     pub fn touch_batch<I>(&mut self, keys: I) -> usize
     where
         I: IntoIterator<Item = K>,
@@ -410,6 +537,12 @@ where
         touched
     }
 
+    /// Evicts the entry with minimum frequency.
+    ///
+    /// Uses `min_freq` bucket for O(1) selection. FIFO tie-breaking
+    /// within the bucket. Removes from both buckets and store.
+    ///
+    /// Complexity: O(1).
     fn evict_min_freq(&mut self) -> Option<(K, Arc<V>)> {
         let (key, _freq) = self.buckets.pop_min()?;
         self.store.record_eviction();
@@ -422,6 +555,17 @@ impl<H, V> LFUHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
+    /// Creates a new handle-based LFU cache with the specified capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let cache: LFUHandleCache<u64, String> = LFUHandleCache::new(100);
+    /// assert_eq!(cache.capacity(), 100);
+    /// ```
     pub fn new(capacity: usize) -> Self {
         LFUHandleCache {
             store: HashMapStore::new(capacity),
@@ -431,7 +575,24 @@ where
         }
     }
 
-    /// Inserts a batch of entries; returns number of entries inserted/updated.
+    /// Inserts a batch of entries; returns number of entries processed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+    /// let entries = vec![
+    ///     (1u64, Arc::new(100)),
+    ///     (2u64, Arc::new(200)),
+    /// ];
+    ///
+    /// let count = cache.insert_batch(entries);
+    /// assert_eq!(count, 2);
+    /// ```
     pub fn insert_batch<I>(&mut self, entries: I) -> usize
     where
         I: IntoIterator<Item = (H, Arc<V>)>,
@@ -444,7 +605,22 @@ where
         count
     }
 
-    /// Removes a batch of handles; returns number of handles removed.
+    /// Removes a batch of handles; returns number actually removed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+    /// cache.insert(1u64, Arc::new(100));
+    /// cache.insert(2u64, Arc::new(200));
+    ///
+    /// let removed = cache.remove_batch([1u64, 2u64, 999u64]);
+    /// assert_eq!(removed, 2);
+    /// ```
     pub fn remove_batch<I>(&mut self, handles: I) -> usize
     where
         I: IntoIterator<Item = H>,
@@ -458,7 +634,22 @@ where
         removed
     }
 
-    /// Touches a batch of handles; returns number of handles found.
+    /// Increments frequency for a batch of handles; returns number found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::traits::{CoreCache, LfuCacheTrait};
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+    /// cache.insert(1u64, Arc::new(100));
+    ///
+    /// let touched = cache.touch_batch([1u64, 999u64]);
+    /// assert_eq!(touched, 1);
+    /// assert_eq!(cache.frequency(&1u64), Some(2));
+    /// ```
     pub fn touch_batch<I>(&mut self, handles: I) -> usize
     where
         I: IntoIterator<Item = H>,
@@ -472,6 +663,12 @@ where
         touched
     }
 
+    /// Evicts the entry with minimum frequency.
+    ///
+    /// Uses `min_freq` bucket for O(1) selection. FIFO tie-breaking
+    /// within the bucket. Removes from both buckets and store.
+    ///
+    /// Complexity: O(1).
     fn evict_min_freq(&mut self) -> Option<(H, Arc<V>)> {
         let (handle, _freq) = self.buckets.pop_min()?;
         self.store.record_eviction();
@@ -480,7 +677,36 @@ where
     }
 }
 
-// Implementation of specialized traits
+/// Core cache operations for LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LfuCache;
+/// use cachekit::traits::CoreCache;
+/// use std::sync::Arc;
+///
+/// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
+///
+/// // Insert items
+/// cache.insert("a", Arc::new(1));
+/// cache.insert("b", Arc::new(2));
+///
+/// // Get returns reference
+/// assert_eq!(**cache.get(&"a").unwrap(), 1);
+///
+/// // Check existence
+/// assert!(cache.contains(&"a"));
+/// assert!(!cache.contains(&"z"));
+///
+/// // Length and capacity
+/// assert_eq!(cache.len(), 2);
+/// assert_eq!(cache.capacity(), 3);
+///
+/// // Clear
+/// cache.clear();
+/// assert_eq!(cache.len(), 0);
+/// ```
 impl<K, V> CoreCache<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -636,6 +862,22 @@ where
     }
 }
 
+/// Mutable cache operations for LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LfuCache;
+/// use cachekit::traits::{CoreCache, MutableCache};
+/// use std::sync::Arc;
+///
+/// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
+/// cache.insert("key", Arc::new(42));
+///
+/// let removed = cache.remove(&"key");
+/// assert_eq!(*removed.unwrap(), 42);
+/// assert!(!cache.contains(&"key"));
+/// ```
 impl<K, V> MutableCache<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -656,6 +898,36 @@ where
     }
 }
 
+/// LFU-specific operations.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LfuCache;
+/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use std::sync::Arc;
+///
+/// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
+/// cache.insert("a", Arc::new(1));
+/// cache.insert("b", Arc::new(2));
+/// cache.get(&"a");  // freq: 1 → 2
+///
+/// // Check frequencies
+/// assert_eq!(cache.frequency(&"a"), Some(2));
+/// assert_eq!(cache.frequency(&"b"), Some(1));
+///
+/// // Peek at LFU victim
+/// let (key, _) = cache.peek_lfu().unwrap();
+/// assert_eq!(*key, "b");  // lowest frequency
+///
+/// // Manual frequency control
+/// cache.increment_frequency(&"b");  // freq: 1 → 2
+/// cache.reset_frequency(&"a");      // freq: 2 → 1
+///
+/// // Pop LFU
+/// let (key, value) = cache.pop_lfu().unwrap();
+/// assert_eq!(key, "a");  // now has lowest freq
+/// ```
 impl<K, V> LfuCacheTrait<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
