@@ -292,9 +292,60 @@ struct Entry<K> {
     list_node: Option<SlotId>,
 }
 
-/// LRU-K Cache implementation.
+/// LRU-K cache implementation with scan resistance.
 ///
-/// This cache evicts the item whose K-th most recent access is furthest in the past.
+/// Evicts the item whose K-th most recent access is furthest in the past.
+/// Items with fewer than K accesses are evicted before items with K or more
+/// accesses, providing resistance to sequential scan workloads.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must be `Eq + Hash + Clone`
+/// - `V`: Value type, must be `Clone`
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lru_k::LrukCache;
+/// use cachekit::traits::CoreCache;
+///
+/// // Create LRU-2 cache (default K=2)
+/// let mut cache: LrukCache<u32, String> = LrukCache::new(100);
+///
+/// // Insert items
+/// cache.insert(1, "page1".to_string());
+/// cache.insert(2, "page2".to_string());
+///
+/// // Access increases history count
+/// cache.get(&1);  // Key 1 now has 2 accesses (insert + get)
+///
+/// // Key 2 has only 1 access, so it's evicted before key 1
+/// ```
+///
+/// # Scan Resistance
+///
+/// LRU-K protects frequently accessed items from being evicted by sequential scans:
+///
+/// ```
+/// use cachekit::policy::lru_k::LrukCache;
+/// use cachekit::traits::{CoreCache, LrukCacheTrait};
+///
+/// let mut cache: LrukCache<u32, &str> = LrukCache::with_k(3, 2);
+///
+/// // Hot pages with multiple accesses
+/// cache.insert(1, "hot1");
+/// cache.get(&1);  // 2 accesses
+///
+/// cache.insert(2, "hot2");
+/// cache.get(&2);  // 2 accesses
+///
+/// // Sequential scan (one-time accesses)
+/// cache.insert(100, "scan1");  // Only 1 access
+///
+/// // Scan page is evicted first, not the hot pages
+/// let victim = cache.peek_lru_k();
+/// assert_eq!(victim.unwrap().0, &100);
+/// ```
 #[derive(Debug)]
 pub struct LrukCache<K, V>
 where
@@ -316,12 +367,55 @@ where
     K: Eq + Hash + Clone,
     V: Clone,
 {
-    /// Creates a new LRU-K cache with default K=2.
+    /// Creates a new LRU-K cache with default K=2 (LRU-2).
+    ///
+    /// LRU-2 is a common choice for database buffer pools, providing good
+    /// scan resistance while keeping overhead low.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru_k::LrukCache;
+    /// use cachekit::traits::{CoreCache, LrukCacheTrait};
+    ///
+    /// let cache: LrukCache<u32, String> = LrukCache::new(100);
+    ///
+    /// assert_eq!(cache.k_value(), 2);
+    /// assert_eq!(cache.capacity(), 100);
+    /// ```
     pub fn new(capacity: usize) -> Self {
         Self::with_k(capacity, 2)
     }
 
     /// Creates a new LRU-K cache with the specified capacity and K value.
+    ///
+    /// # Arguments
+    ///
+    /// - `capacity`: Maximum number of entries
+    /// - `k`: Number of accesses to track (clamped to minimum of 1)
+    ///
+    /// # Choosing K
+    ///
+    /// - **K=1**: Equivalent to standard LRU
+    /// - **K=2**: Good balance for most database workloads (recommended)
+    /// - **K≥3**: Stronger scan resistance, but requires more accesses to "warm up"
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru_k::LrukCache;
+    /// use cachekit::traits::{CoreCache, LrukCacheTrait};
+    ///
+    /// // LRU-3: requires 3 accesses to be considered "hot"
+    /// let cache: LrukCache<u32, String> = LrukCache::with_k(100, 3);
+    ///
+    /// assert_eq!(cache.k_value(), 3);
+    /// assert_eq!(cache.capacity(), 100);
+    ///
+    /// // K=0 is clamped to 1
+    /// let cache2: LrukCache<u32, String> = LrukCache::with_k(100, 0);
+    /// assert_eq!(cache2.k_value(), 1);
+    /// ```
     pub fn with_k(capacity: usize, k: usize) -> Self {
         let k = k.max(1);
         LrukCache {
@@ -337,6 +431,14 @@ where
         }
     }
 
+    /// Records an access for the entry, updating its history.
+    ///
+    /// Increments the logical tick and appends it to the entry's history.
+    /// History is capped at K entries (oldest evicted when full).
+    ///
+    /// Precondition: `id` must be valid in `self.entries`.
+    ///
+    /// Complexity: O(1).
     fn record_access(&mut self, id: SlotId) -> usize {
         self.tick = self.tick.saturating_add(1);
         let entry = self.entries.get_mut(id).expect("lru-k entry missing");
@@ -347,6 +449,11 @@ where
         entry.history.len()
     }
 
+    /// Moves a hot-segment entry to the MRU position.
+    ///
+    /// No-op if the entry is in the cold segment or has no list node.
+    ///
+    /// Complexity: O(1).
     fn move_hot_to_front(&mut self, id: SlotId) {
         let is_hot = self
             .entries
@@ -364,6 +471,12 @@ where
         self.hot.move_to_front(node_id);
     }
 
+    /// Promotes an entry from cold to hot segment if it has >= K accesses.
+    ///
+    /// Removes from cold list, updates segment, and inserts at hot MRU.
+    /// No-op if already hot or has < K accesses.
+    ///
+    /// Complexity: O(1).
     fn promote_if_needed(&mut self, id: SlotId) {
         let promote = self
             .entries
@@ -389,6 +502,12 @@ where
         }
     }
 
+    /// Attaches an entry to a list at the front (MRU position).
+    ///
+    /// Updates the entry's `list_node` field with the new node ID.
+    /// Static helper to avoid borrow conflicts.
+    ///
+    /// Complexity: O(1).
     fn attach_to_list(
         entries: &mut SlotArena<Entry<K>>,
         list: &mut IntrusiveList<SlotId>,
@@ -400,6 +519,12 @@ where
         }
     }
 
+    /// Detaches an entry from its list.
+    ///
+    /// Clears the entry's `list_node` field. No-op if not attached.
+    /// Static helper to avoid borrow conflicts.
+    ///
+    /// Complexity: O(1).
     fn detach_from_list(
         entries: &mut SlotArena<Entry<K>>,
         list: &mut IntrusiveList<SlotId>,
@@ -415,6 +540,12 @@ where
         }
     }
 
+    /// Selects and removes the eviction victim.
+    ///
+    /// Priority: cold segment LRU first, then hot segment LRU.
+    /// Removes from all internal structures (entries, index, store, list).
+    ///
+    /// Complexity: O(1).
     fn evict_candidate(&mut self) -> Option<(K, V)> {
         let id = if !self.cold.is_empty() {
             self.cold.pop_back()?
@@ -433,6 +564,11 @@ where
         Some((entry.key, value))
     }
 
+    /// Returns the slot ID of the eviction candidate without removing it.
+    ///
+    /// Priority: cold segment LRU first, then hot segment LRU.
+    ///
+    /// Complexity: O(1).
     fn peek_candidate(&self) -> Option<SlotId> {
         if !self.cold.is_empty() {
             self.cold.back().copied()
@@ -442,7 +578,35 @@ where
     }
 }
 
-// Implementation of the new specialized traits
+/// Core cache operations for LRU-K.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lru_k::LrukCache;
+/// use cachekit::traits::CoreCache;
+///
+/// let mut cache: LrukCache<u32, String> = LrukCache::new(3);
+///
+/// // Insert items
+/// cache.insert(1, "one".to_string());
+/// cache.insert(2, "two".to_string());
+///
+/// // Get with access history update
+/// assert_eq!(cache.get(&1).map(|s| s.as_str()), Some("one"));
+///
+/// // Contains check
+/// assert!(cache.contains(&1));
+/// assert!(!cache.contains(&999));
+///
+/// // Length and capacity
+/// assert_eq!(cache.len(), 2);
+/// assert_eq!(cache.capacity(), 3);
+///
+/// // Clear all entries
+/// cache.clear();
+/// assert_eq!(cache.len(), 0);
+/// ```
 impl<K, V> CoreCache<K, V> for LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -552,6 +716,25 @@ where
     }
 }
 
+/// Mutable cache operations for LRU-K.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lru_k::LrukCache;
+/// use cachekit::traits::{CoreCache, MutableCache};
+///
+/// let mut cache: LrukCache<u32, String> = LrukCache::new(10);
+/// cache.insert(1, "value".to_string());
+///
+/// // Remove an entry
+/// let removed = cache.remove(&1);
+/// assert_eq!(removed.as_deref(), Some("value"));
+/// assert!(!cache.contains(&1));
+///
+/// // Remove non-existent key
+/// assert!(cache.remove(&999).is_none());
+/// ```
 impl<K, V> MutableCache<K, V> for LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -570,11 +753,52 @@ where
     }
 }
 
+/// LRU-K specific operations.
+///
+/// These methods provide LRU-K specific functionality like eviction,
+/// access history inspection, and K-distance queries.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lru_k::LrukCache;
+/// use cachekit::traits::{CoreCache, LrukCacheTrait};
+///
+/// let mut cache: LrukCache<u32, &str> = LrukCache::with_k(10, 2);
+///
+/// // Insert and access items
+/// cache.insert(1, "one");
+/// cache.get(&1);  // Now has 2 accesses
+///
+/// cache.insert(2, "two");  // Only 1 access
+///
+/// // Check access counts
+/// assert_eq!(cache.access_count(&1), Some(2));
+/// assert_eq!(cache.access_count(&2), Some(1));
+///
+/// // K-distance is only available for items with >= K accesses
+/// assert!(cache.k_distance(&1).is_some());  // Has 2 accesses
+/// assert!(cache.k_distance(&2).is_none());   // Only 1 access
+///
+/// // Peek at eviction victim (item 2 has < K accesses)
+/// let (key, _) = cache.peek_lru_k().unwrap();
+/// assert_eq!(*key, 2);
+///
+/// // Pop eviction victim
+/// let (key, value) = cache.pop_lru_k().unwrap();
+/// assert_eq!(key, 2);
+/// assert_eq!(value, "two");
+/// ```
 impl<K, V> LrukCacheTrait<K, V> for LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
 {
+    /// Removes and returns the LRU-K eviction victim.
+    ///
+    /// Eviction priority:
+    /// 1. Items with fewer than K accesses (evicts oldest first)
+    /// 2. Items with K+ accesses (evicts oldest K-distance first)
     fn pop_lru_k(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_k_call();
@@ -589,6 +813,10 @@ where
         result
     }
 
+    /// Peeks at the LRU-K eviction victim without removing it.
+    ///
+    /// Returns references to the key and value that would be evicted
+    /// by the next `pop_lru_k()` call.
     fn peek_lru_k(&self) -> Option<(&K, &V)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_k_call();
@@ -603,10 +831,15 @@ where
         Some((&entry.key, value.as_ref()))
     }
 
+    /// Returns the K value used by this cache.
     fn k_value(&self) -> usize {
         self.k
     }
 
+    /// Returns the access history for a key (most recent first).
+    ///
+    /// The history is capped at K entries. Timestamps are monotonic
+    /// logical ticks, not wall-clock time.
     fn access_history(&self, key: &K) -> Option<Vec<u64>> {
         let id = self.index.get(key)?;
         self.entries.get(*id).map(|entry| {
@@ -614,11 +847,18 @@ where
         })
     }
 
+    /// Returns the number of accesses recorded for a key.
+    ///
+    /// The count is capped at K (the history size limit).
     fn access_count(&self, key: &K) -> Option<usize> {
         let id = self.index.get(key)?;
         self.entries.get(*id).map(|entry| entry.history.len())
     }
 
+    /// Returns the K-distance for a key.
+    ///
+    /// K-distance is the timestamp of the K-th most recent access.
+    /// Only available for items with at least K accesses.
     fn k_distance(&self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_k_distance_call();
@@ -643,6 +883,10 @@ where
         result
     }
 
+    /// Updates the access time for a key without retrieving its value.
+    ///
+    /// Useful for scenarios like pinned pages where you want to update
+    /// access history without reading the value.
     fn touch(&mut self, key: &K) -> bool {
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_call();
@@ -660,6 +904,10 @@ where
         true
     }
 
+    /// Returns the eviction priority rank for a key.
+    ///
+    /// Rank 0 means the key would be evicted first. Higher ranks mean
+    /// the key is safer from eviction.
     fn k_distance_rank(&self, key: &K) -> Option<usize> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_k_distance_rank_call();
@@ -723,12 +971,36 @@ where
     }
 }
 
+/// Metrics functionality (requires `metrics` feature).
 #[cfg(feature = "metrics")]
 impl<K, V> LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
 {
+    /// Returns a snapshot of cache metrics.
+    ///
+    /// Captures current values of all counters including:
+    /// - Hit/miss rates
+    /// - Insert/update/eviction counts
+    /// - LRU-K specific metrics (K-distance queries, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use cachekit::policy::lru_k::LrukCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache: LrukCache<u32, &str> = LrukCache::new(100);
+    /// cache.insert(1, "one");
+    /// cache.get(&1);
+    /// cache.get(&2);  // miss
+    ///
+    /// let snapshot = cache.metrics_snapshot();
+    /// assert_eq!(snapshot.get_hits, 1);
+    /// assert_eq!(snapshot.get_misses, 1);
+    /// assert_eq!(snapshot.insert_calls, 1);
+    /// ```
     pub fn metrics_snapshot(&self) -> LruKMetricsSnapshot {
         LruKMetricsSnapshot {
             get_calls: self.metrics.get_calls,
