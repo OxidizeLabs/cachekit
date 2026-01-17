@@ -785,6 +785,24 @@ where
     }
 }
 
+/// Core cache operations for handle-based LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::traits::CoreCache;
+/// use std::sync::Arc;
+///
+/// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(3);
+///
+/// cache.insert(1u64, Arc::new(100));
+/// cache.insert(2u64, Arc::new(200));
+///
+/// assert_eq!(**cache.get(&1u64).unwrap(), 100);
+/// assert!(cache.contains(&1u64));
+/// assert_eq!(cache.len(), 2);
+/// ```
 impl<H, V> CoreCache<H, Arc<V>> for LFUHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
@@ -888,6 +906,21 @@ where
     }
 }
 
+/// Mutable cache operations for handle-based LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::traits::{CoreCache, MutableCache};
+/// use std::sync::Arc;
+///
+/// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+/// cache.insert(1u64, Arc::new(42));
+///
+/// let removed = cache.remove(&1u64);
+/// assert_eq!(*removed.unwrap(), 42);
+/// ```
 impl<H, V> MutableCache<H, Arc<V>> for LFUHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
@@ -999,6 +1032,27 @@ where
     }
 }
 
+/// LFU-specific operations for handle-based cache.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use std::sync::Arc;
+///
+/// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(3);
+/// cache.insert(1u64, Arc::new(100));
+/// cache.insert(2u64, Arc::new(200));
+/// cache.get(&1u64);  // freq: 1 → 2
+///
+/// assert_eq!(cache.frequency(&1u64), Some(2));
+/// assert_eq!(cache.frequency(&2u64), Some(1));
+///
+/// // Peek at LFU victim
+/// let (handle, _) = cache.peek_lfu().unwrap();
+/// assert_eq!(*handle, 2u64);
+/// ```
 impl<H, V> LfuCacheTrait<H, Arc<V>> for LFUHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
@@ -1070,11 +1124,33 @@ where
     }
 }
 
+/// Metrics functionality (requires `metrics` feature).
 #[cfg(feature = "metrics")]
 impl<K, V> LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
+    /// Returns a snapshot of cache metrics.
+    ///
+    /// Captures current values of all counters including hit/miss rates,
+    /// insert/eviction counts, and LFU-specific frequency operations.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use cachekit::policy::lfu::LfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LfuCache<&str, i32> = LfuCache::new(100);
+    /// cache.insert("a", Arc::new(1));
+    /// cache.get(&"a");
+    /// cache.get(&"missing");  // miss
+    ///
+    /// let snapshot = cache.metrics_snapshot();
+    /// assert_eq!(snapshot.get_hits, 1);
+    /// assert_eq!(snapshot.get_misses, 1);
+    /// ```
     pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
         LfuMetricsSnapshot {
             get_calls: self.metrics.get_calls,
@@ -1109,11 +1185,15 @@ where
     }
 }
 
+/// Metrics functionality for handle-based cache (requires `metrics` feature).
 #[cfg(feature = "metrics")]
 impl<H, V> LFUHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
+    /// Returns a snapshot of cache metrics.
+    ///
+    /// See [`LfuCache::metrics_snapshot`] for details.
     pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
         LfuMetricsSnapshot {
             get_calls: self.metrics.get_calls,
