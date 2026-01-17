@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConcurrentStoreRead` trait for read-only concurrent store operations.
 - `StoreFactory` and `ConcurrentStoreFactory` traits for creating store instances.
 
+### Documentation
+- Complete documentation for `src/policy/lru_k.rs`:
+  - Architecture diagram showing cache layout and K-distance calculation.
+  - Scan resistance explanation with before/after diagrams.
+  - Docstrings with examples for `LrukCache`, `new()`, `with_k()`, and all trait methods.
+  - Private method docstrings with complexity notes.
+- Complete documentation for `src/policy/lfu.rs`:
+  - Architecture diagram showing frequency buckets and eviction flow.
+  - LFU vs LRU comparison diagram.
+  - Docstrings with examples for `LfuCache`, `LFUHandleCache`, and all public methods.
+  - Batch operation examples (`insert_batch`, `remove_batch`, `touch_batch`).
+  - Metrics snapshot documentation.
+- Complete documentation for `src/policy/heap_lfu.rs`:
+  - Architecture diagram showing min-heap structure and stale entry handling.
+  - Standard LFU vs Heap LFU performance comparison.
+  - Docstrings with examples for `HeapLfuCache` and all public methods.
+  - Private method docstrings explaining lazy deletion and heap rebuild strategy.
+
 ### Changed
 - Refactored store traits to separate single-threaded and concurrent ownership models:
   - `StoreCore`/`StoreMut` now use direct value ownership (`&V`, `V`) for zero-overhead single-threaded access.
