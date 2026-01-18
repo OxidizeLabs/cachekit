@@ -1,6 +1,6 @@
 //! DHAT heap profiler for cachekit.
 //!
-//! Run with: cargo run --bin dhat_profile --release --features dhat-heap
+//! Run with: cargo run --example dhat_profile --release
 //! View results: Open dhat-heap.json in <https://nnethercote.github.io/dh_view/dh_view.html>
 
 #[global_allocator]

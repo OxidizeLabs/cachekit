@@ -276,6 +276,7 @@ fn bench_lfu_workload_hit_rate(c: &mut Criterion) {
             },
         ),
         ("scan", Workload::Scan),
+        ("zipfian_0.99", Workload::Zipfian { theta: 0.99 }),
     ];
 
     for (name, workload) in specs {

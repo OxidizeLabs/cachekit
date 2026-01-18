@@ -12,21 +12,20 @@ documentation = "https://oxidizelabs.github.io/cachekit/"
 readme = "README.md"
 keywords = ["cache", "lru", "lfu", "eviction", "s3-fifo"]
 categories = ["caching", "data-structures"]
-exclude = ["/.idea/", "/target/", "/.DS_Store", "/**/.DS_Store"]
+exclude = ["/.idea/", "/.DS_Store", "/**/.DS_Store"]
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
 metrics = []
-dhat-heap = ["dhat"]
 
 [dependencies]
 parking_lot = "0.12"
 log = "0.4"
-dhat = { version = "0.3", optional = true }
 rustc-hash = "2.1"
 
 [dev-dependencies]
@@ -59,7 +58,44 @@ harness = false
 name = "s3_fifo"
 harness = false
 
-[[bin]]
-name = "dhat_profile"
-path = "src/bin/dhat_profile.rs"
-required-features = ["dhat-heap"]
+# Development profile - optimized for fast compilation and good debugging
+[profile.dev]
+opt-level = 0
+debug = true
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = "unwind"
+incremental = true
+codegen-units = 256
+
+# Test profile - balanced for test execution speed vs debugging
+[profile.test]
+opt-level = 1
+debug = true
+debug-assertions = true
+overflow-checks = true
+lto = false
+incremental = true
+codegen-units = 256
+
+# Release profile - maximum performance for production
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = "fat"
+panic = "abort"
+codegen-units = 1
+strip = true
+
+# Benchmark profile - optimized for consistent performance measurement
+[profile.bench]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -14,6 +14,9 @@ pub enum Workload {
     Hotset { hot_fraction: f64, hot_prob: f64 },
     /// Sequential scan in `[0, universe)`.
     Scan,
+    /// Zipfian distribution - models real-world skewed access patterns.
+    /// `theta` controls skew: 0.0 = uniform, 0.99 = highly skewed (YCSB default).
+    Zipfian { theta: f64 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,16 +38,22 @@ pub struct WorkloadGenerator {
     workload: Workload,
     rng: XorShift64,
     scan_pos: u64,
+    zipfian: Option<ZipfianState>,
 }
 
 impl WorkloadGenerator {
     pub fn new(universe: u64, workload: Workload, seed: u64) -> Self {
         let universe = universe.max(1);
+        let zipfian = match workload {
+            Workload::Zipfian { theta } => Some(ZipfianState::new(universe, theta)),
+            _ => None,
+        };
         Self {
             universe,
             workload,
             rng: XorShift64::new(seed),
             scan_pos: 0,
+            zipfian,
         }
     }
 
@@ -71,6 +80,11 @@ impl WorkloadGenerator {
                 let key = self.scan_pos;
                 self.scan_pos = (self.scan_pos + 1) % self.universe;
                 key
+            },
+            Workload::Zipfian { .. } => {
+                let zipf = self.zipfian.as_ref().unwrap();
+                let u = self.rng.next_f64();
+                zipf.sample(u)
             },
         }
     }
@@ -122,6 +136,62 @@ where
     }
 
     HitRate { hits, misses }
+}
+
+/// Zipfian distribution state for inverse CDF sampling.
+///
+/// Uses the algorithm from YCSB (Yahoo Cloud Serving Benchmark).
+/// Pre-computes zeta values for efficient sampling.
+#[derive(Debug, Clone)]
+struct ZipfianState {
+    n: u64,
+    theta: f64,
+    zeta_n: f64,
+    alpha: f64,
+    eta: f64,
+}
+
+impl ZipfianState {
+    fn new(n: u64, theta: f64) -> Self {
+        let theta = theta.clamp(0.0, 0.9999); // Avoid division issues at theta=1
+        let zeta_2 = Self::zeta(2, theta);
+        let zeta_n = Self::zeta(n, theta);
+        let alpha = 1.0 / (1.0 - theta);
+        let eta = (1.0 - (2.0 / n as f64).powf(1.0 - theta)) / (1.0 - zeta_2 / zeta_n);
+
+        Self {
+            n,
+            theta,
+            zeta_n,
+            alpha,
+            eta,
+        }
+    }
+
+    /// Compute zeta(n, theta) = sum(1/i^theta for i in 1..=n)
+    fn zeta(n: u64, theta: f64) -> f64 {
+        let mut sum = 0.0;
+        for i in 1..=n {
+            sum += 1.0 / (i as f64).powf(theta);
+        }
+        sum
+    }
+
+    /// Sample from Zipfian distribution given uniform random u in [0, 1).
+    fn sample(&self, u: f64) -> u64 {
+        let uz = u * self.zeta_n;
+
+        if uz < 1.0 {
+            return 0;
+        }
+
+        if uz < 1.0 + 0.5_f64.powf(self.theta) {
+            return 1;
+        }
+
+        let spread = (self.n as f64) * (self.eta * u - self.eta + 1.0).powf(self.alpha);
+        (spread as u64).min(self.n - 1)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
