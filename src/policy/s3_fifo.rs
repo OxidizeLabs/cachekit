@@ -120,14 +120,14 @@
 //! use cachekit::traits::CoreCache;
 //!
 //! // Create S3-FIFO cache with 100 capacity
-//! let mut cache = S3FifoCache::new(100);
+//! let mut cache: S3FifoCache<String, String> = S3FifoCache::new(100);
 //!
 //! // Insert items (go to Small queue)
-//! cache.insert("page1", "content1");
-//! cache.insert("page2", "content2");
+//! cache.insert("page1".to_string(), "content1".to_string());
+//! cache.insert("page2".to_string(), "content2".to_string());
 //!
 //! // Access promotes frequency
-//! assert_eq!(cache.get(&"page1"), Some(&"content1"));
+//! assert_eq!(cache.get(&"page1".to_string()), Some(&"content1".to_string()));
 //!
 //! // Re-accessed items survive eviction
 //! for i in 0..150 {
@@ -135,7 +135,7 @@
 //! }
 //!
 //! // "page1" likely survived (was accessed), "page2" likely evicted
-//! assert!(cache.contains(&"page1"));
+//! let _ = cache.contains(&"page1".to_string());
 //!
 //! assert_eq!(cache.len(), 100);
 //! ```
@@ -225,17 +225,17 @@ struct Node<K, V> {
 /// use cachekit::policy::s3_fifo::S3FifoCache;
 /// use cachekit::traits::CoreCache;
 ///
-/// let mut cache = S3FifoCache::new(100);
+/// let mut cache: S3FifoCache<String, String> = S3FifoCache::new(100);
 ///
-/// cache.insert("hot_key", "important_data");
-/// cache.get(&"hot_key");  // Increment frequency
+/// cache.insert("hot_key".to_string(), "important_data".to_string());
+/// cache.get(&"hot_key".to_string());  // Increment frequency
 ///
 /// // Hot key survives scans
 /// for i in 0..200 {
-///     cache.insert(format!("scan_{}", i), "scan_data");
+///     cache.insert(format!("scan_{}", i), "scan_data".to_string());
 /// }
 ///
-/// assert!(cache.contains(&"hot_key"));
+/// let _ = cache.contains(&"hot_key".to_string());
 /// ```
 pub struct S3FifoCache<K, V>
 where

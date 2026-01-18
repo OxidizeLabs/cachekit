@@ -142,6 +142,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::CoreCache;
     ///
     /// let cache: ClockCache<String, i32> = ClockCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
