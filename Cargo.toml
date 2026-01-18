@@ -5,13 +5,13 @@ edition = "2024"
 rust-version = "1.85"
 authors = ["Thomas Korrison <ferrite.db@gmail.com>"]
 license = "MIT OR Apache-2.0"
-description = "High-performance, policy-driven cache primitives for Rust systems (FIFO/LRU/ARC) with optional metrics."
+description = "High-performance cache primitives with pluggable eviction policies (LRU, LFU, FIFO, 2Q, Clock-PRO, S3-FIFO) and optional metrics."
 homepage = "https://oxidizelabs.github.io/cachekit/"
 repository = "https://github.com/OxidizeLabs/cachekit"
 documentation = "https://oxidizelabs.github.io/cachekit/"
 readme = "README.md"
-keywords = ["cache", "lru", "fifo", "arc", "lru-k"]
-categories = ["data-structures", "caching"]
+keywords = ["cache", "lru", "lfu", "eviction", "s3-fifo"]
+categories = ["caching", "data-structures"]
 exclude = ["/.idea/", "/target/", "/.DS_Store", "/**/.DS_Store"]
 
 [package.metadata.docs.rs]
@@ -20,7 +20,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-manager = []
 metrics = []
 dhat-heap = ["dhat"]
 
