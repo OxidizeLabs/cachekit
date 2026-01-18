@@ -572,7 +572,7 @@ where
         None
     }
 
-    /// Zero-copy get: returns reference to Arc<V>
+    /// Zero-copy get: returns reference to `Arc<V>`
     #[inline]
     fn get(&mut self, key: &K) -> Option<&Arc<V>> {
         let node_ptr = match self.map.get(key) {

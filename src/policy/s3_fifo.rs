@@ -82,7 +82,7 @@
 //! ## Key Components
 //!
 //! - [`S3FifoCache`]: Main S3-FIFO cache implementation
-//! - [`S3FifoCacheInner`]: Internal state with queues and index
+//! - `S3FifoCacheInner`: Internal state with queues and index
 //!
 //! ## Operations
 //!

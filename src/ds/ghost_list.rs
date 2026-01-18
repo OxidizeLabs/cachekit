@@ -2,7 +2,7 @@
 //!
 //! Used by adaptive policies (ARC/2Q-style) to track recently evicted keys
 //! without storing values. Implemented as an [`IntrusiveList`]
-//! plus a [`HashMap`] index for O(1) lookups.
+//! plus a `HashMap` index for O(1) lookups.
 //!
 //! ## Architecture
 //!
