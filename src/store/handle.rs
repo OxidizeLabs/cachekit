@@ -135,12 +135,12 @@
 //! - `record_eviction()` is separate from `remove()` for policy-driven eviction tracking
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 
 use crate::store::traits::{
     ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead, StoreFull, StoreMetrics,
@@ -308,7 +308,7 @@ impl ConcurrentStoreCounters {
 /// ```
 #[derive(Debug)]
 pub struct HandleStore<H, V> {
-    map: HashMap<H, Arc<V>>,
+    map: FxHashMap<H, Arc<V>>,
     capacity: usize,
     metrics: StoreCounters,
 }
@@ -330,7 +330,7 @@ where
     /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
-            map: HashMap::with_capacity(capacity),
+            map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             capacity,
             metrics: StoreCounters::default(),
         }
@@ -595,7 +595,7 @@ where
 /// - [`ConcurrentStoreFactory<H, V>`] — factory for creating instances
 #[derive(Debug)]
 pub struct ConcurrentHandleStore<H, V> {
-    map: RwLock<HashMap<H, Arc<V>>>,
+    map: RwLock<FxHashMap<H, Arc<V>>>,
     capacity: usize,
     metrics: ConcurrentStoreCounters,
 }
@@ -618,7 +618,10 @@ where
     /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
-            map: RwLock::new(HashMap::with_capacity(capacity)),
+            map: RwLock::new(FxHashMap::with_capacity_and_hasher(
+                capacity,
+                Default::default(),
+            )),
             capacity,
             metrics: ConcurrentStoreCounters::default(),
         }

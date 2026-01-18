@@ -302,14 +302,14 @@
 //! - `Entry`: Stored in `SlotArena`; thread safety provided by the outer lock
 //! - Values: `Arc<V>` in the store enables safe sharing across threads
 
-use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 
-use crate::ds::{IntrusiveList, SlotArena, SlotId};
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LruMetrics;
 #[cfg(feature = "metrics")]
@@ -318,52 +318,74 @@ use crate::metrics::snapshot::LruMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, LruMetricsReadRecorder, LruMetricsRecorder, MetricsSnapshotProvider,
 };
-use crate::store::hashmap::HashMapStore;
-use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{CoreCache, LruCacheTrait, MutableCache};
 
-#[derive(Debug)]
-struct Entry<K>
-where
-    K: Copy,
-{
+/// Node in the LRU linked list.
+///
+/// Layout optimized for cache locality:
+/// - Linked list pointers first for fast traversal
+/// - Key needed for map removal during eviction
+/// - Value accessed on get/peek
+#[repr(C)]
+struct Node<K, V> {
+    prev: Option<NonNull<Node<K, V>>>,
+    next: Option<NonNull<Node<K, V>>>,
     key: K,
-    list_node: Option<SlotId>,
+    value: Arc<V>,
 }
 
-/// High-performance LRU Cache Core using HashMap + Doubly-Linked List
+/// High-performance LRU Cache Core using HashMap + raw pointer linked list.
 ///
 /// # Zero-Copy Design Philosophy
 ///
 /// This implementation achieves zero-copy semantics through:
-/// - Keys: Copy types (like PageId) - cheap to copy, owned in index/list
-/// - Values: `Arc<V>` stored in the store for zero-copy sharing
+/// - Keys: Copy types (like PageId) - cheap to copy, owned in nodes
+/// - Values: `Arc<V>` for zero-copy sharing
 ///
 /// ## Memory Safety Guarantees:
-/// - Entries live in a `SlotArena` and are addressed by `SlotId`
-/// - `IntrusiveList` maintains ordering without raw pointer manipulation
-/// - List and index invariants are maintained at all operation boundaries
-/// - `Arc<V>` provides thread-safe reference counting in the store
+/// - Nodes are heap-allocated and tracked via NonNull pointers
+/// - HashMap owns the mapping from key to node pointer
+/// - Proper cleanup via Drop implementation
+/// - `Arc<V>` provides thread-safe reference counting
 ///
 /// ## Performance Characteristics:
 /// - All operations are O(1): insert, get, remove, eviction
-/// - Zero data copying for values via Arc::clone()
-/// - Minimal memory overhead for keys via Copy trait
+/// - Minimal indirection: single HashMap lookup per operation
+/// - No SlotArena/IntrusiveList overhead
+/// - FxHash for fast hashing
 ///
 /// ## Thread Safety:
 /// - Core is single-threaded for maximum performance
 /// - Thread safety provided by wrapper (ConcurrentLruCache)
-/// - Values are thread-safe via `Arc<V>` stored in the store
+/// - Values are thread-safe via `Arc<V>`
 pub struct LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    store: HashMapStore<K, Arc<V>>,
-    entries: SlotArena<Entry<K>>,
-    index: HashMap<K, SlotId>,
-    list: IntrusiveList<SlotId>,
+    map: FxHashMap<K, NonNull<Node<K, V>>>,
+    head: Option<NonNull<Node<K, V>>>,
+    tail: Option<NonNull<Node<K, V>>>,
+    capacity: usize,
     #[cfg(feature = "metrics")]
     metrics: LruMetrics,
+}
+
+// SAFETY: LruCore can be sent between threads if K and V are Send.
+// The raw pointers only reference heap memory owned by the struct.
+unsafe impl<K, V> Send for LruCore<K, V>
+where
+    K: Copy + Eq + Hash + Send,
+    V: Send,
+{
+}
+
+// SAFETY: LruCore can be shared between threads if K and V are Sync.
+// Actual thread-safety is provided by the RwLock in ConcurrentLruCache.
+unsafe impl<K, V> Sync for LruCore<K, V>
+where
+    K: Copy + Eq + Hash + Sync,
+    V: Sync,
+{
 }
 
 impl<K, V> LruCore<K, V>
@@ -386,77 +408,98 @@ where
     ///
     /// let mut cache: LruCore<u32, String> = LruCore::new(100);
     /// ```
+    #[inline]
     pub fn new(capacity: usize) -> Self {
         LruCore {
-            store: HashMapStore::new(capacity),
-            entries: SlotArena::with_capacity(capacity),
-            index: HashMap::with_capacity(capacity),
-            list: IntrusiveList::with_capacity(capacity),
+            map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            head: None,
+            tail: None,
+            capacity,
             #[cfg(feature = "metrics")]
             metrics: LruMetrics::default(),
         }
     }
 
-    fn attach_to_front(&mut self, id: SlotId) {
-        let node_id = self.list.push_front(id);
-        if let Some(entry) = self.entries.get_mut(id) {
-            entry.list_node = Some(node_id);
+    /// Detach a node from the linked list without removing it from the map.
+    #[inline(always)]
+    fn detach(&mut self, node_ptr: NonNull<Node<K, V>>) {
+        unsafe {
+            let node = node_ptr.as_ref();
+            let prev = node.prev;
+            let next = node.next;
+
+            match prev {
+                Some(mut p) => p.as_mut().next = next,
+                None => self.head = next,
+            }
+
+            match next {
+                Some(mut n) => n.as_mut().prev = prev,
+                None => self.tail = prev,
+            }
         }
     }
 
-    fn detach_from_list(&mut self, id: SlotId) {
-        let node_id = match self.entries.get(id).and_then(|entry| entry.list_node) {
-            Some(node_id) => node_id,
-            None => return,
-        };
-        let _ = self.list.remove(node_id);
-        if let Some(entry) = self.entries.get_mut(id) {
-            entry.list_node = None;
+    /// Attach a node at the front (MRU position).
+    #[inline(always)]
+    fn attach_front(&mut self, mut node_ptr: NonNull<Node<K, V>>) {
+        unsafe {
+            let node = node_ptr.as_mut();
+            node.prev = None;
+            node.next = self.head;
+
+            match self.head {
+                Some(mut h) => h.as_mut().prev = Some(node_ptr),
+                None => self.tail = Some(node_ptr),
+            }
+
+            self.head = Some(node_ptr);
         }
     }
 
-    fn move_to_front(&mut self, id: SlotId) {
-        let node_id = match self.entries.get(id).and_then(|entry| entry.list_node) {
-            Some(node_id) => node_id,
-            None => return,
-        };
-        self.list.move_to_front(node_id);
-    }
+    /// Pop the tail node (LRU) and return it.
+    #[inline(always)]
+    fn pop_tail(&mut self) -> Option<Box<Node<K, V>>> {
+        self.tail.map(|tail_ptr| unsafe {
+            let node = Box::from_raw(tail_ptr.as_ptr());
 
-    fn pop_lru_id(&mut self) -> Option<SlotId> {
-        let id = self.list.pop_back()?;
-        if let Some(entry) = self.entries.get_mut(id) {
-            entry.list_node = None;
-        }
-        Some(id)
+            self.tail = node.prev;
+            match self.tail {
+                Some(mut t) => t.as_mut().next = None,
+                None => self.head = None,
+            }
+
+            node
+        })
     }
 
     /// Validate internal invariants (debug builds only)
-    ///
-    /// Checks:
-    /// - HashMap and linked list have same number of elements
-    /// - All nodes in HashMap are reachable from head
-    /// - All forward/backward links are consistent
-    /// - Head has no prev, tail has no next
     fn validate_invariants(&self) {
-        if self.index.is_empty() {
-            debug_assert!(self.list.is_empty());
-            debug_assert!(self.store.is_empty());
-            return;
-        }
+        #[cfg(debug_assertions)]
+        {
+            if self.map.is_empty() {
+                debug_assert!(self.head.is_none());
+                debug_assert!(self.tail.is_none());
+                return;
+            }
 
-        let mut count = 0usize;
-        for id in self.list.iter() {
-            count += 1;
-            let entry = self.entries.get(*id).expect("lru entry missing");
-            debug_assert!(entry.list_node.is_some());
-            debug_assert!(self.index.contains_key(&entry.key));
-            debug_assert!(self.store.contains(&entry.key));
-        }
+            // Count nodes from head
+            let mut count = 0usize;
+            let mut current = self.head;
+            while let Some(ptr) = current {
+                count += 1;
+                unsafe {
+                    let node = ptr.as_ref();
+                    debug_assert!(self.map.contains_key(&node.key));
+                    current = node.next;
+                }
+                if count > self.map.len() {
+                    panic!("Cycle detected in list");
+                }
+            }
 
-        debug_assert_eq!(count, self.index.len());
-        debug_assert_eq!(count, self.entries.len());
-        debug_assert_eq!(count, self.store.len());
+            debug_assert_eq!(count, self.map.len());
+        }
     }
 }
 
@@ -466,60 +509,62 @@ where
     K: Copy + Eq + Hash,
 {
     /// Zero-copy insert: key is copied (cheap), value is Arc-wrapped and moved
+    #[inline]
     fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        if let Some(&existing_id) = self.index.get(&key) {
+        // Check for existing key
+        if let Some(&node_ptr) = self.map.get(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            let previous = self.store.try_insert(key, value).unwrap_or_default();
+            // Update value and move to front
+            let previous = unsafe {
+                let node = &mut *node_ptr.as_ptr();
+                std::mem::replace(&mut node.value, value)
+            };
 
-            // Move to head (mark as most recently used) - O(1)
-            self.move_to_front(existing_id);
+            self.detach(node_ptr);
+            self.attach_front(node_ptr);
 
             #[cfg(debug_assertions)]
             self.validate_invariants();
 
-            return previous;
+            return Some(previous);
         }
 
-        // Insert new node
         // For zero capacity, never insert anything
-        if self.store.capacity() == 0 {
+        if self.capacity == 0 {
             return None;
         }
 
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_new();
 
-        if self.store.len() >= self.store.capacity() {
-            // Evict LRU item - O(1)
+        // Evict if at capacity
+        if self.map.len() >= self.capacity {
             #[cfg(feature = "metrics")]
             self.metrics.record_evict_call();
 
-            if let Some(tail_id) = self.pop_lru_id() {
-                let entry = self.entries.remove(tail_id).expect("lru entry missing");
-                self.index.remove(&entry.key);
-                let _ = self.store.remove(&entry.key);
+            if let Some(evicted) = self.pop_tail() {
+                self.map.remove(&evicted.key);
                 #[cfg(feature = "metrics")]
                 self.metrics.record_evicted_entry();
-                self.store.record_eviction();
             }
         }
 
-        if self.store.try_insert(key, value).is_err() {
-            return None;
-        }
-
-        // Allocate and insert new node - O(1) - key copied
-        let id = self.entries.insert(Entry {
+        // Allocate new node
+        let node = Box::new(Node {
+            prev: None,
+            next: None,
             key,
-            list_node: None,
+            value,
         });
-        self.index.insert(key, id);
-        self.attach_to_front(id);
+        let node_ptr = NonNull::new(Box::into_raw(node)).unwrap();
+
+        self.map.insert(key, node_ptr);
+        self.attach_front(node_ptr);
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
@@ -527,14 +572,14 @@ where
         None
     }
 
-    /// Zero-copy get: returns `Arc<V>` clone (O(1) atomic increment)
+    /// Zero-copy get: returns reference to Arc<V>
+    #[inline]
     fn get(&mut self, key: &K) -> Option<&Arc<V>> {
-        let id = match self.index.get(key) {
-            Some(id) => *id,
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => ptr,
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
-                let _ = self.store.get(key);
                 return None;
             },
         };
@@ -542,36 +587,39 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        // Move to head (mark as most recently used) - O(1)
-        self.move_to_front(id);
+        // Move to front (MRU position)
+        self.detach(node_ptr);
+        self.attach_front(node_ptr);
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
 
-        self.store.get(key)
+        // Return reference to value
+        unsafe { Some(&(*node_ptr.as_ptr()).value) }
     }
 
+    #[inline]
     fn contains(&self, key: &K) -> bool {
-        self.store.contains(key)
+        self.map.contains_key(key)
     }
 
+    #[inline]
     fn len(&self) -> usize {
-        self.store.len()
+        self.map.len()
     }
 
+    #[inline]
     fn capacity(&self) -> usize {
-        self.store.capacity()
+        self.capacity
     }
 
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
 
-        self.store.clear();
-
-        self.index.clear();
-        self.entries.clear();
-        self.list.clear();
+        // Drop all nodes
+        while self.pop_tail().is_some() {}
+        self.map.clear();
 
         self.validate_invariants();
     }
@@ -606,14 +654,15 @@ where
     /// cache.insert(4, Arc::new("fourth".to_string()));
     /// assert!(!cache.contains(&1));  // Evicted
     /// ```
+    #[inline]
     pub fn peek(&self, key: &K) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
-        if self.index.contains_key(key) && self.store.peek(key).is_some() {
+        if let Some(&node_ptr) = self.map.get(key) {
             #[cfg(feature = "metrics")]
             (&self.metrics).record_peek_lru_found();
-            let value = self.store.peek(key).expect("lru entry missing from store");
+            let value = unsafe { &(*node_ptr.as_ptr()).value };
             return Some(Arc::clone(value));
         }
         None
@@ -625,16 +674,17 @@ where
     K: Copy + Eq + Hash,
 {
     /// Zero-copy remove: returns `Arc<V>` without cloning data
+    #[inline]
     fn remove(&mut self, key: &K) -> Option<Arc<V>> {
-        let id = self.index.remove(key)?;
-        self.detach_from_list(id);
-        let _ = self.entries.remove(id);
-        let value = self.store.remove(key);
+        let node_ptr = self.map.remove(key)?;
+
+        self.detach(node_ptr);
+        let node = unsafe { Box::from_raw(node_ptr.as_ptr()) };
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
 
-        value
+        Some(node.value)
     }
 }
 
@@ -643,47 +693,47 @@ where
     K: Copy + Eq + Hash,
 {
     /// Zero-copy pop_lru: returns `(K, Arc<V>)` without cloning data
+    #[inline]
     fn pop_lru(&mut self) -> Option<(K, Arc<V>)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_call();
 
-        let id = self.pop_lru_id()?;
-        let entry = self.entries.remove(id).expect("lru entry missing");
-        self.index.remove(&entry.key);
-        let value = self.store.remove(&entry.key);
+        let node = self.pop_tail()?;
+        self.map.remove(&node.key);
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
 
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_found();
-        self.store.record_eviction();
 
-        Some((entry.key, value.expect("lru entry missing from store")))
+        Some((node.key, node.value))
     }
 
     /// Zero-copy peek_lru: returns references without affecting LRU order
+    #[inline]
     fn peek_lru(&self) -> Option<(&K, &Arc<V>)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
-        let id = self.list.back().copied()?;
-        let entry = self.entries.get(id)?;
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lru_found();
-        let value = self
-            .store
-            .peek(&entry.key)
-            .expect("lru entry missing from store");
-        Some((&entry.key, value))
+        self.tail.map(|tail_ptr| {
+            #[cfg(feature = "metrics")]
+            (&self.metrics).record_peek_lru_found();
+            unsafe {
+                let node = tail_ptr.as_ref();
+                (&node.key, &node.value)
+            }
+        })
     }
 
+    #[inline]
     fn touch(&mut self, key: &K) -> bool {
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_call();
 
-        if let Some(&id) = self.index.get(key) {
-            self.move_to_front(id);
+        if let Some(&node_ptr) = self.map.get(key) {
+            self.detach(node_ptr);
+            self.attach_front(node_ptr);
 
             #[cfg(debug_assertions)]
             self.validate_invariants();
@@ -701,16 +751,21 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_recency_rank_call();
 
-        let &target_id = self.index.get(key)?;
-        for (rank, id) in self.list.iter().enumerate() {
+        let &target_ptr = self.map.get(key)?;
+        let mut rank = 0usize;
+        let mut current = self.head;
+
+        while let Some(ptr) = current {
             #[cfg(feature = "metrics")]
             (&self.metrics).record_recency_rank_scan_step();
 
-            if *id == target_id {
+            if ptr == target_ptr {
                 #[cfg(feature = "metrics")]
                 (&self.metrics).record_recency_rank_found();
                 return Some(rank);
             }
+            rank += 1;
+            current = unsafe { ptr.as_ref().next };
         }
         None
     }
@@ -740,19 +795,20 @@ where
             recency_rank_calls: self.metrics.recency_rank_calls.get(),
             recency_rank_found: self.metrics.recency_rank_found.get(),
             recency_rank_scan_steps: self.metrics.recency_rank_scan_steps.get(),
-            cache_len: self.store.len(),
-            capacity: self.store.capacity(),
+            cache_len: self.map.len(),
+            capacity: self.capacity,
         }
     }
 }
 
-// Proper cleanup when cache core is dropped
+// Proper cleanup when cache core is dropped - free all heap-allocated nodes
 impl<K, V> Drop for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
     fn drop(&mut self) {
-        self.clear();
+        // Free all nodes by traversing the list
+        while self.pop_tail().is_some() {}
     }
 }
 
@@ -5095,57 +5151,56 @@ mod tests {
             where
                 K: Copy + Eq + Hash,
             {
-                cache.list.len()
+                cache.map.len()
             }
 
             fn list_keys<K, V>(cache: &LruCore<K, V>) -> Vec<K>
             where
                 K: Copy + Eq + Hash,
             {
-                cache
-                    .list
-                    .iter()
-                    .filter_map(|id| cache.entries.get(*id).map(|entry| entry.key))
-                    .collect()
+                let mut keys = Vec::new();
+                let mut current = cache.head;
+                while let Some(ptr) = current {
+                    unsafe {
+                        let node = ptr.as_ref();
+                        keys.push(node.key);
+                        current = node.next;
+                    }
+                }
+                keys
             }
 
             fn head_key<K, V>(cache: &LruCore<K, V>) -> Option<K>
             where
                 K: Copy + Eq + Hash,
             {
-                cache
-                    .list
-                    .front()
-                    .and_then(|id| cache.entries.get(*id).map(|entry| entry.key))
+                cache.head.map(|ptr| unsafe { ptr.as_ref().key })
             }
 
             fn tail_key<K, V>(cache: &LruCore<K, V>) -> Option<K>
             where
                 K: Copy + Eq + Hash,
             {
-                cache
-                    .list
-                    .back()
-                    .and_then(|id| cache.entries.get(*id).map(|entry| entry.key))
+                cache.tail.map(|ptr| unsafe { ptr.as_ref().key })
             }
 
             #[test]
             fn test_hashmap_linkedlist_size_consistency() {
                 // Test that HashMap size always matches linked list node count
                 let mut cache = LruCore::new(10);
-                assert_eq!(cache.index.len(), count_nodes(&cache));
+                assert_eq!(cache.map.len(), count_nodes(&cache));
 
                 cache.insert(1, Arc::new(10));
-                assert_eq!(cache.index.len(), count_nodes(&cache));
+                assert_eq!(cache.map.len(), count_nodes(&cache));
 
                 cache.insert(2, Arc::new(20));
-                assert_eq!(cache.index.len(), count_nodes(&cache));
+                assert_eq!(cache.map.len(), count_nodes(&cache));
 
                 cache.remove(&1);
-                assert_eq!(cache.index.len(), count_nodes(&cache));
+                assert_eq!(cache.map.len(), count_nodes(&cache));
 
                 cache.clear();
-                assert_eq!(cache.index.len(), count_nodes(&cache));
+                assert_eq!(cache.map.len(), count_nodes(&cache));
             }
 
             #[test]
@@ -5154,7 +5209,8 @@ mod tests {
                 let mut cache = LruCore::new(10);
 
                 // Empty
-                assert!(cache.list.is_empty());
+                assert!(cache.head.is_none());
+                assert!(cache.tail.is_none());
 
                 // One item
                 cache.insert(1, Arc::new(10));
@@ -5170,18 +5226,18 @@ mod tests {
 
             #[test]
             fn test_node_reference_consistency() {
-                // Test that all index entries correspond to list entries
+                // Test that all map entries correspond to list entries
                 let mut cache = LruCore::new(10);
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i));
                 }
 
-                let list_ids: HashSet<_> = cache.list.iter().copied().collect();
-                let index_ids: HashSet<_> = cache.index.values().copied().collect();
+                let list_keys_set: HashSet<_> = list_keys(&cache).into_iter().collect();
+                let map_keys: HashSet<_> = cache.map.keys().copied().collect();
 
-                assert_eq!(list_ids.len(), 5);
-                assert_eq!(cache.index.len(), 5);
-                assert_eq!(list_ids, index_ids);
+                assert_eq!(list_keys_set.len(), 5);
+                assert_eq!(cache.map.len(), 5);
+                assert_eq!(list_keys_set, map_keys);
             }
 
             #[test]
@@ -5192,10 +5248,10 @@ mod tests {
                     cache.insert(i, Arc::new(i));
                 }
 
-                let ids: Vec<_> = cache.list.iter().copied().collect();
-                let uniq: HashSet<_> = ids.iter().copied().collect();
-                assert_eq!(ids.len(), uniq.len());
-                assert_eq!(ids.len(), cache.index.len());
+                let keys = list_keys(&cache);
+                let uniq: HashSet<_> = keys.iter().copied().collect();
+                assert_eq!(keys.len(), uniq.len());
+                assert_eq!(keys.len(), cache.map.len());
             }
 
             #[test]
@@ -5230,13 +5286,13 @@ mod tests {
                 cache.insert(1, Arc::new(10));
                 cache.insert(2, Arc::new(20));
 
-                assert_eq!(cache.index.len(), 2);
+                assert_eq!(cache.map.len(), 2);
                 assert_eq!(count_nodes(&cache), 2);
 
                 // Trigger eviction
                 cache.insert(3, Arc::new(30));
 
-                assert_eq!(cache.index.len(), 2);
+                assert_eq!(cache.map.len(), 2);
                 assert_eq!(count_nodes(&cache), 2);
                 assert!(cache.contains(&2));
                 assert!(cache.contains(&3));
@@ -5253,7 +5309,7 @@ mod tests {
 
                 for i in 0..capacity * 2 {
                     cache.insert(i, Arc::new(i));
-                    assert!(cache.index.len() <= capacity);
+                    assert!(cache.map.len() <= capacity);
                     assert!(count_nodes(&cache) <= capacity);
                 }
             }
@@ -5262,8 +5318,9 @@ mod tests {
             fn test_empty_cache_state_invariants() {
                 // Test invariants when cache is empty (head=None, tail=None)
                 let cache: LruCore<i32, i32> = LruCore::new(10);
-                assert!(cache.list.is_empty());
-                assert!(cache.index.is_empty());
+                assert!(cache.head.is_none());
+                assert!(cache.tail.is_none());
+                assert!(cache.map.is_empty());
                 assert_eq!(count_nodes(&cache), 0);
             }
 
@@ -5275,7 +5332,7 @@ mod tests {
 
                 assert_eq!(head_key(&cache), Some(1));
                 assert_eq!(tail_key(&cache), Some(1));
-                assert_eq!(cache.index.len(), 1);
+                assert_eq!(cache.map.len(), 1);
                 assert_eq!(count_nodes(&cache), 1);
             }
 
@@ -5288,7 +5345,7 @@ mod tests {
                     cache.insert(i, Arc::new(i));
                 }
 
-                assert_eq!(cache.index.len(), capacity);
+                assert_eq!(cache.map.len(), capacity);
                 assert_eq!(count_nodes(&cache), capacity);
                 assert!(head_key(&cache).is_some());
                 assert!(tail_key(&cache).is_some());
@@ -5307,8 +5364,9 @@ mod tests {
 
                 cache.clear();
 
-                assert!(cache.list.is_empty());
-                assert!(cache.index.is_empty());
+                assert!(cache.head.is_none());
+                assert!(cache.tail.is_none());
+                assert!(cache.map.is_empty());
                 assert_eq!(count_nodes(&cache), 0);
             }
 
@@ -5332,7 +5390,7 @@ mod tests {
                 // 1 -> 0
                 cache.remove(&2);
                 assert_eq!(count_nodes(&cache), 0);
-                assert!(cache.list.is_empty());
+                assert!(cache.head.is_none());
             }
 
             #[test]
@@ -5344,14 +5402,14 @@ mod tests {
                     cache.insert(i, Arc::new(i));
                 }
 
-                assert_eq!(cache.index.len(), 10);
+                assert_eq!(cache.map.len(), 10);
                 assert_eq!(count_nodes(&cache), 10);
 
                 // Overwrite keys - should reuse or reallocate but keep consistency
                 for i in 0..5 {
                     cache.insert(i, Arc::new(i + 100));
                 }
-                assert_eq!(cache.index.len(), 10);
+                assert_eq!(cache.map.len(), 10);
                 assert_eq!(count_nodes(&cache), 10);
             }
 
@@ -5364,11 +5422,12 @@ mod tests {
                 }
 
                 for i in 0..5 {
-                    let id = *cache.index.get(&i).unwrap();
-                    let entry = cache.entries.get(id).unwrap();
-                    assert_eq!(entry.key, i);
-                    let value = cache.store.peek(&i).unwrap();
-                    assert_eq!(**value, i * 10);
+                    let node_ptr = cache.map.get(&i).unwrap();
+                    unsafe {
+                        let node = node_ptr.as_ref();
+                        assert_eq!(node.key, i);
+                        assert_eq!(*node.value, i * 10);
+                    }
                 }
             }
 
@@ -5412,7 +5471,7 @@ mod tests {
                 assert!(cache.len() <= 10);
                 // We access inner LruCore to check consistency via the lock
                 let guard = cache.inner.read();
-                assert_eq!(guard.index.len(), count_nodes(&*guard));
+                assert_eq!(guard.map.len(), count_nodes(&*guard));
             }
 
             #[test]
@@ -5421,13 +5480,13 @@ mod tests {
                 // LruCore operations generally don't return Result, but we can check boundary cases
                 let mut cache = LruCore::new(0);
                 assert!(cache.insert(1, Arc::new(1)).is_none());
-                assert!(cache.index.is_empty());
+                assert!(cache.map.is_empty());
 
                 let mut cache = LruCore::new(1);
                 cache.insert(1, Arc::new(1));
                 // Try to remove non-existent
                 assert!(cache.remove(&2).is_none());
-                assert_eq!(cache.index.len(), 1);
+                assert_eq!(cache.map.len(), 1);
                 cache.validate_invariants();
             }
 
@@ -5513,14 +5572,16 @@ mod tests {
 
             #[test]
             fn test_node_slot_validity() {
-                // Test that index entries map to valid slots
+                // Test that map entries point to valid nodes with correct keys
                 let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
 
-                for (k, id) in &cache.index {
-                    let entry = cache.entries.get(*id).unwrap();
-                    assert_eq!(entry.key, *k);
+                for (k, node_ptr) in &cache.map {
+                    unsafe {
+                        let node = node_ptr.as_ref();
+                        assert_eq!(node.key, *k);
+                    }
                 }
             }
 
@@ -5534,8 +5595,9 @@ mod tests {
                 }
 
                 let mut visited = HashSet::new();
-                for id in cache.list.iter() {
-                    assert!(visited.insert(*id), "Duplicate entry detected!");
+                let keys = list_keys(&cache);
+                for k in keys {
+                    assert!(visited.insert(k), "Duplicate entry detected!");
                 }
             }
 
@@ -5548,7 +5610,7 @@ mod tests {
                 cache.insert(2, Arc::new(2));
 
                 let count_list = count_nodes(&cache);
-                assert_eq!(count_list, cache.index.len());
+                assert_eq!(count_list, cache.map.len());
             }
 
             #[test]
@@ -5556,13 +5618,13 @@ mod tests {
                 // Test prevention of duplicate nodes for same key
                 let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(1));
-                let id1 = cache.index.get(&1).copied();
+                let id1 = cache.map.get(&1).copied();
 
                 cache.insert(1, Arc::new(2)); // Overwrite
-                let id2 = cache.index.get(&1).copied();
+                let id2 = cache.map.get(&1).copied();
 
                 assert_eq!(id1, id2);
-                assert_eq!(cache.index.len(), 1);
+                assert_eq!(cache.map.len(), 1);
                 assert_eq!(count_nodes(&cache), 1);
             }
 
@@ -5629,14 +5691,14 @@ mod tests {
 
             #[test]
             fn test_value_consistency_across_structures() {
-                // Test that values are consistent between store and list nodes
+                // Test that values are consistent between map and list nodes
                 let mut cache = LruCore::new(5);
                 cache.insert(1, Arc::new(10));
 
-                let map_val = cache.store.peek(&1).unwrap().clone();
-                let head_key = head_key(&cache).unwrap();
-                assert_eq!(head_key, 1);
-                assert_eq!(*map_val, 10);
+                let head_key_val = head_key(&cache).unwrap();
+                assert_eq!(head_key_val, 1);
+                let value = cache.peek(&1).unwrap();
+                assert_eq!(*value, 10);
             }
 
             #[test]
@@ -5665,7 +5727,7 @@ mod tests {
                 // Test state rollback when operations fail
                 // Currently no operations return Result/failure that requires rollback.
                 let cache = LruCore::<i32, i32>::new(5);
-                assert!(cache.list.is_empty());
+                assert!(cache.head.is_none());
             }
 
             #[test]
@@ -5686,7 +5748,7 @@ mod tests {
                 for i in 0..100 {
                     cache.insert(i % 20, Arc::new(i));
                 }
-                assert_eq!(cache.index.len(), count_nodes(&cache));
+                assert_eq!(cache.map.len(), count_nodes(&cache));
             }
 
             #[test]
@@ -5773,7 +5835,7 @@ mod tests {
                 let mut cache = LruCore::new(0);
                 cache.insert(1, Arc::new(1));
                 assert_eq!(cache.len(), 0);
-                assert!(cache.list.is_empty());
+                assert!(cache.head.is_none());
             }
 
             #[test]
@@ -5874,7 +5936,7 @@ mod tests {
                 cache.insert(1, Arc::new(1));
 
                 // Capture state
-                let state: Vec<_> = cache.index.keys().copied().collect();
+                let state: Vec<_> = cache.map.keys().copied().collect();
                 assert_eq!(state.len(), 1);
             }
 
@@ -6263,7 +6325,7 @@ mod tests {
         fn test_memory_alignment_safety() {
             use std::mem;
             // Ensure Node alignment is respected
-            assert!(mem::align_of::<Entry<u32>>() >= mem::align_of::<u32>());
+            assert!(mem::align_of::<Node<u32, u32>>() >= mem::align_of::<u32>());
 
             let mut cache = LruCore::new(1);
             cache.insert(1, Arc::new(1u64)); // u64 has stricter alignment

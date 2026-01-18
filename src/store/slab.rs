@@ -155,12 +155,12 @@
 //! - Metrics use atomic counters for concurrent compatibility
 //! - `remove_by_id` enables O(1) eviction without key lookup
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 
 use crate::store::traits::{
     ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead, StoreCore, StoreFactory,
@@ -346,7 +346,7 @@ impl StoreCounters {
 pub struct SlabStore<K, V> {
     entries: Vec<Option<Entry<K, V>>>,
     free_list: Vec<usize>,
-    index: HashMap<K, EntryId>,
+    index: FxHashMap<K, EntryId>,
     capacity: usize,
     metrics: StoreCounters,
 }
@@ -373,7 +373,7 @@ where
         Self {
             entries: Vec::with_capacity(capacity),
             free_list: Vec::new(),
-            index: HashMap::with_capacity(capacity),
+            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             capacity,
             metrics: StoreCounters::default(),
         }
@@ -745,7 +745,7 @@ where
 pub struct ConcurrentSlabStore<K, V> {
     entries: RwLock<Vec<Option<Entry<K, Arc<V>>>>>,
     free_list: RwLock<Vec<usize>>,
-    index: RwLock<HashMap<K, EntryId>>,
+    index: RwLock<FxHashMap<K, EntryId>>,
     capacity: usize,
     metrics: StoreCounters,
 }
@@ -770,7 +770,10 @@ where
         Self {
             entries: RwLock::new(Vec::with_capacity(capacity)),
             free_list: RwLock::new(Vec::new()),
-            index: RwLock::new(HashMap::with_capacity(capacity)),
+            index: RwLock::new(FxHashMap::with_capacity_and_hasher(
+                capacity,
+                Default::default(),
+            )),
             capacity,
             metrics: StoreCounters::default(),
         }

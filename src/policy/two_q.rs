@@ -138,11 +138,11 @@
 //! - Johnson & Shasha, "2Q: A Low Overhead High Performance Buffer Management
 //!   Replacement Algorithm", VLDB 1994
 
-use crate::ds::{IntrusiveList, SlotArena, SlotId};
-use crate::store::hashmap::HashMapStore;
-use crate::store::traits::{StoreCore, StoreMut};
+use crate::ds::{IntrusiveList, SlotId};
+use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::hash::Hash;
+use std::ptr::NonNull;
 
 /// Indicates which queue an entry resides in.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -153,15 +153,16 @@ enum QueueKind {
     Protected,
 }
 
-/// Internal entry storing key, value, queue membership, and list position.
-#[derive(Debug)]
-struct Entry<K, V> {
+/// Node in the optimized 2Q linked list.
+///
+/// Cache-line optimized layout with pointers first.
+#[repr(C)]
+struct Node<K, V> {
+    prev: Option<NonNull<Node<K, V>>>,
+    next: Option<NonNull<Node<K, V>>>,
+    queue: QueueKind,
     key: K,
     value: V,
-    queue: QueueKind,
-    /// SlotId of this entry's node in the probation or protected list.
-    /// None if not yet attached to any list.
-    list_node: Option<SlotId>,
 }
 
 /// LRU queue backed by an intrusive doubly-linked list.
@@ -209,11 +210,26 @@ pub struct LruQueue<T> {
 /// - `K`: Key type, must be `Clone + Eq + Hash`
 /// - `V`: Value type
 #[allow(dead_code)]
-#[derive(Debug)]
-pub struct TwoQWithGhost<K, V> {
+pub struct TwoQWithGhost<K, V>
+where
+    K: Clone + Eq + Hash,
+{
     core: TwoQCore<K, V>,
     ghost_list: VecDeque<K>,
     ghost_list_cap: usize,
+}
+
+impl<K, V> std::fmt::Debug for TwoQWithGhost<K, V>
+where
+    K: Clone + Eq + Hash + std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TwoQWithGhost")
+            .field("core", &self.core)
+            .field("ghost_list_len", &self.ghost_list.len())
+            .field("ghost_list_cap", &self.ghost_list_cap)
+            .finish()
+    }
 }
 
 /// Core Two-Queue (2Q) cache implementation.
@@ -256,22 +272,47 @@ pub struct TwoQWithGhost<K, V> {
 /// When capacity is exceeded:
 /// 1. If probation exceeds its cap, evict from probation front (oldest)
 /// 2. Otherwise, evict from protected back (LRU)
-#[derive(Debug)]
-pub struct TwoQCore<K, V> {
-    /// Maps keys to their SlotId in the store.
-    index: HashMapStore<K, SlotId>,
-    /// Arena storing all entries.
-    store: SlotArena<Entry<K, V>>,
+///
+/// # Implementation
+///
+/// Uses raw pointer linked lists for O(1) operations with minimal overhead.
+pub struct TwoQCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Direct key -> node pointer mapping
+    map: FxHashMap<K, NonNull<Node<K, V>>>,
 
-    /// FIFO queue for newly inserted items.
-    probation: IntrusiveList<SlotId>,
-    /// LRU queue for frequently accessed items.
-    protected: LruQueue<SlotId>,
+    /// Probation queue (FIFO): head=newest, tail=oldest
+    probation_head: Option<NonNull<Node<K, V>>>,
+    probation_tail: Option<NonNull<Node<K, V>>>,
+    probation_len: usize,
+
+    /// Protected queue (LRU): head=MRU, tail=LRU
+    protected_head: Option<NonNull<Node<K, V>>>,
+    protected_tail: Option<NonNull<Node<K, V>>>,
+    protected_len: usize,
 
     /// Maximum size of the probation queue.
     probation_cap: usize,
     /// Maximum total cache capacity.
     protected_cap: usize,
+}
+
+// SAFETY: TwoQCore can be sent between threads if K and V are Send.
+unsafe impl<K, V> Send for TwoQCore<K, V>
+where
+    K: Clone + Eq + Hash + Send,
+    V: Send,
+{
+}
+
+// SAFETY: TwoQCore can be shared between threads if K and V are Sync.
+unsafe impl<K, V> Sync for TwoQCore<K, V>
+where
+    K: Clone + Eq + Hash + Sync,
+    V: Sync,
+{
 }
 
 impl<T> Default for LruQueue<T> {
@@ -475,18 +516,130 @@ where
     /// assert_eq!(cache.capacity(), 100);
     /// assert!(cache.is_empty());
     /// ```
+    #[inline]
     pub fn new(protected_cap: usize, a1_frac: f64) -> Self {
         let probation_cap = (protected_cap as f64 * a1_frac) as usize;
         let total_cap = protected_cap + probation_cap;
 
         Self {
-            index: HashMapStore::new(total_cap),
-            store: SlotArena::with_capacity(total_cap),
-            probation: IntrusiveList::with_capacity(probation_cap),
-            protected: LruQueue::with_capacity(protected_cap),
+            map: FxHashMap::with_capacity_and_hasher(total_cap, Default::default()),
+            probation_head: None,
+            probation_tail: None,
+            probation_len: 0,
+            protected_head: None,
+            protected_tail: None,
+            protected_len: 0,
             probation_cap,
             protected_cap,
         }
+    }
+
+    /// Detach a node from its current queue.
+    #[inline(always)]
+    fn detach(&mut self, node_ptr: NonNull<Node<K, V>>) {
+        unsafe {
+            let node = node_ptr.as_ref();
+            let prev = node.prev;
+            let next = node.next;
+            let queue = node.queue;
+
+            let (head, tail, len) = match queue {
+                QueueKind::Probation => (
+                    &mut self.probation_head,
+                    &mut self.probation_tail,
+                    &mut self.probation_len,
+                ),
+                QueueKind::Protected => (
+                    &mut self.protected_head,
+                    &mut self.protected_tail,
+                    &mut self.protected_len,
+                ),
+            };
+
+            match prev {
+                Some(mut p) => p.as_mut().next = next,
+                None => *head = next,
+            }
+
+            match next {
+                Some(mut n) => n.as_mut().prev = prev,
+                None => *tail = prev,
+            }
+
+            *len -= 1;
+        }
+    }
+
+    /// Attach a node at the head of probation queue (FIFO: new items at head).
+    #[inline(always)]
+    fn attach_probation_head(&mut self, mut node_ptr: NonNull<Node<K, V>>) {
+        unsafe {
+            let node = node_ptr.as_mut();
+            node.prev = None;
+            node.next = self.probation_head;
+            node.queue = QueueKind::Probation;
+
+            match self.probation_head {
+                Some(mut h) => h.as_mut().prev = Some(node_ptr),
+                None => self.probation_tail = Some(node_ptr),
+            }
+
+            self.probation_head = Some(node_ptr);
+            self.probation_len += 1;
+        }
+    }
+
+    /// Attach a node at the head of protected queue (LRU: MRU at head).
+    #[inline(always)]
+    fn attach_protected_head(&mut self, mut node_ptr: NonNull<Node<K, V>>) {
+        unsafe {
+            let node = node_ptr.as_mut();
+            node.prev = None;
+            node.next = self.protected_head;
+            node.queue = QueueKind::Protected;
+
+            match self.protected_head {
+                Some(mut h) => h.as_mut().prev = Some(node_ptr),
+                None => self.protected_tail = Some(node_ptr),
+            }
+
+            self.protected_head = Some(node_ptr);
+            self.protected_len += 1;
+        }
+    }
+
+    /// Pop from probation tail (FIFO: oldest at tail).
+    #[inline(always)]
+    fn pop_probation_tail(&mut self) -> Option<Box<Node<K, V>>> {
+        self.probation_tail.map(|tail_ptr| unsafe {
+            let node = Box::from_raw(tail_ptr.as_ptr());
+
+            self.probation_tail = node.prev;
+            match self.probation_tail {
+                Some(mut t) => t.as_mut().next = None,
+                None => self.probation_head = None,
+            }
+            self.probation_len -= 1;
+
+            node
+        })
+    }
+
+    /// Pop from protected tail (LRU: LRU at tail).
+    #[inline(always)]
+    fn pop_protected_tail(&mut self) -> Option<Box<Node<K, V>>> {
+        self.protected_tail.map(|tail_ptr| unsafe {
+            let node = Box::from_raw(tail_ptr.as_ptr());
+
+            self.protected_tail = node.prev;
+            match self.protected_tail {
+                Some(mut t) => t.as_mut().next = None,
+                None => self.protected_head = None,
+            }
+            self.protected_len -= 1;
+
+            node
+        })
     }
 
     /// Retrieves a value by key, promoting from probation to protected if needed.
@@ -512,54 +665,26 @@ where
     /// // Missing key
     /// assert_eq!(cache.get(&"missing"), None);
     /// ```
+    #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let store_id = *self.index.get(key)?;
+        let node_ptr = *self.map.get(key)?;
 
-        let entry = self.store.get(store_id)?;
-        let queue = entry.queue;
-        let list_node = entry.list_node;
+        let queue = unsafe { node_ptr.as_ref().queue };
 
         match queue {
             QueueKind::Probation => {
-                // Promote from probation FIFO to protected LRU
-                self.detach_from_probation(store_id, list_node);
-                self.attach_to_protected(store_id);
+                // Promote from probation to protected
+                self.detach(node_ptr);
+                self.attach_protected_head(node_ptr);
             },
             QueueKind::Protected => {
-                if let Some(node_id) = list_node {
-                    self.protected.move_to_front(node_id);
-                }
+                // Move to MRU position
+                self.detach(node_ptr);
+                self.attach_protected_head(node_ptr);
             },
         }
 
-        self.store.get(store_id).map(|e| &e.value)
-    }
-
-    /// Detaches an entry from the probation list.
-    fn detach_from_probation(&mut self, store_id: SlotId, list_node: Option<SlotId>) {
-        if let Some(node_id) = list_node {
-            let _ = self.probation.remove(node_id);
-        }
-        if let Some(entry) = self.store.get_mut(store_id) {
-            entry.list_node = None;
-        }
-    }
-
-    /// Attaches an entry to the protected queue (LRU).
-    fn attach_to_protected(&mut self, store_id: SlotId) {
-        let node_id = self.protected.push_front(store_id);
-        if let Some(entry) = self.store.get_mut(store_id) {
-            entry.queue = QueueKind::Protected;
-            entry.list_node = Some(node_id);
-        }
-    }
-
-    /// Attaches an entry to the probation queue (FIFO).
-    fn attach_to_probation(&mut self, store_id: SlotId) {
-        let node_id = self.probation.push_back(store_id);
-        if let Some(entry) = self.store.get_mut(store_id) {
-            entry.list_node = Some(node_id);
-        }
+        unsafe { Some(&node_ptr.as_ref().value) }
     }
 
     /// Inserts or updates a key-value pair.
@@ -584,10 +709,12 @@ where
     /// assert_eq!(cache.get(&"key"), Some(&"updated"));
     /// assert_eq!(cache.len(), 1);  // Still 1 entry
     /// ```
+    #[inline]
     pub fn insert(&mut self, key: K, value: V) {
-        if let Some(id) = self.index.get(&key) {
-            if let Some(e) = self.store.get_mut(*id) {
-                e.value = value;
+        // Check for existing key - update in place
+        if let Some(&node_ptr) = self.map.get(&key) {
+            unsafe {
+                (*node_ptr.as_ptr()).value = value;
             }
             return;
         }
@@ -595,47 +722,43 @@ where
         // Evict BEFORE inserting to ensure space is available
         self.evict_if_needed();
 
-        // Create entry with no list attachment yet
-        let entry = Entry {
+        // Create new node in probation
+        let node = Box::new(Node {
+            prev: None,
+            next: None,
+            queue: QueueKind::Probation,
             key: key.clone(),
             value,
-            queue: QueueKind::Probation,
-            list_node: None,
-        };
-        let store_id = self.store.insert(entry);
+        });
+        let node_ptr = NonNull::new(Box::into_raw(node)).unwrap();
 
-        // Add to index
-        self.index
-            .try_insert(key, store_id)
-            .expect("Failed to insert entry");
-
-        // Attach to probation queue
-        self.attach_to_probation(store_id);
+        self.map.insert(key, node_ptr);
+        self.attach_probation_head(node_ptr);
     }
 
     /// Evicts entries until there is room for a new entry.
+    #[inline]
     fn evict_if_needed(&mut self) {
         while self.len() >= self.protected_cap {
-            if self.probation.len() > self.probation_cap {
-                if let Some(id) = self.probation.pop_front() {
-                    self.remove_id(id);
+            if self.probation_len > self.probation_cap {
+                // Evict from probation tail (oldest)
+                if let Some(node) = self.pop_probation_tail() {
+                    self.map.remove(&node.key);
+                    continue;
                 }
-            } else if let Some(id) = self.protected.pop_back() {
-                self.remove_id(id);
-            } else if let Some(id) = self.probation.pop_front() {
-                // Fallback: evict from probation even if under cap
-                self.remove_id(id);
-            } else {
-                // No entries to evict
-                break;
             }
-        }
-    }
-
-    /// Removes an entry by its SlotId.
-    fn remove_id(&mut self, id: SlotId) {
-        if let Some(entry) = self.store.remove(id) {
-            self.index.remove(&entry.key);
+            // Evict from protected tail (LRU)
+            if let Some(node) = self.pop_protected_tail() {
+                self.map.remove(&node.key);
+                continue;
+            }
+            // Fallback: evict from probation even if under cap
+            if let Some(node) = self.pop_probation_tail() {
+                self.map.remove(&node.key);
+                continue;
+            }
+            // No entries to evict
+            break;
         }
     }
 
@@ -653,8 +776,9 @@ where
     /// cache.insert("b", 2);
     /// assert_eq!(cache.len(), 2);
     /// ```
+    #[inline]
     pub fn len(&self) -> usize {
-        self.index.len()
+        self.map.len()
     }
 
     /// Returns `true` if the cache is empty.
@@ -670,8 +794,9 @@ where
     /// cache.insert("key", 42);
     /// assert!(!cache.is_empty());
     /// ```
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.index.len() == 0
+        self.map.is_empty()
     }
 
     /// Returns the total cache capacity.
@@ -684,6 +809,7 @@ where
     /// let cache: TwoQCore<String, i32> = TwoQCore::new(500, 0.25);
     /// assert_eq!(cache.capacity(), 500);
     /// ```
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.protected_cap
     }
@@ -703,8 +829,9 @@ where
     /// assert!(cache.contains(&"key"));
     /// assert!(!cache.contains(&"missing"));
     /// ```
+    #[inline]
     pub fn contains(&self, key: &K) -> bool {
-        self.index.contains(key)
+        self.map.contains_key(key)
     }
 
     /// Clears all entries from the cache.
@@ -723,10 +850,37 @@ where
     /// assert!(!cache.contains(&"a"));
     /// ```
     pub fn clear(&mut self) {
-        self.index.clear();
-        self.store.clear();
-        self.probation.clear();
-        self.protected.list.clear();
+        // Free all nodes
+        while self.pop_probation_tail().is_some() {}
+        while self.pop_protected_tail().is_some() {}
+        self.map.clear();
+    }
+}
+
+// Proper cleanup when cache is dropped
+impl<K, V> Drop for TwoQCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn drop(&mut self) {
+        while self.pop_probation_tail().is_some() {}
+        while self.pop_protected_tail().is_some() {}
+    }
+}
+
+// Debug implementation
+impl<K, V> std::fmt::Debug for TwoQCore<K, V>
+where
+    K: Clone + Eq + Hash + std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TwoQCore")
+            .field("capacity", &self.protected_cap)
+            .field("probation_cap", &self.probation_cap)
+            .field("len", &self.map.len())
+            .field("probation_len", &self.probation_len)
+            .field("protected_len", &self.protected_len)
+            .finish_non_exhaustive()
     }
 }
 
@@ -751,13 +905,15 @@ impl<K, V> crate::traits::CoreCache<K, V> for TwoQCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
+    #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         // Check if key exists - update in place
-        if let Some(id) = self.index.get(&key) {
-            if let Some(e) = self.store.get_mut(*id) {
-                let old = std::mem::replace(&mut e.value, value);
-                return Some(old);
-            }
+        if let Some(&node_ptr) = self.map.get(&key) {
+            let old = unsafe {
+                let node = &mut *node_ptr.as_ptr();
+                std::mem::replace(&mut node.value, value)
+            };
+            return Some(old);
         }
 
         // New insert
@@ -765,27 +921,28 @@ where
         None
     }
 
+    #[inline]
     fn get(&mut self, key: &K) -> Option<&V> {
         TwoQCore::get(self, key)
     }
 
+    #[inline]
     fn contains(&self, key: &K) -> bool {
-        self.index.contains(key)
+        self.map.contains_key(key)
     }
 
+    #[inline]
     fn len(&self) -> usize {
-        self.index.len()
+        self.map.len()
     }
 
+    #[inline]
     fn capacity(&self) -> usize {
         self.protected_cap
     }
 
     fn clear(&mut self) {
-        self.index.clear();
-        self.store.clear();
-        self.probation.clear();
-        self.protected.list.clear();
+        TwoQCore::clear(self);
     }
 }
 

@@ -28,10 +28,13 @@ dhat-heap = ["dhat"]
 parking_lot = "0.12"
 log = "0.4"
 dhat = { version = "0.3", optional = true }
+rustc-hash = "2.1"
 
 [dev-dependencies]
 criterion = "0.8"
 dhat = "0.3"
+lru = "0.12"
+quick_cache = "0.6"
 
 [[bench]]
 name = "fifo"
@@ -47,6 +50,10 @@ harness = false
 
 [[bench]]
 name = "lru_k"
+harness = false
+
+[[bench]]
+name = "comparison"
 harness = false
 
 [[bin]]

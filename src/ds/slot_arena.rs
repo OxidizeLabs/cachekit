@@ -299,6 +299,7 @@ impl<T> SlotArena<T> {
     /// let id = arena.insert("hello");
     /// assert_eq!(arena.get(id), Some(&"hello"));
     /// ```
+    #[inline]
     pub fn insert(&mut self, value: T) -> SlotId {
         let idx = if let Some(idx) = self.free_list.pop() {
             self.slots[idx] = Some(value);
@@ -326,6 +327,7 @@ impl<T> SlotArena<T> {
     /// assert_eq!(arena.remove(id), Some(42));
     /// assert_eq!(arena.remove(id), None);  // Already removed
     /// ```
+    #[inline]
     pub fn remove(&mut self, id: SlotId) -> Option<T> {
         let slot = self.slots.get_mut(id.0)?;
         let value = slot.take()?;
@@ -346,6 +348,7 @@ impl<T> SlotArena<T> {
     ///
     /// assert_eq!(arena.get(id), Some(&"value"));
     /// ```
+    #[inline]
     pub fn get(&self, id: SlotId) -> Option<&T> {
         self.slots.get(id.0).and_then(|slot| slot.as_ref())
     }
@@ -365,6 +368,7 @@ impl<T> SlotArena<T> {
     /// }
     /// assert_eq!(arena.get(id), Some(&2));
     /// ```
+    #[inline]
     pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
         self.slots.get_mut(id.0).and_then(|slot| slot.as_mut())
     }
@@ -383,6 +387,7 @@ impl<T> SlotArena<T> {
     /// arena.remove(id);
     /// assert!(!arena.contains(id));
     /// ```
+    #[inline]
     pub fn contains(&self, id: SlotId) -> bool {
         self.slots
             .get(id.0)

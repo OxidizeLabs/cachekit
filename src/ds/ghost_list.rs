@@ -135,7 +135,7 @@
 //! - Zero-capacity ghost lists are no-ops (record does nothing)
 //! - `debug_validate_invariants()` available in debug/test builds
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
 use crate::ds::intrusive_list::IntrusiveList;
@@ -204,7 +204,7 @@ use crate::ds::slot_arena::SlotId;
 #[derive(Debug)]
 pub struct GhostList<K> {
     list: IntrusiveList<K>,
-    index: HashMap<K, SlotId>,
+    index: FxHashMap<K, SlotId>,
     capacity: usize,
 }
 
@@ -228,7 +228,7 @@ where
     pub fn new(capacity: usize) -> Self {
         Self {
             list: IntrusiveList::with_capacity(capacity),
-            index: HashMap::with_capacity(capacity),
+            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             capacity,
         }
     }

@@ -1,3 +1,4 @@
+pub mod fast_lru;
 pub mod fifo;
 pub mod heap_lfu;
 pub mod lfu;

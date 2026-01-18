@@ -171,18 +171,24 @@
 //! - `min_freq` pointer enables O(1) eviction
 //! - `debug_validate_invariants()` available in debug/test builds
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
+/// LFU entry with cache-line optimized layout.
+/// Link pointers (prev/next) are accessed on every touch/evict operation,
+/// so they're placed first for better cache locality.
 #[derive(Debug)]
+#[repr(C)]
 struct Entry<K> {
-    key: K,
-    freq: u64,
-    last_epoch: u64,
+    // Hot fields - accessed during list operations
     prev: Option<SlotId>,
     next: Option<SlotId>,
+    freq: u64,
+    last_epoch: u64,
+    // Cold field - only accessed on eviction
+    key: K,
 }
 
 #[derive(Debug, Default)]
@@ -250,8 +256,8 @@ struct Bucket {
 #[derive(Debug)]
 pub struct FrequencyBuckets<K> {
     entries: SlotArena<Entry<K>>,
-    index: HashMap<K, SlotId>,
-    buckets: HashMap<u64, Bucket>,
+    index: FxHashMap<K, SlotId>,
+    buckets: FxHashMap<u64, Bucket>,
     min_freq: u64,
     epoch: u64,
 }
@@ -325,8 +331,8 @@ where
     pub fn with_capacity_and_bucket_hint(capacity: usize, bucket_hint: usize) -> Self {
         Self {
             entries: SlotArena::with_capacity(capacity),
-            index: HashMap::with_capacity(capacity),
-            buckets: HashMap::with_capacity(bucket_hint),
+            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            buckets: FxHashMap::with_capacity_and_hasher(bucket_hint, Default::default()),
             min_freq: 0,
             epoch: 0,
         }
@@ -345,8 +351,8 @@ where
     pub fn new() -> Self {
         Self {
             entries: SlotArena::new(),
-            index: HashMap::new(),
-            buckets: HashMap::new(),
+            index: FxHashMap::default(),
+            buckets: FxHashMap::default(),
             min_freq: 0,
             epoch: 0,
         }
@@ -400,6 +406,7 @@ where
     /// assert!(freq.contains(&"key"));
     /// assert!(!freq.contains(&"missing"));
     /// ```
+    #[inline]
     pub fn contains(&self, key: &K) -> bool {
         self.index.contains_key(key)
     }
@@ -464,6 +471,7 @@ where
     /// assert_eq!(freq.frequency(&"key"), Some(2));
     /// assert_eq!(freq.frequency(&"missing"), None);
     /// ```
+    #[inline]
     pub fn frequency(&self, key: &K) -> Option<u64> {
         let id = *self.index.get(key)?;
         self.entries.get(id).map(|entry| entry.freq)
@@ -756,6 +764,7 @@ where
     /// assert!(!freq.insert("a"));  // Already exists
     /// assert_eq!(freq.frequency(&"a"), Some(1));
     /// ```
+    #[inline]
     pub fn insert(&mut self, key: K) -> bool {
         if self.index.contains_key(&key) {
             return false;
@@ -829,6 +838,7 @@ where
     /// assert_eq!(freq.touch(&"key"), Some(3));
     /// assert_eq!(freq.touch(&"missing"), None);
     /// ```
+    #[inline]
     pub fn touch(&mut self, key: &K) -> Option<u64> {
         let id = *self.index.get(key)?;
         let current_freq = self.entries.get(id)?.freq;
@@ -1053,6 +1063,7 @@ where
     /// assert_eq!(freq.remove(&"key"), None);  // Already removed
     /// assert!(!freq.contains(&"key"));
     /// ```
+    #[inline]
     pub fn remove(&mut self, key: &K) -> Option<u64> {
         let id = self.index.remove(key)?;
         let freq = self.entries.get(id)?.freq;
@@ -1123,6 +1134,7 @@ where
     /// assert_eq!(freq.pop_min(), Some(("c", 2)));  // Only one left
     /// assert_eq!(freq.pop_min(), None);            // Empty
     /// ```
+    #[inline]
     pub fn pop_min(&mut self) -> Option<(K, u64)> {
         let freq = self.min_freq;
         if freq == 0 {

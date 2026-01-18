@@ -111,7 +111,7 @@
 //! - Keys are never removed (append-only design)
 //! - Both `index` and `keys` store copies of the key
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
 /// Monotonic key interner that assigns a `u64` handle to each unique key.
@@ -168,7 +168,7 @@ use std::hash::Hash;
 /// ```
 #[derive(Debug, Default)]
 pub struct KeyInterner<K> {
-    index: HashMap<K, u64>,
+    index: FxHashMap<K, u64>,
     keys: Vec<K>,
 }
 
@@ -188,7 +188,7 @@ where
     /// ```
     pub fn new() -> Self {
         Self {
-            index: HashMap::new(),
+            index: FxHashMap::default(),
             keys: Vec::new(),
         }
     }
@@ -207,7 +207,7 @@ where
     /// ```
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            index: HashMap::with_capacity(capacity),
+            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             keys: Vec::with_capacity(capacity),
         }
     }

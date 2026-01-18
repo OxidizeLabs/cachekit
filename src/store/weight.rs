@@ -151,12 +151,12 @@
 //! - Does **not** implement `StoreCore`/`StoreMut` (uses `Arc<V>` API)
 //! - Metrics use atomic counters for concurrent compatibility
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 
 use crate::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull, StoreMetrics};
 
@@ -301,7 +301,7 @@ pub struct WeightStore<K, V, F>
 where
     F: Fn(&V) -> usize,
 {
-    map: HashMap<K, WeightEntry<V>>,
+    map: FxHashMap<K, WeightEntry<V>>,
     capacity_entries: usize,
     capacity_weight: usize,
     total_weight: usize,
@@ -340,7 +340,7 @@ where
     /// ```
     pub fn with_capacity(capacity_entries: usize, capacity_weight: usize, weight_fn: F) -> Self {
         Self {
-            map: HashMap::with_capacity(capacity_entries),
+            map: FxHashMap::with_capacity_and_hasher(capacity_entries, Default::default()),
             capacity_entries,
             capacity_weight,
             total_weight: 0,

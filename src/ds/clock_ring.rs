@@ -158,16 +158,21 @@
 //! - Hand pointer advances after each insert/eviction
 //! - `debug_validate_invariants()` available in debug/test builds
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
 use parking_lot::RwLock;
 
+/// Clock entry with cache-line optimized layout.
 #[derive(Debug)]
+#[repr(C)]
 struct Entry<K, V> {
-    key: K,
-    value: V,
+    // Hot field - checked/modified on every clock sweep
     referenced: bool,
+    // Key needed for index removal during eviction
+    key: K,
+    // Value accessed on get
+    value: V,
 }
 
 /// Fixed-size ring implementing the CLOCK (second-chance) eviction algorithm.
@@ -222,7 +227,7 @@ struct Entry<K, V> {
 #[derive(Debug)]
 pub struct ClockRing<K, V> {
     slots: Vec<Option<Entry<K, V>>>,
-    index: HashMap<K, usize>,
+    index: FxHashMap<K, usize>,
     hand: usize,
     len: usize,
 }
@@ -597,7 +602,7 @@ where
         slots.resize_with(capacity, || None);
         Self {
             slots,
-            index: HashMap::with_capacity(capacity),
+            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             hand: 0,
             len: 0,
         }

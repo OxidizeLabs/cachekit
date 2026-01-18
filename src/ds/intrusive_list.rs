@@ -137,12 +137,18 @@ use parking_lot::RwLock;
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
+/// Internal node with cache-line optimized layout.
+/// Link pointers (prev/next) are placed first as they're accessed on every
+/// list operation. Epoch is used for versioning. Value is accessed last.
 #[derive(Debug)]
+#[repr(C)]
 struct Node<T> {
-    value: T,
+    // Hot fields - accessed during every list traversal
     prev: Option<SlotId>,
     next: Option<SlotId>,
     epoch: u64,
+    // Cold field - accessed on get/peek
+    value: T,
 }
 
 /// Doubly linked list backed by [`SlotArena`].
@@ -254,6 +260,7 @@ impl<T> IntrusiveList<T> {
     /// list.push_back(2);
     /// assert_eq!(list.len(), 2);
     /// ```
+    #[inline]
     pub fn len(&self) -> usize {
         self.arena.len()
     }
@@ -271,6 +278,7 @@ impl<T> IntrusiveList<T> {
     /// list.push_back(1);
     /// assert!(!list.is_empty());
     /// ```
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.arena.is_empty()
     }
@@ -289,6 +297,7 @@ impl<T> IntrusiveList<T> {
     /// list.remove(id);
     /// assert!(!list.contains(id));
     /// ```
+    #[inline]
     pub fn contains(&self, id: SlotId) -> bool {
         self.arena.contains(id)
     }
@@ -307,6 +316,7 @@ impl<T> IntrusiveList<T> {
     /// list.push_back("second");
     /// assert_eq!(list.front(), Some(&"first"));
     /// ```
+    #[inline]
     pub fn front(&self) -> Option<&T> {
         self.head
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
@@ -323,6 +333,7 @@ impl<T> IntrusiveList<T> {
     /// let id = list.push_front("value");
     /// assert_eq!(list.front_id(), Some(id));
     /// ```
+    #[inline]
     pub fn front_id(&self) -> Option<SlotId> {
         self.head
     }
@@ -339,6 +350,7 @@ impl<T> IntrusiveList<T> {
     /// list.push_back("second");
     /// assert_eq!(list.back(), Some(&"second"));
     /// ```
+    #[inline]
     pub fn back(&self) -> Option<&T> {
         self.tail
             .and_then(|id| self.arena.get(id).map(|node| &node.value))
@@ -356,6 +368,7 @@ impl<T> IntrusiveList<T> {
     /// let id = list.push_back("second");
     /// assert_eq!(list.back_id(), Some(id));
     /// ```
+    #[inline]
     pub fn back_id(&self) -> Option<SlotId> {
         self.tail
     }
@@ -437,6 +450,7 @@ impl<T> IntrusiveList<T> {
     ///
     /// assert_eq!(list.get(id), Some(&42));
     /// ```
+    #[inline]
     pub fn get(&self, id: SlotId) -> Option<&T> {
         self.arena.get(id).map(|node| &node.value)
     }
@@ -456,6 +470,7 @@ impl<T> IntrusiveList<T> {
     /// }
     /// assert_eq!(list.get(id), Some(&2));
     /// ```
+    #[inline]
     pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
         self.arena.get_mut(id).map(|node| &mut node.value)
     }
@@ -473,6 +488,7 @@ impl<T> IntrusiveList<T> {
     ///
     /// assert_eq!(list.front(), Some(&"first"));
     /// ```
+    #[inline]
     pub fn push_front(&mut self, value: T) -> SlotId {
         self.push_front_with_epoch(value, 0)
     }
@@ -489,6 +505,7 @@ impl<T> IntrusiveList<T> {
     ///
     /// assert_eq!(list.epoch(id), Some(42));
     /// ```
+    #[inline]
     pub fn push_front_with_epoch(&mut self, value: T, epoch: u64) -> SlotId {
         let id = self.arena.insert(Node {
             value,
@@ -520,6 +537,7 @@ impl<T> IntrusiveList<T> {
     ///
     /// assert_eq!(list.back(), Some(&"second"));
     /// ```
+    #[inline]
     pub fn push_back(&mut self, value: T) -> SlotId {
         self.push_back_with_epoch(value, 0)
     }
@@ -536,6 +554,7 @@ impl<T> IntrusiveList<T> {
     ///
     /// assert_eq!(list.epoch(id), Some(99));
     /// ```
+    #[inline]
     pub fn push_back_with_epoch(&mut self, value: T, epoch: u64) -> SlotId {
         let id = self.arena.insert(Node {
             value,
@@ -607,6 +626,7 @@ impl<T> IntrusiveList<T> {
     /// assert_eq!(list.pop_front(), Some(2));
     /// assert_eq!(list.pop_front(), None);
     /// ```
+    #[inline]
     pub fn pop_front(&mut self) -> Option<T> {
         let id = self.head?;
         self.detach(id)?;
@@ -628,6 +648,7 @@ impl<T> IntrusiveList<T> {
     /// assert_eq!(list.pop_back(), Some(1));
     /// assert_eq!(list.pop_back(), None);
     /// ```
+    #[inline]
     pub fn pop_back(&mut self) -> Option<T> {
         let id = self.tail?;
         self.detach(id)?;
@@ -651,6 +672,7 @@ impl<T> IntrusiveList<T> {
     /// let values: Vec<_> = list.iter().copied().collect();
     /// assert_eq!(values, vec!["a", "c"]);
     /// ```
+    #[inline]
     pub fn remove(&mut self, id: SlotId) -> Option<T> {
         self.detach(id)?;
         self.arena.remove(id).map(|node| node.value)
@@ -675,6 +697,7 @@ impl<T> IntrusiveList<T> {
     /// let values: Vec<_> = list.iter().copied().collect();
     /// assert_eq!(values, vec!["c", "a", "b"]);
     /// ```
+    #[inline]
     pub fn move_to_front(&mut self, id: SlotId) -> bool {
         if !self.arena.contains(id) {
             return false;
@@ -706,6 +729,7 @@ impl<T> IntrusiveList<T> {
     /// let values: Vec<_> = list.iter().copied().collect();
     /// assert_eq!(values, vec!["b", "c", "a"]);
     /// ```
+    #[inline]
     pub fn move_to_back(&mut self, id: SlotId) -> bool {
         if !self.arena.contains(id) {
             return false;
@@ -785,6 +809,7 @@ impl<T> IntrusiveList<T> {
         ids
     }
 
+    #[inline]
     fn detach(&mut self, id: SlotId) -> Option<()> {
         let (prev, next) = {
             let node = self.arena.get(id)?;
@@ -815,6 +840,7 @@ impl<T> IntrusiveList<T> {
         Some(())
     }
 
+    #[inline]
     fn attach_front(&mut self, id: SlotId) -> Option<()> {
         let old_head = self.head;
         if let Some(node) = self.arena.get_mut(id) {
@@ -834,6 +860,7 @@ impl<T> IntrusiveList<T> {
         Some(())
     }
 
+    #[inline]
     fn attach_back(&mut self, id: SlotId) -> Option<()> {
         let old_tail = self.tail;
         if let Some(node) = self.arena.get_mut(id) {
