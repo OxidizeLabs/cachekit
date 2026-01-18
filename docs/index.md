@@ -18,6 +18,7 @@ Welcome to the CacheKit documentation site.
 - [Stores](stores/README.md) — Storage backends
 - [Policy data structures](policy-ds/README.md) — Implementation details
 - [Benchmarks](benchmarks.md) — Performance benchmarks
+- [Workloads](workloads.md) — Synthetic workload generators for benchmarking
 
 ## Observability
 
