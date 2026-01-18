@@ -9,6 +9,7 @@ These documents describe how to implement common cache eviction policies, with a
 - LFU: `src/policy/lfu.rs`
 - Heap LFU: `src/policy/heap_lfu.rs`
 - 2Q: `src/policy/two_q.rs`
+— Second-chance / Clock: `src/policy/clock`
 
 **Roadmap (Not Implemented Yet)**
 
@@ -16,7 +17,6 @@ These documents describe how to implement common cache eviction policies, with a
 - `roadmap/random.md` — Random eviction
 - `roadmap/lifo.md` — LIFO / FILO
 - `roadmap/mru.md` — MRU
-- `roadmap/clock.md` — Second-chance / Clock
 - `roadmap/nru.md` — NRU
 - `roadmap/mfu.md` — MFU
 - `roadmap/lfu-aging.md` — Aging / decayed LFU patterns

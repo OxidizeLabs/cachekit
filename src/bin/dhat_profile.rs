@@ -8,6 +8,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use std::sync::Arc;
 
+use cachekit::policy::clock::ClockCache;
 use cachekit::policy::fifo::FifoCache;
 use cachekit::policy::lfu::LfuCache;
 use cachekit::policy::lru::LruCore;
@@ -185,6 +186,25 @@ fn profile_two_q() {
     println!("  Final size: {}", cache.len());
 }
 
+fn profile_clock() {
+    println!("=== Profiling Clock ===");
+    let capacity = 4096;
+    let operations = 100_000;
+    let universe = 16_384;
+
+    let mut cache = ClockCache::new(capacity);
+
+    for i in 0..capacity as u64 {
+        cache.insert(i, Arc::new(i));
+    }
+
+    hotset_workload(&mut cache, operations, universe, 42);
+    scan_workload(&mut cache, operations / 2, universe);
+    eviction_churn(&mut cache, operations / 4);
+
+    println!("  Final size: {}", cache.len());
+}
+
 fn main() {
     let _profiler = dhat::Profiler::new_heap();
 
@@ -196,6 +216,7 @@ fn main() {
     profile_fifo();
     profile_lru_k();
     profile_two_q();
+    profile_clock();
 
     println!("\n============================");
     println!("Profiling complete!");

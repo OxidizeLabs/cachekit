@@ -1,4 +1,5 @@
 pub mod clock;
+pub mod clock_pro;
 pub mod fast_lru;
 pub mod fifo;
 pub mod heap_lfu;
