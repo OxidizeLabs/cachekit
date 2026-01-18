@@ -11,6 +11,7 @@ These documents describe how to implement common cache eviction policies, with a
 - 2Q: `src/policy/two_q.rs`
 - S3-FIFO: `src/policy/s3_fifo.rs`
 - Second-chance / Clock: `src/policy/clock.rs`
+- CLOCK-Pro: `src/policy/clock_pro.rs`
 
 **Roadmap (Not Implemented Yet)**
 
@@ -25,6 +26,5 @@ These documents describe how to implement common cache eviction policies, with a
 - `roadmap/arc.md` — ARC
 - `roadmap/car.md` — CAR (Clock with Adaptive Replacement)
 - `roadmap/lirs.md` — LIRS
-- `roadmap/clock-pro.md` — CLOCK-Pro
 - `roadmap/gdsf.md` — GreedyDual-Size/Frequency style (size/cost-aware)
 - `roadmap/ttl.md` — TTL (expiration; not an eviction policy)
