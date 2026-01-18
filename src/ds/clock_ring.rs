@@ -438,6 +438,26 @@ where
         ring.touch(key)
     }
 
+    /// Updates the value for an existing key, returning the old value.
+    ///
+    /// Sets the reference bit on update. Returns `None` if the key doesn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(2);
+    /// cache.insert("a", 1);
+    ///
+    /// assert_eq!(cache.update(&"a", 10), Some(1));
+    /// assert_eq!(cache.update(&"missing", 99), None);
+    /// ```
+    pub fn update(&self, key: &K, value: V) -> Option<V> {
+        let mut ring = self.inner.write();
+        ring.update(key, value)
+    }
+
     /// Inserts or updates `key`, evicting if necessary.
     ///
     /// Returns `Some((evicted_key, evicted_value))` if an entry was evicted.
@@ -518,6 +538,12 @@ where
     pub fn pop_victim(&self) -> Option<(K, V)> {
         let mut ring = self.inner.write();
         ring.pop_victim()
+    }
+
+    /// Non-blocking version of [`update`](Self::update).
+    pub fn try_update(&self, key: &K, value: V) -> Option<Option<V>> {
+        let mut ring = self.inner.try_write()?;
+        Some(ring.update(key, value))
     }
 
     /// Non-blocking version of [`insert`](Self::insert).
@@ -844,6 +870,35 @@ where
         false
     }
 
+    /// Updates the value for an existing key, returning the old value.
+    ///
+    /// Sets the reference bit on update. Returns `None` if the key doesn't exist.
+    /// This method never evicts - use [`insert`](Self::insert) for that.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(2);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// // Update existing key
+    /// assert_eq!(ring.update(&"a", 10), Some(1));
+    /// assert_eq!(ring.peek(&"a"), Some(&10));
+    ///
+    /// // Key doesn't exist - returns None
+    /// assert_eq!(ring.update(&"missing", 99), None);
+    /// ```
+    pub fn update(&mut self, key: &K, value: V) -> Option<V> {
+        let idx = *self.index.get(key)?;
+        let entry = self.slots.get_mut(idx)?.as_mut()?;
+        let old = std::mem::replace(&mut entry.value, value);
+        entry.referenced = true;
+        Some(old)
+    }
+
     /// Inserts or updates `key`, evicting if necessary.
     ///
     /// If inserting into a full ring, evicts and returns `(evicted_key, evicted_value)`.
@@ -1110,6 +1165,30 @@ mod tests {
         assert_eq!(ring.insert("a", 10), None);
         assert_eq!(ring.len(), 2);
         assert_eq!(ring.peek(&"a"), Some(&10));
+    }
+
+    #[test]
+    fn clock_ring_update_returns_old_value() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        // Update existing key returns old value
+        assert_eq!(ring.update(&"a", 10), Some(1));
+        assert_eq!(ring.peek(&"a"), Some(&10));
+        assert_eq!(ring.len(), 2);
+
+        // Update non-existent key returns None
+        assert_eq!(ring.update(&"missing", 99), None);
+        assert_eq!(ring.len(), 2);
+
+        // Update sets reference bit - verify by eviction
+        let mut ring2 = ClockRing::new(2);
+        ring2.insert("x", 1);
+        ring2.insert("y", 2);
+        ring2.update(&"x", 10); // Sets ref bit on x
+        let evicted = ring2.insert("z", 3);
+        assert_eq!(evicted, Some(("y", 2))); // y evicted, not x
     }
 
     #[test]

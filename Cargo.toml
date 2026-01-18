@@ -35,6 +35,10 @@ lru = "0.16"
 quick_cache = "0.6"
 
 [[bench]]
+name = "clock"
+harness = false
+
+[[bench]]
 name = "fifo"
 harness = false
 
