@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
+use cachekit::policy::clock::ClockCache;
 use cachekit::policy::fast_lru::FastLru;
 use cachekit::policy::lru::LruCore;
 use cachekit::policy::lru_k::LrukCache;
@@ -27,6 +28,24 @@ const OPS: u64 = 100_000;
 fn bench_get_hit(c: &mut Criterion) {
     let mut group = c.benchmark_group("get_hit");
     group.throughput(Throughput::Elements(OPS));
+
+    // cachekit Clock (fastest - no linked list)
+    group.bench_function("cachekit_clock", |b| {
+        b.iter_custom(|iters| {
+            let mut cache: ClockCache<u64, u64> = ClockCache::new(CAPACITY);
+            for i in 0..CAPACITY as u64 {
+                cache.insert(i, i);
+            }
+            let start = Instant::now();
+            for _ in 0..iters {
+                for i in 0..OPS {
+                    let key = i % (CAPACITY as u64);
+                    black_box(cache.get(&key));
+                }
+            }
+            start.elapsed()
+        })
+    });
 
     // cachekit FastLru (optimized)
     group.bench_function("cachekit_fast", |b| {
@@ -146,6 +165,26 @@ fn bench_get_hit(c: &mut Criterion) {
 fn bench_insert_evict(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_evict");
     group.throughput(Throughput::Elements(OPS));
+
+    // cachekit Clock (fastest - no linked list)
+    group.bench_function("cachekit_clock", |b| {
+        b.iter_custom(|iters| {
+            let mut total = std::time::Duration::ZERO;
+            for _ in 0..iters {
+                let mut cache: ClockCache<u64, u64> = ClockCache::new(CAPACITY);
+                for i in 0..CAPACITY as u64 {
+                    cache.insert(i, i);
+                }
+                let start = Instant::now();
+                for i in 0..OPS {
+                    let key = CAPACITY as u64 + i;
+                    cache.insert(key, key);
+                }
+                total += start.elapsed();
+            }
+            total
+        })
+    });
 
     // cachekit FastLru (optimized)
     group.bench_function("cachekit_fast", |b| {
@@ -279,6 +318,34 @@ fn bench_mixed_workload(c: &mut Criterion) {
     group.throughput(Throughput::Elements(OPS));
 
     // 80% hits, 20% misses causing inserts
+    // cachekit Clock (fastest - no linked list)
+    group.bench_function("cachekit_clock", |b| {
+        b.iter_custom(|iters| {
+            let mut total = std::time::Duration::ZERO;
+            for _ in 0..iters {
+                let mut cache: ClockCache<u64, u64> = ClockCache::new(CAPACITY);
+                for i in 0..CAPACITY as u64 {
+                    cache.insert(i, i);
+                }
+                let start = Instant::now();
+                for i in 0..OPS {
+                    let key = if i % 5 == 0 {
+                        // 20% miss - insert new key
+                        CAPACITY as u64 + i
+                    } else {
+                        // 80% hit
+                        i % (CAPACITY as u64)
+                    };
+                    if cache.get(&key).is_none() {
+                        cache.insert(key, key);
+                    }
+                }
+                total += start.elapsed();
+            }
+            total
+        })
+    });
+
     // cachekit FastLru (optimized)
     group.bench_function("cachekit_fast", |b| {
         b.iter_custom(|iters| {
@@ -457,6 +524,27 @@ fn bench_scaling(c: &mut Criterion) {
         let ops = size as u64;
 
         group.throughput(Throughput::Elements(ops));
+
+        group.bench_with_input(
+            BenchmarkId::new("cachekit_clock", size),
+            &size,
+            |b, &size| {
+                b.iter_custom(|iters| {
+                    let mut cache: ClockCache<u64, u64> = ClockCache::new(size);
+                    for i in 0..size as u64 {
+                        cache.insert(i, i);
+                    }
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        for i in 0..ops {
+                            let key = i % (size as u64);
+                            black_box(cache.get(&key));
+                        }
+                    }
+                    start.elapsed()
+                })
+            },
+        );
 
         group.bench_with_input(
             BenchmarkId::new("cachekit_fast", size),
