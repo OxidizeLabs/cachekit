@@ -56,6 +56,10 @@ harness = false
 name = "comparison"
 harness = false
 
+[[bench]]
+name = "s3_fifo"
+harness = false
+
 [[bin]]
 name = "dhat_profile"
 path = "src/bin/dhat_profile.rs"

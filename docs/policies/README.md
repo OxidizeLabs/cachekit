@@ -3,13 +3,14 @@
 These documents describe how to implement common cache eviction policies, with a bias toward practical, production implementations (O(1) hot-paths, bounded metadata, and clear invariants).
 
 **In this repo** (implemented policies):
-- FIFO: `src/policy/fifo/`
+- FIFO: `src/policy/fifo.rs`
 - LRU: `src/policy/lru.rs`
 - LRU-K: `src/policy/lru_k.rs`
 - LFU: `src/policy/lfu.rs`
 - Heap LFU: `src/policy/heap_lfu.rs`
 - 2Q: `src/policy/two_q.rs`
-— Second-chance / Clock: `src/policy/clock`
+- S3-FIFO: `src/policy/s3_fifo.rs`
+- Second-chance / Clock: `src/policy/clock.rs`
 
 **Roadmap (Not Implemented Yet)**
 

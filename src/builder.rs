@@ -19,7 +19,8 @@
 //! │         ├─── CachePolicy::LruK ────► LrukCache<K, V>                       │
 //! │         ├─── CachePolicy::Lfu ─────► LfuCache<K, V>                        │
 //! │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                    │
-//! │         └─── CachePolicy::TwoQ ────► TwoQCore<K, V>                        │
+//! │         ├─── CachePolicy::TwoQ ────► TwoQCore<K, V>                        │
+//! │         └─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                     │
 //! │                                                                             │
 //! │         ▼                                                                   │
 //! │   Cache<K, V>  (unified wrapper)                                            │
@@ -44,6 +45,7 @@
 //! | LFU       | Stable access patterns            | Frequency (O(1))    |
 //! | HeapLFU   | Frequent evictions, large caches  | Frequency (O(log n))|
 //! | 2Q        | Mixed workloads                   | Two-queue promotion |
+//! | S3-FIFO   | CDN, scan-heavy workloads         | Three-queue FIFO    |
 //!
 //! ## Example
 //!
@@ -91,6 +93,7 @@ use crate::policy::heap_lfu::HeapLfuCache;
 use crate::policy::lfu::LfuCache;
 use crate::policy::lru::LruCore;
 use crate::policy::lru_k::LrukCache;
+use crate::policy::s3_fifo::S3FifoCache;
 use crate::policy::two_q::TwoQCore;
 use crate::traits::CoreCache;
 
@@ -122,6 +125,11 @@ use crate::traits::CoreCache;
 /// // 2Q for mixed workloads (25% probation queue)
 /// let two_q = CacheBuilder::new(100).build::<u64, String>(
 ///     CachePolicy::TwoQ { probation_frac: 0.25 }
+/// );
+///
+/// // S3-FIFO for scan-heavy workloads (10% small queue, 90% ghost list)
+/// let s3_fifo = CacheBuilder::new(100).build::<u64, String>(
+///     CachePolicy::S3Fifo { small_ratio: 0.1, ghost_ratio: 0.9 }
 /// );
 /// ```
 #[derive(Debug, Clone)]
@@ -180,6 +188,23 @@ pub enum CachePolicy {
     ///
     /// Good for: mixed workloads, scan resistance.
     TwoQ { probation_frac: f64 },
+
+    /// S3-FIFO (Simple, Scalable, Scan-resistant FIFO) policy.
+    ///
+    /// Uses three FIFO queues: Small (for new items), Main (for promoted items),
+    /// and Ghost (for tracking evicted keys). Provides excellent scan resistance
+    /// with O(1) operations and minimal overhead.
+    ///
+    /// - `small_ratio: f64` - Fraction of capacity for Small queue (default 0.1)
+    /// - `ghost_ratio: f64` - Fraction of capacity for Ghost list (default 0.9)
+    ///
+    /// Good for: CDN caches, scan-heavy workloads, database buffer pools.
+    S3Fifo {
+        /// Fraction of capacity for the Small queue (filters one-hit wonders).
+        small_ratio: f64,
+        /// Fraction of capacity for the Ghost list (tracks evicted keys).
+        ghost_ratio: f64,
+    },
 }
 
 /// Unified cache wrapper that provides a consistent API regardless of policy.
@@ -243,6 +268,7 @@ where
     Lfu(LfuCache<K, V>),
     HeapLfu(HeapLfuCache<K, V>),
     TwoQ(TwoQCore<K, V>),
+    S3Fifo(S3FifoCache<K, V>),
 }
 
 impl<K, V> Cache<K, V>
@@ -289,6 +315,7 @@ where
                     .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
             },
             CacheInner::TwoQ(twoq) => CoreCache::insert(twoq, key, value),
+            CacheInner::S3Fifo(s3fifo) => CoreCache::insert(s3fifo, key, value),
         }
     }
 
@@ -315,6 +342,7 @@ where
             CacheInner::Lfu(lfu) => lfu.get(key).map(|arc| arc.as_ref()),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.get(key).map(|arc| arc.as_ref()),
             CacheInner::TwoQ(twoq) => twoq.get(key),
+            CacheInner::S3Fifo(s3fifo) => s3fifo.get(key),
         }
     }
 
@@ -341,6 +369,7 @@ where
             CacheInner::Lfu(lfu) => lfu.contains(key),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.contains(key),
             CacheInner::TwoQ(twoq) => twoq.contains(key),
+            CacheInner::S3Fifo(s3fifo) => s3fifo.contains(key),
         }
     }
 
@@ -366,6 +395,7 @@ where
             CacheInner::Lfu(lfu) => lfu.len(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.len(),
             CacheInner::TwoQ(twoq) => twoq.len(),
+            CacheInner::S3Fifo(s3fifo) => s3fifo.len(),
         }
     }
 
@@ -404,6 +434,7 @@ where
             CacheInner::Lfu(lfu) => lfu.capacity(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.capacity(),
             CacheInner::TwoQ(twoq) => twoq.capacity(),
+            CacheInner::S3Fifo(s3fifo) => s3fifo.capacity(),
         }
     }
 
@@ -431,6 +462,7 @@ where
             CacheInner::Lfu(lfu) => lfu.clear(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.clear(),
             CacheInner::TwoQ(twoq) => twoq.clear(),
+            CacheInner::S3Fifo(s3fifo) => s3fifo.clear(),
         }
     }
 }
@@ -505,6 +537,14 @@ impl CacheBuilder {
             CachePolicy::TwoQ { probation_frac } => {
                 CacheInner::TwoQ(TwoQCore::new(self.capacity, probation_frac))
             },
+            CachePolicy::S3Fifo {
+                small_ratio,
+                ghost_ratio,
+            } => CacheInner::S3Fifo(S3FifoCache::with_ratios(
+                self.capacity,
+                small_ratio,
+                ghost_ratio,
+            )),
         };
 
         Cache { inner }
@@ -525,6 +565,10 @@ mod tests {
             CachePolicy::HeapLfu,
             CachePolicy::TwoQ {
                 probation_frac: 0.25,
+            },
+            CachePolicy::S3Fifo {
+                small_ratio: 0.1,
+                ghost_ratio: 0.9,
             },
         ];
 

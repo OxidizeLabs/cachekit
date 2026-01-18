@@ -6,4 +6,5 @@ pub mod heap_lfu;
 pub mod lfu;
 pub mod lru;
 pub mod lru_k;
+pub mod s3_fifo;
 pub mod two_q;
