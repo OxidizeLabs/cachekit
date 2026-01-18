@@ -101,7 +101,7 @@
 //!
 //! ## Implementation
 //!
-//! This implementation uses the [`ClockRing`](crate::ds::ClockRing) data structure,
+//! This implementation uses the [`ClockRing`] data structure,
 //! which provides:
 //! - Cache-line optimized entry layout (`#[repr(C)]` with `referenced` first)
 //! - Hand-based empty slot finding (O(1) amortized, no linear scan)
