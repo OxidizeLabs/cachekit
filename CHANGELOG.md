@@ -8,12 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Clock cache replacement policy (`ClockCache`) implementing the Clock (Second-Chance) algorithm with O(1) access operations.
+- `FastLru` policy for single-threaded performance with cache-line optimized layout and direct value storage.
+- Comparison benchmarks (`benches/comparison.rs`) for evaluating cache policies against external libraries (moka, quick_cache).
 - Unified cache builder (`CacheBuilder`) with support for all eviction policies (FIFO, LRU, LRU-K, LFU, HeapLFU, 2Q).
 - New 2Q eviction policy (`TwoQCore`) with configurable probation/protected queue ratios.
+- Example programs: `basic_two_q.rs` for 2Q cache policy, `basic_builder.rs` for CacheBuilder API usage.
+- DHAT heap profiling binary (`dhat_profile`) for memory analysis.
+- Integration guide documentation (`docs/integration.md`).
+- Documentation tests added to CI workflow.
 - `ConcurrentStoreRead` trait for read-only concurrent store operations.
 - `StoreFactory` and `ConcurrentStoreFactory` traits for creating store instances.
 
 ### Documentation
+- 2Q cache policy documentation (`docs/policies/2q.md`) with goals, data structures, operations, and complexity analysis.
+- README enhanced with Quick Start section and examples for all eviction policies.
 - Complete documentation for `src/policy/lru_k.rs`:
   - Architecture diagram showing cache layout and K-distance calculation.
   - Scan resistance explanation with before/after diagrams.
@@ -30,8 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Standard LFU vs Heap LFU performance comparison.
   - Docstrings with examples for `HeapLfuCache` and all public methods.
   - Private method docstrings explaining lazy deletion and heap rebuild strategy.
+- Documentation enhancements for data structures: ClockRing, FrequencyBuckets, GhostList, KeyInterner, IntrusiveList, LazyMinHeap, SlotArena, FixedHistory, ShardSelector.
+- Documentation enhancements for store implementations: HandleStore, SlabStore, HashMapStore, WeightStore.
+- Documentation enhancements for cache policies: LRU, TwoQ.
+- Documentation enhancements for cache traits and CacheBuilder.
 
 ### Changed
+- Switched to `rustc_hash::FxHashMap` for improved hashing performance across data structures.
+- Raw pointer linked lists in `LruCore` and `LrukCache` for improved cache locality and reduced indirection.
+- Enhanced `TwoQCore` implementation with helper methods (`detach_from_probation`, `attach_to_protected`) and comprehensive tests.
 - Refactored store traits to separate single-threaded and concurrent ownership models:
   - `StoreCore`/`StoreMut` now use direct value ownership (`&V`, `V`) for zero-overhead single-threaded access.
   - `ConcurrentStore` uses `Arc<V>` for safe shared ownership across threads.
