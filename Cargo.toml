@@ -36,32 +36,44 @@ quick_cache = "0.6"
 rand = "0.9"
 rand_distr = "0.5"
 
+# =============================================================================
+# Benchmarks - organized by purpose
+# =============================================================================
+
+# Cross-policy workload comparison (single source of truth)
 [[bench]]
-name = "clock"
+name = "workloads"
 harness = false
 
+# Micro-operations (get/insert latency for all policies)
 [[bench]]
-name = "fifo"
+name = "ops"
 harness = false
 
-[[bench]]
-name = "lru"
-harness = false
-
-[[bench]]
-name = "lfu"
-harness = false
-
-[[bench]]
-name = "lru_k"
-harness = false
-
+# External crate comparison (lru, quick_cache)
 [[bench]]
 name = "comparison"
 harness = false
 
+# Policy-specific unique operations
 [[bench]]
-name = "s3_fifo"
+name = "policy_lru"
+path = "benches/policy/lru.rs"
+harness = false
+
+[[bench]]
+name = "policy_lfu"
+path = "benches/policy/lfu.rs"
+harness = false
+
+[[bench]]
+name = "policy_lru_k"
+path = "benches/policy/lru_k.rs"
+harness = false
+
+[[bench]]
+name = "policy_s3_fifo"
+path = "benches/policy/s3_fifo.rs"
 harness = false
 
 # Development profile - optimized for fast compilation and good debugging
