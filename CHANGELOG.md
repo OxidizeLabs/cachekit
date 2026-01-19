@@ -5,7 +5,7 @@ All notable changes to cachekit will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0-alpha] - 2026-01-19
 
 ### Added
 - S3-FIFO cache policy (`S3FifoCache`) implementing the scan-resistant FIFO variant with small/main/ghost queues.
@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FastLru` policy for single-threaded performance with cache-line optimized layout and direct value storage.
 - S3-FIFO benchmarks (`benches/s3_fifo.rs`) with workload generators.
 - Comparison benchmarks (`benches/comparison.rs`) for evaluating cache policies against external libraries (moka, quick_cache).
+- Human-readable benchmark reports (`benches/reports.rs`) for cache policy comparison tables without criterion overhead.
+- New workload generators for benchmarking: `ScrambledZipfian`, `Latest`, `ShiftingHotspot`, `Exponential`.
+- `rand` and `rand_distr` dependencies for workload simulation.
 - Unified cache builder (`CacheBuilder`) with support for all eviction policies (FIFO, LRU, LRU-K, LFU, HeapLFU, 2Q).
 - New 2Q eviction policy (`TwoQCore`) with configurable probation/protected queue ratios.
 - Example programs: `basic_s3_fifo.rs` for S3-FIFO cache policy, `basic_two_q.rs` for 2Q cache policy, `basic_builder.rs` for CacheBuilder API usage.
@@ -26,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 - S3-FIFO cache policy documentation (`docs/policies/s3-fifo.md`) with architecture, queue management, and ghost filtering.
 - Clock policy documentation moved from roadmap to main policies (`docs/policies/clock.md`).
+- Benchmark README enhanced with detailed performance insights, hit rate comparisons, and policy selection guide.
 - 2Q cache policy documentation (`docs/policies/2q.md`) with goals, data structures, operations, and complexity analysis.
 - README enhanced with Quick Start section and examples for all eviction policies.
 - Complete documentation for `src/policy/lru_k.rs`:

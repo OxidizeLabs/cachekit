@@ -1,6 +1,6 @@
 [package]
 name = "cachekit"
-version = "0.1.0-alpha"
+version = "0.2.0-alpha"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Thomas Korrison <ferrite.db@gmail.com>"]
