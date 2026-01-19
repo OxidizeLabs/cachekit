@@ -2,6 +2,10 @@
 //!
 //! Provides deterministic key streams for cache benchmarking.
 
+// This module provides a complete workload API for benchmarking.
+// Not all workload variants are used in every benchmark configuration.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use cachekit::traits::CoreCache;

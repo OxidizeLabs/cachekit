@@ -7,6 +7,10 @@
 //! - Eviction behavior
 //! - Adaptation speed
 
+// This module provides a complete utility API for benchmarking.
+// Not all items are used in every benchmark configuration.
+#![allow(dead_code)]
+
 use std::time::{Duration, Instant};
 
 use cachekit::traits::CoreCache;
