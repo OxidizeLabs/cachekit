@@ -161,6 +161,7 @@
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
 /// Clock entry with cache-line optimized layout.
@@ -280,11 +281,13 @@ pub struct ClockRing<K, V> {
 ///     assert_eq!(val, 42);
 /// }
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ConcurrentClockRing<K, V> {
     inner: RwLock<ClockRing<K, V>>,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentClockRing<K, V>
 where
     K: Eq + Hash + Clone,
@@ -1339,6 +1342,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_clock_ring_try_ops() {
         let ring = ConcurrentClockRing::new(2);

@@ -155,10 +155,13 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
-use crate::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull, StoreMetrics};
+#[cfg(feature = "concurrency")]
+use crate::store::traits::{ConcurrentStore, ConcurrentStoreRead};
+use crate::store::traits::{StoreFull, StoreMetrics};
 
 /// Internal entry storing value and its precomputed weight.
 ///
@@ -609,6 +612,7 @@ where
 /// assert_eq!(store.total_weight(), 10_000);  // 100 entries × 100 bytes
 /// ```
 #[derive(Debug)]
+#[cfg(feature = "concurrency")]
 pub struct ConcurrentWeightStore<K, V, F>
 where
     F: Fn(&V) -> usize,
@@ -617,6 +621,7 @@ where
     metrics: StoreCounters,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V, F> ConcurrentWeightStore<K, V, F>
 where
     K: Eq + Hash + Send + Sync,
@@ -695,6 +700,7 @@ where
 /// Read operations for [`ConcurrentWeightStore`].
 ///
 /// All methods acquire a read lock on the inner store.
+#[cfg(feature = "concurrency")]
 impl<K, V, F> ConcurrentStoreRead<K, V> for ConcurrentWeightStore<K, V, F>
 where
     K: Eq + Hash + Send + Sync,
@@ -744,6 +750,7 @@ where
 /// Write operations for [`ConcurrentWeightStore`].
 ///
 /// All methods acquire a write lock on the inner store.
+#[cfg(feature = "concurrency")]
 impl<K, V, F> ConcurrentStore<K, V> for ConcurrentWeightStore<K, V, F>
 where
     K: Eq + Hash + Send + Sync,
@@ -832,6 +839,7 @@ mod tests {
         assert_eq!(store.total_weight(), 4);
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_weight_store_basic_ops() {
         let store = ConcurrentWeightStore::with_capacity(2, 10, weight_by_len);

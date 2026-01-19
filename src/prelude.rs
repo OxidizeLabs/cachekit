@@ -1,8 +1,12 @@
 pub use crate::ds::{
-    ClockRing, ConcurrentClockRing, ConcurrentIntrusiveList, ConcurrentSlotArena, FixedHistory,
-    FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle, GhostList, IntrusiveList,
-    KeyInterner, LazyMinHeap, ShardSelector, ShardedFrequencyBucketEntryMeta,
-    ShardedFrequencyBuckets, ShardedSlotArena, ShardedSlotId, SlotArena, SlotId,
+    ClockRing, FixedHistory, FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
+    GhostList, IntrusiveList, KeyInterner, LazyMinHeap, ShardSelector, SlotArena, SlotId,
+};
+
+#[cfg(feature = "concurrency")]
+pub use crate::ds::{
+    ConcurrentClockRing, ConcurrentIntrusiveList, ConcurrentSlotArena,
+    ShardedFrequencyBucketEntryMeta, ShardedFrequencyBuckets, ShardedSlotArena, ShardedSlotId,
 };
 #[cfg(feature = "metrics")]
 pub use crate::metrics::snapshot::CacheMetricsSnapshot;

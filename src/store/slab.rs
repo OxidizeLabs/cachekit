@@ -156,16 +156,17 @@
 //! - `remove_by_id` enables O(1) eviction without key lookup
 
 use std::hash::Hash;
+#[cfg(feature = "concurrency")]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
-use crate::store::traits::{
-    ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead, StoreCore, StoreFactory,
-    StoreFull, StoreMetrics, StoreMut,
-};
+#[cfg(feature = "concurrency")]
+use crate::store::traits::{ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead};
+use crate::store::traits::{StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut};
 
 /// Opaque handle for stable O(1) access to slab entries.
 ///
@@ -740,6 +741,7 @@ where
 /// let id = store.entry_id(&0).unwrap();
 /// assert!(store.get_by_id(id).is_some());
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 #[allow(clippy::type_complexity)]
 pub struct ConcurrentSlabStore<K, V> {
@@ -750,6 +752,7 @@ pub struct ConcurrentSlabStore<K, V> {
     metrics: StoreCounters,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash,
@@ -876,6 +879,7 @@ where
 /// Read operations for [`ConcurrentSlabStore`].
 ///
 /// Acquires read locks on internal structures as needed.
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentStoreRead<K, V> for ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash + Send + Sync,
@@ -927,6 +931,7 @@ where
 ///
 /// Uses fine-grained locking—different internal structures are locked
 /// independently to minimize contention.
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentStore<K, V> for ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash + Send + Sync + Clone,
@@ -1028,6 +1033,7 @@ where
 /// let store = create::<ConcurrentSlabStore<String, i32>>(100);
 /// assert_eq!(store.capacity(), 100);
 /// ```
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentStoreFactory<K, V> for ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash + Send + Sync + Clone,
@@ -1125,6 +1131,7 @@ mod tests {
         assert_eq!(id1.index(), id2.index());
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_slab_store_basic_ops() {
         let store = ConcurrentSlabStore::new(2);
@@ -1138,6 +1145,7 @@ mod tests {
         assert!(!store.contains(&"k1"));
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_slab_store_entry_id_roundtrip() {
         let store = ConcurrentSlabStore::new(2);

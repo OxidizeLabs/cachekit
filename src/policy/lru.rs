@@ -307,6 +307,7 @@ use std::hash::Hash;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
@@ -853,6 +854,7 @@ where
 
 /// Thread-safe concurrent LRU cache wrapper using RwLock
 /// Optimized for read-heavy database workloads (buffer pools)
+#[cfg(feature = "concurrency")]
 #[derive(Clone)]
 pub struct ConcurrentLruCache<K, V>
 where
@@ -861,6 +863,7 @@ where
     inner: Arc<RwLock<LruCore<K, V>>>,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> fmt::Debug for ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + fmt::Debug,
@@ -874,6 +877,7 @@ where
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> Default for ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
@@ -885,6 +889,7 @@ where
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
@@ -1198,7 +1203,7 @@ where
     }
 }
 
-#[cfg(feature = "metrics")]
+#[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
@@ -1220,7 +1225,7 @@ where
     }
 }
 
-#[cfg(feature = "metrics")]
+#[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for ConcurrentLruCache<K, V>
 where
     K: Copy + Eq + Hash + Send + Sync,
@@ -1687,6 +1692,7 @@ mod tests {
                 assert!(cache.recency_rank(&2).is_none());
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_concurrent_cache_basic() {
                 // Test basic operations on ConcurrentLruCache
@@ -1716,6 +1722,7 @@ mod tests {
                 assert_eq!(cache.len(), 0);
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_concurrent_insert_arc() {
                 // Test inserting Arc<V> directly into concurrent cache
@@ -1735,6 +1742,7 @@ mod tests {
                 assert!(Arc::ptr_eq(&retrieved_val, &value_clone));
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_arc_value_sharing() {
                 // Test that Arc<V> values are properly shared (zero-copy)
@@ -1758,6 +1766,7 @@ mod tests {
                 assert!(Arc::ptr_eq(&v2, &v3));
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_key_copy_semantics() {
                 // Test that keys use Copy semantics efficiently
@@ -2298,6 +2307,7 @@ mod tests {
                 assert!(cache.contains(&4));
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_concurrent_cache_edge_cases() {
                 // Test edge cases specific to ConcurrentLruCache
@@ -2333,6 +2343,7 @@ mod tests {
                 assert_eq!(cache.len(), 0);
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_arc_reference_counting_edge_cases() {
                 // Test Arc reference counting in edge scenarios
@@ -2366,6 +2377,7 @@ mod tests {
                 assert_eq!(Arc::strong_count(&value), 1); // Back to original only
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_insert_arc_vs_insert_value() {
                 // Test difference between insert_arc and regular insert
@@ -2821,6 +2833,7 @@ mod tests {
                 assert_eq!(**value.unwrap(), 100);
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_concurrent_read_write_edge_cases() {
                 // Test edge cases in concurrent read/write scenarios
@@ -5021,6 +5034,7 @@ mod tests {
                 // regardless of the cache size (100 items)
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_lru_concurrent_ordering() {
                 // Test LRU ordering behavior in concurrent scenarios
@@ -5448,8 +5462,9 @@ mod tests {
                 assert_eq!(list_keys(&cache), vec![1, 3, 2]);
             }
 
-            #[test]
+            #[cfg(feature = "concurrency")]
             #[cfg_attr(miri, ignore)]
+            #[test]
             fn test_concurrent_state_consistency() {
                 // Test state consistency in concurrent access scenarios
                 // Using ConcurrentLruCache which wraps LruCore
@@ -5771,8 +5786,9 @@ mod tests {
                 assert_eq!(*val.unwrap(), 1);
             }
 
-            #[test]
+            #[cfg(feature = "concurrency")]
             #[cfg_attr(miri, ignore)]
+            #[test]
             fn test_thread_safety_state_consistency() {
                 // Test state consistency across multiple threads
                 let cache = Arc::new(ConcurrentLruCache::new(10));
@@ -5796,6 +5812,7 @@ mod tests {
                 assert!(cache.len() <= 10);
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_lock_state_consistency() {
                 // Test RwLock state consistency in concurrent scenarios
@@ -5812,8 +5829,9 @@ mod tests {
                 }
             }
 
-            #[test]
+            #[cfg(feature = "concurrency")]
             #[cfg_attr(miri, ignore)]
+            #[test]
             fn test_poison_lock_recovery() {
                 // Test state consistency after lock poisoning
                 let cache = Arc::new(ConcurrentLruCache::new(10));
@@ -5940,6 +5958,7 @@ mod tests {
                 assert_eq!(state.len(), 1);
             }
 
+            #[cfg(feature = "concurrency")]
             #[test]
             fn test_clone_state_consistency() {
                 // Test state consistency of concurrent cache cloning
@@ -6403,8 +6422,9 @@ mod tests {
             assert!(!cache.contains(&1));
         }
 
-        #[test]
+        #[cfg(feature = "concurrency")]
         #[cfg_attr(miri, ignore)]
+        #[test]
         fn test_safe_concurrent_access() {
             // Verify memory safety under concurrent load
             let counter = Arc::new(AtomicUsize::new(0));
@@ -6441,8 +6461,9 @@ mod tests {
             // If strict, count == cache.len().
         }
 
-        #[test]
+        #[cfg(feature = "concurrency")]
         #[cfg_attr(miri, ignore)]
+        #[test]
         fn test_safe_concurrent_modification() {
             // Similar to test_safe_concurrent_access but mixing insert/remove
             let counter = Arc::new(AtomicUsize::new(0));
@@ -6473,8 +6494,9 @@ mod tests {
             assert!(count <= 100);
         }
 
-        #[test]
+        #[cfg(feature = "concurrency")]
         #[cfg_attr(miri, ignore)]
+        #[test]
         fn test_lock_poisoning_memory_safety() {
             // parking_lot RwLock does not poison. It releases the lock on unwind.
             // We verify that the cache remains usable and consistent after a panic in a thread holding the lock.
@@ -6607,8 +6629,9 @@ mod tests {
             // cargo miri test
         }
 
-        #[test]
+        #[cfg(feature = "concurrency")]
         #[cfg_attr(miri, ignore)]
+        #[test]
         fn test_memory_safety_under_stress() {
             // High contention stress test
             let cache = Arc::new(ConcurrentLruCache::new(100));
@@ -6684,6 +6707,7 @@ mod tests {
             cache.remove(&1);
         }
 
+        #[cfg(feature = "concurrency")]
         #[test]
         fn test_send_sync_memory_safety() {
             fn assert_send<T: Send>() {}
@@ -6705,6 +6729,7 @@ mod tests {
             assert_eq!(counter.load(Ordering::SeqCst), 0);
         }
 
+        #[cfg(feature = "concurrency")]
         #[test]
         fn test_clone_memory_safety() {
             // Verify ConcurrentLruCache clone shares state safely
@@ -6749,8 +6774,9 @@ mod tests {
             // Documentation: operations may panic on OOM.
         }
 
-        #[test]
+        #[cfg(feature = "concurrency")]
         #[cfg_attr(miri, ignore)]
+        #[test]
         fn test_cross_thread_memory_safety() {
             let cache = Arc::new(ConcurrentLruCache::new(10));
             let c2 = cache.clone();

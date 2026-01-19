@@ -137,14 +137,16 @@
 use std::cell::Cell;
 use std::hash::Hash;
 use std::sync::Arc;
+#[cfg(feature = "concurrency")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
-use crate::store::traits::{
-    ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead, StoreFull, StoreMetrics,
-};
+#[cfg(feature = "concurrency")]
+use crate::store::traits::{ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead};
+use crate::store::traits::{StoreFull, StoreMetrics};
 
 /// Metrics counters for single-threaded handle stores.
 ///
@@ -203,6 +205,7 @@ impl StoreCounters {
     }
 }
 
+#[cfg(feature = "concurrency")]
 /// Metrics counters for concurrent handle stores.
 ///
 /// Uses `AtomicU64` with relaxed ordering for lock-free counter updates.
@@ -223,6 +226,7 @@ struct ConcurrentStoreCounters {
     evictions: AtomicU64,
 }
 
+#[cfg(feature = "concurrency")]
 impl ConcurrentStoreCounters {
     fn snapshot(&self) -> StoreMetrics {
         StoreMetrics {
@@ -593,6 +597,7 @@ where
 /// - [`ConcurrentStoreRead<H, V>`] — read operations
 /// - [`ConcurrentStore<H, V>`] — write operations
 /// - [`ConcurrentStoreFactory<H, V>`] — factory for creating instances
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ConcurrentHandleStore<H, V> {
     map: RwLock<FxHashMap<H, Arc<V>>>,
@@ -600,6 +605,7 @@ pub struct ConcurrentHandleStore<H, V> {
     metrics: ConcurrentStoreCounters,
 }
 
+#[cfg(feature = "concurrency")]
 impl<H, V> ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
@@ -656,6 +662,7 @@ where
 ///
 /// All methods acquire a read lock on the internal map. Multiple readers
 /// can access the store concurrently.
+#[cfg(feature = "concurrency")]
 impl<H, V> ConcurrentStoreRead<H, V> for ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
@@ -709,6 +716,7 @@ where
 ///
 /// All methods acquire a write lock on the internal map. Writers have
 /// exclusive access—no concurrent readers or writers during the operation.
+#[cfg(feature = "concurrency")]
 impl<H, V> ConcurrentStore<H, V> for ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
@@ -771,6 +779,7 @@ where
 /// let store = create_store::<ConcurrentHandleStore<u64, String>, _, _>(100);
 /// assert_eq!(store.capacity(), 100);
 /// ```
+#[cfg(feature = "concurrency")]
 impl<H, V> ConcurrentStoreFactory<H, V> for ConcurrentHandleStore<H, V>
 where
     H: Copy + Eq + Hash + Send + Sync,
@@ -815,6 +824,7 @@ mod tests {
         assert_eq!(store.len(), 1);
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_handle_store_basic_ops() {
         let store = ConcurrentHandleStore::new(2);

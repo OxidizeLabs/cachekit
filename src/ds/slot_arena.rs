@@ -665,11 +665,13 @@ pub struct SlotArenaSnapshot {
 /// assert_eq!(arena.get_with(id, |v| *v), Some(42));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg(feature = "concurrency")]
 pub struct ShardedSlotId {
     shard: usize,
     slot: SlotId,
 }
 
+#[cfg(feature = "concurrency")]
 impl ShardedSlotId {
     /// Returns the shard index.
     ///
@@ -741,6 +743,7 @@ impl ShardedSlotId {
 /// assert_eq!(arena.len(), 400);
 /// assert_eq!(arena.shard_count(), 4);
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ShardedSlotArena<T> {
     shards: Vec<parking_lot::RwLock<SlotArena<T>>>,
@@ -748,6 +751,7 @@ pub struct ShardedSlotArena<T> {
     next_shard: std::sync::atomic::AtomicUsize,
 }
 
+#[cfg(feature = "concurrency")]
 impl<T> ShardedSlotArena<T> {
     /// Creates a sharded arena with the specified number of shards.
     ///
@@ -1108,11 +1112,13 @@ impl<T> Default for SlotArena<T> {
 ///
 /// assert_eq!(arena.get_with(id, |v| *v), Some(4));
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ConcurrentSlotArena<T> {
     inner: parking_lot::RwLock<SlotArena<T>>,
 }
 
+#[cfg(feature = "concurrency")]
 impl<T> ConcurrentSlotArena<T> {
     /// Creates an empty concurrent arena.
     ///
@@ -1427,6 +1433,7 @@ impl<T> ConcurrentSlotArena<T> {
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<T> Default for ConcurrentSlotArena<T> {
     fn default() -> Self {
         Self::new()
@@ -1455,6 +1462,7 @@ mod tests {
         assert_eq!(id1.index(), id3.index());
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_slot_arena_basic_ops() {
         let arena = ConcurrentSlotArena::new();
@@ -1562,6 +1570,7 @@ mod tests {
         assert!(snapshot.free_list.contains(&a.index()));
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_slot_arena_basic_ops() {
         let arena = ShardedSlotArena::new(2);
@@ -1575,6 +1584,7 @@ mod tests {
         assert_eq!(arena.len(), 1);
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_slot_arena_shard_for_key() {
         let arena: ShardedSlotArena<i32> = ShardedSlotArena::new(4);
@@ -1582,6 +1592,7 @@ mod tests {
         assert!(shard < arena.shard_count());
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_slot_arena_with_seed() {
         let arena: ShardedSlotArena<i32> = ShardedSlotArena::with_shards_seed(4, 0, 99);
@@ -1589,6 +1600,7 @@ mod tests {
         assert!(shard < arena.shard_count());
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_slot_arena_try_ops() {
         let arena = ConcurrentSlotArena::new();
@@ -1598,6 +1610,7 @@ mod tests {
         assert_eq!(arena.get_with(id, |v| *v), Some(2));
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_slot_arena_clear_and_accessors() {
         let arena = ConcurrentSlotArena::new();
@@ -1613,6 +1626,7 @@ mod tests {
         assert_eq!(arena.get_with(a, |v| *v), None);
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_slot_arena_get_mut_with_updates_value() {
         let arena = ConcurrentSlotArena::new();

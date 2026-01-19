@@ -1522,12 +1522,14 @@ pub struct FrequencyBucketsSnapshot<K> {
 ///
 /// assert_eq!(freq.len(), 100);
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ShardedFrequencyBuckets<K> {
     shards: Vec<parking_lot::RwLock<FrequencyBuckets<K>>>,
     selector: crate::ds::ShardSelector,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K> ShardedFrequencyBuckets<K>
 where
     K: Eq + Hash + Clone,
@@ -2957,6 +2959,7 @@ mod tests {
         assert_eq!(buckets.min_freq(), Some(1));
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_frequency_buckets_basic_ops() {
         let buckets = ShardedFrequencyBuckets::new(2);
@@ -2972,6 +2975,7 @@ mod tests {
         assert_eq!(buckets.len(), 1);
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_frequency_buckets_shard_for_key() {
         let buckets: ShardedFrequencyBuckets<&str> = ShardedFrequencyBuckets::new(4);
@@ -2979,6 +2983,7 @@ mod tests {
         assert!(shard < buckets.shard_count());
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_frequency_buckets_with_seed() {
         let buckets: ShardedFrequencyBuckets<&str> =
@@ -2987,6 +2992,7 @@ mod tests {
         assert!(shard < buckets.shard_count());
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_frequency_buckets_iter_entries() {
         let buckets = ShardedFrequencyBuckets::new(2);

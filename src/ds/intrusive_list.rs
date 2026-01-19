@@ -133,6 +133,7 @@
 //! - Backed by [`SlotArena`] for stable handles
 //! - No pointer chasing; links are `SlotId` indices
 //! - `debug_validate_invariants()` available in debug/test builds
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
@@ -1028,11 +1029,13 @@ impl<T> Default for IntrusiveList<T> {
 ///     assert!(success);
 /// }
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ConcurrentIntrusiveList<T> {
     inner: RwLock<IntrusiveList<T>>,
 }
 
+#[cfg(feature = "concurrency")]
 impl<T> ConcurrentIntrusiveList<T> {
     /// Creates an empty concurrent list.
     ///
@@ -1529,6 +1532,7 @@ impl<T> ConcurrentIntrusiveList<T> {
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<T> Default for ConcurrentIntrusiveList<T> {
     fn default() -> Self {
         Self::new()
@@ -1702,6 +1706,7 @@ mod tests {
         assert_eq!(list.debug_snapshot_ids_sorted(), vec![a, b, c]);
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_intrusive_list_clear_and_accessors() {
         let list = ConcurrentIntrusiveList::new();
@@ -1721,6 +1726,7 @@ mod tests {
         assert!(!list.contains(b));
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_intrusive_list_try_ops() {
         let list = ConcurrentIntrusiveList::new();
@@ -1735,6 +1741,7 @@ mod tests {
         assert!(list.is_empty());
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_intrusive_list_epoch_ops() {
         let list = ConcurrentIntrusiveList::new();

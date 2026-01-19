@@ -170,13 +170,17 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::ptr::NonNull;
+#[cfg(feature = "concurrency")]
 use std::sync::Arc;
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
 use crate::ds::GhostList;
-use crate::traits::{ConcurrentCache, CoreCache};
+#[cfg(feature = "concurrency")]
+use crate::traits::ConcurrentCache;
+use crate::traits::CoreCache;
 
 /// Maximum frequency value (2 bits = 0-3).
 const MAX_FREQ: u8 = 3;
@@ -721,6 +725,7 @@ where
 ///     println!("Got: {}", value);
 /// }
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Clone, Debug)]
 pub struct ConcurrentS3FifoCache<K, V>
 where
@@ -729,6 +734,7 @@ where
     inner: Arc<RwLock<S3FifoCache<K, V>>>,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentS3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Debug,
@@ -803,6 +809,7 @@ where
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentCache for ConcurrentS3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Debug + Send + Sync,
@@ -1267,6 +1274,7 @@ mod tests {
     // Concurrent Cache
     // ==============================================
 
+    #[cfg(feature = "concurrency")]
     mod concurrent_cache {
         use super::*;
 

@@ -153,15 +153,18 @@
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
+#[cfg(feature = "concurrency")]
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(feature = "concurrency")]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
-use crate::store::traits::{
-    ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead, StoreCore, StoreFactory,
-    StoreFull, StoreMetrics, StoreMut,
-};
+#[cfg(feature = "concurrency")]
+use crate::store::traits::{ConcurrentStore, ConcurrentStoreFactory, ConcurrentStoreRead};
+use crate::store::traits::{StoreCore, StoreFactory, StoreFull, StoreMetrics, StoreMut};
 
 // =============================================================================
 // Metrics counters
@@ -582,6 +585,7 @@ where
 ///
 /// assert_eq!(store.len(), 100);
 /// ```
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ConcurrentHashMapStore<K, V, S = RandomState> {
     map: RwLock<HashMap<K, Arc<V>, S>>,
@@ -589,6 +593,7 @@ pub struct ConcurrentHashMapStore<K, V, S = RandomState> {
     metrics: StoreCounters,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send,
@@ -610,6 +615,7 @@ where
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V, S> ConcurrentHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send,
@@ -648,6 +654,7 @@ where
 /// Read operations for [`ConcurrentHashMapStore`].
 ///
 /// All methods acquire a read lock. Multiple readers can access concurrently.
+#[cfg(feature = "concurrency")]
 impl<K, V, S> ConcurrentStoreRead<K, V> for ConcurrentHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
@@ -697,6 +704,7 @@ where
 /// Write operations for [`ConcurrentHashMapStore`].
 ///
 /// All methods acquire a write lock. Writers have exclusive access.
+#[cfg(feature = "concurrency")]
 impl<K, V, S> ConcurrentStore<K, V> for ConcurrentHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
@@ -756,6 +764,7 @@ where
 /// let store = create::<ConcurrentHashMapStore<String, i32>>(50);
 /// assert_eq!(store.capacity(), 50);
 /// ```
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentStoreFactory<K, V> for ConcurrentHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send + Sync,
@@ -830,6 +839,7 @@ where
 /// - Optimal shard count is typically 2-4x the number of CPU cores
 /// - Keys that hash to the same shard still contend
 /// - Use [`ConcurrentStoreFactory`] to auto-detect shard count
+#[cfg(feature = "concurrency")]
 #[derive(Debug)]
 pub struct ShardedHashMapStore<K, V, S = RandomState> {
     shards: Vec<RwLock<HashMap<K, Arc<V>, S>>>,
@@ -839,6 +849,7 @@ pub struct ShardedHashMapStore<K, V, S = RandomState> {
     hasher: S,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ShardedHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send + Sync,
@@ -866,6 +877,7 @@ where
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V, S> ShardedHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
@@ -931,6 +943,7 @@ where
 /// Read operations for [`ShardedHashMapStore`].
 ///
 /// Each operation only locks the shard containing the target key.
+#[cfg(feature = "concurrency")]
 impl<K, V, S> ConcurrentStoreRead<K, V> for ShardedHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
@@ -983,6 +996,7 @@ where
 ///
 /// Each operation only locks the shard containing the target key, except
 /// `clear()` which locks all shards.
+#[cfg(feature = "concurrency")]
 impl<K, V, S> ConcurrentStore<K, V> for ShardedHashMapStore<K, V, S>
 where
     K: Eq + Hash + Send + Sync,
@@ -1079,6 +1093,7 @@ where
 /// assert_eq!(store.capacity(), 10000);
 /// // shard_count() == number of CPU cores (or 1 if detection fails)
 /// ```
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentStoreFactory<K, V> for ShardedHashMapStore<K, V, RandomState>
 where
     K: Eq + Hash + Send + Sync,
@@ -1171,6 +1186,7 @@ mod tests {
         assert_eq!(metrics.evictions, 1);
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_store_basic_ops() {
         let store = ConcurrentHashMapStore::new(2);
@@ -1184,6 +1200,7 @@ mod tests {
         assert!(!store.contains(&"k1"));
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_store_basic_ops() {
         let store = ShardedHashMapStore::new(2, 2);
@@ -1197,6 +1214,7 @@ mod tests {
         assert!(!store.contains(&"k1"));
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn sharded_store_capacity_enforced() {
         let store = ShardedHashMapStore::new(1, 2);

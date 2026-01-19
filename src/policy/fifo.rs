@@ -274,13 +274,17 @@
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::hash::Hash;
+#[cfg(feature = "concurrency")]
 use std::sync::Arc;
 
+#[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{ConcurrentCache, CoreCache, FifoCacheTrait};
+#[cfg(feature = "concurrency")]
+use crate::traits::ConcurrentCache;
+use crate::traits::{CoreCache, FifoCacheTrait};
 
 /// FIFO (First In, First Out) Cache.
 ///
@@ -388,6 +392,7 @@ where
 }
 
 /// Thread-safe FIFO cache wrapper using RwLock.
+#[cfg(feature = "concurrency")]
 #[derive(Clone, Debug)]
 pub struct ConcurrentFifoCache<K, V>
 where
@@ -396,6 +401,7 @@ where
     inner: Arc<RwLock<FifoCache<K, V>>>,
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentFifoCache<K, V>
 where
     K: Eq + Hash + Clone + Debug,
@@ -470,6 +476,7 @@ where
     }
 }
 
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentCache for ConcurrentFifoCache<K, V>
 where
     K: Eq + Hash + Clone + Debug + Send + Sync,
