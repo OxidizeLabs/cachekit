@@ -55,6 +55,11 @@ harness = false
 name = "comparison"
 harness = false
 
+# Human-readable reports (not criterion, just prints tables)
+[[bench]]
+name = "reports"
+harness = false
+
 # Policy-specific unique operations
 [[bench]]
 name = "policy_lru"

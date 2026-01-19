@@ -11,9 +11,10 @@ benches/
 │   ├── metrics.rs            # Benchmark metrics infrastructure
 │   └── workload.rs           # Workload generators (zipfian, scan, etc.)
 │
-├── workloads.rs              # Cross-policy workload comparison (single source of truth)
+├── workloads.rs              # Cross-policy workload comparison (criterion)
 ├── ops.rs                    # Micro-operations (get_hit, insert latency)
 ├── comparison.rs             # External crate comparison (lru, quick_cache)
+├── reports.rs                # Human-readable console reports (no criterion)
 │
 ├── policy/                   # Policy-specific unique operations
 │   ├── lru.rs                # pop_lru, touch
@@ -51,7 +52,19 @@ cargo bench --bench policy_s3_fifo
 
 ### Console reports (quick analysis without criterion overhead)
 ```bash
-cargo test --bench workloads -- --ignored --nocapture
+# Show available reports
+cargo bench --bench reports
+
+# Run specific report
+cargo bench --bench reports -- hit_rate
+cargo bench --bench reports -- scan
+cargo bench --bench reports -- adaptation
+cargo bench --bench reports -- detailed
+cargo bench --bench reports -- memory
+cargo bench --bench reports -- comprehensive
+
+# Run all reports
+cargo bench --bench reports -- all
 ```
 
 ## Benchmark Groups
@@ -94,6 +107,20 @@ Operations unique to specific policies:
 | `policy_lfu` | `pop_lfu`, `increment_frequency`, `bucket_touch`, eviction scaling |
 | `policy_lru_k` | `pop_lru_k`, `touch_hotset`, K-value comparison |
 | `policy_s3_fifo` | `scan_resistance`, `small_to_main_promotion`, high churn |
+
+### reports.rs
+Human-readable console reports (no criterion overhead, instant results):
+
+| Report | Description |
+|--------|-------------|
+| `hit_rate` | Hit rate comparison table across core workloads |
+| `extended` | Extended hit rate with all workload patterns |
+| `scan` | Scan resistance (baseline/scan/recovery hit rates) |
+| `adaptation` | Adaptation speed comparison with hit rate curves |
+| `detailed` | Single benchmark showing all metrics fields |
+| `memory` | Memory overhead comparison across policies |
+| `comprehensive` | Full PolicyComparison tables for each policy |
+| `all` | Run all reports sequentially |
 
 ## Latest Results
 
