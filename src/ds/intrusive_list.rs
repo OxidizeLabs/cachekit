@@ -1569,6 +1569,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "concurrency")]
     fn concurrent_intrusive_list_basic_ops() {
         let list = ConcurrentIntrusiveList::new();
         let a = list.push_front("a");

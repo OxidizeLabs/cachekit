@@ -6031,11 +6031,10 @@ mod tests {
     // MEMORY SAFETY TESTS MODULE
     // ==============================================
     mod memory_safety {
+        use super::*;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::thread;
-
-        use super::*;
 
         // Helper to track object lifecycle
         struct LifeCycleTracker {
