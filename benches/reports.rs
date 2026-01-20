@@ -3,7 +3,8 @@
 //! This is a standalone binary (not a criterion benchmark) that prints
 //! human-readable comparison tables for cache policy evaluation.
 
-mod common;
+use bench_support as common;
+use bench_support::for_each_policy;
 
 use std::sync::Arc;
 

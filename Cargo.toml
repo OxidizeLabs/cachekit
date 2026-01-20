@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "bench-support"]
+resolver = "2"
+
 [package]
 name = "cachekit"
 version = "0.2.0-alpha"
@@ -30,12 +34,16 @@ log = "0.4"
 rustc-hash = "2.1"
 
 [dev-dependencies]
+bench-support = { path = "bench-support" }
 criterion = "0.8"
 dhat = "0.3"
 lru = "0.16"
 quick_cache = "0.6"
 rand = "0.9"
 rand_distr = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
 
 # =============================================================================
 # Benchmarks - organized by purpose
@@ -59,6 +67,11 @@ harness = false
 # Human-readable reports (not criterion, just prints tables)
 [[bench]]
 name = "reports"
+harness = false
+
+# JSON artifact runner (produces target/benchmarks/<run-id>/results.json)
+[[bench]]
+name = "runner"
 harness = false
 
 # Policy-specific unique operations

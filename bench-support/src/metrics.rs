@@ -7,16 +7,12 @@
 //! - Eviction behavior
 //! - Adaptation speed
 
-// This module provides a complete utility API for benchmarking.
-// Not all items are used in every benchmark configuration.
-#![allow(dead_code)]
-
 use std::time::{Duration, Instant};
 
 use cachekit::traits::CoreCache;
 use rand::SeedableRng;
 
-use crate::common::workload::WorkloadSpec;
+use crate::workload::WorkloadSpec;
 
 // ============================================================================
 // Core Metrics Structures
@@ -195,7 +191,7 @@ impl LatencySampler {
     #[inline]
     pub fn record(&mut self, duration: Duration) {
         self.count += 1;
-        if self.count % self.sample_rate != 0 {
+        if !self.count.is_multiple_of(self.sample_rate) {
             return;
         }
 
@@ -252,7 +248,7 @@ impl Default for BenchmarkConfig {
             warmup_ops: 10_000,
             workload: WorkloadSpec {
                 universe: 16_384,
-                workload: crate::common::workload::Workload::Zipfian { exponent: 1.0 },
+                workload: crate::workload::Workload::Zipfian { exponent: 1.0 },
                 seed: 42,
             },
             latency_sample_rate: 100,
@@ -643,7 +639,7 @@ impl PolicyComparison {
 
 /// Standard workload suite for comparing policies.
 pub fn standard_workload_suite(universe: u64, seed: u64) -> Vec<(&'static str, WorkloadSpec)> {
-    use crate::common::workload::Workload;
+    use crate::workload::Workload;
 
     vec![
         (

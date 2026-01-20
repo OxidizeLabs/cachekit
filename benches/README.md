@@ -1,225 +1,188 @@
-# Benchmarks
+# CacheKit Benchmarks
 
-Organized benchmark suite for cachekit cache policies.
+This directory contains the benchmark suite for CacheKit cache policies.
 
-## Structure
+## Benchmark Organization
 
+### Criterion Benchmarks (Performance Measurement)
+
+**`workloads.rs`** - Policy comparison across standard workloads
+- Hit rate benchmarks for all policies × all workloads
+- Scan resistance tests
+- Adaptation speed tests
+- Comprehensive benchmarks with latency/throughput
+- Run: `cargo bench --bench workloads`
+
+**`ops.rs`** - Micro-operation benchmarks
+- Individual get/insert operation latency
+- Measures raw policy overhead
+- Run: `cargo bench --bench ops`
+
+**`comparison.rs`** - External crate comparison
+- Compares CacheKit policies against `lru` and `quick_cache` crates
+- Run: `cargo bench --bench comparison`
+
+**`policy/*.rs`** - Policy-specific benchmarks
+- Unique operations for each policy
+- Run: `cargo bench --bench policy_lru`, etc.
+
+### Report Generators
+
+**`reports.rs`** - Human-readable console reports
+- Prints comparison tables for policies
+- No Criterion overhead, just raw measurements
+- Run: `cargo bench --bench reports -- <report_type>`
+- Available reports:
+  - `hit_rate` - Hit rate comparison table
+  - `extended` - Extended workload comparison
+  - `scan` - Scan resistance metrics
+  - `adaptation` - Adaptation speed metrics
+  - `detailed` - Single benchmark deep dive
+  - `memory` - Memory overhead comparison
+  - `comprehensive` - Full policy tables
+  - `all` - Run all reports
+
+**`runner.rs`** - JSON artifact generator
+- Produces structured JSON results for automation
+- Captures full environment metadata (git, rustc, CPU)
+- Output: `target/benchmarks/<timestamp>/results.json`
+- Run: `cargo bench --bench runner`
+
+## Common Infrastructure
+
+**`common/`** - Shared benchmark utilities
+- `registry.rs` - Central registry of policies and workloads
+- `metrics.rs` - Benchmark measurement utilities
+- `workload.rs` - Workload generators
+- `json_results.rs` - JSON output schema
+
+## Quick Start
+
+### Run hit rate comparison
+```bash
+cargo bench --bench reports -- hit_rate
 ```
-benches/
-├── common/                    # Shared utilities
-│   ├── mod.rs
-│   ├── metrics.rs            # Benchmark metrics infrastructure
-│   └── workload.rs           # Workload generators (zipfian, scan, etc.)
-│
-├── workloads.rs              # Cross-policy workload comparison (criterion)
-├── ops.rs                    # Micro-operations (get_hit, insert latency)
-├── comparison.rs             # External crate comparison (lru, quick_cache)
-├── reports.rs                # Human-readable console reports (no criterion)
-│
-├── policy/                   # Policy-specific unique operations
-│   ├── lru.rs                # pop_lru, touch
-│   ├── lfu.rs                # pop_lfu, frequency_updates, bucket_touch
-│   ├── lru_k.rs              # pop_lru_k, touch, k-value scaling
-│   └── s3_fifo.rs            # scan_resistance, promotion
-│
-└── README.md
+
+### Generate JSON artifact
+```bash
+cargo bench --bench runner
+# Output: target/benchmarks/<timestamp>/results.json
 ```
 
-## Running Benchmarks
-
-### All policies under identical workloads (recommended starting point)
+### Run full Criterion benchmarks
 ```bash
 cargo bench --bench workloads
 ```
 
-### Micro-operations (get/insert latency per policy)
+### View Criterion HTML reports
 ```bash
-cargo bench --bench ops
+# After running criterion benchmarks
+open target/criterion/report/index.html
 ```
 
-### External crate comparison
-```bash
-cargo bench --bench comparison
-```
+## Benchmark Configuration
 
-### Policy-specific operations
-```bash
-cargo bench --bench policy_lru
-cargo bench --bench policy_lfu
-cargo bench --bench policy_lru_k
-cargo bench --bench policy_s3_fifo
-```
+Default parameters (defined in each benchmark file):
+- **Capacity**: 4,096 entries
+- **Universe**: 16,384 possible keys
+- **Operations**: 200,000 per benchmark
+- **Seed**: 42 (for reproducibility)
 
-### Console reports (quick analysis without criterion overhead)
-```bash
-# Show available reports
-cargo bench --bench reports
+## Policy Registry
 
-# Run specific report
-cargo bench --bench reports -- hit_rate
-cargo bench --bench reports -- scan
-cargo bench --bench reports -- adaptation
-cargo bench --bench reports -- detailed
-cargo bench --bench reports -- memory
-cargo bench --bench reports -- comprehensive
+All benchmarks use the central policy registry (`common/registry.rs`).
 
-# Run all reports
-cargo bench --bench reports -- all
-```
+Current policies:
+- **LRU** - Least Recently Used
+- **LRU-K** - LRU with K-distance tracking
+- **LFU** - Least Frequently Used
+- **Heap-LFU** - LFU with heap-based eviction
+- **Clock** - Clock/Second-Chance algorithm
+- **S3-FIFO** - Simple Scalable FIFO variant
+- **2Q** - Two-Queue algorithm
 
-## Benchmark Groups
+To add a new policy:
+1. Add entry to `for_each_policy!` macro in `common/registry.rs`
+2. All benchmarks automatically include it
 
-### workloads.rs
-Single source of truth for policy comparison. All policies tested under identical conditions:
+## Workload Registry
 
-| Group | Description |
-|-------|-------------|
-| `hit_rate` | Hit rate across workloads (uniform, hotset, scan, zipfian, etc.) |
-| `scan_resistance` | Baseline → scan → recovery hit rate measurement |
-| `adaptation_speed` | Workload shift response time |
-| `comprehensive` | Full metrics: latency (p50/p95/p99), throughput, eviction stats |
+Current standard workloads:
+- `uniform` - Uniform random access
+- `hotset_90_10` - 90% of accesses to 10% of keys
+- `scan` - Sequential access
+- `zipfian_1.0` - Zipfian distribution (α=1.0)
+- `scrambled_zipf` - Zipfian with hashed keys
+- `latest` - Recent keys are more popular
+- `scan_resistance` - Mixed point queries and sequential scans
+- `flash_crowd` - Sudden traffic spikes
 
-### ops.rs
-Per-operation latency (ns/op) for all policies:
+Extended workloads include: `zipfian_0.8`, `shifting_hotspot`, `exponential`, `pareto`, `correlated`, `loop_small`, `working_set_churn`, `bursty`, `mixture`.
 
-| Group | Description |
-|-------|-------------|
-| `get_hit_ns` | Cache hit latency |
-| `insert_evict_ns` | Insert with eviction latency |
-| `mixed_ops_ns` | 80% hit / 20% miss workload |
+To add a new workload:
+1. Add entry to `STANDARD_WORKLOADS` or `EXTENDED_WORKLOADS` in `common/registry.rs`
+2. All benchmarks automatically test it
 
-### comparison.rs
-Compare cachekit against external crates:
+## Output Formats
 
-| Group | Description |
-|-------|-------------|
-| `get_hit` | Get performance vs lru, quick_cache |
-| `insert_evict` | Insert performance vs lru, quick_cache |
-| `mixed_workload` | Realistic workload comparison |
-| `scaling_get` | Performance at different cache sizes |
+### Criterion
+- HTML reports in `target/criterion/`
+- Statistical analysis with confidence intervals
+- Automatic regression detection
 
-### policy/*.rs
-Operations unique to specific policies:
+### Console Reports
+- Plain text tables
+- Hit rate percentages
+- Throughput (ops/sec)
+- Latency distribution (p50, p95, p99)
 
-| File | Operations |
-|------|------------|
-| `policy_lru` | `pop_lru`, `touch_hotset` |
-| `policy_lfu` | `pop_lfu`, `increment_frequency`, `bucket_touch`, eviction scaling |
-| `policy_lru_k` | `pop_lru_k`, `touch_hotset`, K-value comparison |
-| `policy_s3_fifo` | `scan_resistance`, `small_to_main_promotion`, high churn |
+### JSON Artifacts
+- Structured data in `target/benchmarks/<timestamp>/results.json`
+- Includes metadata (git commit, rustc version, CPU model)
+- Schema version 1.0.0
+- ~60KB per run, 91 results
 
-### reports.rs
-Human-readable console reports (no criterion overhead, instant results):
+## Best Practices
 
-| Report | Description |
-|--------|-------------|
-| `hit_rate` | Hit rate comparison table across core workloads |
-| `extended` | Extended hit rate with all workload patterns |
-| `scan` | Scan resistance (baseline/scan/recovery hit rates) |
-| `adaptation` | Adaptation speed comparison with hit rate curves |
-| `detailed` | Single benchmark showing all metrics fields |
-| `memory` | Memory overhead comparison across policies |
-| `comprehensive` | Full PolicyComparison tables for each policy |
-| `all` | Run all reports sequentially |
+### For Performance Testing
+1. Use release builds: `cargo bench`
+2. Close other applications to reduce noise
+3. Run multiple times and check consistency
+4. Use Criterion for statistical rigor
 
-## Latest Results
+### For Development
+1. Use `reports.rs` for quick comparisons
+2. Check `hit_rate` first to catch regressions
+3. Use `runner.rs` for CI/CD integration
 
-*Generated with `cargo bench --bench reports -- all` (capacity=4096, universe=16384, ops=200000)*
+### For Release
+1. Run full benchmark suite: `cargo bench`
+2. Generate JSON artifact: `cargo bench --bench runner`
+3. Compare with previous releases
+4. Document significant changes in CHANGELOG
 
-### Hit Rate Comparison
+## Troubleshooting
 
-| Policy | uniform | hotset | scan | zipfian | scrambled | latest | scan_resist | flash_crowd |
-|--------|---------|--------|------|---------|-----------|--------|-------------|-------------|
-| LRU | 24.62% | 90.65% | 0.00% | 80.17% | 90.22% | **35.45%** | 16.75% | 88.50% |
-| LRU-K | 24.61% | 90.64% | 0.00% | 82.57% | **91.13%** | 25.91% | 20.28% | 89.40% |
-| LFU | 24.61% | 90.64% | 0.00% | 82.57% | **91.13%** | 25.82% | 20.28% | 89.40% |
-| Heap-LFU | 24.67% | 90.67% | **22.52%** | 74.81% | 90.03% | 26.51% | 23.42% | 85.32% |
-| Clock | 24.66% | 90.65% | 0.00% | 80.75% | 90.45% | 34.96% | 17.63% | 88.74% |
-| S3-FIFO | 24.77% | 90.63% | 0.00% | **82.84%** | 91.07% | 23.45% | **24.00%** | **89.49%** |
-| 2Q | 24.78% | 90.63% | 0.00% | 82.37% | 90.71% | 31.55% | 16.04% | 89.36% |
+### Benchmarks take too long
+- Reduce `OPS` constant in benchmark file
+- Run specific workloads: `cargo bench --bench workloads -- uniform`
+- Use `reports.rs` instead of Criterion
 
-**Key insights**:
-- **uniform**: All policies equal (~24.7%) - random access reaches theoretical limit
-- **scan**: Heap-LFU alone survives (22.5%); all others collapse to 0%
-- **zipfian**: S3-FIFO wins (82.8%) - frequency-aware policies outperform recency-only
-- **latest**: LRU wins (35.5%) - recency-biased workload is LRU's sweet spot
-- **scan_resistance**: S3-FIFO leads (24.0%) - handles mixed scan + point queries best
+### Results vary between runs
+- Ensure system is idle during benchmarking
+- Disable CPU frequency scaling if possible
+- Run on dedicated hardware for consistent results
+- Use longer warmup periods
 
-### Scan Resistance
+### Adding new policies fails
+- Check `for_each_policy!` macro syntax
+- Verify policy implements `CoreCache<K, V>` trait
+- Ensure type parameters match (some policies use `Arc<V>`, others use `V`)
 
-| Policy | Baseline | During Scan | Recovery | Score |
-|--------|----------|-------------|----------|-------|
-| LRU | 79.65% | 7.03% | 68.54% | 0.86 |
-| LRU-K | 79.66% | 7.69% | 78.54% | **0.99** |
-| LFU | 79.66% | 7.69% | 78.54% | **0.99** |
-| Heap-LFU | 79.21% | 21.89% | 75.79% | 0.96 |
-| S3-FIFO | 79.66% | 7.69% | 78.82% | **0.99** |
-| 2Q | 79.66% | 7.69% | 78.54% | **0.99** |
-| Clock | 79.66% | 6.90% | 68.54% | 0.86 |
+## See Also
 
-**Score** = recovery / baseline (1.0 = full recovery after scan pollution)
-
-- **Winners (0.99)**: LRU-K, LFU, S3-FIFO, 2Q - recover almost fully after scans
-- **Losers (0.86)**: LRU, Clock - scans permanently degrade performance by ~11%
-
-### Adaptation Speed
-
-| Policy | Ops to 50% | Ops to 80% | Stable HR |
-|--------|------------|------------|-----------|
-| LRU | 3,072 | 5,120 | **49.32%** |
-| LRU-K | **1,024** | **2,048** | 9.08% |
-| LFU | **1,024** | **2,048** | 9.08% |
-| Heap-LFU | 2,048 | 2,048 | 9.86% |
-| S3-FIFO | 8,192 | 11,264 | 44.34% |
-| 2Q | 3,072 | 11,264 | 33.50% |
-| Clock | 3,072 | 6,144 | **49.32%** |
-
-- **Fastest warmup**: LRU-K reaches 80% of stable in only 2,048 ops
-- **Slowest warmup**: S3-FIFO takes 11,264 ops (frequency tracking needs history)
-- **Trade-off**: S3-FIFO has better long-term hit rates but slower warmup
-
-### Throughput (ops/sec)
-
-*Zipfian 1.0 workload, p99 latency in parentheses*
-
-| Policy | uniform | zipfian | hotset | scan | loop_small |
-|--------|---------|---------|--------|------|------------|
-| LRU | 20.6M (125ns) | 16.2M (125ns) | 7.3M (375ns) | 4.6M (334ns) | 24.6M (42ns) |
-| S3-FIFO | 19.9M (167ns) | 15.0M (167ns) | 24.3M (125ns) | 23.3M (84ns) | 26.2M (42ns) |
-| Clock | **32.2M (84ns)** | **16.9M (84ns)** | **26.1M (83ns)** | **37.3M (42ns)** | 25.8M (42ns) |
-
-- **Clock is fastest** with lowest tail latency across all workloads
-- **S3-FIFO** trades ~12% throughput for better hit rates
-- **LRU** struggles on scan workload (constant eviction overhead)
-
-### Memory Overhead
-
-*Shallow struct size (heap allocations not included)*
-
-| Policy | Struct Size |
-|--------|-------------|
-| LRU | 56 bytes |
-| Clock | 72 bytes |
-| 2Q | 96 bytes |
-| LRU-K | 104 bytes |
-| S3-FIFO | 224 bytes |
-
-S3-FIFO has 4x the metadata overhead of LRU due to its three-queue structure.
-
-### Policy Selection Guide
-
-| Use Case | Best Policy | Why |
-|----------|-------------|-----|
-| General purpose | **S3-FIFO** | Best hit rate on realistic workloads |
-| Low latency critical | **Clock** | Fastest ops, lowest p99 |
-| Scan-heavy / DB buffers | **S3-FIFO** or **2Q** | Excellent scan resistance |
-| Fast warmup needed | **LRU** | Quickest to steady state |
-| Memory constrained | **LRU** | Smallest metadata footprint |
-| Mixed read/write | **LRU-K** | Good balance across patterns |
-
-## Adding a New Policy
-
-1. Add to `workloads.rs` - include in all benchmark groups
-2. Add to `ops.rs` - include in get_hit and insert_evict benchmarks
-3. (Optional) Create `policy/<name>.rs` if the policy has unique operations
-4. Add `[[bench]]` entry to `Cargo.toml` if creating policy-specific file
+- [Benchmarking Design Plan](../docs/benchmarking-plan.md)
+- [Phase 1 Summary](../PHASE1_SUMMARY.md) - Registry refactor
+- [Phase 2 Summary](../PHASE2_SUMMARY.md) - JSON artifact output
+- [Benchmark Metrics Documentation](../docs/metrics.md)
+- [Workload Documentation](../docs/workloads.md)

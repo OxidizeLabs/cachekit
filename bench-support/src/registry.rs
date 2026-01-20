@@ -7,54 +7,11 @@
 //! To add a new policy or workload, modify this file only.
 //! All benchmarks and reports automatically pick up the changes.
 
-use crate::common::workload::{Workload, WorkloadSpec};
+use crate::workload::{Workload, WorkloadSpec};
 
 // ============================================================================
 // Policy Registry
 // ============================================================================
-
-/// Policy case with metadata and constructor information.
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct PolicyCase {
-    /// Short identifier (e.g., "lru", "s3_fifo").
-    pub id: &'static str,
-    /// Human-readable display name (e.g., "LRU", "S3-FIFO").
-    pub display_name: &'static str,
-}
-
-/// All policies in the benchmark suite.
-#[allow(dead_code)]
-pub const POLICIES: &[PolicyCase] = &[
-    PolicyCase {
-        id: "lru",
-        display_name: "LRU",
-    },
-    PolicyCase {
-        id: "lru_k",
-        display_name: "LRU-K",
-    },
-    PolicyCase {
-        id: "lfu",
-        display_name: "LFU",
-    },
-    PolicyCase {
-        id: "heap_lfu",
-        display_name: "Heap-LFU",
-    },
-    PolicyCase {
-        id: "clock",
-        display_name: "Clock",
-    },
-    PolicyCase {
-        id: "s3_fifo",
-        display_name: "S3-FIFO",
-    },
-    PolicyCase {
-        id: "two_q",
-        display_name: "2Q",
-    },
-];
 
 /// Macro to execute monomorphic code for each policy.
 ///
@@ -145,7 +102,6 @@ pub struct WorkloadCase {
     /// Short identifier (e.g., "uniform", "zipfian_1.0").
     pub id: &'static str,
     /// Human-readable display name (e.g., "Uniform", "Zipfian 1.0").
-    #[allow(dead_code)]
     pub display_name: &'static str,
     /// Workload specification (without universe/seed).
     pub workload: Workload,
@@ -213,7 +169,6 @@ pub const STANDARD_WORKLOADS: &[WorkloadCase] = &[
 /// Extended workload suite - comprehensive set covering all workload types.
 ///
 /// Use this for exhaustive testing or specialized reports.
-#[allow(dead_code)]
 pub const EXTENDED_WORKLOADS: &[WorkloadCase] = &[
     WorkloadCase {
         id: "uniform",
@@ -332,7 +287,6 @@ pub const EXTENDED_WORKLOADS: &[WorkloadCase] = &[
 
 /// Build a `WorkloadSpec` from a workload case and runtime parameters.
 impl WorkloadCase {
-    #[allow(dead_code)]
     pub fn with_params(self, universe: u64, seed: u64) -> WorkloadSpec {
         WorkloadSpec {
             universe,

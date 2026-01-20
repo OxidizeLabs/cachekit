@@ -12,7 +12,8 @@
 //! For policy-specific operations, see: `cargo bench --bench policy_*`
 //! For external crate comparison, see: `cargo bench --bench comparison`
 
-mod common;
+use bench_support as common;
+use bench_support::for_each_policy;
 
 use std::time::Instant;
 
