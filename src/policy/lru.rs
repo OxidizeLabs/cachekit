@@ -6034,6 +6034,7 @@ mod tests {
         use super::*;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        #[cfg(feature = "concurrency")]
         use std::thread;
 
         // Helper to track object lifecycle
