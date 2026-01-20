@@ -7,19 +7,13 @@ mod common;
 
 use std::sync::Arc;
 
-use cachekit::policy::clock::ClockCache;
-use cachekit::policy::heap_lfu::HeapLfuCache;
-use cachekit::policy::lfu::LfuCache;
-use cachekit::policy::lru::LruCore;
-use cachekit::policy::lru_k::LrukCache;
-use cachekit::policy::s3_fifo::S3FifoCache;
-use cachekit::policy::two_q::TwoQCore;
 use cachekit::traits::CoreCache;
 use common::metrics::{
     BenchmarkConfig, PolicyComparison, estimate_entry_overhead, measure_adaptation_speed,
     measure_scan_resistance, run_benchmark, standard_workload_suite,
 };
-use common::workload::{Workload, WorkloadSpec, run_hit_rate};
+use common::registry::{EXTENDED_WORKLOADS, STANDARD_WORKLOADS};
+use common::workload::run_hit_rate;
 
 const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
@@ -72,147 +66,14 @@ fn main() {
 }
 
 // ============================================================================
-// Workload definitions
-// ============================================================================
-
-fn workloads() -> Vec<(&'static str, Workload)> {
-    vec![
-        ("uniform", Workload::Uniform),
-        (
-            "hotset_90_10",
-            Workload::HotSet {
-                hot_fraction: 0.1,
-                hot_prob: 0.9,
-            },
-        ),
-        ("scan", Workload::Scan),
-        ("zipfian_1.0", Workload::Zipfian { exponent: 1.0 }),
-        (
-            "scrambled_zipf",
-            Workload::ScrambledZipfian { exponent: 1.0 },
-        ),
-        ("latest", Workload::Latest { exponent: 0.8 }),
-        (
-            "scan_resistance",
-            Workload::ScanResistance {
-                scan_fraction: 0.2,
-                scan_length: 1000,
-                point_exponent: 1.0,
-            },
-        ),
-        (
-            "flash_crowd",
-            Workload::FlashCrowd {
-                base_exponent: 1.0,
-                flash_prob: 0.001,
-                flash_duration: 1000,
-                flash_keys: 10,
-                flash_intensity: 100.0,
-            },
-        ),
-    ]
-}
-
-fn extended_workloads() -> Vec<(&'static str, Workload)> {
-    vec![
-        ("uniform", Workload::Uniform),
-        (
-            "hotset_90_10",
-            Workload::HotSet {
-                hot_fraction: 0.1,
-                hot_prob: 0.9,
-            },
-        ),
-        ("scan", Workload::Scan),
-        ("zipfian_1.0", Workload::Zipfian { exponent: 1.0 }),
-        ("zipfian_0.8", Workload::Zipfian { exponent: 0.8 }),
-        (
-            "scrambled_zipf",
-            Workload::ScrambledZipfian { exponent: 1.0 },
-        ),
-        ("latest", Workload::Latest { exponent: 0.8 }),
-        (
-            "shifting_hotspot",
-            Workload::ShiftingHotspot {
-                shift_interval: 10_000,
-                hot_fraction: 0.1,
-            },
-        ),
-        ("exponential", Workload::Exponential { lambda: 0.05 }),
-        ("pareto", Workload::Pareto { shape: 1.5 }),
-        (
-            "scan_resistance",
-            Workload::ScanResistance {
-                scan_fraction: 0.2,
-                scan_length: 1000,
-                point_exponent: 1.0,
-            },
-        ),
-        (
-            "correlated",
-            Workload::Correlated {
-                stride: 1,
-                burst_len: 8,
-                burst_prob: 0.3,
-            },
-        ),
-        (
-            "loop_small",
-            Workload::Loop {
-                working_set_size: 512,
-            },
-        ),
-        (
-            "working_set_churn",
-            Workload::WorkingSetChurn {
-                working_set_size: 2048,
-                churn_rate: 0.001,
-            },
-        ),
-        (
-            "bursty",
-            Workload::Bursty {
-                hurst: 0.8,
-                base_exponent: 1.0,
-            },
-        ),
-        (
-            "flash_crowd",
-            Workload::FlashCrowd {
-                base_exponent: 1.0,
-                flash_prob: 0.001,
-                flash_duration: 1000,
-                flash_keys: 10,
-                flash_intensity: 100.0,
-            },
-        ),
-        ("mixture", Workload::Mixture),
-    ]
-}
-
-// ============================================================================
 // Helper functions
 // ============================================================================
 
-fn run_lru_workload(workload: Workload) -> f64 {
-    let mut cache = LruCore::new(CAPACITY);
-    let mut generator = WorkloadSpec {
-        universe: UNIVERSE,
-        workload,
-        seed: SEED,
-    }
-    .generator();
-    let stats = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-    stats.hit_rate()
-}
-
-fn run_direct_workload<C: CoreCache<u64, Arc<u64>>>(cache: &mut C, workload: Workload) -> f64 {
-    let mut generator = WorkloadSpec {
-        universe: UNIVERSE,
-        workload,
-        seed: SEED,
-    }
-    .generator();
+fn run_workload<C: CoreCache<u64, Arc<u64>>>(
+    cache: &mut C,
+    workload_case: &common::registry::WorkloadCase,
+) -> f64 {
+    let mut generator = workload_case.with_params(UNIVERSE, SEED).generator();
     let stats = run_hit_rate(cache, &mut generator, OPS, Arc::new);
     stats.hit_rate()
 }
@@ -226,75 +87,26 @@ fn print_hit_rate_comparison() {
         "\n=== Hit Rate Comparison (capacity={}, universe={}, ops={}) ===",
         CAPACITY, UNIVERSE, OPS
     );
-    let wl_list = workloads();
+
+    // Print header
     print!("{:<12}", "Policy");
-    for (name, _) in &wl_list {
-        print!(" {:>14}", name);
+    for workload_case in STANDARD_WORKLOADS {
+        print!(" {:>14}", workload_case.id);
     }
     println!();
-    println!("{}", "-".repeat(12 + wl_list.len() * 15));
+    println!("{}", "-".repeat(12 + STANDARD_WORKLOADS.len() * 15));
 
-    print!("{:<12}", "LRU");
-    for (_, wl) in &wl_list {
-        print!(" {:>13.2}%", run_lru_workload(*wl) * 100.0);
-    }
-    println!();
-
-    print!("{:<12}", "LRU-K");
-    for (_, wl) in &wl_list {
-        let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-        print!(" {:>13.2}%", run_direct_workload(&mut cache, *wl) * 100.0);
-    }
-    println!();
-
-    print!("{:<12}", "LFU");
-    for (_, wl) in &wl_list {
-        let mut cache: LfuCache<u64, u64> = LfuCache::new(CAPACITY);
-        let mut generator = WorkloadSpec {
-            universe: UNIVERSE,
-            workload: *wl,
-            seed: SEED,
+    // Print each policy row
+    for_each_policy! {
+        with |_policy_id, display_name, make_cache| {
+            print!("{:<12}", display_name);
+            for workload_case in STANDARD_WORKLOADS {
+                let mut cache = make_cache(CAPACITY);
+                print!(" {:>13.2}%", run_workload(&mut cache, workload_case) * 100.0);
+            }
+            println!();
         }
-        .generator();
-        let stats = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-        print!(" {:>13.2}%", stats.hit_rate() * 100.0);
     }
-    println!();
-
-    print!("{:<12}", "Heap-LFU");
-    for (_, wl) in &wl_list {
-        let mut cache: HeapLfuCache<u64, u64> = HeapLfuCache::new(CAPACITY);
-        let mut generator = WorkloadSpec {
-            universe: UNIVERSE,
-            workload: *wl,
-            seed: SEED,
-        }
-        .generator();
-        let stats = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-        print!(" {:>13.2}%", stats.hit_rate() * 100.0);
-    }
-    println!();
-
-    print!("{:<12}", "Clock");
-    for (_, wl) in &wl_list {
-        let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-        print!(" {:>13.2}%", run_direct_workload(&mut cache, *wl) * 100.0);
-    }
-    println!();
-
-    print!("{:<12}", "S3-FIFO");
-    for (_, wl) in &wl_list {
-        let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-        print!(" {:>13.2}%", run_direct_workload(&mut cache, *wl) * 100.0);
-    }
-    println!();
-
-    print!("{:<12}", "2Q");
-    for (_, wl) in &wl_list {
-        let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-        print!(" {:>13.2}%", run_direct_workload(&mut cache, *wl) * 100.0);
-    }
-    println!();
 }
 
 fn print_extended_hit_rate_comparison() {
@@ -302,42 +114,27 @@ fn print_extended_hit_rate_comparison() {
         "\n=== Extended Hit Rate Comparison (capacity={}, universe={}, ops={}) ===",
         CAPACITY, UNIVERSE, OPS
     );
-    let wl_list = extended_workloads();
 
-    for chunk in wl_list.chunks(6) {
+    for chunk in EXTENDED_WORKLOADS.chunks(6) {
         print!("{:<12}", "Policy");
-        for (name, _) in chunk {
-            print!(" {:>12}", name);
+        for workload_case in chunk {
+            print!(" {:>12}", workload_case.id);
         }
         println!();
         println!("{}", "-".repeat(12 + chunk.len() * 13));
 
-        print!("{:<12}", "LRU");
-        for (_, wl) in chunk {
-            print!(" {:>11.2}%", run_lru_workload(*wl) * 100.0);
+        for_each_policy! {
+            with |_policy_id, display_name, make_cache| {
+                print!("{:<12}", display_name);
+                for workload_case in chunk {
+                    let mut cache = make_cache(CAPACITY);
+                    print!(" {:>11.2}%", run_workload(&mut cache, workload_case) * 100.0);
+                }
+                println!();
+            }
         }
-        println!();
 
-        print!("{:<12}", "LRU-K");
-        for (_, wl) in chunk {
-            let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-            print!(" {:>11.2}%", run_direct_workload(&mut cache, *wl) * 100.0);
-        }
         println!();
-
-        print!("{:<12}", "S3-FIFO");
-        for (_, wl) in chunk {
-            let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-            print!(" {:>11.2}%", run_direct_workload(&mut cache, *wl) * 100.0);
-        }
-        println!();
-
-        print!("{:<12}", "2Q");
-        for (_, wl) in chunk {
-            let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-            print!(" {:>11.2}%", run_direct_workload(&mut cache, *wl) * 100.0);
-        }
-        println!("\n");
     }
 }
 
@@ -349,95 +146,29 @@ fn print_scan_resistance_comparison() {
     );
     println!("{}", "-".repeat(60));
 
-    let mut cache = LruCore::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
-        "LRU",
-        result.baseline_hit_rate * 100.0,
-        result.scan_hit_rate * 100.0,
-        result.recovery_hit_rate * 100.0,
-        result.resistance_score
-    );
-
-    let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
-        "LRU-K",
-        result.baseline_hit_rate * 100.0,
-        result.scan_hit_rate * 100.0,
-        result.recovery_hit_rate * 100.0,
-        result.resistance_score
-    );
-
-    let mut cache: LfuCache<u64, u64> = LfuCache::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
-        "LFU",
-        result.baseline_hit_rate * 100.0,
-        result.scan_hit_rate * 100.0,
-        result.recovery_hit_rate * 100.0,
-        result.resistance_score
-    );
-
-    let mut cache: HeapLfuCache<u64, u64> = HeapLfuCache::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
-        "Heap-LFU",
-        result.baseline_hit_rate * 100.0,
-        result.scan_hit_rate * 100.0,
-        result.recovery_hit_rate * 100.0,
-        result.resistance_score
-    );
-
-    let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
-        "S3-FIFO",
-        result.baseline_hit_rate * 100.0,
-        result.scan_hit_rate * 100.0,
-        result.recovery_hit_rate * 100.0,
-        result.resistance_score
-    );
-
-    let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
-        "2Q",
-        result.baseline_hit_rate * 100.0,
-        result.scan_hit_rate * 100.0,
-        result.recovery_hit_rate * 100.0,
-        result.resistance_score
-    );
-
-    let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
-        "Clock",
-        result.baseline_hit_rate * 100.0,
-        result.scan_hit_rate * 100.0,
-        result.recovery_hit_rate * 100.0,
-        result.resistance_score
-    );
+    for_each_policy! {
+        with |_policy_id, display_name, make_cache| {
+            let mut cache = make_cache(CAPACITY);
+            let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            println!(
+                "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
+                display_name,
+                result.baseline_hit_rate * 100.0,
+                result.scan_hit_rate * 100.0,
+                result.recovery_hit_rate * 100.0,
+                result.resistance_score
+            );
+        }
+    }
 
     println!("\n--- Compact Summaries ---");
-    let mut cache = LruCore::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!("LRU:      {}", result.summary());
-
-    let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!("S3-FIFO:  {}", result.summary());
-
-    let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-    let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!("2Q:       {}", result.summary());
+    for_each_policy! {
+        with |_policy_id, display_name, make_cache| {
+            let mut cache = make_cache(CAPACITY);
+            let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            println!("{:<10} {}", display_name, result.summary());
+        }
+    }
 }
 
 fn print_adaptation_comparison() {
@@ -448,96 +179,47 @@ fn print_adaptation_comparison() {
     );
     println!("{}", "-".repeat(60));
 
-    let mut cache = LruCore::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>15} {:>15} {:>11.2}%",
-        "LRU",
-        result.ops_to_50_percent,
-        result.ops_to_80_percent,
-        result.stable_hit_rate * 100.0
-    );
-
-    let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>15} {:>15} {:>11.2}%",
-        "LRU-K",
-        result.ops_to_50_percent,
-        result.ops_to_80_percent,
-        result.stable_hit_rate * 100.0
-    );
-
-    let mut cache: LfuCache<u64, u64> = LfuCache::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>15} {:>15} {:>11.2}%",
-        "LFU",
-        result.ops_to_50_percent,
-        result.ops_to_80_percent,
-        result.stable_hit_rate * 100.0
-    );
-
-    let mut cache: HeapLfuCache<u64, u64> = HeapLfuCache::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>15} {:>15} {:>11.2}%",
-        "Heap-LFU",
-        result.ops_to_50_percent,
-        result.ops_to_80_percent,
-        result.stable_hit_rate * 100.0
-    );
-
-    let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>15} {:>15} {:>11.2}%",
-        "S3-FIFO",
-        result.ops_to_50_percent,
-        result.ops_to_80_percent,
-        result.stable_hit_rate * 100.0
-    );
-
-    let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>15} {:>15} {:>11.2}%",
-        "2Q",
-        result.ops_to_50_percent,
-        result.ops_to_80_percent,
-        result.stable_hit_rate * 100.0
-    );
-
-    let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!(
-        "{:<12} {:>15} {:>15} {:>11.2}%",
-        "Clock",
-        result.ops_to_50_percent,
-        result.ops_to_80_percent,
-        result.stable_hit_rate * 100.0
-    );
+    for_each_policy! {
+        with |_policy_id, display_name, make_cache| {
+            let mut cache = make_cache(CAPACITY);
+            let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            println!(
+                "{:<12} {:>15} {:>15} {:>11.2}%",
+                display_name,
+                result.ops_to_50_percent,
+                result.ops_to_80_percent,
+                result.stable_hit_rate * 100.0
+            );
+        }
+    }
 
     println!("\n--- Compact Summaries ---");
-    let mut cache = LruCore::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!("LRU:      {}", result.summary());
+    for_each_policy! {
+        with |_policy_id, display_name, make_cache| {
+            let mut cache = make_cache(CAPACITY);
+            let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            println!("{:<10} {}", display_name, result.summary());
+        }
+    }
 
-    let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    println!("S3-FIFO:  {}", result.summary());
-
+    // Show detailed curve for first policy (LRU) as an example
     println!("\n--- LRU Adaptation Curve (hit rate per window) ---");
-    let mut cache = LruCore::new(CAPACITY);
-    let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-    for (i, &rate) in result.hit_rate_curve.iter().enumerate() {
-        let bar_len = (rate * 40.0) as usize;
-        println!(
-            "Window {:2}: {:5.1}% {}",
-            i + 1,
-            rate * 100.0,
-            "#".repeat(bar_len)
-        );
+    for_each_policy! {
+        with |policy_id, _display_name, make_cache| {
+            if policy_id == "lru" {
+                let mut cache = make_cache(CAPACITY);
+                let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+                for (i, &rate) in result.hit_rate_curve.iter().enumerate() {
+                    let bar_len = (rate * 40.0) as usize;
+                    println!(
+                        "Window {:2}: {:5.1}% {}",
+                        i + 1,
+                        rate * 100.0,
+                        "#".repeat(bar_len)
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -546,82 +228,38 @@ fn run_comprehensive_comparison() {
 
     let suite = standard_workload_suite(UNIVERSE, SEED);
 
-    // LRU
-    {
-        let mut comparison = PolicyComparison::new("LRU");
-        for (workload_name, spec) in &suite {
-            let mut cache = LruCore::new(CAPACITY);
-            let config = BenchmarkConfig {
-                name: workload_name.to_string(),
-                capacity: CAPACITY,
-                operations: OPS,
-                warmup_ops: CAPACITY,
-                workload: *spec,
-                latency_sample_rate: 100,
-                max_latency_samples: 10_000,
-            };
-            let result = run_benchmark("LRU", &mut cache, &config, Arc::new);
-            comparison.add_result(result);
+    for_each_policy! {
+        with |policy_id, display_name, make_cache| {
+            let mut comparison = PolicyComparison::new(display_name);
+            for (workload_name, spec) in &suite {
+                let mut cache = make_cache(CAPACITY);
+                let config = BenchmarkConfig {
+                    name: workload_name.to_string(),
+                    capacity: CAPACITY,
+                    operations: OPS,
+                    warmup_ops: CAPACITY,
+                    workload: *spec,
+                    latency_sample_rate: 100,
+                    max_latency_samples: 10_000,
+                };
+                let result = run_benchmark(policy_id, &mut cache, &config, Arc::new);
+                comparison.add_result(result);
+            }
+            comparison.print_table();
+            println!();
         }
-        comparison.print_table();
-        println!();
-    }
-
-    // S3-FIFO
-    {
-        let mut comparison = PolicyComparison::new("S3-FIFO");
-        for (workload_name, spec) in &suite {
-            let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-            let config = BenchmarkConfig {
-                name: workload_name.to_string(),
-                capacity: CAPACITY,
-                operations: OPS,
-                warmup_ops: CAPACITY,
-                workload: *spec,
-                latency_sample_rate: 100,
-                max_latency_samples: 10_000,
-            };
-            let result = run_benchmark("S3-FIFO", &mut cache, &config, Arc::new);
-            comparison.add_result(result);
-        }
-        comparison.print_table();
-        println!();
-    }
-
-    // Clock
-    {
-        let mut comparison = PolicyComparison::new("Clock");
-        for (workload_name, spec) in &suite {
-            let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-            let config = BenchmarkConfig {
-                name: workload_name.to_string(),
-                capacity: CAPACITY,
-                operations: OPS,
-                warmup_ops: CAPACITY,
-                workload: *spec,
-                latency_sample_rate: 100,
-                max_latency_samples: 10_000,
-            };
-            let result = run_benchmark("Clock", &mut cache, &config, Arc::new);
-            comparison.add_result(result);
-        }
-        comparison.print_table();
-        println!();
     }
 }
 
 fn run_detailed_single_benchmark() {
     println!("\n=== Detailed Benchmark Results ===\n");
 
-    let workload = Workload::Zipfian { exponent: 1.0 };
-    let spec = WorkloadSpec {
-        universe: UNIVERSE,
-        workload,
-        seed: SEED,
-    };
+    // Use first workload from standard suite (zipfian 1.0)
+    let workload_case = &STANDARD_WORKLOADS[3]; // zipfian_1.0
+    let spec = workload_case.with_params(UNIVERSE, SEED);
 
     let config = BenchmarkConfig {
-        name: "zipfian_1.0".to_string(),
+        name: workload_case.id.to_string(),
         capacity: CAPACITY,
         operations: OPS,
         warmup_ops: CAPACITY,
@@ -630,48 +268,55 @@ fn run_detailed_single_benchmark() {
         max_latency_samples: 10_000,
     };
 
-    let mut cache = LruCore::new(CAPACITY);
-    let result = run_benchmark("LRU", &mut cache, &config, Arc::new);
+    // Run detailed benchmark for first policy (LRU)
+    for_each_policy! {
+        with |policy_id, display_name, make_cache| {
+            if policy_id == "lru" {
+                let mut cache = make_cache(CAPACITY);
+                let result = run_benchmark(display_name, &mut cache, &config, Arc::new);
 
-    println!("Summary: {}\n", result.summary());
+                println!("Summary: {}\n", result.summary());
 
-    println!("--- Configuration ---");
-    println!("  Policy:     {}", result.policy_name);
-    println!("  Workload:   {}", result.workload_name);
-    println!("  Capacity:   {}", result.capacity);
-    println!("  Universe:   {}", result.universe);
-    println!("  Operations: {}", result.operations);
+                println!("--- Configuration ---");
+                println!("  Policy:     {}", result.policy_name);
+                println!("  Workload:   {}", result.workload_name);
+                println!("  Capacity:   {}", result.capacity);
+                println!("  Universe:   {}", result.universe);
+                println!("  Operations: {}", result.operations);
 
-    println!("\n--- Hit Statistics ---");
-    println!("  Hits:       {}", result.hit_stats.hits);
-    println!("  Misses:     {}", result.hit_stats.misses);
-    println!("  Inserts:    {}", result.hit_stats.inserts);
-    println!("  Updates:    {}", result.hit_stats.updates);
-    println!("  Hit Rate:   {:.2}%", result.hit_stats.hit_rate() * 100.0);
-    println!("  Miss Rate:  {:.2}%", result.hit_stats.miss_rate() * 100.0);
-    println!("  Total Ops:  {}", result.hit_stats.total_ops());
+                println!("\n--- Hit Statistics ---");
+                println!("  Hits:       {}", result.hit_stats.hits);
+                println!("  Misses:     {}", result.hit_stats.misses);
+                println!("  Inserts:    {}", result.hit_stats.inserts);
+                println!("  Updates:    {}", result.hit_stats.updates);
+                println!("  Hit Rate:   {:.2}%", result.hit_stats.hit_rate() * 100.0);
+                println!("  Miss Rate:  {:.2}%", result.hit_stats.miss_rate() * 100.0);
+                println!("  Total Ops:  {}", result.hit_stats.total_ops());
 
-    println!("\n--- Throughput ---");
-    println!("  Duration:       {:?}", result.throughput.total_duration);
-    println!("  Ops/sec:        {:.0}", result.throughput.ops_per_sec);
-    println!("  Gets/sec:       {:.0}", result.throughput.gets_per_sec);
-    println!("  Inserts/sec:    {:.0}", result.throughput.inserts_per_sec);
+                println!("\n--- Throughput ---");
+                println!("  Duration:       {:?}", result.throughput.total_duration);
+                println!("  Ops/sec:        {:.0}", result.throughput.ops_per_sec);
+                println!("  Gets/sec:       {:.0}", result.throughput.gets_per_sec);
+                println!("  Inserts/sec:    {:.0}", result.throughput.inserts_per_sec);
 
-    println!("\n--- Latency Distribution ---");
-    println!("  Samples:  {}", result.latency.sample_count);
-    println!("  Min:      {:?}", result.latency.min);
-    println!("  p50:      {:?}", result.latency.p50);
-    println!("  p95:      {:?}", result.latency.p95);
-    println!("  p99:      {:?}", result.latency.p99);
-    println!("  Max:      {:?}", result.latency.max);
-    println!("  Mean:     {:?}", result.latency.mean);
+                println!("\n--- Latency Distribution ---");
+                println!("  Samples:  {}", result.latency.sample_count);
+                println!("  Min:      {:?}", result.latency.min);
+                println!("  p50:      {:?}", result.latency.p50);
+                println!("  p95:      {:?}", result.latency.p95);
+                println!("  p99:      {:?}", result.latency.p99);
+                println!("  Max:      {:?}", result.latency.max);
+                println!("  Mean:     {:?}", result.latency.mean);
 
-    println!("\n--- Eviction Statistics ---");
-    println!("  Total Evictions:     {}", result.eviction.total_evictions);
-    println!(
-        "  Evictions per Insert: {:.3}",
-        result.eviction.evictions_per_insert
-    );
+                println!("\n--- Eviction Statistics ---");
+                println!("  Total Evictions:     {}", result.eviction.total_evictions);
+                println!(
+                    "  Evictions per Insert: {:.3}",
+                    result.eviction.evictions_per_insert
+                );
+            }
+        }
+    }
 }
 
 fn print_memory_overhead_comparison() {
@@ -682,70 +327,18 @@ fn print_memory_overhead_comparison() {
     );
     println!("{}", "-".repeat(55));
 
-    // LRU
-    {
-        let mut cache = LruCore::new(CAPACITY);
-        for i in 0..CAPACITY as u64 {
-            cache.insert(i, Arc::new(i));
+    for_each_policy! {
+        with |_policy_id, display_name, make_cache| {
+            let mut cache = make_cache(CAPACITY);
+            for i in 0..CAPACITY as u64 {
+                cache.insert(i, Arc::new(i));
+            }
+            let estimate = estimate_entry_overhead(&cache, cache.len());
+            println!(
+                "{:<12} {:>12} {:>15} {:>12}",
+                display_name, estimate.total_bytes, estimate.bytes_per_entry, estimate.entry_count
+            );
         }
-        let estimate = estimate_entry_overhead(&cache, cache.len());
-        println!(
-            "{:<12} {:>12} {:>15} {:>12}",
-            "LRU", estimate.total_bytes, estimate.bytes_per_entry, estimate.entry_count
-        );
-        println!("  -> {}", estimate.summary());
-    }
-
-    // LRU-K
-    {
-        let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-        for i in 0..CAPACITY as u64 {
-            cache.insert(i, Arc::new(i));
-        }
-        let estimate = estimate_entry_overhead(&cache, cache.len());
-        println!(
-            "{:<12} {:>12} {:>15} {:>12}",
-            "LRU-K", estimate.total_bytes, estimate.bytes_per_entry, estimate.entry_count
-        );
-    }
-
-    // Clock
-    {
-        let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-        for i in 0..CAPACITY as u64 {
-            cache.insert(i, Arc::new(i));
-        }
-        let estimate = estimate_entry_overhead(&cache, cache.len());
-        println!(
-            "{:<12} {:>12} {:>15} {:>12}",
-            "Clock", estimate.total_bytes, estimate.bytes_per_entry, estimate.entry_count
-        );
-    }
-
-    // S3-FIFO
-    {
-        let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-        for i in 0..CAPACITY as u64 {
-            cache.insert(i, Arc::new(i));
-        }
-        let estimate = estimate_entry_overhead(&cache, cache.len());
-        println!(
-            "{:<12} {:>12} {:>15} {:>12}",
-            "S3-FIFO", estimate.total_bytes, estimate.bytes_per_entry, estimate.entry_count
-        );
-    }
-
-    // 2Q
-    {
-        let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-        for i in 0..CAPACITY as u64 {
-            cache.insert(i, Arc::new(i));
-        }
-        let estimate = estimate_entry_overhead(&cache, cache.len());
-        println!(
-            "{:<12} {:>12} {:>15} {:>12}",
-            "2Q", estimate.total_bytes, estimate.bytes_per_entry, estimate.entry_count
-        );
     }
 
     println!(

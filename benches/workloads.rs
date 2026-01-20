@@ -14,70 +14,20 @@
 
 mod common;
 
-use std::sync::Arc;
 use std::time::Instant;
 
-use cachekit::policy::clock::ClockCache;
-use cachekit::policy::heap_lfu::HeapLfuCache;
-use cachekit::policy::lfu::LfuCache;
-use cachekit::policy::lru::LruCore;
-use cachekit::policy::lru_k::LrukCache;
-use cachekit::policy::s3_fifo::S3FifoCache;
-use cachekit::policy::two_q::TwoQCore;
 use common::metrics::{
     BenchmarkConfig, measure_adaptation_speed, measure_scan_resistance, run_benchmark,
     standard_workload_suite,
 };
-use common::workload::{Workload, WorkloadSpec, run_hit_rate};
+use common::registry::STANDARD_WORKLOADS;
+use common::workload::{WorkloadSpec, run_hit_rate};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
 const OPS: usize = 200_000;
 const SEED: u64 = 42;
-
-// ============================================================================
-// Workload definitions
-// ============================================================================
-
-/// Workloads that differentiate policies (scan-heavy, skewed, etc.)
-fn workloads() -> Vec<(&'static str, Workload)> {
-    vec![
-        ("uniform", Workload::Uniform),
-        (
-            "hotset_90_10",
-            Workload::HotSet {
-                hot_fraction: 0.1,
-                hot_prob: 0.9,
-            },
-        ),
-        ("scan", Workload::Scan),
-        ("zipfian_1.0", Workload::Zipfian { exponent: 1.0 }),
-        (
-            "scrambled_zipf",
-            Workload::ScrambledZipfian { exponent: 1.0 },
-        ),
-        ("latest", Workload::Latest { exponent: 0.8 }),
-        (
-            "scan_resistance",
-            Workload::ScanResistance {
-                scan_fraction: 0.2,
-                scan_length: 1000,
-                point_exponent: 1.0,
-            },
-        ),
-        (
-            "flash_crowd",
-            Workload::FlashCrowd {
-                base_exponent: 1.0,
-                flash_prob: 0.001,
-                flash_duration: 1000,
-                flash_keys: 10,
-                flash_intensity: 100.0,
-            },
-        ),
-    ]
-}
 
 // ============================================================================
 // Hit Rate Benchmarks
@@ -87,174 +37,36 @@ fn bench_hit_rates(c: &mut Criterion) {
     let mut group = c.benchmark_group("hit_rate");
     group.throughput(Throughput::Elements(OPS as u64));
 
-    for (workload_name, workload) in workloads() {
-        // LRU
-        group.bench_with_input(
-            BenchmarkId::new("lru", workload_name),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache = LruCore::new(CAPACITY);
-                        let mut generator = WorkloadSpec {
-                            universe: UNIVERSE,
-                            workload: wl,
-                            seed: SEED,
-                        }
-                        .generator();
-                        let start = Instant::now();
-                        let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
+    for workload_case in STANDARD_WORKLOADS {
+        let workload = workload_case.workload;
+        let workload_id = workload_case.id;
 
-        // LRU-K
-        group.bench_with_input(
-            BenchmarkId::new("lru_k", workload_name),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-                        let mut generator = WorkloadSpec {
-                            universe: UNIVERSE,
-                            workload: wl,
-                            seed: SEED,
-                        }
-                        .generator();
-                        let start = Instant::now();
-                        let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        // LFU
-        group.bench_with_input(
-            BenchmarkId::new("lfu", workload_name),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: LfuCache<u64, u64> = LfuCache::new(CAPACITY);
-                        let mut generator = WorkloadSpec {
-                            universe: UNIVERSE,
-                            workload: wl,
-                            seed: SEED,
-                        }
-                        .generator();
-                        let start = Instant::now();
-                        let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        // Heap-LFU
-        group.bench_with_input(
-            BenchmarkId::new("heap_lfu", workload_name),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: HeapLfuCache<u64, u64> = HeapLfuCache::new(CAPACITY);
-                        let mut generator = WorkloadSpec {
-                            universe: UNIVERSE,
-                            workload: wl,
-                            seed: SEED,
-                        }
-                        .generator();
-                        let start = Instant::now();
-                        let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        // Clock
-        group.bench_with_input(
-            BenchmarkId::new("clock", workload_name),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-                        let mut generator = WorkloadSpec {
-                            universe: UNIVERSE,
-                            workload: wl,
-                            seed: SEED,
-                        }
-                        .generator();
-                        let start = Instant::now();
-                        let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        // S3-FIFO
-        group.bench_with_input(
-            BenchmarkId::new("s3_fifo", workload_name),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-                        let mut generator = WorkloadSpec {
-                            universe: UNIVERSE,
-                            workload: wl,
-                            seed: SEED,
-                        }
-                        .generator();
-                        let start = Instant::now();
-                        let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        // 2Q
-        group.bench_with_input(
-            BenchmarkId::new("two_q", workload_name),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-                        let mut generator = WorkloadSpec {
-                            universe: UNIVERSE,
-                            workload: wl,
-                            seed: SEED,
-                        }
-                        .generator();
-                        let start = Instant::now();
-                        let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
+        for_each_policy! {
+            with |policy_id, _display_name, make_cache| {
+                group.bench_with_input(
+                    BenchmarkId::new(policy_id, workload_id),
+                    &workload,
+                    |b, &wl| {
+                        b.iter_custom(|iters| {
+                            let mut total = std::time::Duration::default();
+                            for _ in 0..iters {
+                                let mut cache = make_cache(CAPACITY);
+                                let mut generator = WorkloadSpec {
+                                    universe: UNIVERSE,
+                                    workload: wl,
+                                    seed: SEED,
+                                }
+                                .generator();
+                                let start = Instant::now();
+                                let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
+                                total += start.elapsed();
+                            }
+                            total
+                        });
+                    },
+                );
+            }
+        }
     }
 
     group.finish();
@@ -267,96 +79,22 @@ fn bench_hit_rates(c: &mut Criterion) {
 fn bench_scan_resistance(c: &mut Criterion) {
     let mut group = c.benchmark_group("scan_resistance");
 
-    group.bench_function("lru", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache = LruCore::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("lru_k", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("lfu", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: LfuCache<u64, u64> = LfuCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("heap_lfu", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: HeapLfuCache<u64, u64> = HeapLfuCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("clock", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("s3_fifo", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("two_q", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-                let start = Instant::now();
-                let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
+    for_each_policy! {
+        with |policy_id, _display_name, make_cache| {
+            group.bench_function(policy_id, |b| {
+                b.iter_custom(|iters| {
+                    let mut total = std::time::Duration::default();
+                    for _ in 0..iters {
+                        let mut cache = make_cache(CAPACITY);
+                        let start = Instant::now();
+                        let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+                        total += start.elapsed();
+                    }
+                    total
+                });
+            });
+        }
+    }
 
     group.finish();
 }
@@ -368,96 +106,22 @@ fn bench_scan_resistance(c: &mut Criterion) {
 fn bench_adaptation_speed(c: &mut Criterion) {
     let mut group = c.benchmark_group("adaptation_speed");
 
-    group.bench_function("lru", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache = LruCore::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("lru_k", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("lfu", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: LfuCache<u64, u64> = LfuCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("heap_lfu", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: HeapLfuCache<u64, u64> = HeapLfuCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("clock", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("s3_fifo", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-                let start = Instant::now();
-                let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
-
-    group.bench_function("two_q", |b| {
-        b.iter_custom(|iters| {
-            let mut total = std::time::Duration::default();
-            for _ in 0..iters {
-                let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-                let start = Instant::now();
-                let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
-                total += start.elapsed();
-            }
-            total
-        });
-    });
+    for_each_policy! {
+        with |policy_id, _display_name, make_cache| {
+            group.bench_function(policy_id, |b| {
+                b.iter_custom(|iters| {
+                    let mut total = std::time::Duration::default();
+                    for _ in 0..iters {
+                        let mut cache = make_cache(CAPACITY);
+                        let start = Instant::now();
+                        let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+                        total += start.elapsed();
+                    }
+                    total
+                });
+            });
+        }
+    }
 
     group.finish();
 }
@@ -481,99 +145,26 @@ fn bench_comprehensive(c: &mut Criterion) {
             max_latency_samples: 10_000,
         };
 
-        group.bench_with_input(BenchmarkId::new("lru", workload_name), &config, |b, cfg| {
-            b.iter_custom(|iters| {
-                let mut total = std::time::Duration::default();
-                for _ in 0..iters {
-                    let mut cache = LruCore::new(CAPACITY);
-                    let start = Instant::now();
-                    let _ = run_benchmark("lru", &mut cache, cfg, Arc::new);
-                    total += start.elapsed();
-                }
-                total
-            });
-        });
-
-        group.bench_with_input(
-            BenchmarkId::new("lru_k", workload_name),
-            &config,
-            |b, cfg| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: LrukCache<u64, Arc<u64>> = LrukCache::new(CAPACITY);
-                        let start = Instant::now();
-                        let _ = run_benchmark("lru_k", &mut cache, cfg, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        group.bench_with_input(BenchmarkId::new("lfu", workload_name), &config, |b, cfg| {
-            b.iter_custom(|iters| {
-                let mut total = std::time::Duration::default();
-                for _ in 0..iters {
-                    let mut cache: LfuCache<u64, u64> = LfuCache::new(CAPACITY);
-                    let start = Instant::now();
-                    let _ = run_benchmark("lfu", &mut cache, cfg, Arc::new);
-                    total += start.elapsed();
-                }
-                total
-            });
-        });
-
-        group.bench_with_input(
-            BenchmarkId::new("clock", workload_name),
-            &config,
-            |b, cfg| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: ClockCache<u64, Arc<u64>> = ClockCache::new(CAPACITY);
-                        let start = Instant::now();
-                        let _ = run_benchmark("clock", &mut cache, cfg, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("s3_fifo", workload_name),
-            &config,
-            |b, cfg| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: S3FifoCache<u64, Arc<u64>> = S3FifoCache::new(CAPACITY);
-                        let start = Instant::now();
-                        let _ = run_benchmark("s3_fifo", &mut cache, cfg, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("two_q", workload_name),
-            &config,
-            |b, cfg| {
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::default();
-                    for _ in 0..iters {
-                        let mut cache: TwoQCore<u64, Arc<u64>> = TwoQCore::new(CAPACITY, 0.25);
-                        let start = Instant::now();
-                        let _ = run_benchmark("two_q", &mut cache, cfg, Arc::new);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
+        for_each_policy! {
+            with |policy_id, _display_name, make_cache| {
+                group.bench_with_input(
+                    BenchmarkId::new(policy_id, workload_name),
+                    &config,
+                    |b, cfg| {
+                        b.iter_custom(|iters| {
+                            let mut total = std::time::Duration::default();
+                            for _ in 0..iters {
+                                let mut cache = make_cache(CAPACITY);
+                                let start = Instant::now();
+                                let _ = run_benchmark(policy_id, &mut cache, cfg, Arc::new);
+                                total += start.elapsed();
+                            }
+                            total
+                        });
+                    },
+                );
+            }
+        }
     }
 
     group.finish();
