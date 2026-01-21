@@ -1,0 +1,2323 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "timestamp": "2026-01-21T18:23:26.347214248+00:00",
+    "git_commit": "fdc2d5bfff48d361e73803aa8d0e3e9767cb0fd3",
+    "git_branch": "main",
+    "git_dirty": false,
+    "rustc_version": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+    "host_triple": "x86_64-unknown-linux-gnu",
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "config": {
+      "capacity": 4096,
+      "universe": 16384,
+      "operations": 200000,
+      "seed": 42
+    }
+  },
+  "results": [
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 49249,
+          "misses": 150751,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.246245,
+          "miss_rate": 0.753755
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 49228,
+          "misses": 150772,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.24614,
+          "miss_rate": 0.75386
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 49227,
+          "misses": 150773,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.246135,
+          "miss_rate": 0.753865
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 49338,
+          "misses": 150662,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.24669,
+          "miss_rate": 0.75331
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 49322,
+          "misses": 150678,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.24661,
+          "miss_rate": 0.75339
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 49530,
+          "misses": 150470,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.24765,
+          "miss_rate": 0.75235
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 49562,
+          "misses": 150438,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.24781,
+          "miss_rate": 0.75219
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181302,
+          "misses": 18698,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.90651,
+          "miss_rate": 0.09348999999999996
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181271,
+          "misses": 18729,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.906355,
+          "miss_rate": 0.09364499999999998
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181271,
+          "misses": 18729,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.906355,
+          "miss_rate": 0.09364499999999998
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181341,
+          "misses": 18659,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.906705,
+          "miss_rate": 0.09329500000000002
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181305,
+          "misses": 18695,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.906525,
+          "miss_rate": 0.09347499999999997
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181259,
+          "misses": 18741,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.906295,
+          "miss_rate": 0.09370500000000004
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181261,
+          "misses": 18739,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.906305,
+          "miss_rate": 0.09369499999999997
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "scan",
+      "workload_name": "Scan",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 0,
+          "misses": 200000,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.0,
+          "miss_rate": 1.0
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "scan",
+      "workload_name": "Scan",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 0,
+          "misses": 200000,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.0,
+          "miss_rate": 1.0
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "scan",
+      "workload_name": "Scan",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 0,
+          "misses": 200000,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.0,
+          "miss_rate": 1.0
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "scan",
+      "workload_name": "Scan",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 45045,
+          "misses": 154955,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.225225,
+          "miss_rate": 0.774775
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "scan",
+      "workload_name": "Scan",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 0,
+          "misses": 200000,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.0,
+          "miss_rate": 1.0
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "scan",
+      "workload_name": "Scan",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 0,
+          "misses": 200000,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.0,
+          "miss_rate": 1.0
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "scan",
+      "workload_name": "Scan",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 0,
+          "misses": 200000,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.0,
+          "miss_rate": 1.0
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 160345,
+          "misses": 39655,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.801725,
+          "miss_rate": 0.19827499999999998
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 165140,
+          "misses": 34860,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.8257,
+          "miss_rate": 0.1743
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 165140,
+          "misses": 34860,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.8257,
+          "miss_rate": 0.1743
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 149625,
+          "misses": 50375,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.748125,
+          "miss_rate": 0.25187499999999996
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 161497,
+          "misses": 38503,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.807485,
+          "miss_rate": 0.192515
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 165687,
+          "misses": 34313,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.828435,
+          "miss_rate": 0.17156499999999997
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 164737,
+          "misses": 35263,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.823685,
+          "miss_rate": 0.176315
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "scrambled_zipf",
+      "workload_name": "Scrambled Zipfian",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 180446,
+          "misses": 19554,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.90223,
+          "miss_rate": 0.09777000000000002
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "scrambled_zipf",
+      "workload_name": "Scrambled Zipfian",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 182257,
+          "misses": 17743,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.911285,
+          "miss_rate": 0.08871499999999999
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "scrambled_zipf",
+      "workload_name": "Scrambled Zipfian",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 182257,
+          "misses": 17743,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.911285,
+          "miss_rate": 0.08871499999999999
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "scrambled_zipf",
+      "workload_name": "Scrambled Zipfian",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 180054,
+          "misses": 19946,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.90027,
+          "miss_rate": 0.09972999999999999
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "scrambled_zipf",
+      "workload_name": "Scrambled Zipfian",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 180895,
+          "misses": 19105,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.904475,
+          "miss_rate": 0.09552499999999997
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "scrambled_zipf",
+      "workload_name": "Scrambled Zipfian",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 182132,
+          "misses": 17868,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.91066,
+          "miss_rate": 0.08933999999999997
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "scrambled_zipf",
+      "workload_name": "Scrambled Zipfian",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 181419,
+          "misses": 18581,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.907095,
+          "miss_rate": 0.09290500000000002
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "latest",
+      "workload_name": "Latest",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 70904,
+          "misses": 129096,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.35452,
+          "miss_rate": 0.64548
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "latest",
+      "workload_name": "Latest",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 51813,
+          "misses": 148187,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.259065,
+          "miss_rate": 0.740935
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "latest",
+      "workload_name": "Latest",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 51641,
+          "misses": 148359,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.258205,
+          "miss_rate": 0.741795
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "latest",
+      "workload_name": "Latest",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 53012,
+          "misses": 146988,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.26506,
+          "miss_rate": 0.7349399999999999
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "latest",
+      "workload_name": "Latest",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 69914,
+          "misses": 130086,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.34957,
+          "miss_rate": 0.6504300000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "latest",
+      "workload_name": "Latest",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 46908,
+          "misses": 153092,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.23454,
+          "miss_rate": 0.76546
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "latest",
+      "workload_name": "Latest",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 63094,
+          "misses": 136906,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.31547,
+          "miss_rate": 0.6845300000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "scan_resistance",
+      "workload_name": "Scan Resistance",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 33508,
+          "misses": 166492,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.16754,
+          "miss_rate": 0.83246
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "scan_resistance",
+      "workload_name": "Scan Resistance",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 40562,
+          "misses": 159438,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.20281,
+          "miss_rate": 0.7971900000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "scan_resistance",
+      "workload_name": "Scan Resistance",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 40562,
+          "misses": 159438,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.20281,
+          "miss_rate": 0.7971900000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "scan_resistance",
+      "workload_name": "Scan Resistance",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 46846,
+          "misses": 153154,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.23423,
+          "miss_rate": 0.7657700000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "scan_resistance",
+      "workload_name": "Scan Resistance",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 35269,
+          "misses": 164731,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.176345,
+          "miss_rate": 0.823655
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "scan_resistance",
+      "workload_name": "Scan Resistance",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 47995,
+          "misses": 152005,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.239975,
+          "miss_rate": 0.760025
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "scan_resistance",
+      "workload_name": "Scan Resistance",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 32071,
+          "misses": 167929,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.160355,
+          "miss_rate": 0.839645
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "flash_crowd",
+      "workload_name": "Flash Crowd",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 177003,
+          "misses": 22997,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.885015,
+          "miss_rate": 0.114985
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "flash_crowd",
+      "workload_name": "Flash Crowd",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 178806,
+          "misses": 21194,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.89403,
+          "miss_rate": 0.10597000000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "flash_crowd",
+      "workload_name": "Flash Crowd",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 178806,
+          "misses": 21194,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.89403,
+          "miss_rate": 0.10597000000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "flash_crowd",
+      "workload_name": "Flash Crowd",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 170634,
+          "misses": 29366,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.85317,
+          "miss_rate": 0.14683000000000002
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "flash_crowd",
+      "workload_name": "Flash Crowd",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 177475,
+          "misses": 22525,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.887375,
+          "miss_rate": 0.11262499999999998
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "flash_crowd",
+      "workload_name": "Flash Crowd",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 178989,
+          "misses": 21011,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.894945,
+          "miss_rate": 0.10505500000000001
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "flash_crowd",
+      "workload_name": "Flash Crowd",
+      "case_id": "hit_rate",
+      "metrics": {
+        "hit_stats": {
+          "hits": 178715,
+          "misses": 21285,
+          "inserts": 0,
+          "updates": 0,
+          "hit_rate": 0.893575,
+          "miss_rate": 0.10642499999999999
+        },
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "scan_resistance_test",
+      "workload_name": "Scan Resistance Test",
+      "case_id": "scan_resistance",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": {
+          "baseline_hit_rate": 0.7965087890625,
+          "scan_hit_rate": 0.0703125,
+          "recovery_hit_rate": 0.6854248046875,
+          "resistance_score": 0.8605363984674329
+        },
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "scan_resistance_test",
+      "workload_name": "Scan Resistance Test",
+      "case_id": "scan_resistance",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": {
+          "baseline_hit_rate": 0.796630859375,
+          "scan_hit_rate": 0.076904296875,
+          "recovery_hit_rate": 0.785400390625,
+          "resistance_score": 0.985902543671468
+        },
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "scan_resistance_test",
+      "workload_name": "Scan Resistance Test",
+      "case_id": "scan_resistance",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": {
+          "baseline_hit_rate": 0.796630859375,
+          "scan_hit_rate": 0.076904296875,
+          "recovery_hit_rate": 0.785400390625,
+          "resistance_score": 0.985902543671468
+        },
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "scan_resistance_test",
+      "workload_name": "Scan Resistance Test",
+      "case_id": "scan_resistance",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": {
+          "baseline_hit_rate": 0.7921142578125,
+          "scan_hit_rate": 0.2188720703125,
+          "recovery_hit_rate": 0.7579345703125,
+          "resistance_score": 0.9568500539374326
+        },
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "scan_resistance_test",
+      "workload_name": "Scan Resistance Test",
+      "case_id": "scan_resistance",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": {
+          "baseline_hit_rate": 0.796630859375,
+          "scan_hit_rate": 0.0689697265625,
+          "recovery_hit_rate": 0.6854248046875,
+          "resistance_score": 0.8604045357033405
+        },
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "scan_resistance_test",
+      "workload_name": "Scan Resistance Test",
+      "case_id": "scan_resistance",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": {
+          "baseline_hit_rate": 0.796630859375,
+          "scan_hit_rate": 0.076904296875,
+          "recovery_hit_rate": 0.7882080078125,
+          "resistance_score": 0.989426907753601
+        },
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "scan_resistance_test",
+      "workload_name": "Scan Resistance Test",
+      "case_id": "scan_resistance",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": {
+          "baseline_hit_rate": 0.796630859375,
+          "scan_hit_rate": 0.076904296875,
+          "recovery_hit_rate": 0.785400390625,
+          "resistance_score": 0.985902543671468
+        },
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "adaptation_test",
+      "workload_name": "Adaptation Test",
+      "case_id": "adaptation",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": {
+          "stable_hit_rate": 0.4931640625,
+          "ops_to_50_percent": 3072,
+          "ops_to_80_percent": 5120
+        }
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "adaptation_test",
+      "workload_name": "Adaptation Test",
+      "case_id": "adaptation",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": {
+          "stable_hit_rate": 0.0908203125,
+          "ops_to_50_percent": 1024,
+          "ops_to_80_percent": 2048
+        }
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "adaptation_test",
+      "workload_name": "Adaptation Test",
+      "case_id": "adaptation",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": {
+          "stable_hit_rate": 0.0908203125,
+          "ops_to_50_percent": 1024,
+          "ops_to_80_percent": 2048
+        }
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "adaptation_test",
+      "workload_name": "Adaptation Test",
+      "case_id": "adaptation",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": {
+          "stable_hit_rate": 0.0986328125,
+          "ops_to_50_percent": 2048,
+          "ops_to_80_percent": 2048
+        }
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "adaptation_test",
+      "workload_name": "Adaptation Test",
+      "case_id": "adaptation",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": {
+          "stable_hit_rate": 0.4931640625,
+          "ops_to_50_percent": 3072,
+          "ops_to_80_percent": 6144
+        }
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "adaptation_test",
+      "workload_name": "Adaptation Test",
+      "case_id": "adaptation",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": {
+          "stable_hit_rate": 0.443359375,
+          "ops_to_50_percent": 8192,
+          "ops_to_80_percent": 11264
+        }
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "adaptation_test",
+      "workload_name": "Adaptation Test",
+      "case_id": "adaptation",
+      "metrics": {
+        "hit_stats": null,
+        "throughput": null,
+        "latency": null,
+        "eviction": null,
+        "scan_resistance": null,
+        "adaptation": {
+          "stable_hit_rate": 0.3349609375,
+          "ops_to_50_percent": 3072,
+          "ops_to_80_percent": 11264
+        }
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 50351,
+          "misses": 153745,
+          "inserts": 153745,
+          "updates": 0,
+          "hit_rate": 0.24670253214173724,
+          "miss_rate": 0.7532974678582628
+        },
+        "throughput": {
+          "duration_ms": 20.936035,
+          "ops_per_sec": 17092109.37027952,
+          "gets_per_sec": 9748550.764268402,
+          "inserts_per_sec": 7343558.60601112
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 30,
+          "p50_ns": 70,
+          "p95_ns": 100,
+          "p99_ns": 120,
+          "max_ns": 531,
+          "mean_ns": 68
+        },
+        "eviction": {
+          "total_evictions": 149649,
+          "evictions_per_insert": 0.9969222775146391
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 50215,
+          "misses": 153881,
+          "inserts": 153881,
+          "updates": 0,
+          "hit_rate": 0.24603617905299466,
+          "miss_rate": 0.7539638209470053
+        },
+        "throughput": {
+          "duration_ms": 28.316839,
+          "ops_per_sec": 12641841.838349259,
+          "gets_per_sec": 7207584.151606753,
+          "inserts_per_sec": 5434257.686742507
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 40,
+          "p50_ns": 100,
+          "p95_ns": 150,
+          "p99_ns": 190,
+          "max_ns": 330,
+          "mean_ns": 101
+        },
+        "eviction": {
+          "total_evictions": 149785,
+          "evictions_per_insert": 0.9969250633956086
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 50216,
+          "misses": 153880,
+          "inserts": 153880,
+          "updates": 0,
+          "hit_rate": 0.24604107870805894,
+          "miss_rate": 0.7539589212919411
+        },
+        "throughput": {
+          "duration_ms": 42.064017,
+          "ops_per_sec": 8510266.625272617,
+          "gets_per_sec": 4852033.033364359,
+          "inserts_per_sec": 3658233.591908257
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 70,
+          "p50_ns": 171,
+          "p95_ns": 271,
+          "p99_ns": 351,
+          "max_ns": 822,
+          "mean_ns": 172
+        },
+        "eviction": {
+          "total_evictions": 149784,
+          "evictions_per_insert": 0.9969250429295955
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 50306,
+          "misses": 153790,
+          "inserts": 153790,
+          "updates": 0,
+          "hit_rate": 0.24648204766384446,
+          "miss_rate": 0.7535179523361555
+        },
+        "throughput": {
+          "duration_ms": 48.632347,
+          "ops_per_sec": 7359011.4826249285,
+          "gets_per_sec": 4196712.940874517,
+          "inserts_per_sec": 3162298.5417504115
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 60,
+          "p50_ns": 220,
+          "p95_ns": 290,
+          "p99_ns": 341,
+          "max_ns": 711,
+          "mean_ns": 199
+        },
+        "eviction": {
+          "total_evictions": 149694,
+          "evictions_per_insert": 0.996923199872133
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 50400,
+          "misses": 153696,
+          "inserts": 153696,
+          "updates": 0,
+          "hit_rate": 0.24694261523988711,
+          "miss_rate": 0.7530573847601129
+        },
+        "throughput": {
+          "duration_ms": 20.974838,
+          "ops_per_sec": 17058153.202422827,
+          "gets_per_sec": 9730516.154642053,
+          "inserts_per_sec": 7327637.0477807745
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 70,
+          "p95_ns": 101,
+          "p99_ns": 130,
+          "max_ns": 11872,
+          "mean_ns": 73
+        },
+        "eviction": {
+          "total_evictions": 149600,
+          "evictions_per_insert": 0.9969212725406832
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 50618,
+          "misses": 153478,
+          "inserts": 153478,
+          "updates": 0,
+          "hit_rate": 0.24801074004390092,
+          "miss_rate": 0.7519892599560991
+        },
+        "throughput": {
+          "duration_ms": 30.169395,
+          "ops_per_sec": 11852209.830525272,
+          "gets_per_sec": 6765001.419484878,
+          "inserts_per_sec": 5087208.411040394
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 110,
+          "p95_ns": 190,
+          "p99_ns": 251,
+          "max_ns": 1613,
+          "mean_ns": 111
+        },
+        "eviction": {
+          "total_evictions": 149382,
+          "evictions_per_insert": 0.9969167934652038
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "uniform",
+      "workload_name": "Uniform",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 50588,
+          "misses": 153508,
+          "inserts": 153508,
+          "updates": 0,
+          "hit_rate": 0.2478637503919724,
+          "miss_rate": 0.7521362496080276
+        },
+        "throughput": {
+          "duration_ms": 22.107679,
+          "ops_per_sec": 16175556.013817642,
+          "gets_per_sec": 9231905.348363344,
+          "inserts_per_sec": 6943650.665454297
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 30,
+          "p50_ns": 70,
+          "p95_ns": 110,
+          "p99_ns": 150,
+          "max_ns": 370,
+          "mean_ns": 73
+        },
+        "eviction": {
+          "total_evictions": 149412,
+          "evictions_per_insert": 0.9969174106249249
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 163664,
+          "misses": 40432,
+          "inserts": 40432,
+          "updates": 0,
+          "hit_rate": 0.8018971464408906,
+          "miss_rate": 0.1981028535591094
+        },
+        "throughput": {
+          "duration_ms": 27.849938,
+          "ops_per_sec": 8780199.079796873,
+          "gets_per_sec": 7328418.469010595,
+          "inserts_per_sec": 1451780.610786279
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 20,
+          "p50_ns": 40,
+          "p95_ns": 90,
+          "p99_ns": 101,
+          "max_ns": 170,
+          "mean_ns": 47
+        },
+        "eviction": {
+          "total_evictions": 36336,
+          "evictions_per_insert": 0.9378000309709389
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 168592,
+          "misses": 35504,
+          "inserts": 35504,
+          "updates": 0,
+          "hit_rate": 0.8260426465976796,
+          "miss_rate": 0.17395735340232044
+        },
+        "throughput": {
+          "duration_ms": 30.282376,
+          "ops_per_sec": 7912192.887374491,
+          "gets_per_sec": 6739761.767702772,
+          "inserts_per_sec": 1172431.1196717194
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 50,
+          "p95_ns": 120,
+          "p99_ns": 140,
+          "max_ns": 8325,
+          "mean_ns": 62
+        },
+        "eviction": {
+          "total_evictions": 31408,
+          "evictions_per_insert": 0.9287361760009463
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 168592,
+          "misses": 35504,
+          "inserts": 35504,
+          "updates": 0,
+          "hit_rate": 0.8260426465976796,
+          "miss_rate": 0.17395735340232044
+        },
+        "throughput": {
+          "duration_ms": 41.703956,
+          "ops_per_sec": 5745258.315542055,
+          "gets_per_sec": 4893924.2118901145,
+          "inserts_per_sec": 851334.1036519413
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 70,
+          "p50_ns": 110,
+          "p95_ns": 180,
+          "p99_ns": 210,
+          "max_ns": 9037,
+          "mean_ns": 122
+        },
+        "eviction": {
+          "total_evictions": 31408,
+          "evictions_per_insert": 0.9287361760009463
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 152685,
+          "misses": 51411,
+          "inserts": 51411,
+          "updates": 0,
+          "hit_rate": 0.7481038334901223,
+          "miss_rate": 0.2518961665098777
+        },
+        "throughput": {
+          "duration_ms": 42.839724000000004,
+          "ops_per_sec": 5964254.111441053,
+          "gets_per_sec": 4764176.35183644,
+          "inserts_per_sec": 1200077.7596046135
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 60,
+          "p50_ns": 80,
+          "p95_ns": 271,
+          "p99_ns": 331,
+          "max_ns": 692,
+          "mean_ns": 115
+        },
+        "eviction": {
+          "total_evictions": 47315,
+          "evictions_per_insert": 0.951533433886375
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 164853,
+          "misses": 39243,
+          "inserts": 39243,
+          "updates": 0,
+          "hit_rate": 0.8077228363123237,
+          "miss_rate": 0.19227716368767633
+        },
+        "throughput": {
+          "duration_ms": 26.899537000000002,
+          "ops_per_sec": 9046215.182068003,
+          "gets_per_sec": 7587342.488459931,
+          "inserts_per_sec": 1458872.6936080721
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 31,
+          "p95_ns": 90,
+          "p99_ns": 110,
+          "max_ns": 150,
+          "mean_ns": 43
+        },
+        "eviction": {
+          "total_evictions": 35147,
+          "evictions_per_insert": 0.9358308704103097
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 169166,
+          "misses": 34930,
+          "inserts": 34930,
+          "updates": 0,
+          "hit_rate": 0.8288550486045783,
+          "miss_rate": 0.17114495139542174
+        },
+        "throughput": {
+          "duration_ms": 29.197502,
+          "ops_per_sec": 8186522.257965767,
+          "gets_per_sec": 6990187.037233528,
+          "inserts_per_sec": 1196335.2207322393
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 20,
+          "p50_ns": 40,
+          "p95_ns": 140,
+          "p99_ns": 200,
+          "max_ns": 912,
+          "mean_ns": 53
+        },
+        "eviction": {
+          "total_evictions": 30834,
+          "evictions_per_insert": 0.9275057153170497
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "zipfian_1.0",
+      "workload_name": "Zipfian 1.0",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 168195,
+          "misses": 35901,
+          "inserts": 35901,
+          "updates": 0,
+          "hit_rate": 0.824097483537159,
+          "miss_rate": 0.17590251646284105
+        },
+        "throughput": {
+          "duration_ms": 28.140901,
+          "ops_per_sec": 8528404.971823752,
+          "gets_per_sec": 7252646.246116996,
+          "inserts_per_sec": 1275758.7257067568
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 41,
+          "p95_ns": 90,
+          "p99_ns": 101,
+          "max_ns": 151,
+          "mean_ns": 49
+        },
+        "eviction": {
+          "total_evictions": 31805,
+          "evictions_per_insert": 0.9295630571386818
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru",
+      "policy_name": "LRU",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 185060,
+          "misses": 19036,
+          "inserts": 19036,
+          "updates": 0,
+          "hit_rate": 0.9067301661962998,
+          "miss_rate": 0.09326983380370024
+        },
+        "throughput": {
+          "duration_ms": 18.188671,
+          "ops_per_sec": 12267636.266552955,
+          "gets_per_sec": 11221050.729874657,
+          "inserts_per_sec": 1046585.5366782983
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 20,
+          "p50_ns": 40,
+          "p95_ns": 70,
+          "p99_ns": 80,
+          "max_ns": 110,
+          "mean_ns": 44
+        },
+        "eviction": {
+          "total_evictions": 14940,
+          "evictions_per_insert": 0.8729184925503944
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lru_k",
+      "policy_name": "LRU-K",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 185020,
+          "misses": 19076,
+          "inserts": 19076,
+          "updates": 0,
+          "hit_rate": 0.9065341799937284,
+          "miss_rate": 0.09346582000627157
+        },
+        "throughput": {
+          "duration_ms": 20.541639,
+          "ops_per_sec": 10864371.630715543,
+          "gets_per_sec": 9935721.292736184,
+          "inserts_per_sec": 928650.3379793599
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 50,
+          "p95_ns": 101,
+          "p99_ns": 120,
+          "max_ns": 190,
+          "mean_ns": 55
+        },
+        "eviction": {
+          "total_evictions": 14980,
+          "evictions_per_insert": 0.8732148061789565
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "lfu",
+      "policy_name": "LFU",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 185020,
+          "misses": 19076,
+          "inserts": 19076,
+          "updates": 0,
+          "hit_rate": 0.9065341799937284,
+          "miss_rate": 0.09346582000627157
+        },
+        "throughput": {
+          "duration_ms": 27.671686,
+          "ops_per_sec": 8064994.666389319,
+          "gets_per_sec": 7375625.756956045,
+          "inserts_per_sec": 689368.9094332741
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 60,
+          "p50_ns": 80,
+          "p95_ns": 160,
+          "p99_ns": 180,
+          "max_ns": 8426,
+          "mean_ns": 94
+        },
+        "eviction": {
+          "total_evictions": 14980,
+          "evictions_per_insert": 0.8732148061789565
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "heap_lfu",
+      "policy_name": "Heap-LFU",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 185098,
+          "misses": 18998,
+          "inserts": 18998,
+          "updates": 0,
+          "hit_rate": 0.9069163530887425,
+          "miss_rate": 0.09308364691125748
+        },
+        "throughput": {
+          "duration_ms": 27.966106,
+          "ops_per_sec": 7977299.378039974,
+          "gets_per_sec": 7297977.058372016,
+          "inserts_per_sec": 679322.3196679581
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 60,
+          "p50_ns": 71,
+          "p95_ns": 220,
+          "p99_ns": 270,
+          "max_ns": 1553,
+          "mean_ns": 87
+        },
+        "eviction": {
+          "total_evictions": 14902,
+          "evictions_per_insert": 0.8726357088481583
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "clock",
+      "policy_name": "Clock",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 185059,
+          "misses": 19037,
+          "inserts": 19037,
+          "updates": 0,
+          "hit_rate": 0.9067252665412355,
+          "miss_rate": 0.09327473345876447
+        },
+        "throughput": {
+          "duration_ms": 16.806654,
+          "ops_per_sec": 13276467.760923738,
+          "gets_per_sec": 12143761.631553788,
+          "inserts_per_sec": 1132706.1293699506
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 40,
+          "p95_ns": 70,
+          "p99_ns": 90,
+          "max_ns": 130,
+          "mean_ns": 38
+        },
+        "eviction": {
+          "total_evictions": 14941,
+          "evictions_per_insert": 0.8729259172703903
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "s3_fifo",
+      "policy_name": "S3-FIFO",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 185019,
+          "misses": 19077,
+          "inserts": 19077,
+          "updates": 0,
+          "hit_rate": 0.9065292803386642,
+          "miss_rate": 0.0934707196613358
+        },
+        "throughput": {
+          "duration_ms": 18.297394,
+          "ops_per_sec": 12196982.805310963,
+          "gets_per_sec": 11154375.317053346,
+          "inserts_per_sec": 1042607.4882576173
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 20,
+          "p50_ns": 40,
+          "p95_ns": 100,
+          "p99_ns": 141,
+          "max_ns": 521,
+          "mean_ns": 44
+        },
+        "eviction": {
+          "total_evictions": 14981,
+          "evictions_per_insert": 0.8732221963161576
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    },
+    {
+      "policy_id": "two_q",
+      "policy_name": "2Q",
+      "workload_id": "hotset_90_10",
+      "workload_name": "HotSet 90/10",
+      "case_id": "comprehensive",
+      "metrics": {
+        "hit_stats": {
+          "hits": 185013,
+          "misses": 19083,
+          "inserts": 19083,
+          "updates": 0,
+          "hit_rate": 0.9064998824082785,
+          "miss_rate": 0.0935001175917215
+        },
+        "throughput": {
+          "duration_ms": 18.72987,
+          "ops_per_sec": 11915672.666174406,
+          "gets_per_sec": 10896818.824690187,
+          "inserts_per_sec": 1018853.8414842176
+        },
+        "latency": {
+          "sample_count": 2000,
+          "min_ns": 29,
+          "p50_ns": 49,
+          "p95_ns": 70,
+          "p99_ns": 80,
+          "max_ns": 7714,
+          "mean_ns": 51
+        },
+        "eviction": {
+          "total_evictions": 14987,
+          "evictions_per_insert": 0.8732665190537233
+        },
+        "scan_resistance": null,
+        "adaptation": null
+      }
+    }
+  ]
+}
