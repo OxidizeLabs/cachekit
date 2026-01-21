@@ -120,12 +120,12 @@ jobs:
 
       - name: Commit and push results
         run: |
-          # Add generated files
-          git add docs/benchmarks/latest/
+          # Add generated files (force add since they're in .gitignore)
+          git add -f docs/benchmarks/latest/
 
           # Add version snapshot if it exists
           if [ -n "$(find docs/benchmarks -maxdepth 1 -name 'v*' -type d 2>/dev/null)" ]; then
-            git add docs/benchmarks/v*/
+            git add -f docs/benchmarks/v*/
           fi
 
           # Check if there are changes to commit
