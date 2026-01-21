@@ -1,0 +1,212 @@
+name: Benchmarks
+
+on:
+  # Run weekly on Monday at 00:00 UTC
+  schedule:
+    - cron: '0 0 * * 1'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      create_snapshot:
+        description: 'Create version snapshot (e.g., v0.2.0)'
+        required: false
+        type: string
+
+  # Run on release tags
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write  # Needed to commit benchmark results
+
+jobs:
+  benchmark:
+    name: Run Benchmarks and Generate Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for git metadata
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          # Install any system dependencies if needed
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Build benchmarks
+        run: |
+          cargo build --release --benches
+
+      - name: Run benchmark suite
+        run: |
+          echo "::group::Running benchmarks"
+          cargo bench --bench runner --quiet
+          echo "::endgroup::"
+
+      - name: Find latest results
+        id: find_results
+        run: |
+          LATEST_JSON=$(find target/benchmarks -name "results.json" -type f | sort -r | head -n 1)
+          if [ -z "$LATEST_JSON" ]; then
+            echo "❌ No benchmark results found"
+            exit 1
+          fi
+          echo "results_path=$LATEST_JSON" >> $GITHUB_OUTPUT
+          echo "✅ Found results: $LATEST_JSON"
+
+      - name: Generate documentation
+        run: |
+          echo "::group::Generating docs"
+          cargo run --release --package bench-support --bin render_docs -- \
+            "${{ steps.find_results.outputs.results_path }}" \
+            docs/benchmarks/latest
+          echo "::endgroup::"
+
+      - name: Create version snapshot (if tag or manual)
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.create_snapshot != ''
+        run: |
+          # Determine version
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="${{ inputs.create_snapshot }}"
+          fi
+
+          if [ -n "$VERSION" ]; then
+            echo "::group::Creating snapshot for $VERSION"
+            cargo run --release --package bench-support --bin render_docs -- \
+              "${{ steps.find_results.outputs.results_path }}" \
+              "docs/benchmarks/$VERSION"
+            echo "✅ Created snapshot: docs/benchmarks/$VERSION"
+            echo "::endgroup::"
+          fi
+
+      - name: Display benchmark summary
+        run: |
+          echo "### 📊 Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Files Generated:**" >> $GITHUB_STEP_SUMMARY
+          echo "- \`docs/benchmarks/latest/index.md\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`docs/benchmarks/latest/charts.html\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`docs/benchmarks/latest/results.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Show git info
+          echo "**Environment:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: \`$(git rev-parse --short HEAD)\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: \`$(git rev-parse --abbrev-ref HEAD)\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Rustc: \`$(rustc --version)\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Runner: \`${{ runner.os }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and push results
+        run: |
+          # Add generated files
+          git add docs/benchmarks/latest/
+
+          # Add version snapshot if it exists
+          if [ -n "$(find docs/benchmarks -maxdepth 1 -name 'v*' -type d 2>/dev/null)" ]; then
+            git add docs/benchmarks/v*/
+          fi
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "ℹ️ No changes to commit"
+            exit 0
+          fi
+
+          # Create commit message
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            COMMIT_MSG="benchmark: update results for ${GITHUB_REF#refs/tags/} [skip ci]"
+          else
+            COMMIT_MSG="benchmark: update results [skip ci]"
+          fi
+
+          git commit -m "$COMMIT_MSG"
+          git push
+
+          echo "✅ Pushed benchmark results"
+
+      - name: Create benchmark summary
+        if: always()
+        run: |
+          echo "### 📈 Quick Stats" >> $GITHUB_STEP_SUMMARY
+
+          # Extract and display some key metrics from results.json
+          if [ -f "docs/benchmarks/latest/results.json" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+            jq -r '.metadata | {timestamp, git_commit, rustc_version, cpu_model}' \
+              docs/benchmarks/latest/results.json >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+            # Count benchmarks
+            TOTAL=$(jq '.results | length' docs/benchmarks/latest/results.json)
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Total benchmarks:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            docs/benchmarks/latest/
+            target/benchmarks/
+          retention-days: 30
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const resultsPath = 'docs/benchmarks/latest/results.json';
+
+            if (!fs.existsSync(resultsPath)) {
+              console.log('No results to comment');
+              return;
+            }
+
+            const results = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+            const timestamp = results.metadata.timestamp;
+            const benchCount = results.results.length;
+
+            const body = `## 📊 Benchmark Results
+
+            **Generated:** ${timestamp}
+            **Benchmarks Run:** ${benchCount}
+
+            📈 [View Charts](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/benchmarks/latest/charts.html)
+            📄 [View Report](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/benchmarks/latest/index.md)
+            📁 [Download Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            > ⚠️ **Note:** Benchmark results may vary on CI runners. For consistent measurements, use a dedicated benchmark machine.
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
