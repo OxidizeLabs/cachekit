@@ -71,9 +71,18 @@ fn main() {
         std::process::exit(1);
     });
 
+    // Generate charts.html
+    let charts_path = output_dir.join("charts.html");
+    let charts_html = include_str!("charts_template.html");
+    fs::write(&charts_path, charts_html).unwrap_or_else(|e| {
+        eprintln!("Error writing {}: {}", charts_path.display(), e);
+        std::process::exit(1);
+    });
+
     println!("✅ Generated documentation:");
     println!("   - {}", index_path.display());
     println!("   - {}", json_dest.display());
+    println!("   - {}", charts_path.display());
 }
 
 fn generate_markdown(artifact: &BenchmarkArtifact) -> String {
@@ -81,6 +90,12 @@ fn generate_markdown(artifact: &BenchmarkArtifact) -> String {
 
     // Header
     md.push_str("# Benchmark Results\n\n");
+
+    // Quick links
+    md.push_str(
+        "**Quick Links**: [📊 Interactive Charts](charts.html) | [📁 Raw JSON](results.json)\n\n",
+    );
+    md.push_str("---\n\n");
 
     // Metadata
     md.push_str("## Environment\n\n");

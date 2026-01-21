@@ -47,3 +47,7 @@ out/
 .idea/**/copilot.data.migration.*.xml
 .DS_Store
 /dhat-heap.json
+
+# Benchmark artifacts
+docs/benchmarks/latest/
+docs/benchmarks/*/
