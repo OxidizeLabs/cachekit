@@ -1,11 +1,22 @@
 # Benchmarks
 
-This page links to the latest benchmark reports and the release-tag snapshots.
+This page links to the latest benchmark reports and release-tag snapshots.
 
-- [Latest benchmarks](../benchmarks/latest/)
-- [Release benchmarks (by tag)](../benchmarks/)
+## Quick Links
 
-For local runs and raw numbers, see `benches/README.md`.
+- **[📊 Latest Benchmark Results](benchmarks/latest/)** - Comprehensive comparison of all policies
+- **[📁 Raw JSON Data](benchmarks/latest/results.json)** - For tooling and custom analysis
+- **[📖 Benchmarking Plan](benchmarking-plan.md)** - Methodology and implementation details
+- **[💻 Run Locally](../benches/README.md)** - Instructions for running benchmarks
+
+## Automated Reports
+
+Benchmark reports are generated automatically from JSON artifacts using:
+```bash
+./scripts/update_benchmark_docs.sh
+```
+
+This runs the full benchmark suite and renders results to `docs/benchmarks/latest/`.
 
 ## Latest run (release)
 

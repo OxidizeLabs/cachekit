@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[[bin]]
+name = "render_docs"
+path = "src/bin/render_docs.rs"
+
 [dependencies]
 cachekit = { path = ".." }
 criterion = "0.5"
