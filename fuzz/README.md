@@ -307,6 +307,49 @@ cd fuzz
 cargo fuzz run lazy_heap_property_tests
 ```
 
+## ShardSelector Fuzz Targets
+
+### 22. `shard_selector_arbitrary_ops`
+
+Tests arbitrary shard selection operations with various shard counts and key types.
+
+**Purpose**: Find edge cases in deterministic shard mapping and range validation.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run shard_selector_arbitrary_ops
+```
+
+### 23. `shard_selector_distribution`
+
+Tests key distribution across shards and seed isolation properties.
+
+**Purpose**: Verify keys distribute across shards and different seeds produce different mappings.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run shard_selector_distribution
+```
+
+### 24. `shard_selector_property_tests`
+
+Property-based tests verifying specific invariants:
+- Determinism (same key → same shard)
+- Range validity (shard < shard_count)
+- Zero shards clamped to 1
+- Single shard always returns 0
+- Seed isolation
+
+**Purpose**: Verify fundamental shard selector properties and invariants hold under all conditions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run shard_selector_property_tests
+```
+
 ## Running Fuzz Tests
 
 ### Run a specific target
@@ -385,6 +428,9 @@ Add to your CI pipeline:
     cargo fuzz run lazy_heap_arbitrary_ops -- -max_total_time=60 -seed=19
     cargo fuzz run lazy_heap_stress -- -max_total_time=60 -seed=20
     cargo fuzz run lazy_heap_property_tests -- -max_total_time=60 -seed=21
+    cargo fuzz run shard_selector_arbitrary_ops -- -max_total_time=60 -seed=22
+    cargo fuzz run shard_selector_distribution -- -max_total_time=60 -seed=23
+    cargo fuzz run shard_selector_property_tests -- -max_total_time=60 -seed=24
 ```
 
 ## Coverage
@@ -418,5 +464,6 @@ cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-
 - [KeyInterner Tests](../src/ds/interner.rs) - Unit and property tests for KeyInterner
 - [IntrusiveList Tests](../src/ds/intrusive_list.rs) - Unit and property tests for IntrusiveList
 - [LazyMinHeap Tests](../src/ds/lazy_heap.rs) - Unit and property tests for LazyMinHeap
+- [ShardSelector Tests](../src/ds/shard.rs) - Unit and property tests for ShardSelector
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)

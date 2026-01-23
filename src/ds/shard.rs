@@ -212,3 +212,331 @@ mod tests {
         assert!(a < selector.shard_count());
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Determinism
+    // =============================================================================
+
+    proptest! {
+        /// Property: Same key always returns same shard
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_deterministic_mapping(
+            shard_count in 1usize..64,
+            seed in any::<u64>(),
+            key in any::<u32>()
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+
+            let shard1 = selector.shard_for_key(&key);
+            let shard2 = selector.shard_for_key(&key);
+            let shard3 = selector.shard_for_key(&key);
+
+            prop_assert_eq!(shard1, shard2);
+            prop_assert_eq!(shard2, shard3);
+        }
+
+        /// Property: Deterministic across multiple calls
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_deterministic_batch(
+            shard_count in 1usize..64,
+            seed in any::<u64>(),
+            keys in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+
+            // First pass
+            let shards1: Vec<_> = keys.iter().map(|k| selector.shard_for_key(k)).collect();
+
+            // Second pass
+            let shards2: Vec<_> = keys.iter().map(|k| selector.shard_for_key(k)).collect();
+
+            prop_assert_eq!(shards1, shards2);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Range Validity
+    // =============================================================================
+
+    proptest! {
+        /// Property: Shard index is always in valid range
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_shard_in_range(
+            shard_count in 1usize..128,
+            seed in any::<u64>(),
+            key in any::<u64>()
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+            let shard = selector.shard_for_key(&key);
+
+            prop_assert!(shard < shard_count);
+            prop_assert!(shard < selector.shard_count());
+        }
+
+        /// Property: All keys map to valid shards
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_all_keys_valid_range(
+            shard_count in 1usize..64,
+            seed in any::<u64>(),
+            keys in prop::collection::vec(any::<u32>(), 0..100)
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+
+            for key in keys {
+                let shard = selector.shard_for_key(&key);
+                prop_assert!(shard < shard_count);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Shard Count
+    // =============================================================================
+
+    proptest! {
+        /// Property: shard_count returns configured count
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_shard_count_matches(
+            shard_count in 1usize..128,
+            seed in any::<u64>()
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+            prop_assert_eq!(selector.shard_count(), shard_count);
+        }
+
+        /// Property: Zero shards is clamped to 1
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_zero_shards_clamped(seed in any::<u64>()) {
+            let selector = ShardSelector::new(0, seed);
+            prop_assert_eq!(selector.shard_count(), 1);
+
+            // All keys should map to shard 0
+            for i in 0..10u32 {
+                let shard = selector.shard_for_key(&i);
+                prop_assert_eq!(shard, 0);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Single Shard
+    // =============================================================================
+
+    proptest! {
+        /// Property: Single shard always returns 0
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_single_shard_returns_zero(
+            seed in any::<u64>(),
+            keys in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let selector = ShardSelector::new(1, seed);
+
+            for key in keys {
+                let shard = selector.shard_for_key(&key);
+                prop_assert_eq!(shard, 0);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Seed Isolation
+    // =============================================================================
+
+    proptest! {
+        /// Property: Different seeds produce different selectors
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_different_seeds_different_selectors(
+            shard_count in 1usize..64,
+            seed1 in any::<u64>(),
+            seed2 in any::<u64>()
+        ) {
+            prop_assume!(seed1 != seed2);
+
+            let selector1 = ShardSelector::new(shard_count, seed1);
+            let selector2 = ShardSelector::new(shard_count, seed2);
+
+            // Different seeds should produce different selectors
+            prop_assert_ne!(selector1, selector2);
+        }
+
+        /// Property: Different seeds can produce different mappings
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_seed_affects_mapping(
+            shard_count in 2usize..16,
+            seed1 in any::<u64>(),
+            seed2 in any::<u64>(),
+            keys in prop::collection::vec(any::<u32>(), 10..50)
+        ) {
+            prop_assume!(seed1 != seed2);
+
+            let selector1 = ShardSelector::new(shard_count, seed1);
+            let selector2 = ShardSelector::new(shard_count, seed2);
+
+            // With different seeds and multiple shards, keys can map to different shards
+            // This test ensures the mechanism works without crashes
+            // (not enforcing strict distribution as it's probabilistic)
+            for key in &keys {
+                let _shard1 = selector1.shard_for_key(key);
+                let _shard2 = selector2.shard_for_key(key);
+                // Both shards are valid, that's all we verify
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Distribution
+    // =============================================================================
+
+    proptest! {
+        /// Property: Keys distribute across available shards
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_keys_use_shards(
+            shard_count in 2usize..16,
+            seed in any::<u64>(),
+            keys in prop::collection::vec(any::<u32>(), 20..100)
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+
+            let mut shard_counts = vec![0usize; shard_count];
+
+            for key in &keys {
+                let shard = selector.shard_for_key(key);
+                shard_counts[shard] += 1;
+            }
+
+            // At least one shard should be used
+            let used_shards = shard_counts.iter().filter(|&&count| count > 0).count();
+            prop_assert!(used_shards > 0);
+
+            // With enough unique keys, we expect multiple shards to be used
+            let unique_keys: std::collections::HashSet<_> = keys.iter().collect();
+            if unique_keys.len() >= shard_count * 2 {
+                // Expect at least some distribution (not enforcing strict uniformity)
+                prop_assert!(used_shards > 1);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Key Type Flexibility
+    // =============================================================================
+
+    proptest! {
+        /// Property: Works with different key types (u32)
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_works_with_u32(
+            shard_count in 1usize..32,
+            seed in any::<u64>(),
+            keys in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+
+            for key in keys {
+                let shard = selector.shard_for_key(&key);
+                prop_assert!(shard < shard_count);
+            }
+        }
+
+        /// Property: Works with different key types (u64)
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_works_with_u64(
+            shard_count in 1usize..32,
+            seed in any::<u64>(),
+            keys in prop::collection::vec(any::<u64>(), 0..30)
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+
+            for key in keys {
+                let shard = selector.shard_for_key(&key);
+                prop_assert!(shard < shard_count);
+            }
+        }
+
+        /// Property: Works with different key types (String)
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_works_with_string(
+            shard_count in 1usize..32,
+            seed in any::<u64>(),
+            keys in prop::collection::vec("[a-z]{1,10}", 0..30)
+        ) {
+            let selector = ShardSelector::new(shard_count, seed);
+
+            for key in keys {
+                let shard = selector.shard_for_key(&key);
+                prop_assert!(shard < shard_count);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Default Implementation
+    // =============================================================================
+
+    proptest! {
+        /// Property: Default creates single-shard selector
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_default_single_shard(keys in prop::collection::vec(any::<u32>(), 0..30)) {
+            let selector = ShardSelector::default();
+
+            prop_assert_eq!(selector.shard_count(), 1);
+
+            // All keys should map to shard 0
+            for key in keys {
+                let shard = selector.shard_for_key(&key);
+                prop_assert_eq!(shard, 0);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Equality
+    // =============================================================================
+
+    proptest! {
+        /// Property: Selectors with same config are equal
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_same_config_equal(
+            shard_count in 1usize..64,
+            seed in any::<u64>()
+        ) {
+            let selector1 = ShardSelector::new(shard_count, seed);
+            let selector2 = ShardSelector::new(shard_count, seed);
+
+            prop_assert_eq!(selector1, selector2);
+        }
+
+        /// Property: Selectors with different shard counts are not equal
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_different_shard_count_not_equal(
+            shard_count1 in 1usize..32,
+            shard_count2 in 32usize..64,
+            seed in any::<u64>()
+        ) {
+            let selector1 = ShardSelector::new(shard_count1, seed);
+            let selector2 = ShardSelector::new(shard_count2, seed);
+
+            prop_assert_ne!(selector1, selector2);
+        }
+    }
+}

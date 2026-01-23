@@ -166,3 +166,24 @@ path = "fuzz_targets/lazy_heap_property_tests.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "shard_selector_arbitrary_ops"
+path = "fuzz_targets/shard_selector_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shard_selector_distribution"
+path = "fuzz_targets/shard_selector_distribution.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shard_selector_property_tests"
+path = "fuzz_targets/shard_selector_property_tests.rs"
+test = false
+doc = false
+bench = false
