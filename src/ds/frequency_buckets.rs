@@ -3044,3 +3044,558 @@ mod tests {
         assert_eq!(buckets.len(), 1);
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Core Invariants
+    // =============================================================================
+
+    proptest! {
+        /// Property: Invariants hold after any sequence of operations
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_invariants_always_hold(
+            ops in prop::collection::vec((0u8..4, any::<u32>()), 0..100)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            for (op, key) in ops {
+                match op % 4 {
+                    0 => { buckets.insert(key); }
+                    1 => { buckets.touch(&key); }
+                    2 => { buckets.remove(&key); }
+                    3 => { buckets.pop_min(); }
+                    _ => unreachable!(),
+                }
+
+                buckets.debug_validate_invariants();
+            }
+        }
+
+        /// Property: len() equals number of unique keys inserted minus removed
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_len_is_accurate(
+            ops in prop::collection::vec((0u8..3, 0u32..20), 0..50)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            let mut expected_keys = std::collections::HashSet::new();
+
+            for (op, key) in ops {
+                match op % 3 {
+                    0 => {
+                        buckets.insert(key);
+                        expected_keys.insert(key);
+                    }
+                    1 => {
+                        buckets.remove(&key);
+                        expected_keys.remove(&key);
+                    }
+                    2 => {
+                        if let Some((evicted_key, _)) = buckets.pop_min() {
+                            expected_keys.remove(&evicted_key);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+
+                prop_assert_eq!(buckets.len(), expected_keys.len());
+            }
+        }
+
+        /// Property: Empty state is consistent
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_empty_state_consistent(
+            keys in prop::collection::vec(any::<u32>(), 0..20)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            for key in keys {
+                buckets.insert(key);
+            }
+
+            while !buckets.is_empty() {
+                buckets.pop_min();
+            }
+
+            prop_assert!(buckets.is_empty());
+            prop_assert_eq!(buckets.len(), 0);
+            prop_assert_eq!(buckets.min_freq(), None);
+            prop_assert_eq!(buckets.peek_min(), None);
+            prop_assert_eq!(buckets.pop_min(), None);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Frequency Tracking
+    // =============================================================================
+
+    proptest! {
+        /// Property: Frequencies start at 1 and increment by 1
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_frequency_starts_at_one_and_increments(
+            key in any::<u32>(),
+            touch_count in 0usize..20
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            buckets.insert(key);
+            prop_assert_eq!(buckets.frequency(&key), Some(1));
+
+            for i in 0..touch_count {
+                let new_freq = buckets.touch(&key).unwrap();
+                prop_assert_eq!(new_freq, 2 + i as u64);
+                prop_assert_eq!(buckets.frequency(&key), Some(2 + i as u64));
+            }
+        }
+
+        /// Property: touch returns None for missing keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_touch_missing_returns_none(
+            present_key in any::<u32>(),
+            missing_key in any::<u32>()
+        ) {
+            prop_assume!(present_key != missing_key);
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            buckets.insert(present_key);
+
+            prop_assert_eq!(buckets.touch(&missing_key), None);
+            prop_assert!(!buckets.contains(&missing_key));
+        }
+
+        /// Property: touch_capped respects max frequency
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_touch_capped_respects_max(
+            key in any::<u32>(),
+            max_freq in 2u64..10,
+            touch_count in 0usize..20
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            buckets.insert(key);
+
+            for _ in 0..touch_count {
+                buckets.touch_capped(&key, max_freq);
+            }
+
+            let final_freq = buckets.frequency(&key).unwrap();
+            prop_assert!(final_freq <= max_freq);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - min_freq Tracking
+    // =============================================================================
+
+    proptest! {
+        /// Property: min_freq is always the minimum frequency present
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_min_freq_is_accurate(
+            ops in prop::collection::vec((0u8..2, 0u32..10), 1..30)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            for (op, key) in ops {
+                match op % 2 {
+                    0 => { buckets.insert(key); }
+                    1 => { buckets.touch(&key); }
+                    _ => unreachable!(),
+                }
+
+                // Compute actual minimum frequency
+                let mut actual_min: Option<u64> = None;
+                for (_, meta) in buckets.iter_entries() {
+                    actual_min = match actual_min {
+                        None => Some(meta.freq),
+                        Some(min) => Some(min.min(meta.freq)),
+                    };
+                }
+
+                prop_assert_eq!(buckets.min_freq(), actual_min);
+            }
+        }
+
+        /// Property: min_freq updates correctly after removal
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_min_freq_updates_after_removal(
+            keys in prop::collection::vec(0u32..10, 2..10)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            // Insert all keys
+            for &key in &keys {
+                buckets.insert(key);
+            }
+
+            // Touch first key multiple times
+            if let Some(&first_key) = keys.first() {
+                for _ in 0..5 {
+                    buckets.touch(&first_key);
+                }
+            }
+
+            // min_freq should be 1 (other keys)
+            prop_assert_eq!(buckets.min_freq(), Some(1));
+
+            // Remove all keys at freq=1
+            for &key in &keys {
+                if buckets.frequency(&key) == Some(1) {
+                    buckets.remove(&key);
+                }
+            }
+
+            // min_freq should now be 6 (first key) or None if empty
+            if !buckets.is_empty() {
+                prop_assert!(buckets.min_freq().unwrap() > 1);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - FIFO Ordering
+    // =============================================================================
+
+    proptest! {
+        /// Property: FIFO order within same frequency bucket
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_fifo_order_same_frequency(
+            keys in prop::collection::vec(0u32..50, 2..20)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            let mut unique_keys = keys.clone();
+            unique_keys.dedup();
+
+            // Insert keys in order
+            for &key in &unique_keys {
+                buckets.insert(key);
+            }
+
+            // All keys at freq=1, should pop in FIFO order
+            for expected_key in unique_keys {
+                let (popped_key, freq) = buckets.pop_min().unwrap();
+                prop_assert_eq!(popped_key, expected_key);
+                prop_assert_eq!(freq, 1);
+            }
+
+            prop_assert!(buckets.is_empty());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Eviction (pop_min)
+    // =============================================================================
+
+    proptest! {
+        /// Property: peek_min and pop_min return the same key/freq
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_peek_pop_consistency(
+            keys in prop::collection::vec(any::<u32>(), 1..20),
+            touch_ops in prop::collection::vec((any::<u32>(), 0usize..5), 0..20)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            for key in keys {
+                buckets.insert(key);
+            }
+
+            for (key, count) in touch_ops {
+                for _ in 0..count {
+                    buckets.touch(&key);
+                }
+            }
+
+            while !buckets.is_empty() {
+                let peeked = buckets.peek_min().map(|(k, f)| (*k, f));
+                let popped = buckets.pop_min();
+
+                prop_assert!(peeked.is_some());
+                prop_assert!(popped.is_some());
+
+                let (peek_key, peek_freq) = peeked.unwrap();
+                let (pop_key, pop_freq) = popped.unwrap();
+
+                prop_assert_eq!(peek_key, pop_key);
+                prop_assert_eq!(peek_freq, pop_freq);
+            }
+        }
+
+        /// Property: pop_min returns lowest frequency
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_pop_min_returns_lowest_frequency(
+            keys in prop::collection::vec(0u32..10, 2..10)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            // Insert keys
+            for &key in &keys {
+                buckets.insert(key);
+            }
+
+            // Touch some keys
+            if let Some(&first_key) = keys.first() {
+                for _ in 0..3 {
+                    buckets.touch(&first_key);
+                }
+            }
+
+            // Pop should return a key with the minimum frequency
+            if let Some((_, popped_freq)) = buckets.pop_min() {
+                // All remaining keys should have freq >= popped_freq
+                for (_, meta) in buckets.iter_entries() {
+                    prop_assert!(meta.freq >= popped_freq);
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Remove Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: remove returns correct frequency and removes key
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_returns_freq_and_removes(
+            key in any::<u32>(),
+            touch_count in 0usize..10
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            buckets.insert(key);
+
+            for _ in 0..touch_count {
+                buckets.touch(&key);
+            }
+
+            let expected_freq = 1 + touch_count as u64;
+            let removed_freq = buckets.remove(&key).unwrap();
+
+            prop_assert_eq!(removed_freq, expected_freq);
+            prop_assert!(!buckets.contains(&key));
+            prop_assert_eq!(buckets.frequency(&key), None);
+        }
+
+        /// Property: remove missing key returns None
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_missing_returns_none(
+            present_key in any::<u32>(),
+            missing_key in any::<u32>()
+        ) {
+            prop_assume!(present_key != missing_key);
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            buckets.insert(present_key);
+
+            prop_assert_eq!(buckets.remove(&missing_key), None);
+            prop_assert!(!buckets.contains(&missing_key));
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Clear Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: clear resets to empty state
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_resets_state(
+            keys in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            for key in keys {
+                buckets.insert(key);
+                buckets.touch(&key);
+            }
+
+            buckets.clear();
+
+            prop_assert!(buckets.is_empty());
+            prop_assert_eq!(buckets.len(), 0);
+            prop_assert_eq!(buckets.min_freq(), None);
+            prop_assert_eq!(buckets.peek_min(), None);
+            prop_assert_eq!(buckets.pop_min(), None);
+            buckets.debug_validate_invariants();
+        }
+
+        /// Property: clear_shrink behaves like clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_shrink_same_as_clear(
+            keys in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut buckets1: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            let mut buckets2: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            for &key in &keys {
+                buckets1.insert(key);
+                buckets2.insert(key);
+            }
+
+            buckets1.clear();
+            buckets2.clear_shrink();
+
+            prop_assert_eq!(buckets1.len(), buckets2.len());
+            prop_assert_eq!(buckets1.is_empty(), buckets2.is_empty());
+            prop_assert_eq!(buckets1.min_freq(), buckets2.min_freq());
+        }
+
+        /// Property: usable after clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_usable_after_clear(
+            keys1 in prop::collection::vec(any::<u32>(), 1..20),
+            keys2 in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            for key in keys1 {
+                buckets.insert(key);
+            }
+
+            buckets.clear();
+
+            for key in &keys2 {
+                buckets.insert(*key);
+            }
+
+            let unique_keys2: std::collections::HashSet<_> = keys2.into_iter().collect();
+            prop_assert_eq!(buckets.len(), unique_keys2.len());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Decay Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: decay_halve reduces frequencies correctly
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_decay_halve_reduces_frequencies(
+            keys in prop::collection::vec(0u32..10, 1..10)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            // Insert and build up frequencies
+            for &key in &keys {
+                buckets.insert(key);
+                for _ in 0..5 {
+                    buckets.touch(&key);
+                }
+            }
+
+            // Record frequencies before decay
+            let mut before: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+            for (_, meta) in buckets.iter_entries() {
+                before.insert(*meta.key, meta.freq);
+            }
+
+            buckets.decay_halve();
+
+            // Check frequencies after decay
+            for (key, old_freq) in before {
+                let new_freq = buckets.frequency(&key).unwrap();
+                let expected = (old_freq / 2).max(1);
+                prop_assert_eq!(new_freq, expected);
+            }
+
+            buckets.debug_validate_invariants();
+        }
+
+        /// Property: rebase_min_freq shifts frequencies correctly
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_rebase_min_freq_shifts_correctly(
+            keys in prop::collection::vec(0u32..5, 2..8)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            // Insert keys with varying frequencies
+            for (i, &key) in keys.iter().enumerate() {
+                buckets.insert(key);
+                for _ in 0..i {
+                    buckets.touch(&key);
+                }
+            }
+
+            let min_before = buckets.min_freq();
+            if min_before.unwrap_or(0) <= 1 {
+                return Ok(());
+            }
+
+            let delta = min_before.unwrap() - 1;
+
+            // Record frequencies before rebase
+            let mut before: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+            for (_, meta) in buckets.iter_entries() {
+                before.insert(*meta.key, meta.freq);
+            }
+
+            buckets.rebase_min_freq();
+
+            // Check frequencies after rebase
+            for (key, old_freq) in before {
+                let new_freq = buckets.frequency(&key).unwrap();
+                let expected = old_freq.saturating_sub(delta).max(1);
+                prop_assert_eq!(new_freq, expected);
+            }
+
+            prop_assert_eq!(buckets.min_freq(), Some(1));
+            buckets.debug_validate_invariants();
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Batch Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: insert_batch inserts correct number of unique keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_insert_batch_unique_count(
+            keys in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            let unique_keys: std::collections::HashSet<_> = keys.iter().copied().collect();
+
+            let inserted = buckets.insert_batch(keys);
+
+            prop_assert_eq!(inserted, unique_keys.len());
+            prop_assert_eq!(buckets.len(), unique_keys.len());
+        }
+
+        /// Property: touch_batch touches only present keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_touch_batch_only_present(
+            present_keys in prop::collection::vec(0u32..10, 1..10),
+            touch_keys in prop::collection::vec(0u32..20, 0..10)
+        ) {
+            let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+
+            buckets.insert_batch(present_keys.clone());
+            let touched = buckets.touch_batch(touch_keys.clone());
+
+            let present_set: std::collections::HashSet<_> = present_keys.into_iter().collect();
+            let touch_set: std::collections::HashSet<_> = touch_keys.into_iter().collect();
+            let intersection_count = touch_set.intersection(&present_set).count();
+
+            prop_assert_eq!(touched, intersection_count);
+        }
+    }
+}

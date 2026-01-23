@@ -92,6 +92,49 @@ cd fuzz
 cargo fuzz run fixed_history_property_tests
 ```
 
+## FrequencyBuckets Fuzz Targets
+
+### 7. `frequency_buckets_arbitrary_ops`
+
+Tests arbitrary sequences of all FrequencyBuckets operations (insert, touch, remove, pop_min, peek_min, clear).
+
+**Purpose**: Find edge cases in LFU tracking operation interleaving and state transitions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run frequency_buckets_arbitrary_ops
+```
+
+### 8. `frequency_buckets_stress`
+
+Stress tests with heavy insert, touch, and pop_min operations using reference HashMap validation.
+
+**Purpose**: Find frequency tracking bugs and eviction issues under high LFU load. Validates against a reference implementation to ensure correctness.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run frequency_buckets_stress
+```
+
+### 9. `frequency_buckets_property_tests`
+
+Property-based tests verifying specific invariants:
+- Frequency monotonicity (touch always increments)
+- FIFO ordering within same frequency bucket
+- min_freq accuracy
+- peek/pop consistency
+- Clear operation correctness
+
+**Purpose**: Verify fundamental LFU properties and invariants hold under all conditions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run frequency_buckets_property_tests
+```
+
 ## Running Fuzz Tests
 
 ### Run a specific target
@@ -155,6 +198,9 @@ Add to your CI pipeline:
     cargo fuzz run fixed_history_arbitrary_ops -- -max_total_time=60 -seed=4
     cargo fuzz run fixed_history_record_stress -- -max_total_time=60 -seed=5
     cargo fuzz run fixed_history_property_tests -- -max_total_time=60 -seed=6
+    cargo fuzz run frequency_buckets_arbitrary_ops -- -max_total_time=60 -seed=7
+    cargo fuzz run frequency_buckets_stress -- -max_total_time=60 -seed=8
+    cargo fuzz run frequency_buckets_property_tests -- -max_total_time=60 -seed=9
 ```
 
 ## Coverage
@@ -181,7 +227,8 @@ cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-
 
 ## Related Documentation
 
-- [ClockRing Tests](../src/ds/clock_ring.rs) - Unit tests for ClockRing
-- [FixedHistory Tests](../src/ds/fixed_history.rs) - Unit tests for FixedHistory
+- [ClockRing Tests](../src/ds/clock_ring.rs) - Unit and property tests for ClockRing
+- [FixedHistory Tests](../src/ds/fixed_history.rs) - Unit and property tests for FixedHistory
+- [FrequencyBuckets Tests](../src/ds/frequency_buckets.rs) - Unit and property tests for FrequencyBuckets
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)
