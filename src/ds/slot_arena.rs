@@ -2023,7 +2023,7 @@ mod property_tests {
             }
 
             let iter_count = arena.iter().count();
-            let expected_count = values.len().div_ceil(2);
+            let expected_count = values.len() / 2;
             prop_assert_eq!(iter_count, expected_count);
         }
     }

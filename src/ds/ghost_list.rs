@@ -740,23 +740,26 @@ mod property_tests {
             keys in prop::collection::vec(0u32..50, 1..30)
         ) {
             let mut ghost: GhostList<u32> = GhostList::new(capacity);
+            let mut reference: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
 
-            // Collect unique keys in order
-            let mut unique_keys = Vec::new();
-            for &key in &keys {
-                if !unique_keys.contains(&key) {
-                    unique_keys.push(key);
-                }
+            for key in keys {
                 ghost.record(key);
+
+                if let Some(pos) = reference.iter().position(|&k| k == key) {
+                    reference.remove(pos);
+                } else if reference.len() >= capacity {
+                    reference.pop_back();
+                }
+                reference.push_front(key);
             }
 
-            // If we have more unique keys than capacity, earliest should be evicted
-            if unique_keys.len() > capacity {
-                let keep_from = unique_keys.len() - capacity;
-                for &key in &unique_keys[keep_from..] {
-                    prop_assert!(ghost.contains(&key));
-                }
+            prop_assert_eq!(ghost.len(), reference.len());
+            for &ref_key in &reference {
+                prop_assert!(ghost.contains(&ref_key));
             }
+
+            let snapshot = ghost.debug_snapshot_keys();
+            prop_assert_eq!(snapshot, reference.iter().copied().collect::<Vec<_>>());
 
             ghost.debug_validate_invariants();
         }

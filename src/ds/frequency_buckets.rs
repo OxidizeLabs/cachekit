@@ -3230,24 +3230,32 @@ mod property_tests {
             keys in prop::collection::vec(0u32..10, 2..10)
         ) {
             let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+            let mut unique_keys = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for key in keys {
+                if seen.insert(key) {
+                    unique_keys.push(key);
+                }
+            }
 
             // Insert all keys
-            for &key in &keys {
+            for &key in &unique_keys {
                 buckets.insert(key);
             }
 
             // Touch first key multiple times
-            if let Some(&first_key) = keys.first() {
+            if let Some(&first_key) = unique_keys.first() {
                 for _ in 0..5 {
                     buckets.touch(&first_key);
                 }
             }
 
-            // min_freq should be 1 (other keys)
-            prop_assert_eq!(buckets.min_freq(), Some(1));
+            // min_freq should be 1 if we have other keys, else 6 for the touched key
+            let expected_min = if unique_keys.len() > 1 { Some(1) } else { Some(6) };
+            prop_assert_eq!(buckets.min_freq(), expected_min);
 
             // Remove all keys at freq=1
-            for &key in &keys {
+            for &key in &unique_keys {
                 if buckets.frequency(&key) == Some(1) {
                     buckets.remove(&key);
                 }
@@ -3272,8 +3280,13 @@ mod property_tests {
             keys in prop::collection::vec(0u32..50, 2..20)
         ) {
             let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
-            let mut unique_keys = keys.clone();
-            unique_keys.dedup();
+            let mut unique_keys = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for key in keys {
+                if seen.insert(key) {
+                    unique_keys.push(key);
+                }
+            }
 
             // Insert keys in order
             for &key in &unique_keys {
@@ -3592,8 +3605,10 @@ mod property_tests {
             let touched = buckets.touch_batch(touch_keys.clone());
 
             let present_set: std::collections::HashSet<_> = present_keys.into_iter().collect();
-            let touch_set: std::collections::HashSet<_> = touch_keys.into_iter().collect();
-            let intersection_count = touch_set.intersection(&present_set).count();
+            let intersection_count = touch_keys
+                .iter()
+                .filter(|key| present_set.contains(key))
+                .count();
 
             prop_assert_eq!(touched, intersection_count);
         }
