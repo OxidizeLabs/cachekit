@@ -7,14 +7,43 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
 
-**High-performance cache policies and tiered caching primitives for Rust systems with optional metrics and benchmarks.**
+**High-performance cache policies and supporting data structures for Rust systems with optional metrics and benchmarks.**
+
+## Why CacheKit
+
+- Pluggable eviction policies with predictable performance characteristics.
+- Unified builder API plus direct access for policy-specific operations.
+- Optional metrics and benchmarks to validate trade-offs.
+
+## Installation
+
+Add `cachekit` as a dependency in your `Cargo.toml`:
+
+```toml
+[dependencies]
+cachekit = "0.2.0-alpha"
+```
+
+From git (bleeding edge):
+
+```toml
+[dependencies]
+cachekit = { git = "https://github.com/OxidizeLabs/cachekit" }
+```
+
+## Feature Flags
+
+| Feature | Enables |
+|---------|---------|
+| `metrics` | Hit/miss metrics and snapshots |
+| `concurrency` | Concurrent wrappers (requires `parking_lot`) |
 
 ## Overview
 
 CacheKit is a Rust library that provides:
 
 - High-performance cache replacement policies (e.g., **FIFO**, **LRU**, **LRU-K**).
-- Tiered caching primitives to build layered caching strategies.
+- Supporting data structures and policy primitives for building caches.
 - Optional metrics and benchmark harnesses.
 - A modular API suitable for embedding in systems where control over caching behavior is critical.
 
@@ -25,15 +54,6 @@ This crate is designed for systems programming, microservices, and performance-c
 - Policy implementations optimized for performance and predictability.
 - Optional integration with metrics collectors (e.g., Prometheus/metrics crates).
 - Benchmarks to compare policy performance under real-world workloads.
-
-## Installation
-
-Add `cachekit` as a dependency in your `Cargo.toml`:
-
-```toml
-[dependencies]
-cachekit = "0.2.0-alpha"
-```
 
 ## Quick Start
 
@@ -108,6 +128,8 @@ let s3_fifo = CacheBuilder::new(100).build::<u64, String>(
 | 2Q      | Mixed workloads | Two-queue promotion |
 | S3-FIFO | Scan-heavy workloads | FIFO + ghost history |
 
+See [Choosing a policy](docs/guides/choosing-a-policy.md) for benchmark-driven guidance.
+
 ### Direct Policy Access
 
 For advanced use cases requiring policy-specific operations, use the underlying implementations directly:
@@ -127,3 +149,10 @@ fn main() {
     }
 }
 ```
+
+## Next Steps
+
+- [Quickstart](docs/getting-started/quickstart.md)
+- [Integration guide](docs/getting-started/integration.md)
+- [Policy overview](docs/policies/README.md)
+- [Benchmarks](docs/benchmarks/overview.md)
