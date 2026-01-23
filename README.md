@@ -32,7 +32,7 @@ Add `cachekit` as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachekit = { git = "https://github.com/OxidizeLabs/cachekit" }
+cachekit = "0.2.0-alpha"
 ```
 
 ## Quick Start
@@ -78,7 +78,9 @@ let lru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
 let lru_k = CacheBuilder::new(100).build::<u64, String>(CachePolicy::LruK { k: 2 });
 
 // LFU - Least Frequently Used (bucket-based, O(1))
-let lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu);
+let lfu = CacheBuilder::new(100).build::<u64, String>(
+    CachePolicy::Lfu { bucket_hint: None }
+);
 
 // HeapLFU - Least Frequently Used (heap-based, O(log n))
 let heap_lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::HeapLfu);
@@ -86,6 +88,11 @@ let heap_lfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::HeapLfu)
 // 2Q - Two-Queue with configurable probation fraction
 let two_q = CacheBuilder::new(100).build::<u64, String>(
     CachePolicy::TwoQ { probation_frac: 0.25 }
+);
+
+// S3-FIFO - Scan-resistant FIFO with small + ghost ratios
+let s3_fifo = CacheBuilder::new(100).build::<u64, String>(
+    CachePolicy::S3Fifo { small_ratio: 0.1, ghost_ratio: 0.9 }
 );
 ```
 
@@ -99,6 +106,7 @@ let two_q = CacheBuilder::new(100).build::<u64, String>(
 | LFU     | Stable access patterns | Frequency (O(1)) |
 | HeapLFU | Large caches, frequent evictions | Frequency (O(log n)) |
 | 2Q      | Mixed workloads | Two-queue promotion |
+| S3-FIFO | Scan-heavy workloads | FIFO + ghost history |
 
 ### Direct Policy Access
 

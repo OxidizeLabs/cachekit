@@ -181,8 +181,6 @@ To add a new workload:
 
 ## See Also
 
-- [Benchmarking Design Plan](../docs/benchmarking-plan.md)
-- [Phase 1 Summary](../PHASE1_SUMMARY.md) - Registry refactor
-- [Phase 2 Summary](../PHASE2_SUMMARY.md) - JSON artifact output
-- [Benchmark Metrics Documentation](../docs/metrics.md)
+- [Benchmark Quick Start](../docs/benchmarks/QUICKSTART.md)
+- [Benchmark Docs](../docs/benchmarks/README.md)
 - [Workload Documentation](../docs/workloads.md)

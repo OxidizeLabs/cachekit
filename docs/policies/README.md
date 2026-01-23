@@ -2,7 +2,7 @@
 
 This document summarizes common cache replacement (eviction) policies, their tradeoffs, and when to use (or avoid) each. It’s written as a practical companion to `docs/design.md`.
 
-Implementation notes live in `docs/policies/README.md`.
+Implementation notes live in the per-policy docs under `docs/policies/` and the data-structure docs under `docs/policy-ds/`.
 
 Terminology used below:
 - **Admission**: whether an item is allowed into cache at all (some “policies” combine admission + eviction).
@@ -12,14 +12,16 @@ Terminology used below:
 
 ## How To Choose (Quick Guidance)
 
-Pick based on workload first:
-- **Strong temporal locality (hot keys repeat quickly)**: `LRU` / `Clock` usually works.
-- **One-hit-wonder dominated / scan-heavy**: prefer scan-resistant policies like `LRU-K`, `2Q`, `ARC`.
-- **Frequency matters more than recency** (hot keys repeat but with long gaps): `LFU` (with aging) or hybrids.
-- **Need low overhead & simple**: `FIFO`, `Random`, `Clock`.
-- **Need adaptive across shifting workloads**: `ARC` (or related adaptive policies).
+These recommendations mirror the latest benchmark guide in `docs/benchmarks/latest/index.md`.
 
-If you can only implement one “general purpose” policy for mixed workloads, `ARC`-style adaptivity or `LRU-K`/`2Q`-style scan resistance usually beats plain `LRU`, at the cost of more metadata and complexity.
+Pick based on workload first:
+- **Strong temporal locality + low latency**: `LRU` or `Clock` (fastest in benchmarks).
+- **One-hit-wonder dominated / scan-heavy**: `S3-FIFO` or `Heap-LFU`; `LRU-K` or `2Q` for mixed scans + reuses.
+- **Frequency matters more than recency** (hot keys repeat with long gaps): `LFU` or `Heap-LFU`; `LRU-K` for multi-access signals.
+- **Need low overhead & simple**: `LRU` or `Clock` (fast ops, minimal metadata); `FIFO`/`Random` when simplicity trumps hit rate.
+- **Need adaptive across shifting workloads**: `S3-FIFO` or `2Q`.
+
+If you can only implement one “general purpose” policy for mixed workloads, `S3-FIFO` or `LRU` are the strongest defaults in current benchmarks, with `2Q` as a good alternative when scans are common.
 
 ## Policy Catalog (Summaries)
 
@@ -205,7 +207,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 
 ## Practical Tradeoffs (What Changes In Real Systems)
 
-- **Scan resistance**: `LRU`/`Clock` are vulnerable; `LRU-K`/`2Q`/`ARC`/`LIRS` handle scans better.
+- **Scan resistance**: `LRU`/`Clock` are vulnerable; `S3-FIFO`, `Heap-LFU`, `LRU-K`, and `2Q` handle scans better.
 - **Metadata & CPU**: `Random`/`FIFO` < `Clock` < `LRU` < `2Q`/`SLRU` < `LRU-K`/`ARC`/`LIRS`.
 - **Concurrency**: strict global `LRU` lists can contend; `Clock` and sharded designs often scale better.
 - **Adaptivity**: `LFU` needs decay to adapt; `ARC`-family adapts via history; static partitions (`2Q`/`SLRU`) need tuning.
@@ -213,11 +215,11 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 
 ## When To Use / Not Use (Rules Of Thumb)
 
-- Use `LRU` when you have **temporal locality** and can tolerate per-hit metadata updates.
-- Prefer `Clock` when you want **LRU-like** behavior with **lower overhead**.
-- Avoid plain `LRU` for workloads with **large scans** unless you add scan resistance (e.g., `2Q`, `SLRU`, `LRU-K`).
-- Use `LFU` (with aging) when **popularity is stable** and you care about long-term hot items.
-- Use `ARC` when workload is **mixed or shifting** and you can afford the complexity and memory overhead.
+- Use `LRU` when you have **temporal locality** and need **low latency**; it is consistently fast in benchmarks.
+- Prefer `Clock` when you want **LRU-like** behavior with **lower overhead** and similar latency.
+- For **scan-heavy** workloads, avoid plain `LRU`; prefer `S3-FIFO` or `Heap-LFU`, with `2Q` or `LRU-K` as alternatives.
+- Use `LFU`/`Heap-LFU` when **frequency is predictive** and the hot set is stable; expect slower adaptation to shifts.
+- For **shifting patterns**, `S3-FIFO` or `2Q` adapts better in benchmarks than frequency-only policies.
 - Use cost/size-aware policies (GDS/GDSF) when optimizing **byte hit rate** or **miss cost**, not just request count.
 
 ## Reference Material

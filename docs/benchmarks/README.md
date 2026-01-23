@@ -116,4 +116,4 @@ When adding new benchmark cases:
 
 ---
 
-*For more details, see [benchmarking-plan.md](../benchmarking-plan.md)*
+*For more details, see [Benchmark Quick Start](QUICKSTART.md)*

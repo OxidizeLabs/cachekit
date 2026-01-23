@@ -4,6 +4,7 @@ Welcome to the CacheKit documentation site.
 
 ## Getting Started
 
+- [Quickstart](quickstart.md) — Install and build your first cache
 - [Integration guide](integration.md) — CacheBuilder API, policy selection, thread safety
 - [Design overview](design.md) — Architectural decisions and performance principles
 

@@ -34,9 +34,10 @@ cache.clear();
 │         ├─── CachePolicy::Fifo ────► FifoCache<K, V>                       │
 │         ├─── CachePolicy::Lru ─────► LruCore<K, V>                         │
 │         ├─── CachePolicy::LruK ────► LrukCache<K, V>                       │
-│         ├─── CachePolicy::Lfu ─────► LfuCache<K, V>                        │
+│         ├─── CachePolicy::Lfu { bucket_hint } ─► LfuCache<K, V>            │
 │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                    │
-│         └─── CachePolicy::TwoQ ────► TwoQCore<K, V>                        │
+│         ├─── CachePolicy::TwoQ ────► TwoQCore<K, V>                        │
+│         └─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                     │
 │                                                                             │
 │         ▼                                                                   │
 │   Cache<K, V>  (unified wrapper)                                            │
@@ -67,9 +68,10 @@ The `Cache<K, V>` wrapper requires:
 | `Fifo` | Simple, predictable eviction | No recency/frequency tracking |
 | `Lru` | Temporal locality | Vulnerable to scans |
 | `LruK { k }` | Scan resistance | Extra memory for history |
-| `Lfu` | Stable hot spots | Slow to adapt to changes |
+| `Lfu { bucket_hint }` | Stable hot spots | Slow to adapt to changes |
 | `HeapLfu` | Large caches, frequent evictions | O(log n) eviction |
 | `TwoQ { probation_frac }` | Mixed workloads | Two-queue overhead |
+| `S3Fifo { small_ratio, ghost_ratio }` | Scan-heavy workloads | Small + ghost queues |
 
 ## Direct Policy Access
 

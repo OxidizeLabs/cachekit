@@ -4,7 +4,7 @@ CacheKit employs a multi-layered testing approach combining unit tests, property
 
 ## Testing Philosophy
 
-Following the [workspace rules](.cursorrules), we:
+Following the [workspace rules](../.cursorrules), we:
 
 1. **Test public APIs primarily** - Focus on the contract users depend on
 2. **Test critical internal algorithms** - Property test complex logic like eviction policies
