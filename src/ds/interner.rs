@@ -390,3 +390,402 @@ mod tests {
         assert_eq!(interner.resolve(a), Some(&"a".to_string()));
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Handle Assignment
+    // =============================================================================
+
+    proptest! {
+        /// Property: Handles start at 0 and increment sequentially
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_handles_sequential_from_zero(
+            keys in prop::collection::vec(any::<u32>(), 1..50)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+            let mut unique_keys = Vec::new();
+
+            for key in keys {
+                if !unique_keys.contains(&key) {
+                    unique_keys.push(key);
+                    let handle = interner.intern(&key);
+                    let expected_handle = (unique_keys.len() - 1) as u64;
+                    prop_assert_eq!(handle, expected_handle);
+                }
+            }
+        }
+
+        /// Property: First key gets handle 0
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_first_key_gets_zero(key in any::<u32>()) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+            let handle = interner.intern(&key);
+            prop_assert_eq!(handle, 0);
+        }
+
+        /// Property: Different keys get different handles
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_different_keys_different_handles(
+            key1 in any::<u32>(),
+            key2 in any::<u32>()
+        ) {
+            prop_assume!(key1 != key2);
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            let h1 = interner.intern(&key1);
+            let h2 = interner.intern(&key2);
+
+            prop_assert_ne!(h1, h2);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Idempotency
+    // =============================================================================
+
+    proptest! {
+        /// Property: intern is idempotent - same key always returns same handle
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_intern_idempotent(
+            key in any::<u32>(),
+            repeat_count in 1usize..10
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            let first_handle = interner.intern(&key);
+
+            for _ in 0..repeat_count {
+                let handle = interner.intern(&key);
+                prop_assert_eq!(handle, first_handle);
+            }
+
+            // Length should be 1 (only one unique key)
+            prop_assert_eq!(interner.len(), 1);
+        }
+
+        /// Property: Re-interning doesn't increase length
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_reintern_no_length_increase(
+            keys in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            // Intern all keys once
+            for &key in &keys {
+                interner.intern(&key);
+            }
+
+            let len_after_first = interner.len();
+
+            // Intern all keys again
+            for &key in &keys {
+                interner.intern(&key);
+            }
+
+            prop_assert_eq!(interner.len(), len_after_first);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Bidirectional Mapping
+    // =============================================================================
+
+    proptest! {
+        /// Property: intern -> resolve roundtrip returns same key
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_intern_resolve_roundtrip(
+            keys in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in keys {
+                let handle = interner.intern(&key);
+                prop_assert_eq!(interner.resolve(handle), Some(&key));
+            }
+        }
+
+        /// Property: get_handle -> resolve roundtrip is consistent
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_get_handle_resolve_consistent(
+            keys in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            // Intern keys
+            for &key in &keys {
+                interner.intern(&key);
+            }
+
+            // Verify consistency
+            for &key in &keys {
+                if let Some(handle) = interner.get_handle(&key) {
+                    prop_assert_eq!(interner.resolve(handle), Some(&key));
+                }
+            }
+        }
+
+        /// Property: All handles from 0..len are valid
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_all_handles_valid_up_to_len(
+            keys in prop::collection::vec(0u32..50, 1..30)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in keys {
+                interner.intern(&key);
+            }
+
+            let len = interner.len() as u64;
+
+            // All handles from 0 to len-1 should resolve to something
+            for handle in 0..len {
+                prop_assert!(interner.resolve(handle).is_some());
+            }
+
+            // Handles >= len should return None
+            for handle in len..(len + 10) {
+                prop_assert_eq!(interner.resolve(handle), None);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - get_handle
+    // =============================================================================
+
+    proptest! {
+        /// Property: get_handle returns None for keys not yet interned
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_get_handle_missing_returns_none(
+            interned_keys in prop::collection::vec(0u32..20, 1..10),
+            query_key in 20u32..40
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in interned_keys {
+                interner.intern(&key);
+            }
+
+            // Query key not in range should return None
+            prop_assert_eq!(interner.get_handle(&query_key), None);
+        }
+
+        /// Property: get_handle doesn't modify state (read-only)
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_get_handle_read_only(
+            keys in prop::collection::vec(any::<u32>(), 1..20),
+            query_key in any::<u32>()
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in keys {
+                interner.intern(&key);
+            }
+
+            let len_before = interner.len();
+            let _ = interner.get_handle(&query_key);
+            let len_after = interner.len();
+
+            prop_assert_eq!(len_before, len_after);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Length and Empty State
+    // =============================================================================
+
+    proptest! {
+        /// Property: len equals number of unique interned keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_len_equals_unique_keys(
+            keys in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in &keys {
+                interner.intern(key);
+            }
+
+            let unique_count = {
+                let mut unique = std::collections::HashSet::new();
+                for key in keys {
+                    unique.insert(key);
+                }
+                unique.len()
+            };
+
+            prop_assert_eq!(interner.len(), unique_count);
+        }
+
+        /// Property: is_empty is consistent with len
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_is_empty_consistent_with_len(
+            keys in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in keys {
+                interner.intern(&key);
+
+                // Check consistency: is_empty() ⟺ len() has no items
+                if interner.is_empty() {
+                    prop_assert_eq!(interner.len(), 0);
+                } else {
+                    prop_assert!(!interner.is_empty());
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Clear Operation
+    // =============================================================================
+
+    proptest! {
+        /// Property: clear_shrink resets to empty state
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_resets_state(
+            keys in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in keys {
+                interner.intern(&key);
+            }
+
+            interner.clear_shrink();
+
+            prop_assert!(interner.is_empty());
+            prop_assert_eq!(interner.len(), 0);
+        }
+
+        /// Property: clear invalidates all previous handles
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_invalidates_handles(
+            keys in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            let mut handles = Vec::new();
+            for key in &keys {
+                let handle = interner.intern(key);
+                handles.push(handle);
+            }
+
+            interner.clear_shrink();
+
+            // All previous handles should now be invalid
+            for handle in handles {
+                prop_assert_eq!(interner.resolve(handle), None);
+            }
+
+            // All previous keys should not have handles
+            for key in keys {
+                prop_assert_eq!(interner.get_handle(&key), None);
+            }
+        }
+
+        /// Property: usable after clear - handles restart from 0
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_usable_after_clear(
+            keys1 in prop::collection::vec(any::<u32>(), 1..20),
+            keys2 in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+
+            for key in keys1 {
+                interner.intern(&key);
+            }
+
+            interner.clear_shrink();
+
+            // After clear, handles should restart from 0
+            if let Some(&first_key) = keys2.first() {
+                let handle = interner.intern(&first_key);
+                prop_assert_eq!(handle, 0);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Reference Implementation Equivalence
+    // =============================================================================
+
+    proptest! {
+        /// Property: Behavior matches reference HashMap implementation
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_matches_reference_implementation(
+            keys in prop::collection::vec(0u32..50, 0..50)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+            let mut reference: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+            let mut next_handle: u64 = 0;
+
+            for key in keys {
+                let handle = interner.intern(&key);
+
+                // Update reference
+                let ref_handle = *reference.entry(key).or_insert_with(|| {
+                    let h = next_handle;
+                    next_handle += 1;
+                    h
+                });
+
+                // Verify handle matches reference
+                prop_assert_eq!(handle, ref_handle);
+
+                // Verify length matches
+                prop_assert_eq!(interner.len(), reference.len());
+
+                // Verify all keys in reference have correct handles
+                for (&ref_key, &ref_handle) in &reference {
+                    prop_assert_eq!(interner.get_handle(&ref_key), Some(ref_handle));
+                    prop_assert_eq!(interner.resolve(ref_handle), Some(&ref_key));
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Memory and Capacity
+    // =============================================================================
+
+    proptest! {
+        /// Property: approx_bytes increases as keys are added
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_approx_bytes_increases(
+            keys in prop::collection::vec(any::<u32>(), 10..30)
+        ) {
+            let mut interner: KeyInterner<u32> = KeyInterner::new();
+            let base_bytes = interner.approx_bytes();
+
+            for key in keys {
+                interner.intern(&key);
+            }
+
+            let after_bytes = interner.approx_bytes();
+            prop_assert!(after_bytes >= base_bytes);
+        }
+    }
+}

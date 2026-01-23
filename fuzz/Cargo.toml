@@ -103,3 +103,24 @@ path = "fuzz_targets/ghost_list_property_tests.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "interner_arbitrary_ops"
+path = "fuzz_targets/interner_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "interner_stress"
+path = "fuzz_targets/interner_stress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "interner_property_tests"
+path = "fuzz_targets/interner_property_tests.rs"
+test = false
+doc = false
+bench = false
