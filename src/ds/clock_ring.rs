@@ -1356,6 +1356,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(miri, ignore)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
@@ -1759,6 +1760,7 @@ mod property_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(miri, ignore)]
 mod fuzz_tests {
     use super::*;
 

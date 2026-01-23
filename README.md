@@ -23,10 +23,8 @@ This crate is designed for systems programming, microservices, and performance-c
 ## Features
 
 - Policy implementations optimized for performance and predictability.
-- Backends that support both in-memory and composite cache strategies.
 - Optional integration with metrics collectors (e.g., Prometheus/metrics crates).
 - Benchmarks to compare policy performance under real-world workloads.
-- Idiomatic Rust API with `no_std` compatibility where appropriate.
 
 ## Installation
 
