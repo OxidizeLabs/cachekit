@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use cachekit::ds::SlotArena;
+use cachekit::ds::{SlotArena, SlotId};
 use std::collections::HashMap;
 
 // Fuzz stress test with heavy operations and reference validation
@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let mut arena: SlotArena<u32> = SlotArena::new();
-    let mut reference: HashMap<usize, u32> = HashMap::new();
+    let mut reference: HashMap<SlotId, u32> = HashMap::new();
 
     for (idx, &byte) in data.iter().enumerate() {
         let value = u32::from(byte);
@@ -24,26 +24,23 @@ fuzz_target!(|data: &[u8]| {
             0 => {
                 // insert
                 let id = arena.insert(value);
-                reference.insert(id.index(), value);
+                reference.insert(id, value);
             }
             1 => {
                 // remove a random existing slot
                 if !reference.is_empty() {
                     let keys: Vec<_> = reference.keys().copied().collect();
                     let key_idx = (value as usize) % keys.len();
-                    let key = keys[key_idx];
-
-                    let id = cachekit::ds::SlotId(key);
+                    let id = keys[key_idx];
                     let arena_val = arena.remove(id);
-                    let ref_val = reference.remove(&key);
+                    let ref_val = reference.remove(&id);
 
                     assert_eq!(arena_val, ref_val);
                 }
             }
             2 => {
                 // verify consistency
-                for (&key, &expected_value) in &reference {
-                    let id = cachekit::ds::SlotId(key);
+                for (&id, &expected_value) in &reference {
                     assert_eq!(arena.get(id), Some(&expected_value));
                     assert!(arena.contains(id));
                 }

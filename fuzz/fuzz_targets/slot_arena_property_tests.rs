@@ -119,7 +119,8 @@ fn test_length_tracking(data: &[u8]) {
             expected_len += 1;
         } else if !arena.is_empty() {
             // remove
-            if let Some(id) = arena.iter_ids().next() {
+            let id = arena.iter_ids().next();
+            if let Some(id) = id {
                 arena.remove(id);
                 expected_len -= 1;
             }

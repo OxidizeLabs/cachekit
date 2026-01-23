@@ -32,36 +32,27 @@ fuzz_target!(|data: &[u8]| {
 fn test_lru_eviction_order(data: &[u8], capacity_byte: u8) {
     let capacity = ((capacity_byte as usize) % 10).max(2);
     let mut ghost: GhostList<u32> = GhostList::new(capacity);
+    let mut reference: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
 
     // Record keys in sequence
     let keys: Vec<u32> = data.iter().map(|&b| u32::from(b)).take(20).collect();
     for &key in &keys {
         ghost.record(key);
+        if let Some(pos) = reference.iter().position(|&k| k == key) {
+            reference.remove(pos);
+        } else if reference.len() >= capacity {
+            reference.pop_back();
+        }
+        reference.push_front(key);
     }
 
-    // If we recorded more than capacity, verify oldest are gone
-    if keys.len() > capacity {
-        // First (capacity) unique keys might be evicted
-        let mut unique_keys: Vec<u32> = Vec::new();
-        for &key in &keys {
-            if !unique_keys.contains(&key) {
-                unique_keys.push(key);
-            }
-        }
-
-        // Last 'capacity' unique keys should be present
-        let keep_from = unique_keys.len().saturating_sub(capacity);
-        for &key in &unique_keys[keep_from..] {
-            assert!(ghost.contains(&key));
-        }
-
-        // Earlier keys should be evicted (if there were enough unique keys)
-        if unique_keys.len() > capacity {
-            for &key in &unique_keys[..keep_from.min(3)] {
-                assert!(!ghost.contains(&key));
-            }
-        }
+    assert_eq!(ghost.len(), reference.len());
+    for &key in &reference {
+        assert!(ghost.contains(&key));
     }
+
+    let snapshot = ghost.debug_snapshot_keys();
+    assert_eq!(snapshot, reference.iter().copied().collect::<Vec<_>>());
 
     ghost.debug_validate_invariants();
 }

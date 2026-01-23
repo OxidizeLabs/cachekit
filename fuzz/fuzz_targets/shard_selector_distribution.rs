@@ -61,6 +61,7 @@ fuzz_target!(|data: &[u8]| {
 
             // With different seeds and multiple shards, we expect some keys to map differently
             // (but not enforcing strict requirements as it depends on the hash function)
+            let _ = (same_count, different_count);
         }
     }
 });

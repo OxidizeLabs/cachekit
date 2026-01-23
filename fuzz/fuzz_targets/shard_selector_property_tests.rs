@@ -139,4 +139,5 @@ fn test_seed_isolation(data: &[u8]) {
 
     // We don't enforce strict distribution, but with enough keys and different seeds,
     // we'd expect at least some differences (this is probabilistic)
+    let _ = different_count;
 }

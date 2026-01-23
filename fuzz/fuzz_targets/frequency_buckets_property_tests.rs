@@ -135,7 +135,7 @@ fn test_peek_pop_consistency(data: &[u8]) {
         let popped = buckets.pop_min();
 
         if let (Some((peek_key, peek_freq)), Some((pop_key, pop_freq))) = (peeked, popped) {
-            assert_eq!(peek_key, pop_key);
+            assert_eq!(*peek_key, pop_key);
             assert_eq!(peek_freq, pop_freq);
         }
 

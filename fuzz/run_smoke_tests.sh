@@ -13,10 +13,16 @@ ARBITRARY_TARGETS=$(cargo fuzz list | grep '_arbitrary_ops$' || true)
 
 if [ -n "$ARBITRARY_TARGETS" ]; then
     echo "Using arbitrary_ops targets (representative subset)"
-    mapfile -t TARGETS <<< "$ARBITRARY_TARGETS"
+    TARGETS=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && TARGETS+=("$line")
+    done <<< "$ARBITRARY_TARGETS"
 else
     echo "No arbitrary_ops targets found, using all targets"
-    mapfile -t TARGETS < <(cargo fuzz list)
+    TARGETS=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && TARGETS+=("$line")
+    done < <(cargo fuzz list)
 fi
 
 echo "Found ${#TARGETS[@]} target(s):"

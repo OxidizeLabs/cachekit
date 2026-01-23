@@ -98,7 +98,7 @@ fn test_stale_entries_skipped(data: &[u8]) {
     // But pop_best should skip them and return correct values
     let mut seen_keys = std::collections::HashSet::new();
 
-    while let Some((key, score)) = heap.pop_best() {
+    while let Some((key, _score)) = heap.pop_best() {
         // Each key should only be popped once
         assert!(!seen_keys.contains(&key));
         seen_keys.insert(key);
@@ -139,10 +139,10 @@ fn test_rebuild_preserves_order(data: &[u8]) {
     assert_eq!(heap.heap_len(), heap.len());
 
     // Pop order should match expected
-    for (expected_key, expected_score) in expected {
+    for (_expected_key, expected_score) in expected {
         let popped = heap.pop_best();
         assert!(popped.is_some());
-        let (key, score) = popped.unwrap();
+        let (_key, score) = popped.unwrap();
         assert_eq!(score, expected_score);
         // Key might differ if scores are equal, but score must match
     }

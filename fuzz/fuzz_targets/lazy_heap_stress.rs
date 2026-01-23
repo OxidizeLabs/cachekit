@@ -33,7 +33,7 @@ fuzz_target!(|data: &[u8]| {
                 heap.update(key, score);
 
                 // Update reference: remove old entry if exists, add new one
-                reference.retain(|&Reverse((s, k))| k != key);
+                reference.retain(|&Reverse((_s, k))| k != key);
                 reference.push(Reverse((score, key)));
                 live_keys.insert(key);
             }
