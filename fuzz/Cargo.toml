@@ -1,0 +1,42 @@
+[package]
+name = "cachekit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.5"
+
+[dependencies.cachekit]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "clock_ring_arbitrary_ops"
+path = "fuzz_targets/clock_ring_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clock_ring_insert_stress"
+path = "fuzz_targets/clock_ring_insert_stress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clock_ring_eviction_patterns"
+path = "fuzz_targets/clock_ring_eviction_patterns.rs"
+test = false
+doc = false
+bench = false

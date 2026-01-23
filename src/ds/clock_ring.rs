@@ -1354,3 +1354,567 @@ mod tests {
         assert!(ring.is_empty());
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Core Invariants
+    // =============================================================================
+
+    proptest! {
+        /// Property: len() never exceeds capacity
+        #[test]
+        fn prop_len_within_capacity(
+            capacity in 1usize..100,
+            ops in prop::collection::vec((0u32..1000, 0u32..100), 0..200)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for (key, value) in ops {
+                ring.insert(key, value);
+                prop_assert!(ring.len() <= ring.capacity());
+            }
+        }
+
+        /// Property: Index and slot consistency - every indexed key has matching slot
+        #[test]
+        fn prop_index_slot_consistency(
+            capacity in 1usize..50,
+            ops in prop::collection::vec((0u32..100, 0u32..100), 0..100)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for (key, value) in ops {
+                ring.insert(key, value);
+                ring.debug_validate_invariants();
+            }
+        }
+
+        /// Property: Get after insert returns the correct value
+        #[test]
+        fn prop_get_after_insert(
+            capacity in 1usize..50,
+            key in 0u32..100,
+            value in 0u32..1000
+        ) {
+            let mut ring = ClockRing::new(capacity);
+            ring.insert(key, value);
+
+            if ring.contains(&key) {
+                prop_assert_eq!(ring.peek(&key), Some(&value));
+            }
+        }
+
+        /// Property: Insert on full ring returns eviction or None
+        #[test]
+        fn prop_insert_eviction_behavior(
+            capacity in 1usize..20,
+            keys in prop::collection::vec(0u32..50, 0..100)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for key in keys {
+                let len_before = ring.len();
+                let evicted = ring.insert(key, key * 10);
+
+                if len_before < capacity {
+                    // Not full - no eviction expected
+                    if evicted.is_some() {
+                        // Unless we're updating an existing key
+                        prop_assert!(len_before == ring.len());
+                    }
+                } else {
+                    // Full - eviction expected unless updating existing key
+                    prop_assert!(ring.len() <= capacity);
+                }
+
+                ring.debug_validate_invariants();
+            }
+        }
+
+        /// Property: Remove decreases length and makes key absent
+        #[test]
+        fn prop_remove_behavior(
+            capacity in 1usize..50,
+            keys in prop::collection::vec(0u32..100, 1..50)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            // Insert all keys
+            for &key in &keys {
+                ring.insert(key, key * 10);
+            }
+
+            // Remove half
+            for &key in &keys[0..keys.len()/2] {
+                let len_before = ring.len();
+                let removed = ring.remove(&key);
+
+                if removed.is_some() {
+                    prop_assert_eq!(ring.len(), len_before - 1);
+                    prop_assert!(!ring.contains(&key));
+                }
+
+                ring.debug_validate_invariants();
+            }
+        }
+
+        /// Property: Update doesn't change len, only value
+        #[test]
+        fn prop_update_preserves_len(
+            capacity in 1usize..50,
+            ops in prop::collection::vec((0u32..50, 0u32..100), 1..50)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for (key, value) in &ops {
+                ring.insert(*key, *value);
+            }
+
+            let len_before = ring.len();
+
+            // Update existing keys
+            for (key, new_value) in ops {
+                if ring.contains(&key) {
+                    ring.update(&key, new_value + 1000);
+                    prop_assert_eq!(ring.len(), len_before);
+                }
+            }
+
+            ring.debug_validate_invariants();
+        }
+
+        /// Property: Referenced entries survive longer than unreferenced
+        #[test]
+        fn prop_second_chance_behavior(
+            capacity in 2usize..10
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            // Fill ring
+            for i in 0..capacity {
+                ring.insert(i as u32, i as u32);
+            }
+
+            // Mark first entry as referenced
+            ring.touch(&0);
+
+            // Insert new entry - should not evict entry 0
+            ring.insert(capacity as u32, capacity as u32);
+
+            // Entry 0 should still be present due to reference bit
+            prop_assert!(ring.contains(&0) || ring.len() < capacity);
+        }
+
+        /// Property: peek doesn't modify state (can be called multiple times)
+        #[test]
+        fn prop_peek_idempotent(
+            capacity in 1usize..50,
+            keys in prop::collection::vec(0u32..100, 1..50)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for key in keys {
+                ring.insert(key, key * 10);
+            }
+
+            // Take snapshot
+            let snapshot_before = ring.debug_snapshot_slots();
+
+            // Peek all entries multiple times
+            for i in 0..100 {
+                ring.peek(&i);
+            }
+
+            let snapshot_after = ring.debug_snapshot_slots();
+
+            // State should be unchanged
+            prop_assert_eq!(snapshot_before, snapshot_after);
+        }
+
+        /// Property: Hand position stays within bounds
+        #[test]
+        fn prop_hand_within_bounds(
+            capacity in 1usize..50,
+            ops in prop::collection::vec((0u32..100, 0u32..100), 0..200)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for (key, value) in ops {
+                ring.insert(key, value);
+                ring.debug_validate_invariants();
+            }
+        }
+
+        /// Property: pop_victim decreases length
+        #[test]
+        fn prop_pop_victim_decreases_len(
+            capacity in 1usize..50,
+            keys in prop::collection::vec(0u32..100, 1..50)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for key in keys {
+                ring.insert(key, key * 10);
+            }
+
+            while !ring.is_empty() {
+                let len_before = ring.len();
+                let evicted = ring.pop_victim();
+
+                if evicted.is_some() {
+                    prop_assert_eq!(ring.len(), len_before - 1);
+                    let (evicted_key, _) = evicted.unwrap();
+                    prop_assert!(!ring.contains(&evicted_key));
+                }
+
+                ring.debug_validate_invariants();
+            }
+        }
+
+        /// Property: Clear empties the ring
+        #[test]
+        fn prop_clear_empties(
+            capacity in 1usize..50,
+            keys in prop::collection::vec(0u32..100, 1..50)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for key in keys {
+                ring.insert(key, key * 10);
+            }
+
+            ring.clear();
+
+            prop_assert!(ring.is_empty());
+            prop_assert_eq!(ring.len(), 0);
+            ring.debug_validate_invariants();
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Sequential Operation Consistency
+    // =============================================================================
+
+    #[derive(Debug, Clone)]
+    enum Operation {
+        Insert(u32, u32),
+        Get(u32),
+        Peek(u32),
+        Touch(u32),
+        Update(u32, u32),
+        Remove(u32),
+        PopVictim,
+    }
+
+    fn operation_strategy() -> impl Strategy<Value = Operation> {
+        prop_oneof![
+            (0u32..50, 0u32..100).prop_map(|(k, v)| Operation::Insert(k, v)),
+            (0u32..50).prop_map(Operation::Get),
+            (0u32..50).prop_map(Operation::Peek),
+            (0u32..50).prop_map(Operation::Touch),
+            (0u32..50, 0u32..100).prop_map(|(k, v)| Operation::Update(k, v)),
+            (0u32..50).prop_map(Operation::Remove),
+            Just(Operation::PopVictim),
+        ]
+    }
+
+    proptest! {
+        /// Property: Arbitrary operation sequences maintain all invariants
+        #[test]
+        fn prop_arbitrary_ops_maintain_invariants(
+            capacity in 1usize..30,
+            ops in prop::collection::vec(operation_strategy(), 0..200)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for op in ops {
+                match op {
+                    Operation::Insert(k, v) => {
+                        ring.insert(k, v);
+                    }
+                    Operation::Get(k) => {
+                        ring.get(&k);
+                    }
+                    Operation::Peek(k) => {
+                        ring.peek(&k);
+                    }
+                    Operation::Touch(k) => {
+                        ring.touch(&k);
+                    }
+                    Operation::Update(k, v) => {
+                        ring.update(&k, v);
+                    }
+                    Operation::Remove(k) => {
+                        ring.remove(&k);
+                    }
+                    Operation::PopVictim => {
+                        ring.pop_victim();
+                    }
+                }
+
+                // All invariants must hold after every operation
+                ring.debug_validate_invariants();
+                prop_assert!(ring.len() <= ring.capacity());
+            }
+        }
+
+        /// Property: Interleaved inserts/removes maintain consistency
+        #[test]
+        fn prop_interleaved_insert_remove(
+            capacity in 1usize..30,
+            ops in prop::collection::vec((0u32..50, any::<bool>()), 0..200)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            for (key, should_insert) in ops {
+                if should_insert {
+                    ring.insert(key, key * 10);
+                } else {
+                    ring.remove(&key);
+                }
+
+                ring.debug_validate_invariants();
+                prop_assert!(ring.len() <= ring.capacity());
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Edge Cases
+    // =============================================================================
+
+    proptest! {
+        /// Property: Zero capacity ring stays empty
+        #[test]
+        fn prop_zero_capacity_noop(
+            ops in prop::collection::vec((0u32..100, 0u32..100), 0..50)
+        ) {
+            let mut ring = ClockRing::<u32, u32>::new(0);
+
+            for (key, value) in ops {
+                ring.insert(key, value);
+                prop_assert!(ring.is_empty());
+                prop_assert_eq!(ring.len(), 0);
+                prop_assert!(!ring.contains(&key));
+            }
+        }
+
+        /// Property: Capacity 1 ring never exceeds 1 entry
+        #[test]
+        fn prop_capacity_one_single_entry(
+            keys in prop::collection::vec(0u32..100, 1..50)
+        ) {
+            let mut ring = ClockRing::new(1);
+
+            for key in keys {
+                ring.insert(key, key * 10);
+                prop_assert!(ring.len() <= 1);
+                ring.debug_validate_invariants();
+            }
+        }
+
+        /// Property: Duplicate inserts don't grow the ring
+        #[test]
+        fn prop_duplicate_inserts_no_growth(
+            capacity in 1usize..30,
+            key in 0u32..50,
+            values in prop::collection::vec(0u32..100, 1..50)
+        ) {
+            let mut ring = ClockRing::new(capacity);
+
+            ring.insert(key, 0);
+            let len_after_first = ring.len();
+
+            for value in values {
+                ring.insert(key, value);
+                prop_assert_eq!(ring.len(), len_after_first);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Concurrent Wrapper (if enabled)
+    // =============================================================================
+
+    #[cfg(feature = "concurrency")]
+    proptest! {
+        /// Property: Concurrent wrapper maintains same invariants
+        #[test]
+        fn prop_concurrent_maintains_invariants(
+            capacity in 1usize..30,
+            ops in prop::collection::vec((0u32..50, 0u32..100), 0..100)
+        ) {
+            let ring = ConcurrentClockRing::new(capacity);
+
+            for (key, value) in ops {
+                ring.insert(key, value);
+                prop_assert!(ring.len() <= ring.capacity());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+
+    /// Fuzz target: arbitrary operation sequences
+    ///
+    /// This can be used with cargo-fuzz or as a regular test with
+    /// generated inputs.
+    pub fn fuzz_arbitrary_operations(data: &[u8]) {
+        if data.len() < 2 {
+            return;
+        }
+
+        let capacity = (data[0] as usize % 50).max(1);
+        let mut ring = ClockRing::new(capacity);
+
+        let mut idx = 1;
+        while idx < data.len() {
+            if idx + 2 >= data.len() {
+                break;
+            }
+
+            let op = data[idx] % 7;
+            let key = data[idx + 1] as u32;
+            let value = data[idx + 2] as u32;
+
+            match op {
+                0 => {
+                    ring.insert(key, value);
+                },
+                1 => {
+                    ring.get(&key);
+                },
+                2 => {
+                    ring.peek(&key);
+                },
+                3 => {
+                    ring.touch(&key);
+                },
+                4 => {
+                    ring.update(&key, value);
+                },
+                5 => {
+                    ring.remove(&key);
+                },
+                6 => {
+                    ring.pop_victim();
+                },
+                _ => unreachable!(),
+            }
+
+            // Validate invariants after each operation
+            ring.debug_validate_invariants();
+            assert!(ring.len() <= ring.capacity());
+
+            idx += 3;
+        }
+    }
+
+    /// Fuzz target: stress test with many inserts
+    pub fn fuzz_insert_stress(data: &[u8]) {
+        if data.len() < 4 {
+            return;
+        }
+
+        let capacity = (data[0] as usize % 100).max(1);
+        let mut ring = ClockRing::new(capacity);
+
+        for chunk in data[1..].chunks(2) {
+            if chunk.len() < 2 {
+                break;
+            }
+            let key = chunk[0] as u32;
+            let value = chunk[1] as u32;
+            ring.insert(key, value);
+
+            assert!(ring.len() <= ring.capacity());
+        }
+
+        ring.debug_validate_invariants();
+    }
+
+    /// Fuzz target: eviction patterns with reference bits
+    pub fn fuzz_eviction_patterns(data: &[u8]) {
+        if data.len() < 3 {
+            return;
+        }
+
+        let capacity = (data[0] as usize % 20).max(2);
+        let mut ring = ClockRing::new(capacity);
+
+        // Fill the ring
+        for i in 0..capacity {
+            ring.insert(i as u32, i as u32);
+        }
+
+        let mut idx = 1;
+        while idx < data.len() {
+            if idx + 1 >= data.len() {
+                break;
+            }
+
+            let key = data[idx] as u32 % capacity as u32;
+            let should_touch = data[idx + 1] % 2 == 0;
+
+            if should_touch {
+                ring.touch(&key);
+            }
+
+            // Insert new entry to trigger eviction
+            let new_key = capacity as u32 + (idx as u32);
+            ring.insert(new_key, new_key);
+
+            ring.debug_validate_invariants();
+            assert!(ring.len() <= ring.capacity());
+
+            idx += 2;
+        }
+    }
+
+    #[test]
+    fn test_fuzz_arbitrary_operations_smoke() {
+        // Smoke test with some sample inputs
+        let inputs = vec![
+            vec![5, 0, 1, 2, 1, 3, 4, 2, 5, 6],
+            vec![10, 6, 7, 8, 5, 9, 10, 0, 1, 2],
+            vec![1, 0, 0, 0, 1, 1, 1, 2, 2, 2],
+        ];
+
+        for input in inputs {
+            fuzz_arbitrary_operations(&input);
+        }
+    }
+
+    #[test]
+    fn test_fuzz_insert_stress_smoke() {
+        let inputs = vec![
+            vec![5, 1, 2, 3, 4, 5, 6, 7, 8],
+            vec![1, 0, 0, 0, 0, 0, 0],
+            vec![20; 100],
+        ];
+
+        for input in inputs {
+            fuzz_insert_stress(&input);
+        }
+    }
+
+    #[test]
+    fn test_fuzz_eviction_patterns_smoke() {
+        let inputs = vec![
+            vec![5, 0, 1, 1, 0, 2, 1, 3, 0],
+            vec![3, 0, 0, 1, 1, 2, 0, 0, 1],
+            vec![10, 1, 0, 2, 1, 3, 0, 4, 1],
+        ];
+
+        for input in inputs {
+            fuzz_eviction_patterns(&input);
+        }
+    }
+}
