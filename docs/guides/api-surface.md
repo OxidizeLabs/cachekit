@@ -19,6 +19,6 @@ This page maps the major modules and how they fit together.
 
 ## Where to Start
 
-- [Builder overview](integration.md)
-- [Policy guidance](policies/README.md)
-- [Data structures](policy-ds/README.md)
+- [Builder overview](../getting-started/integration.md)
+- [Policy guidance](../policies/README.md)
+- [Data structures](../policy-ds/README.md)

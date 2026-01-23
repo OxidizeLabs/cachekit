@@ -4,7 +4,7 @@ CacheKit employs a multi-layered testing approach combining unit tests, property
 
 ## Testing Philosophy
 
-Following the [workspace rules](../.cursorrules), we:
+Following the [workspace rules](../../.cursorrules), we:
 
 1. **Test public APIs primarily** - Focus on the contract users depend on
 2. **Test critical internal algorithms** - Property test complex logic like eviction policies
@@ -103,7 +103,7 @@ cd fuzz
 cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=60
 ```
 
-See [fuzz/README.md](../fuzz/README.md) for detailed fuzzing instructions.
+See [fuzz/README.md](../../fuzz/README.md) for detailed fuzzing instructions.
 
 ## Testing Private Methods
 
@@ -223,7 +223,7 @@ rust-gdb --args target/x86_64-unknown-linux-gnu/release/clock_ring_arbitrary_ops
 
 ## Performance Tests
 
-Performance-critical paths have separate benchmarks (see [benchmarks/](../benches/)):
+Performance-critical paths have separate benchmarks (see [benchmarks/](../../benches/)):
 
 ```bash
 cargo bench
@@ -267,6 +267,6 @@ fuzz_target!(|data: &[u8]| {
 
 ## Related Documentation
 
-- [Contributing Guide](../CONTRIBUTING.md)
-- [Fuzz Testing](../fuzz/README.md)
-- [Benchmarking](../benches/README.md)
+- [Contributing Guide](../../CONTRIBUTING.md)
+- [Fuzz Testing](../../fuzz/README.md)
+- [Benchmarking](../../benches/README.md)

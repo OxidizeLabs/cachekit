@@ -183,4 +183,4 @@ To add a new workload:
 
 - [Benchmark Quick Start](../docs/benchmarks/QUICKSTART.md)
 - [Benchmark Docs](../docs/benchmarks/README.md)
-- [Workload Documentation](../docs/workloads.md)
+- [Workload Documentation](../docs/benchmarks/workloads.md)

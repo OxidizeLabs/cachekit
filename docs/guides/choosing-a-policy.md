@@ -1,7 +1,7 @@
 # Choosing a Policy
 
 This guide summarizes practical trade-offs and mirrors the benchmark-driven guidance
-in the [latest benchmark guide](benchmarks/latest/index.md).
+in the [latest benchmark guide](../benchmarks/latest/index.md).
 
 ## Quick Picks
 
@@ -24,5 +24,5 @@ in the [latest benchmark guide](benchmarks/latest/index.md).
 
 ## Deep Dives
 
-- [Implemented policies](policies/README.md)
-- [Policy roadmap](policies/roadmap/README.md)
+- [Implemented policies](../policies/README.md)
+- [Policy roadmap](../policies/roadmap/README.md)

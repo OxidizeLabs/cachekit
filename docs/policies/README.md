@@ -1,6 +1,6 @@
 # Cache Replacement Policies
 
-This document summarizes common cache replacement (eviction) policies, their tradeoffs, and when to use (or avoid) each. It’s written as a practical companion to [Design overview](../design.md).
+This document summarizes common cache replacement (eviction) policies, their tradeoffs, and when to use (or avoid) each. It’s written as a practical companion to [Design overview](../design/design.md).
 
 Implementation notes live in the [per-policy docs](./) and the [policy data structures](../policy-ds/README.md).
 

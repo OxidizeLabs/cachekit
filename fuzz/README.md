@@ -470,12 +470,12 @@ When you add a new fuzz target:
 2. Register it in `fuzz/Cargo.toml`
 3. **That's it!** CI automatically discovers and runs it
 
-**No workflow updates needed!** See [Adding Fuzz Targets Guide](../docs/adding-fuzz-targets.md) for details.
+**No workflow updates needed!** See [Adding Fuzz Targets Guide](../docs/testing/adding-fuzz-targets.md) for details.
 
 ### Documentation
 
-- [Adding Fuzz Targets Guide](../docs/adding-fuzz-targets.md) - How to create new fuzz targets
-- [Fuzzing CI/CD Documentation](../docs/fuzzing-cicd.md) - Complete CI/CD integration details
+- [Adding Fuzz Targets Guide](../docs/testing/adding-fuzz-targets.md) - How to create new fuzz targets
+- [Fuzzing CI/CD Documentation](../docs/testing/fuzzing-cicd.md) - Complete CI/CD integration details
 
 ### Manual Integration Example
 

@@ -455,4 +455,4 @@ Your new fuzz target will automatically be:
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)
 - [Arbitrary Trait Documentation](https://docs.rs/arbitrary/latest/arbitrary/)
 - [Fuzzing CI/CD Guide](fuzzing-cicd.md)
-- [Fuzz Targets Documentation](../fuzz/README.md)
+- [Fuzz Targets Documentation](../../fuzz/README.md)

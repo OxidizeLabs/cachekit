@@ -90,7 +90,7 @@ In a PR that targets `main`:
 
 - Bump `Cargo.toml` `version = "X.Y.Z(...)"` (no `v`).
 - Finalize `CHANGELOG.md` for that version/date.
-- (Optional) Update [Benchmarks](benchmarks.md) after a local run:
+- (Optional) Update [Benchmarks](../benchmarks/overview.md) after a local run:
   - `cargo bench`
   - `scripts/update_docs_benchmarks.sh target/criterion docs/benchmarks.md`
 

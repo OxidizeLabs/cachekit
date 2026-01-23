@@ -117,13 +117,13 @@ Metrics should guide design decisions, not justify them afterward.
 
 Design in layers:
 - Storage layer: how entries live in memory, allocation, layout, indexing.
-- Policy layer: LRU, FIFO, LFU, LRU-K (roadmap: Clock/ARC/2Q, etc; see [Policy roadmap](policies/roadmap/README.md)); only manipulates metadata and ordering.
+- Policy layer: LRU, FIFO, LFU, LRU-K (roadmap: Clock/ARC/2Q, etc; see [Policy roadmap](../policies/roadmap/README.md)); only manipulates metadata and ordering.
 - Integration layer: ties application objects, payloads, or IDs into cache entries.
 
 Related docs:
-- [Policy overview](policies/README.md)
-- [Policy roadmap](policies/roadmap/README.md)
-- [Policy data structures](policy-ds/README.md)
+- [Policy overview](../policies/README.md)
+- [Policy roadmap](../policies/roadmap/README.md)
+- [Policy data structures](../policy-ds/README.md)
 
 This makes:
 - Benchmarking easier.

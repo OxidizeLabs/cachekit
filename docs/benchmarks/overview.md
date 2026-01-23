@@ -4,9 +4,9 @@ This page links to the latest benchmark reports and release-tag snapshots.
 
 ## Quick Links
 
-- **[📊 Interactive Charts](benchmarks/latest/charts.html)** - Visual comparison with Chart.js
-- **[📄 Latest Results](benchmarks/latest/)** - Comprehensive Markdown tables
-- **[📁 Raw JSON Data](benchmarks/latest/results.json)** - For tooling and custom analysis
+- **[📊 Interactive Charts](latest/charts.html)** - Visual comparison with Chart.js
+- **[📄 Latest Results](latest/)** - Comprehensive Markdown tables
+- **[📁 Raw JSON Data](latest/results.json)** - For tooling and custom analysis
 
 ## Automated Reports
 
@@ -22,4 +22,4 @@ Benchmark reports are **automatically generated weekly** via GitHub Actions and 
 ./scripts/update_benchmark_docs.sh
 ```
 
-This runs the full benchmark suite and renders results to [docs/benchmarks/latest/](benchmarks/latest/).
+This runs the full benchmark suite and renders results to [docs/benchmarks/latest/](latest/).

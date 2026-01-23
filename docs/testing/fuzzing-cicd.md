@@ -318,7 +318,7 @@ If fuzz tests find "issues" that aren't real bugs:
 
 ## Resources
 
-- [Fuzz Target Documentation](../fuzz/README.md)
+- [Fuzz Target Documentation](../../fuzz/README.md)
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)
 - [GitHub Actions Workflow Syntax](https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions)
