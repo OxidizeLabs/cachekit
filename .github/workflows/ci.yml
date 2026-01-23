@@ -82,6 +82,45 @@ jobs:
           cargo miri test --package cachekit --lib ds:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
           cargo miri test --package cachekit --lib policy:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
 
+  # Property-based tests with higher case count
+  property-tests:
+    name: Property Tests
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: Run property tests with increased cases
+        run: PROPTEST_CASES=1000 cargo test --lib property_tests
+        env:
+          RUST_BACKTRACE: 1
+
+  # Quick fuzz test on PRs (smoke test)
+  fuzz-quick:
+    name: Fuzz Tests (Quick)
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> target"
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: Run fuzz tests (60s each)
+        run: |
+          cd fuzz
+          cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=60 -seed=1
+          cargo fuzz run clock_ring_insert_stress -- -max_total_time=60 -seed=2
+          cargo fuzz run clock_ring_eviction_patterns -- -max_total_time=60 -seed=3
+      - name: Run in-tree fuzz smoke tests
+        run: cargo test --lib fuzz_tests
+
   # Documentation build check
   docs:
     name: Documentation

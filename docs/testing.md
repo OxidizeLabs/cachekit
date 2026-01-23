@@ -159,25 +159,31 @@ cargo test --features concurrency
 
 Our CI runs:
 1. Unit tests on all supported platforms
-2. Property tests with default case count (256)
-3. Short fuzz runs (60 seconds per target)
-4. Tests with all feature combinations
+2. Property tests with increased case count (1000)
+3. Quick fuzz tests on PRs (60 seconds per target)
+4. Continuous fuzzing nightly (1 hour per target)
+5. Tests with all feature combinations
+
+**See [Fuzzing in CI/CD](fuzzing-cicd.md) for detailed fuzzing setup.**
 
 Example CI configuration:
 ```yaml
-- name: Run unit tests
-  run: cargo test --all-features
-
-- name: Run property tests
-  run: PROPTEST_CASES=1000 cargo test prop_
-
-- name: Run fuzz tests
+# Quick fuzz on PRs
+- name: Run fuzz tests (quick)
   run: |
     cargo install cargo-fuzz
     cd fuzz
-    for target in clock_ring_*; do
-      cargo fuzz run $target -- -max_total_time=60
-    done
+    cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=60 -seed=1
+    cargo fuzz run clock_ring_insert_stress -- -max_total_time=60 -seed=2
+    cargo fuzz run clock_ring_eviction_patterns -- -max_total_time=60 -seed=3
+
+# Property tests with more cases
+- name: Run property tests
+  run: PROPTEST_CASES=1000 cargo test prop_
+
+# Unit tests
+- name: Run unit tests
+  run: cargo test --all-features
 ```
 
 ## Debugging Test Failures

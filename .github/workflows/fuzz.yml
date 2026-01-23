@@ -1,0 +1,222 @@
+name: Continuous Fuzzing
+
+on:
+  # Run on main branch pushes
+  push:
+    branches: [main]
+  # Run nightly
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration per target (seconds)'
+        required: false
+        default: '3600'
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  issues: write  # To create issues on fuzzing failures
+
+jobs:
+  # Long-running fuzz tests
+  fuzz-continuous:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - clock_ring_arbitrary_ops
+          - clock_ring_insert_stress
+          - clock_ring_eviction_patterns
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> target"
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Restore corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run fuzz target
+        id: fuzz
+        continue-on-error: true
+        run: |
+          cd fuzz
+          DURATION=${{ github.event.inputs.duration || '3600' }}
+          echo "Running ${{ matrix.target }} for ${DURATION} seconds"
+          cargo fuzz run ${{ matrix.target }} -- \
+            -max_total_time=${DURATION} \
+            -print_final_stats=1 \
+            -print_corpus_stats=1 \
+            -rss_limit_mb=4096
+        env:
+          RUST_BACKTRACE: full
+
+      - name: Minimize corpus
+        if: always()
+        run: |
+          cd fuzz
+          cargo fuzz cmin ${{ matrix.target }}
+
+      - name: Save corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+
+      - name: Check for crashes
+        id: check_crashes
+        if: always()
+        run: |
+          if [ -d "fuzz/artifacts/${{ matrix.target }}" ] && [ "$(ls -A fuzz/artifacts/${{ matrix.target }})" ]; then
+            echo "crashes_found=true" >> $GITHUB_OUTPUT
+            echo "## Crashes found in ${{ matrix.target }}" >> $GITHUB_STEP_SUMMARY
+            ls -lh fuzz/artifacts/${{ matrix.target }}/ >> $GITHUB_STEP_SUMMARY
+          else
+            echo "crashes_found=false" >> $GITHUB_OUTPUT
+            echo "✅ No crashes found in ${{ matrix.target }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload crash artifacts
+        if: steps.check_crashes.outputs.crashes_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ matrix.target }}-${{ github.sha }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 90
+
+      - name: Create issue for crashes
+        if: steps.check_crashes.outputs.crashes_found == 'true' && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const target = '${{ matrix.target }}';
+            const artifactsDir = `fuzz/artifacts/${target}`;
+            const files = fs.readdirSync(artifactsDir);
+
+            const body = `
+            ## 🐛 Fuzzing Found Crashes in \`${target}\`
+
+            The continuous fuzzing workflow found ${files.length} crash(es) in the \`${target}\` fuzz target.
+
+            ### Crash Files
+            ${files.map(f => `- \`${f}\``).join('\n')}
+
+            ### How to Reproduce
+            \`\`\`bash
+            cd fuzz
+            cargo fuzz run ${target} fuzz/artifacts/${target}/${files[0]}
+            \`\`\`
+
+            ### Artifacts
+            Download crash artifacts from: [Actions Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            ### Next Steps
+            1. Reproduce locally using the command above
+            2. Fix the underlying issue
+            3. Add a regression test
+            4. Re-run fuzzing to verify the fix
+
+            ---
+            *Automatically created by continuous fuzzing workflow*
+            `;
+
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[FUZZ] Crashes found in ${target}`,
+              body: body,
+              labels: ['bug', 'fuzzing', 'security']
+            });
+
+      - name: Fail if crashes found
+        if: steps.check_crashes.outputs.crashes_found == 'true'
+        run: |
+          echo "::error::Fuzzing found crashes in ${{ matrix.target }}"
+          exit 1
+
+  # Corpus statistics and coverage
+  fuzz-coverage:
+    name: Fuzz Coverage Report
+    runs-on: ubuntu-latest
+    needs: fuzz-continuous
+    if: always() && github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> target"
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Restore all corpora
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/
+          key: fuzz-corpus-all-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Generate coverage report
+        run: |
+          cd fuzz
+          for target in clock_ring_arbitrary_ops clock_ring_insert_stress clock_ring_eviction_patterns; do
+            echo "## Coverage for $target" >> $GITHUB_STEP_SUMMARY
+            cargo fuzz coverage $target || true
+            if [ -f "coverage/$target/coverage.json" ]; then
+              echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+              cat "coverage/$target/coverage.json" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-coverage-${{ github.sha }}
+          path: fuzz/coverage/
+          retention-days: 30
+
+  # Summary job
+  fuzz-summary:
+    name: Fuzzing Summary
+    runs-on: ubuntu-latest
+    needs: fuzz-continuous
+    if: always()
+    steps:
+      - name: Check fuzzing results
+        run: |
+          if [ "${{ needs.fuzz-continuous.result }}" != "success" ]; then
+            echo "⚠️ Some fuzz targets found issues or failed" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ All fuzz targets passed" >> $GITHUB_STEP_SUMMARY
+          fi
