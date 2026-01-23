@@ -11,6 +11,7 @@ authors = ["Thomas Korrison <ferrite.db@gmail.com>"]
 license = "MIT OR Apache-2.0"
 description = "High-performance cache primitives with pluggable eviction policies (LRU, LFU, FIFO, 2Q, Clock-PRO, S3-FIFO) and optional metrics."
 homepage = "https://oxidizelabs.github.io/cachekit/"
+documentation = "https://docs.rs/cachekit"
 repository = "https://github.com/OxidizeLabs/cachekit"
 readme = "README.md"
 keywords = ["cache", "lru", "lfu", "eviction", "s3-fifo"]
