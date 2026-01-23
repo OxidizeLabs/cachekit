@@ -124,3 +124,24 @@ path = "fuzz_targets/interner_property_tests.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "intrusive_list_arbitrary_ops"
+path = "fuzz_targets/intrusive_list_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "intrusive_list_stress"
+path = "fuzz_targets/intrusive_list_stress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "intrusive_list_property_tests"
+path = "fuzz_targets/intrusive_list_property_tests.rs"
+test = false
+doc = false
+bench = false

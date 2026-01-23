@@ -1771,3 +1771,567 @@ mod tests {
         list.debug_validate_invariants();
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - FIFO Ordering
+    // =============================================================================
+
+    proptest! {
+        /// Property: push_back + pop_front preserves FIFO order
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_fifo_ordering(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            // Push all values to back
+            for value in &values {
+                list.push_back(*value);
+            }
+
+            // Pop from front should return values in same order
+            for value in values {
+                let popped = list.pop_front();
+                prop_assert_eq!(popped, Some(value));
+            }
+
+            prop_assert!(list.is_empty());
+        }
+
+        /// Property: push_front + pop_back preserves reverse FIFO order
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_reverse_fifo_ordering(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            // Push all values to front
+            for value in &values {
+                list.push_front(*value);
+            }
+
+            // Pop from back should return values in same order
+            for value in values {
+                let popped = list.pop_back();
+                prop_assert_eq!(popped, Some(value));
+            }
+
+            prop_assert!(list.is_empty());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - LIFO Ordering
+    // =============================================================================
+
+    proptest! {
+        /// Property: push_front + pop_front preserves LIFO order
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_lifo_ordering(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            // Push all values to front
+            for value in &values {
+                list.push_front(*value);
+            }
+
+            // Pop from front should return values in reverse order
+            for value in values.iter().rev() {
+                let popped = list.pop_front();
+                prop_assert_eq!(popped, Some(*value));
+            }
+
+            prop_assert!(list.is_empty());
+        }
+
+        /// Property: push_back + pop_back preserves LIFO order
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_reverse_lifo_ordering(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            // Push all values to back
+            for value in &values {
+                list.push_back(*value);
+            }
+
+            // Pop from back should return values in reverse order
+            for value in values.iter().rev() {
+                let popped = list.pop_back();
+                prop_assert_eq!(popped, Some(*value));
+            }
+
+            prop_assert!(list.is_empty());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Move Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: move_to_front makes element the front (MRU)
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_move_to_front_is_mru(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = list.push_back(*value);
+                ids.push((id, *value));
+            }
+
+            // Move each element to front and verify
+            for (id, value) in ids {
+                if list.contains(id) {
+                    list.move_to_front(id);
+                    prop_assert_eq!(list.front(), Some(&value));
+                    prop_assert_eq!(list.front_id(), Some(id));
+                }
+            }
+        }
+
+        /// Property: move_to_back makes element the back (LRU)
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_move_to_back_is_lru(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = list.push_front(*value);
+                ids.push((id, *value));
+            }
+
+            // Move each element to back and verify
+            for (id, value) in ids {
+                if list.contains(id) {
+                    list.move_to_back(id);
+                    prop_assert_eq!(list.back(), Some(&value));
+                    prop_assert_eq!(list.back_id(), Some(id));
+                }
+            }
+        }
+
+        /// Property: move operations are idempotent
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_move_operations_idempotent(
+            values in prop::collection::vec(any::<u32>(), 1..20),
+            repeat_count in 1usize..5
+        ) {
+            let mut list = IntrusiveList::new();
+
+            for value in values {
+                let id = list.push_back(value);
+
+                // Moving to front multiple times should work
+                for _ in 0..repeat_count {
+                    prop_assert!(list.move_to_front(id));
+                    prop_assert_eq!(list.front_id(), Some(id));
+                }
+
+                // Moving to back multiple times should work
+                for _ in 0..repeat_count {
+                    prop_assert!(list.move_to_back(id));
+                    prop_assert_eq!(list.back_id(), Some(id));
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Remove Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: remove decreases length by 1 and invalidates id
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_decreases_length(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = list.push_back(*value);
+                ids.push((id, *value));
+            }
+
+            // Remove each element
+            for (id, value) in ids {
+                let old_len = list.len();
+                let removed = list.remove(id);
+
+                prop_assert_eq!(removed, Some(value));
+                prop_assert_eq!(list.len(), old_len - 1);
+                prop_assert!(!list.contains(id));
+                prop_assert_eq!(list.get(id), None);
+            }
+
+            prop_assert!(list.is_empty());
+        }
+
+        /// Property: removing non-existent id returns None
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_missing_returns_none(
+            values in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            for value in values {
+                let id = list.push_back(value);
+                let old_len = list.len();
+
+                // Remove once
+                let removed = list.remove(id);
+                prop_assert_eq!(removed, Some(value));
+
+                // Remove again should return None
+                let removed_again = list.remove(id);
+                prop_assert_eq!(removed_again, None);
+                prop_assert_eq!(list.len(), old_len - 1);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Length and Empty State
+    // =============================================================================
+
+    proptest! {
+        /// Property: len tracks number of elements correctly
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_len_tracks_elements(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut expected_len = 0;
+
+            for value in values {
+                list.push_back(value);
+                expected_len += 1;
+                prop_assert_eq!(list.len(), expected_len);
+            }
+
+            while !list.is_empty() {
+                list.pop_front();
+                expected_len -= 1;
+                prop_assert_eq!(list.len(), expected_len);
+            }
+
+            prop_assert_eq!(list.len(), 0);
+        }
+
+        /// Property: is_empty is consistent with len and front/back
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_is_empty_consistent(
+            values in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            for value in values {
+                list.push_back(value);
+
+                if list.is_empty() {
+                    prop_assert_eq!(list.len(), 0);
+                    prop_assert_eq!(list.front(), None);
+                    prop_assert_eq!(list.back(), None);
+                } else {
+                    prop_assert!(!list.is_empty());
+                    prop_assert!(list.front().is_some());
+                    prop_assert!(list.back().is_some());
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Front/Back Consistency
+    // =============================================================================
+
+    proptest! {
+        /// Property: push_front updates front, push_back updates back
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_push_front_back_consistency(
+            front_values in prop::collection::vec(any::<u32>(), 1..20),
+            back_values in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            // Push to front
+            for value in &front_values {
+                list.push_front(*value);
+                prop_assert_eq!(list.front(), Some(value));
+            }
+
+            // Push to back
+            for value in &back_values {
+                list.push_back(*value);
+                prop_assert_eq!(list.back(), Some(value));
+            }
+
+            // Front should be last pushed to front
+            if let Some(&last_front) = front_values.last() {
+                prop_assert_eq!(list.front(), Some(&last_front));
+            }
+
+            // Back should be last pushed to back
+            if let Some(&last_back) = back_values.last() {
+                prop_assert_eq!(list.back(), Some(&last_back));
+            }
+        }
+
+        /// Property: front_id and back_id are consistent with front/back
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_front_back_id_consistency(
+            values in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            for value in values {
+                list.push_back(value);
+
+                if let Some(front_id) = list.front_id() {
+                    prop_assert_eq!(list.get(front_id), list.front());
+                }
+
+                if let Some(back_id) = list.back_id() {
+                    prop_assert_eq!(list.get(back_id), list.back());
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Contains and Get
+    // =============================================================================
+
+    proptest! {
+        /// Property: contains returns true for all pushed ids
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_contains_all_pushed(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut ids = Vec::new();
+
+            for value in values {
+                let id = list.push_back(value);
+                ids.push(id);
+
+                // All pushed ids should be contained
+                for &id in &ids {
+                    prop_assert!(list.contains(id));
+                }
+            }
+        }
+
+        /// Property: get returns correct value for all ids
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_get_returns_correct_value(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = list.push_back(*value);
+                ids.push((id, *value));
+            }
+
+            // Verify get returns correct value
+            for (id, value) in ids {
+                prop_assert_eq!(list.get(id), Some(&value));
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Clear Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: clear_shrink resets to empty state
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_resets_state(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            for value in values {
+                list.push_back(value);
+            }
+
+            list.clear_shrink();
+
+            prop_assert!(list.is_empty());
+            prop_assert_eq!(list.len(), 0);
+            prop_assert_eq!(list.front(), None);
+            prop_assert_eq!(list.back(), None);
+        }
+
+        /// Property: clear invalidates all previous ids
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_invalidates_ids(
+            values in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut ids = Vec::new();
+
+            for value in values {
+                let id = list.push_back(value);
+                ids.push(id);
+            }
+
+            list.clear_shrink();
+
+            // All previous ids should be invalid
+            for id in ids {
+                prop_assert!(!list.contains(id));
+                prop_assert_eq!(list.get(id), None);
+            }
+        }
+
+        /// Property: usable after clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_usable_after_clear(
+            values1 in prop::collection::vec(any::<u32>(), 1..20),
+            values2 in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            for value in values1 {
+                list.push_back(value);
+            }
+
+            list.clear_shrink();
+
+            // Should be usable after clear
+            for value in &values2 {
+                list.push_back(*value);
+            }
+
+            prop_assert_eq!(list.len(), values2.len());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Epoch Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: epoch default is 0, set_epoch updates correctly
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_epoch_operations(
+            values in prop::collection::vec(any::<u32>(), 1..20),
+            epochs in prop::collection::vec(any::<u64>(), 1..20)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut ids = Vec::new();
+
+            // Push with default epoch
+            for value in &values {
+                let id = list.push_back(*value);
+                ids.push(id);
+                prop_assert_eq!(list.epoch(id), Some(0));
+            }
+
+            // Set epochs
+            for (id, epoch) in ids.iter().zip(epochs.iter()) {
+                list.set_epoch(*id, *epoch);
+                prop_assert_eq!(list.epoch(*id), Some(*epoch));
+            }
+        }
+
+        /// Property: push_with_epoch sets epoch correctly
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_push_with_epoch(
+            values in prop::collection::vec(any::<u32>(), 1..20),
+            epochs in prop::collection::vec(any::<u64>(), 1..20)
+        ) {
+            let mut list = IntrusiveList::new();
+
+            for (value, epoch) in values.iter().zip(epochs.iter()) {
+                let id = list.push_back_with_epoch(*value, *epoch);
+                prop_assert_eq!(list.epoch(id), Some(*epoch));
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Reference Implementation Equivalence
+    // =============================================================================
+
+    proptest! {
+        /// Property: Behavior matches reference VecDeque for FIFO operations
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_matches_vecdeque_fifo(
+            operations in prop::collection::vec((0u8..4, any::<u32>()), 0..50)
+        ) {
+            let mut list = IntrusiveList::new();
+            let mut reference = std::collections::VecDeque::new();
+
+            for (op, value) in operations {
+                match op % 4 {
+                    0 => {
+                        list.push_back(value);
+                        reference.push_back(value);
+                    }
+                    1 => {
+                        list.push_front(value);
+                        reference.push_front(value);
+                    }
+                    2 => {
+                        let list_val = list.pop_front();
+                        let ref_val = reference.pop_front();
+                        prop_assert_eq!(list_val, ref_val);
+                    }
+                    3 => {
+                        let list_val = list.pop_back();
+                        let ref_val = reference.pop_back();
+                        prop_assert_eq!(list_val, ref_val);
+                    }
+                    _ => unreachable!(),
+                }
+
+                // Verify consistency
+                prop_assert_eq!(list.len(), reference.len());
+                prop_assert_eq!(list.front(), reference.front());
+                prop_assert_eq!(list.back(), reference.back());
+                prop_assert_eq!(list.is_empty(), reference.is_empty());
+            }
+        }
+    }
+}

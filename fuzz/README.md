@@ -221,6 +221,49 @@ cd fuzz
 cargo fuzz run interner_property_tests
 ```
 
+## IntrusiveList Fuzz Targets
+
+### 16. `intrusive_list_arbitrary_ops`
+
+Tests arbitrary sequences of all IntrusiveList operations (push_front, push_back, pop_front, pop_back, move_to_front, move_to_back, remove, get, clear).
+
+**Purpose**: Find edge cases in doubly linked list operation interleaving and state transitions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run intrusive_list_arbitrary_ops
+```
+
+### 17. `intrusive_list_stress`
+
+Stress tests with heavy push/pop operations using reference VecDeque validation.
+
+**Purpose**: Find ordering bugs under high load. Validates against VecDeque to ensure FIFO/LIFO correctness and front/back consistency.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run intrusive_list_stress
+```
+
+### 18. `intrusive_list_property_tests`
+
+Property-based tests verifying specific invariants:
+- FIFO ordering (push_back + pop_front)
+- LIFO ordering (push_front + pop_front)
+- LRU behavior (move_to_front)
+- Remove consistency
+- Clear operation correctness
+
+**Purpose**: Verify fundamental doubly linked list properties and invariants hold under all conditions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run intrusive_list_property_tests
+```
+
 ## Running Fuzz Tests
 
 ### Run a specific target
@@ -293,6 +336,9 @@ Add to your CI pipeline:
     cargo fuzz run interner_arbitrary_ops -- -max_total_time=60 -seed=13
     cargo fuzz run interner_stress -- -max_total_time=60 -seed=14
     cargo fuzz run interner_property_tests -- -max_total_time=60 -seed=15
+    cargo fuzz run intrusive_list_arbitrary_ops -- -max_total_time=60 -seed=16
+    cargo fuzz run intrusive_list_stress -- -max_total_time=60 -seed=17
+    cargo fuzz run intrusive_list_property_tests -- -max_total_time=60 -seed=18
 ```
 
 ## Coverage
@@ -324,5 +370,6 @@ cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-
 - [FrequencyBuckets Tests](../src/ds/frequency_buckets.rs) - Unit and property tests for FrequencyBuckets
 - [GhostList Tests](../src/ds/ghost_list.rs) - Unit and property tests for GhostList
 - [KeyInterner Tests](../src/ds/interner.rs) - Unit and property tests for KeyInterner
+- [IntrusiveList Tests](../src/ds/intrusive_list.rs) - Unit and property tests for IntrusiveList
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)
