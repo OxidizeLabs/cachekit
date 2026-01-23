@@ -82,3 +82,24 @@ path = "fuzz_targets/frequency_buckets_property_tests.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ghost_list_arbitrary_ops"
+path = "fuzz_targets/ghost_list_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ghost_list_lru_stress"
+path = "fuzz_targets/ghost_list_lru_stress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ghost_list_property_tests"
+path = "fuzz_targets/ghost_list_property_tests.rs"
+test = false
+doc = false
+bench = false

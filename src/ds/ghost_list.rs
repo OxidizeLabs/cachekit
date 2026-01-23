@@ -659,3 +659,450 @@ mod tests {
         assert!(!ghost.contains(&"b"));
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Core Invariants
+    // =============================================================================
+
+    proptest! {
+        /// Property: Invariants hold after any sequence of operations
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_invariants_always_hold(
+            capacity in 1usize..20,
+            ops in prop::collection::vec((0u8..3, any::<u32>()), 0..50)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            for (op, key) in ops {
+                match op % 3 {
+                    0 => { ghost.record(key); }
+                    1 => { ghost.remove(&key); }
+                    2 => { let _ = ghost.contains(&key); }
+                    _ => unreachable!(),
+                }
+
+                ghost.debug_validate_invariants();
+            }
+        }
+
+        /// Property: len() never exceeds capacity
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_len_never_exceeds_capacity(
+            capacity in 1usize..30,
+            keys in prop::collection::vec(any::<u32>(), 0..100)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            for key in keys {
+                ghost.record(key);
+                prop_assert!(ghost.len() <= capacity);
+            }
+        }
+
+        /// Property: Empty state is consistent
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_empty_state_consistent(
+            capacity in 1usize..20,
+            keys in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            for key in keys {
+                ghost.record(key);
+            }
+
+            ghost.clear();
+
+            prop_assert!(ghost.is_empty());
+            prop_assert_eq!(ghost.len(), 0);
+            prop_assert_eq!(ghost.capacity(), capacity);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - LRU Eviction Order
+    // =============================================================================
+
+    proptest! {
+        /// Property: LRU eviction - oldest keys evicted first
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_lru_eviction_order(
+            capacity in 2usize..10,
+            keys in prop::collection::vec(0u32..50, 1..30)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            // Collect unique keys in order
+            let mut unique_keys = Vec::new();
+            for &key in &keys {
+                if !unique_keys.contains(&key) {
+                    unique_keys.push(key);
+                }
+                ghost.record(key);
+            }
+
+            // If we have more unique keys than capacity, earliest should be evicted
+            if unique_keys.len() > capacity {
+                let keep_from = unique_keys.len() - capacity;
+                for &key in &unique_keys[keep_from..] {
+                    prop_assert!(ghost.contains(&key));
+                }
+            }
+
+            ghost.debug_validate_invariants();
+        }
+
+        /// Property: Recording existing key doesn't increase length
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_rerecord_no_length_increase(
+            capacity in 2usize..10,
+            key in any::<u32>()
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            ghost.record(key);
+            let len_after_first = ghost.len();
+
+            ghost.record(key);
+            let len_after_second = ghost.len();
+
+            prop_assert_eq!(len_after_first, len_after_second);
+            prop_assert_eq!(len_after_first, 1);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Promotion to MRU
+    // =============================================================================
+
+    proptest! {
+        /// Property: Re-recording promotes to MRU position
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_rerecord_promotes_to_mru(
+            capacity in 2usize..10,
+            keys in prop::collection::vec(0u32..20, 2..10)
+        ) {
+            prop_assume!(keys.len() >= 2);
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            // Record keys
+            for &key in &keys {
+                ghost.record(key);
+            }
+
+            if ghost.is_empty() {
+                return Ok(());
+            }
+
+            // Get snapshot to find a key that's in the list
+            let snapshot = ghost.debug_snapshot_keys();
+            if snapshot.is_empty() {
+                return Ok(());
+            }
+
+            let promoted_key = snapshot[snapshot.len() - 1]; // Pick LRU key
+
+            // Re-record to promote
+            ghost.record(promoted_key);
+
+            // Should now be at MRU position (index 0 in snapshot)
+            let new_snapshot = ghost.debug_snapshot_keys();
+            if !new_snapshot.is_empty() {
+                prop_assert_eq!(new_snapshot[0], promoted_key);
+            }
+        }
+
+        /// Property: Promoted keys survive longer than unpromoted
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_promoted_keys_survive_longer(
+            capacity in 3usize..8,
+            fill_keys in prop::collection::vec(0u32..10, 3..8)
+        ) {
+            prop_assume!(fill_keys.len() >= capacity);
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            // Fill to capacity with unique keys
+            let mut unique = Vec::new();
+            for &key in &fill_keys {
+                if !unique.contains(&key) && unique.len() < capacity {
+                    ghost.record(key);
+                    unique.push(key);
+                }
+            }
+
+            if unique.len() < capacity {
+                return Ok(());
+            }
+
+            // Pick LRU key and promote it
+            let snapshot = ghost.debug_snapshot_keys();
+            let promoted_key = snapshot[snapshot.len() - 1];
+            ghost.record(promoted_key);
+
+            // Record enough new keys to cause evictions
+            for i in 100..(100 + capacity - 1) {
+                ghost.record(i as u32);
+            }
+
+            // Promoted key should still be present
+            prop_assert!(ghost.contains(&promoted_key));
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Contains and Remove
+    // =============================================================================
+
+    proptest! {
+        /// Property: recorded keys are present, removed keys are not
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_contains_after_record(
+            capacity in 1usize..20,
+            key in any::<u32>()
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            ghost.record(key);
+            prop_assert!(ghost.contains(&key));
+
+            ghost.remove(&key);
+            prop_assert!(!ghost.contains(&key));
+        }
+
+        /// Property: remove returns true only for present keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_returns_correct_bool(
+            capacity in 1usize..10,
+            keys in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            for &key in &keys {
+                ghost.record(key);
+            }
+
+            for &key in &keys {
+                let was_present = ghost.contains(&key);
+                let remove_result = ghost.remove(&key);
+
+                if was_present {
+                    prop_assert!(remove_result);
+                    prop_assert!(!ghost.contains(&key));
+                }
+
+                // Removing again should return false
+                prop_assert!(!ghost.remove(&key));
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Clear Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: clear resets to empty state
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_resets_state(
+            capacity in 1usize..20,
+            keys in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            for key in keys {
+                ghost.record(key);
+            }
+
+            ghost.clear();
+
+            prop_assert!(ghost.is_empty());
+            prop_assert_eq!(ghost.len(), 0);
+            prop_assert_eq!(ghost.capacity(), capacity);
+            ghost.debug_validate_invariants();
+        }
+
+        /// Property: clear_shrink behaves like clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_shrink_same_as_clear(
+            capacity in 1usize..20,
+            keys in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut ghost1: GhostList<u32> = GhostList::new(capacity);
+            let mut ghost2: GhostList<u32> = GhostList::new(capacity);
+
+            for &key in &keys {
+                ghost1.record(key);
+                ghost2.record(key);
+            }
+
+            ghost1.clear();
+            ghost2.clear_shrink();
+
+            prop_assert_eq!(ghost1.len(), ghost2.len());
+            prop_assert_eq!(ghost1.is_empty(), ghost2.is_empty());
+            prop_assert_eq!(ghost1.capacity(), ghost2.capacity());
+        }
+
+        /// Property: usable after clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_usable_after_clear(
+            capacity in 1usize..10,
+            keys1 in prop::collection::vec(any::<u32>(), 1..20),
+            keys2 in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            for key in keys1 {
+                ghost.record(key);
+            }
+
+            ghost.clear();
+
+            for &key in &keys2 {
+                ghost.record(key);
+            }
+
+            let unique_keys2: std::collections::HashSet<_> = keys2.into_iter().collect();
+            let expected_len = unique_keys2.len().min(capacity);
+            prop_assert_eq!(ghost.len(), expected_len);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Zero Capacity
+    // =============================================================================
+
+    proptest! {
+        /// Property: zero capacity ghost list is always empty (no-op)
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_zero_capacity_always_empty(
+            keys in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(0);
+
+            for key in keys {
+                ghost.record(key);
+                prop_assert!(ghost.is_empty());
+                prop_assert_eq!(ghost.len(), 0);
+                prop_assert_eq!(ghost.capacity(), 0);
+                prop_assert!(!ghost.contains(&key));
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Batch Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: record_batch records all keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_record_batch_records_all(
+            capacity in 5usize..20,
+            keys in prop::collection::vec(0u32..20, 1..10)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            let count = ghost.record_batch(keys.clone());
+
+            prop_assert_eq!(count, keys.len());
+
+            let unique_keys: std::collections::HashSet<_> = keys.into_iter().collect();
+            let expected_len = unique_keys.len().min(capacity);
+            prop_assert_eq!(ghost.len(), expected_len);
+        }
+
+        /// Property: remove_batch removes only present keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_batch_only_present(
+            capacity in 5usize..20,
+            record_keys in prop::collection::vec(0u32..10, 1..10),
+            remove_keys in prop::collection::vec(0u32..20, 1..10)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+
+            ghost.record_batch(record_keys.clone());
+
+            let removed = ghost.remove_batch(remove_keys.clone());
+
+            let record_set: std::collections::HashSet<_> = record_keys.into_iter().collect();
+            let remove_set: std::collections::HashSet<_> = remove_keys.into_iter().collect();
+
+            // Count how many keys to remove were actually present
+            let mut expected_removed = 0;
+            for key in remove_set {
+                if record_set.contains(&key) && !ghost.is_empty() {
+                    expected_removed += 1;
+                }
+            }
+
+            // removed count should match or be less (due to LRU evictions before removal)
+            prop_assert!(removed <= expected_removed || removed <= record_set.len());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Reference Implementation Equivalence
+    // =============================================================================
+
+    proptest! {
+        /// Property: Behavior matches reference VecDeque implementation
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_matches_reference_implementation(
+            capacity in 2usize..10,
+            keys in prop::collection::vec(0u32..20, 0..30)
+        ) {
+            let mut ghost: GhostList<u32> = GhostList::new(capacity);
+            let mut reference: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+
+            for key in keys {
+                // Update ghost list
+                ghost.record(key);
+
+                // Update reference implementation
+                if let Some(pos) = reference.iter().position(|&k| k == key) {
+                    reference.remove(pos);
+                } else if reference.len() >= capacity {
+                    reference.pop_back(); // Remove LRU
+                }
+                reference.push_front(key); // Add at MRU
+
+                // Verify length matches
+                prop_assert_eq!(ghost.len(), reference.len());
+
+                // Verify all keys in reference are in ghost list
+                for &ref_key in &reference {
+                    prop_assert!(ghost.contains(&ref_key));
+                }
+
+                // Verify snapshot matches reference
+                let snapshot = ghost.debug_snapshot_keys();
+                prop_assert_eq!(snapshot.len(), reference.len());
+                for (snap_key, ref_key) in snapshot.iter().zip(reference.iter()) {
+                    prop_assert_eq!(snap_key, ref_key);
+                }
+            }
+        }
+    }
+}

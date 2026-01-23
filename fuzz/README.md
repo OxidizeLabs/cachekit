@@ -135,6 +135,49 @@ cd fuzz
 cargo fuzz run frequency_buckets_property_tests
 ```
 
+## GhostList Fuzz Targets
+
+### 10. `ghost_list_arbitrary_ops`
+
+Tests arbitrary sequences of all GhostList operations (record, remove, contains, clear).
+
+**Purpose**: Find edge cases in ghost list operation interleaving and state transitions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run ghost_list_arbitrary_ops
+```
+
+### 11. `ghost_list_lru_stress`
+
+Stress tests with heavy record operations using reference VecDeque validation.
+
+**Purpose**: Find LRU eviction bugs under high load. Validates against a VecDeque reference implementation to ensure correct MRU/LRU ordering.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run ghost_list_lru_stress
+```
+
+### 12. `ghost_list_property_tests`
+
+Property-based tests verifying specific invariants:
+- LRU eviction order (oldest evicted first)
+- Promotion to MRU on re-record
+- Capacity bounds enforcement
+- Clear operation correctness
+- Zero capacity no-op behavior
+
+**Purpose**: Verify fundamental ghost list properties and invariants hold under all conditions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run ghost_list_property_tests
+```
+
 ## Running Fuzz Tests
 
 ### Run a specific target
@@ -201,6 +244,9 @@ Add to your CI pipeline:
     cargo fuzz run frequency_buckets_arbitrary_ops -- -max_total_time=60 -seed=7
     cargo fuzz run frequency_buckets_stress -- -max_total_time=60 -seed=8
     cargo fuzz run frequency_buckets_property_tests -- -max_total_time=60 -seed=9
+    cargo fuzz run ghost_list_arbitrary_ops -- -max_total_time=60 -seed=10
+    cargo fuzz run ghost_list_lru_stress -- -max_total_time=60 -seed=11
+    cargo fuzz run ghost_list_property_tests -- -max_total_time=60 -seed=12
 ```
 
 ## Coverage
@@ -230,5 +276,6 @@ cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-
 - [ClockRing Tests](../src/ds/clock_ring.rs) - Unit and property tests for ClockRing
 - [FixedHistory Tests](../src/ds/fixed_history.rs) - Unit and property tests for FixedHistory
 - [FrequencyBuckets Tests](../src/ds/frequency_buckets.rs) - Unit and property tests for FrequencyBuckets
+- [GhostList Tests](../src/ds/ghost_list.rs) - Unit and property tests for GhostList
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)
