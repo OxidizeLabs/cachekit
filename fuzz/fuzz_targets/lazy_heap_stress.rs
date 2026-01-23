@@ -2,8 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use cachekit::ds::LazyMinHeap;
-use std::collections::BinaryHeap;
-use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap};
 
 // Fuzz stress test with heavy operations and reference validation
 //
@@ -15,8 +14,9 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let mut heap: LazyMinHeap<u32, u32> = LazyMinHeap::new();
-    let mut reference: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-    let mut live_keys = std::collections::HashSet::new();
+    let mut reference: BTreeMap<(u32, u64), u32> = BTreeMap::new();
+    let mut ref_by_key: HashMap<u32, (u32, u64)> = HashMap::new();
+    let mut ref_seq: u64 = 0;
 
     for chunk in data.chunks(3) {
         if chunk.len() < 2 {
@@ -33,36 +33,41 @@ fuzz_target!(|data: &[u8]| {
                 heap.update(key, score);
 
                 // Update reference: remove old entry if exists, add new one
-                reference.retain(|&Reverse((_s, k))| k != key);
-                reference.push(Reverse((score, key)));
-                live_keys.insert(key);
+                if let Some((old_score, old_seq)) = ref_by_key.remove(&key) {
+                    reference.remove(&(old_score, old_seq));
+                }
+                let seq = ref_seq;
+                ref_seq = ref_seq.wrapping_add(1);
+                reference.insert((score, seq), key);
+                ref_by_key.insert(key, (score, seq));
             }
             1 => {
                 // pop_best
                 let heap_val = heap.pop_best();
 
-                // Find minimum in reference that's still live
-                let mut ref_val = None;
-                while let Some(Reverse((score, key))) = reference.pop() {
-                    if live_keys.contains(&key) {
-                        ref_val = Some((key, score));
-                        live_keys.remove(&key);
-                        break;
-                    }
-                }
+                // Find minimum in reference (score, then seq)
+                let ref_val = if let Some((&(score, seq), &key)) = reference.iter().next() {
+                    reference.remove(&(score, seq));
+                    ref_by_key.remove(&key);
+                    Some((key, score))
+                } else {
+                    None
+                };
 
                 assert_eq!(heap_val, ref_val);
             }
             2 => {
                 // remove
                 heap.remove(&key);
-                live_keys.remove(&key);
+                if let Some((score, seq)) = ref_by_key.remove(&key) {
+                    reference.remove(&(score, seq));
+                }
             }
             _ => unreachable!(),
         }
 
         // Verify length matches live keys
-        assert_eq!(heap.len(), live_keys.len());
-        assert_eq!(heap.is_empty(), live_keys.is_empty());
+        assert_eq!(heap.len(), ref_by_key.len());
+        assert_eq!(heap.is_empty(), ref_by_key.is_empty());
     }
 });

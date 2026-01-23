@@ -227,7 +227,7 @@ where
 /// ```
 #[derive(Debug)]
 pub struct LazyMinHeap<K, S> {
-    scores: HashMap<K, S>,
+    scores: HashMap<K, ScoreEntry<S>>,
     heap: BinaryHeap<Reverse<HeapEntry<K, S>>>,
     seq: u64,
 }
@@ -393,7 +393,7 @@ where
     /// assert_eq!(heap.score_of(&"missing"), None);
     /// ```
     pub fn score_of(&self, key: &K) -> Option<&S> {
-        self.scores.get(key)
+        self.scores.get(key).map(|entry| &entry.score)
     }
 
     /// Updates `key`'s score and returns the previous score, if any.
@@ -416,9 +416,17 @@ where
     /// assert_eq!(heap.score_of(&"item"), Some(&5));
     /// ```
     pub fn update(&mut self, key: K, score: S) -> Option<S> {
-        let previous = self.scores.insert(key.clone(), score.clone());
-        self.push_entry(key, score);
-        previous
+        let seq = self.seq;
+        self.seq = self.seq.wrapping_add(1);
+        let previous = self.scores.insert(
+            key.clone(),
+            ScoreEntry {
+                score: score.clone(),
+                seq,
+            },
+        );
+        self.push_entry_with_seq(key, score, seq);
+        previous.map(|entry| entry.score)
     }
 
     /// Removes `key` and returns its score, if present.
@@ -442,7 +450,7 @@ where
     /// assert_eq!(heap.pop_best(), Some(("b", 2)));
     /// ```
     pub fn remove(&mut self, key: &K) -> Option<S> {
-        self.scores.remove(key)
+        self.scores.remove(key).map(|entry| entry.score)
     }
 
     /// Pops and returns the minimum `(key, score)`, skipping stale entries.
@@ -465,7 +473,7 @@ where
         loop {
             let Reverse(entry) = self.heap.pop()?;
             match self.scores.get(&entry.key) {
-                Some(score) if *score == entry.score => {
+                Some(current) if current.score == entry.score && current.seq == entry.seq => {
                     self.scores.remove(&entry.key);
                     return Some((entry.key, entry.score));
                 },
@@ -498,13 +506,13 @@ where
     /// ```
     pub fn rebuild(&mut self) {
         self.heap.clear();
-        let entries: Vec<(K, S)> = self
+        let entries: Vec<(K, ScoreEntry<S>)> = self
             .scores
             .iter()
-            .map(|(key, score)| (key.clone(), score.clone()))
+            .map(|(key, entry)| (key.clone(), entry.clone()))
             .collect();
-        for (key, score) in entries {
-            self.push_entry(key, score);
+        for (key, entry) in entries {
+            self.push_entry_with_seq(key, entry.score, entry.seq);
         }
     }
 
@@ -555,7 +563,7 @@ where
     /// ```
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.scores.capacity() * std::mem::size_of::<(K, S)>()
+            + self.scores.capacity() * std::mem::size_of::<(K, ScoreEntry<S>)>()
             + self.heap.capacity() * std::mem::size_of::<std::cmp::Reverse<HeapEntry<K, S>>>()
     }
 
@@ -568,7 +576,7 @@ where
     {
         self.scores
             .iter()
-            .map(|(key, score)| (key.clone(), score.clone()))
+            .map(|(key, entry)| (key.clone(), entry.score.clone()))
             .collect()
     }
 
@@ -581,15 +589,16 @@ where
         }
     }
 
-    fn push_entry(&mut self, key: K, score: S) {
-        let entry = HeapEntry {
-            score,
-            seq: self.seq,
-            key,
-        };
-        self.seq = self.seq.wrapping_add(1);
+    fn push_entry_with_seq(&mut self, key: K, score: S, seq: u64) {
+        let entry = HeapEntry { score, seq, key };
         self.heap.push(Reverse(entry));
     }
+}
+
+#[derive(Debug, Clone)]
+struct ScoreEntry<S> {
+    score: S,
+    seq: u64,
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -668,6 +677,16 @@ mod tests {
         assert_eq!(heap.pop_best(), Some(("a", 1)));
         assert_eq!(heap.pop_best(), Some(("b", 1)));
         assert_eq!(heap.pop_best(), Some(("c", 1)));
+    }
+
+    #[test]
+    fn lazy_heap_update_same_score_refreshes_order() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 1);
+        heap.update("b", 1);
+        heap.update("a", 1); // refresh "a" to the back of the equal-score queue
+        assert_eq!(heap.pop_best(), Some(("b", 1)));
+        assert_eq!(heap.pop_best(), Some(("a", 1)));
     }
 
     #[test]
