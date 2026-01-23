@@ -131,11 +131,11 @@ fn test_peek_pop_consistency(data: &[u8]) {
 
     // Peek and pop should be consistent
     while !buckets.is_empty() {
-        let peeked = buckets.peek_min();
+        let peeked = buckets.peek_min().map(|(peek_key, peek_freq)| (*peek_key, peek_freq));
         let popped = buckets.pop_min();
 
         if let (Some((peek_key, peek_freq)), Some((pop_key, pop_freq))) = (peeked, popped) {
-            assert_eq!(*peek_key, pop_key);
+            assert_eq!(peek_key, pop_key);
             assert_eq!(peek_freq, pop_freq);
         }
 
