@@ -1,6 +1,6 @@
 # Fuzz Testing for CacheKit
 
-This directory contains fuzz tests for the ClockRing data structure using `cargo-fuzz` and `libfuzzer-sys`.
+This directory contains fuzz tests for CacheKit data structures using `cargo-fuzz` and `libfuzzer-sys`.
 
 ## Prerequisites
 
@@ -48,6 +48,48 @@ Tests second-chance algorithm with varying reference bit patterns.
 ```bash
 cd fuzz
 cargo fuzz run clock_ring_eviction_patterns
+```
+
+## FixedHistory Fuzz Targets
+
+### 4. `fixed_history_arbitrary_ops`
+
+Tests arbitrary sequences of all FixedHistory operations (record, most_recent, kth_most_recent, to_vec_mru, clear).
+
+**Purpose**: Find edge cases in ring buffer operation interleaving and state transitions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run fixed_history_arbitrary_ops
+```
+
+### 5. `fixed_history_record_stress`
+
+Stress tests with many record operations using reference implementation validation.
+
+**Purpose**: Find wrapping bugs and ordering issues under heavy recording load. Validates against a reference implementation to ensure correctness.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run fixed_history_record_stress
+```
+
+### 6. `fixed_history_property_tests`
+
+Property-based tests verifying specific invariants:
+- Order preservation after wrapping
+- kth_most_recent consistency
+- Boundary conditions (k=0, k>len)
+- Clear operation correctness
+
+**Purpose**: Verify fundamental properties and invariants hold under all conditions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run fixed_history_property_tests
 ```
 
 ## Running Fuzz Tests
@@ -110,6 +152,9 @@ Add to your CI pipeline:
     cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=60 -seed=1
     cargo fuzz run clock_ring_insert_stress -- -max_total_time=60 -seed=2
     cargo fuzz run clock_ring_eviction_patterns -- -max_total_time=60 -seed=3
+    cargo fuzz run fixed_history_arbitrary_ops -- -max_total_time=60 -seed=4
+    cargo fuzz run fixed_history_record_stress -- -max_total_time=60 -seed=5
+    cargo fuzz run fixed_history_property_tests -- -max_total_time=60 -seed=6
 ```
 
 ## Coverage
@@ -136,7 +181,7 @@ cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-
 
 ## Related Documentation
 
-- [Property Tests](../src/ds/clock_ring.rs) - Property-based tests using proptest
-- [Unit Tests](../src/ds/clock_ring.rs) - Traditional unit tests
+- [ClockRing Tests](../src/ds/clock_ring.rs) - Unit tests for ClockRing
+- [FixedHistory Tests](../src/ds/fixed_history.rs) - Unit tests for FixedHistory
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)

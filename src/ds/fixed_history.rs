@@ -546,3 +546,352 @@ mod tests {
         assert_eq!(history.debug_snapshot_mru(), vec![30, 20, 10]);
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Core Invariants
+    // =============================================================================
+
+    proptest! {
+        /// Property: len() never exceeds capacity K
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_len_within_capacity(
+            timestamps in prop::collection::vec(any::<u64>(), 0..100)
+        ) {
+            let mut history = FixedHistory::<10>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+                prop_assert!(history.len() <= history.capacity());
+                prop_assert!(history.len() <= 10);
+            }
+        }
+
+        /// Property: most_recent() returns the last recorded timestamp
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_most_recent_is_last_recorded(
+            timestamps in prop::collection::vec(any::<u64>(), 1..50)
+        ) {
+            let mut history = FixedHistory::<8>::new();
+
+            for &ts in &timestamps {
+                history.record(ts);
+                prop_assert_eq!(history.most_recent(), Some(ts));
+            }
+        }
+
+        /// Property: to_vec_mru() length matches len()
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_vec_mru_length_matches_len(
+            timestamps in prop::collection::vec(any::<u64>(), 0..50)
+        ) {
+            let mut history = FixedHistory::<7>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+                let vec = history.to_vec_mru();
+                prop_assert_eq!(vec.len(), history.len());
+            }
+        }
+
+        /// Property: kth_most_recent(k) matches to_vec_mru()[k-1]
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_kth_matches_vec_mru(
+            timestamps in prop::collection::vec(any::<u64>(), 1..50)
+        ) {
+            let mut history = FixedHistory::<6>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+            }
+
+            let vec = history.to_vec_mru();
+            for k in 1..=history.len() {
+                prop_assert_eq!(history.kth_most_recent(k), Some(vec[k - 1]));
+            }
+        }
+
+        /// Property: Invariants hold after every operation
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_invariants_always_hold(
+            timestamps in prop::collection::vec(any::<u64>(), 0..100)
+        ) {
+            let mut history = FixedHistory::<5>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+                history.debug_validate_invariants();
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Boundary Conditions
+    // =============================================================================
+
+    proptest! {
+        /// Property: k=0 always returns None
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_k_zero_returns_none(
+            timestamps in prop::collection::vec(any::<u64>(), 0..30)
+        ) {
+            let mut history = FixedHistory::<5>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+                prop_assert_eq!(history.kth_most_recent(0), None);
+            }
+        }
+
+        /// Property: k > len() returns None
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_k_exceeds_len_returns_none(
+            timestamps in prop::collection::vec(any::<u64>(), 0..20),
+            k in 1usize..100
+        ) {
+            let mut history = FixedHistory::<8>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+            }
+
+            if k > history.len() {
+                prop_assert_eq!(history.kth_most_recent(k), None);
+            }
+        }
+
+        /// Property: Empty history returns None for all operations
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_empty_returns_none(k in 0usize..20) {
+            let history = FixedHistory::<10>::new();
+
+            prop_assert!(history.is_empty());
+            prop_assert_eq!(history.len(), 0);
+            prop_assert_eq!(history.most_recent(), None);
+            prop_assert_eq!(history.kth_most_recent(k), None);
+            prop_assert_eq!(history.to_vec_mru().len(), 0);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Ring Buffer Wrapping
+    // =============================================================================
+
+    proptest! {
+        /// Property: After K+N records, only last K timestamps are retained
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_wrapping_retains_last_k(
+            timestamps in prop::collection::vec(1u64..1000, 10..50)
+        ) {
+            const K: usize = 7;
+            let mut history = FixedHistory::<K>::new();
+
+            for ts in &timestamps {
+                history.record(*ts);
+            }
+
+            // History should contain at most K elements
+            prop_assert_eq!(history.len(), K.min(timestamps.len()));
+
+            // Verify it contains the last K timestamps
+            let expected_len = K.min(timestamps.len());
+            let expected: Vec<u64> = timestamps[timestamps.len() - expected_len..]
+                .iter()
+                .rev()
+                .copied()
+                .collect();
+
+            prop_assert_eq!(history.to_vec_mru(), expected);
+        }
+
+        /// Property: Order is preserved in MRU order after wrapping
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_order_preserved_after_wrapping(
+            timestamps in prop::collection::vec(any::<u64>(), 5..50)
+        ) {
+            const K: usize = 5;
+            let mut history = FixedHistory::<K>::new();
+
+            for ts in &timestamps {
+                history.record(*ts);
+            }
+
+            let vec = history.to_vec_mru();
+
+            // Verify strict MRU order: each element should equal kth_most_recent
+            for (idx, &val) in vec.iter().enumerate() {
+                prop_assert_eq!(history.kth_most_recent(idx + 1), Some(val));
+            }
+        }
+
+        /// Property: Length increases monotonically until K, then stays at K
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_length_grows_then_saturates(
+            timestamps in prop::collection::vec(any::<u64>(), 1..30)
+        ) {
+            const K: usize = 8;
+            let mut history = FixedHistory::<K>::new();
+
+            for (idx, ts) in timestamps.iter().enumerate() {
+                history.record(*ts);
+                let expected_len = (idx + 1).min(K);
+                prop_assert_eq!(history.len(), expected_len);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Clear Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: clear() resets to empty state
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_resets_state(
+            timestamps in prop::collection::vec(any::<u64>(), 1..30)
+        ) {
+            let mut history = FixedHistory::<6>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+            }
+
+            history.clear();
+
+            prop_assert!(history.is_empty());
+            prop_assert_eq!(history.len(), 0);
+            prop_assert_eq!(history.most_recent(), None);
+            prop_assert_eq!(history.to_vec_mru().len(), 0);
+            history.debug_validate_invariants();
+        }
+
+        /// Property: clear_shrink() behaves identically to clear()
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_shrink_same_as_clear(
+            timestamps in prop::collection::vec(any::<u64>(), 1..30)
+        ) {
+            let mut history1 = FixedHistory::<6>::new();
+            let mut history2 = FixedHistory::<6>::new();
+
+            for ts in &timestamps {
+                history1.record(*ts);
+                history2.record(*ts);
+            }
+
+            history1.clear();
+            history2.clear_shrink();
+
+            prop_assert_eq!(history1.len(), history2.len());
+            prop_assert_eq!(history1.is_empty(), history2.is_empty());
+            prop_assert_eq!(history1.capacity(), history2.capacity());
+        }
+
+        /// Property: Can record after clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_usable_after_clear(
+            timestamps1 in prop::collection::vec(any::<u64>(), 1..20),
+            timestamps2 in prop::collection::vec(any::<u64>(), 1..20)
+        ) {
+            let mut history = FixedHistory::<5>::new();
+
+            for ts in timestamps1 {
+                history.record(ts);
+            }
+
+            history.clear();
+
+            for ts in &timestamps2 {
+                history.record(*ts);
+            }
+
+            prop_assert_eq!(history.len(), timestamps2.len().min(5));
+            prop_assert_eq!(history.most_recent(), Some(*timestamps2.last().unwrap()));
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Zero Capacity Edge Case
+    // =============================================================================
+
+    proptest! {
+        /// Property: Zero capacity history is always empty
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_zero_capacity_always_empty(
+            timestamps in prop::collection::vec(any::<u64>(), 0..30)
+        ) {
+            let mut history = FixedHistory::<0>::new();
+
+            for ts in timestamps {
+                history.record(ts);
+                prop_assert!(history.is_empty());
+                prop_assert_eq!(history.len(), 0);
+                prop_assert_eq!(history.capacity(), 0);
+                prop_assert_eq!(history.most_recent(), None);
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Reference Implementation Equivalence
+    // =============================================================================
+
+    proptest! {
+        /// Property: Behavior matches reference Vec implementation
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_matches_reference_implementation(
+            timestamps in prop::collection::vec(any::<u64>(), 0..50)
+        ) {
+            const K: usize = 10;
+            let mut history = FixedHistory::<K>::new();
+            let mut reference: Vec<u64> = Vec::new();
+
+            for ts in timestamps {
+                history.record(ts);
+                reference.push(ts);
+
+                // Keep only last K in reference
+                if reference.len() > K {
+                    reference.remove(0);
+                }
+
+                // Verify length matches
+                prop_assert_eq!(history.len(), reference.len());
+
+                // Verify most_recent matches
+                if !reference.is_empty() {
+                    prop_assert_eq!(history.most_recent(), Some(*reference.last().unwrap()));
+                }
+
+                // Verify to_vec_mru matches (reference is in LRU order, so reverse it)
+                let expected: Vec<u64> = reference.iter().rev().copied().collect();
+                prop_assert_eq!(history.to_vec_mru(), expected);
+
+                // Verify each kth_most_recent
+                for k in 1..=reference.len() {
+                    let expected_idx = reference.len() - k;
+                    prop_assert_eq!(history.kth_most_recent(k), Some(reference[expected_idx]));
+                }
+            }
+        }
+    }
+}

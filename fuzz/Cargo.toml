@@ -40,3 +40,24 @@ path = "fuzz_targets/clock_ring_eviction_patterns.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fixed_history_arbitrary_ops"
+path = "fuzz_targets/fixed_history_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fixed_history_record_stress"
+path = "fuzz_targets/fixed_history_record_stress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fixed_history_property_tests"
+path = "fuzz_targets/fixed_history_property_tests.rs"
+test = false
+doc = false
+bench = false
