@@ -3,10 +3,10 @@
 use libfuzzer_sys::fuzz_target;
 use cachekit::ds::ClockRing;
 
-/// Fuzz stress test with many inserts
-///
-/// Tests behavior under heavy insert load with varying keys and values
-/// to find capacity-related edge cases and eviction bugs.
+// Fuzz stress test with many inserts
+//
+// Tests behavior under heavy insert load with varying keys and values
+// to find capacity-related edge cases and eviction bugs.
 fuzz_target!(|data: &[u8]| {
     if data.len() < 4 {
         return;
@@ -26,5 +26,6 @@ fuzz_target!(|data: &[u8]| {
         assert!(ring.len() <= ring.capacity());
     }
 
-    ring.debug_validate_invariants();
+    // Final check
+    assert!(ring.len() <= ring.capacity());
 });

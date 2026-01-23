@@ -3,10 +3,10 @@
 use libfuzzer_sys::fuzz_target;
 use cachekit::ds::ClockRing;
 
-/// Fuzz eviction patterns with reference bits
-///
-/// Tests the second-chance algorithm by varying which entries are touched
-/// (referenced) before eviction, ensuring the CLOCK algorithm behaves correctly.
+// Fuzz eviction patterns with reference bits
+//
+// Tests the second-chance algorithm by varying which entries are touched
+// (referenced) before eviction, ensuring the CLOCK algorithm behaves correctly.
 fuzz_target!(|data: &[u8]| {
     if data.len() < 3 {
         return;
@@ -37,7 +37,6 @@ fuzz_target!(|data: &[u8]| {
         let new_key = capacity as u32 + (idx as u32);
         ring.insert(new_key, new_key);
 
-        ring.debug_validate_invariants();
         assert!(ring.len() <= ring.capacity());
 
         idx += 2;

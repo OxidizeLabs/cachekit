@@ -10,6 +10,8 @@ Install cargo-fuzz:
 cargo install cargo-fuzz
 ```
 
+**Note**: The fuzz targets require nightly Rust and use `libfuzzer-sys = "0.4"`.
+
 ## Available Fuzz Targets
 
 ### 1. `clock_ring_arbitrary_ops`
