@@ -12,7 +12,6 @@ license = "MIT OR Apache-2.0"
 description = "High-performance cache primitives with pluggable eviction policies (LRU, LFU, FIFO, 2Q, Clock-PRO, S3-FIFO) and optional metrics."
 homepage = "https://oxidizelabs.github.io/cachekit/"
 repository = "https://github.com/OxidizeLabs/cachekit"
-documentation = "https://oxidizelabs.github.io/cachekit/"
 readme = "README.md"
 keywords = ["cache", "lru", "lfu", "eviction", "s3-fifo"]
 categories = ["caching", "data-structures"]
