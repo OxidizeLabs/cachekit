@@ -3,7 +3,7 @@
 This document describes the end-to-end release process for the `cachekit` crate:
 versioning, validation, tagging, publishing, and documentation updates.
 
-If you only need a quick set of checks, see `docs/release-checklist.md`.
+If you only need a quick set of checks, see [Release checklist](release-checklist.md).
 
 ## Release types
 
@@ -39,7 +39,7 @@ Make a branch/PR that does the release bookkeeping:
 - **Update docs as needed** (design/docs/policy notes, etc.).
 - **Update benchmark docs (optional):**
   - Run benchmarks locally: `cargo bench`
-  - Update `docs/benchmarks.md` from Criterion output:
+  - Update [Benchmarks](benchmarks.md) from Criterion output:
     - `scripts/update_docs_benchmarks.sh target/criterion docs/benchmarks.md`
 
 Suggested local validation for the PR:

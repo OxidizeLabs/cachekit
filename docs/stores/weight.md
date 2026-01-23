@@ -1,6 +1,6 @@
 # Weight store
 
-This store module is implemented in `cachekit::store::weight` and provides a weight-aware store that enforces both an entry-count limit and a total weight limit (typically “bytes”). For an overview of all store types, see `docs/stores/README.md`.
+This store module is implemented in `cachekit::store::weight` and provides a weight-aware store that enforces both an entry-count limit and a total weight limit (typically “bytes”). For an overview of all store types, see [Stores](README.md).
 
 ## Architecture
 - Stores `Arc<V>` values in a `HashMap<K, WeightEntry<V>>`.

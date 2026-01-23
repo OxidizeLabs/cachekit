@@ -4,7 +4,7 @@ This document explains how CacheKit’s release cycle works in practice: what ru
 what makes `main` “releasable”, and how a version becomes a GitHub Release and (optionally)
 a crates.io publish.
 
-For the hands-on, step-by-step release procedure, see `docs/releasing.md`.
+For the hands-on, step-by-step release procedure, see [Releasing CacheKit](releasing.md).
 
 ## Mental model
 
@@ -90,7 +90,7 @@ In a PR that targets `main`:
 
 - Bump `Cargo.toml` `version = "X.Y.Z(...)"` (no `v`).
 - Finalize `CHANGELOG.md` for that version/date.
-- (Optional) Update `docs/benchmarks.md` after a local run:
+- (Optional) Update [Benchmarks](benchmarks.md) after a local run:
   - `cargo bench`
   - `scripts/update_docs_benchmarks.sh target/criterion docs/benchmarks.md`
 

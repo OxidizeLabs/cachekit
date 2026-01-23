@@ -22,4 +22,4 @@ Benchmark reports are **automatically generated weekly** via GitHub Actions and 
 ./scripts/update_benchmark_docs.sh
 ```
 
-This runs the full benchmark suite and renders results to `docs/benchmarks/latest/`.
+This runs the full benchmark suite and renders results to [docs/benchmarks/latest/](benchmarks/latest/).

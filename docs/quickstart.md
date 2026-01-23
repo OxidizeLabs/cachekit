@@ -44,7 +44,7 @@ Start with one of these:
 - `CachePolicy::Lfu { bucket_hint: None }` for frequency-driven workloads.
 - `CachePolicy::TwoQ { probation_frac: 0.25 }` for mixed workloads with occasional scans.
 
-See the full policy guidance in `docs/policies/README.md`.
+See the full policy guidance in [Policy overview](policies/README.md).
 
 ## Thread Safety
 

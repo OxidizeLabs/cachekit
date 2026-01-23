@@ -1,8 +1,8 @@
 # Cache Replacement Policies
 
-This document summarizes common cache replacement (eviction) policies, their tradeoffs, and when to use (or avoid) each. It’s written as a practical companion to `docs/design.md`.
+This document summarizes common cache replacement (eviction) policies, their tradeoffs, and when to use (or avoid) each. It’s written as a practical companion to [Design overview](../design.md).
 
-Implementation notes live in the per-policy docs under `docs/policies/` and the data-structure docs under `docs/policy-ds/`.
+Implementation notes live in the [per-policy docs](./) and the [policy data structures](../policy-ds/README.md).
 
 Terminology used below:
 - **Admission**: whether an item is allowed into cache at all (some “policies” combine admission + eviction).
@@ -12,7 +12,7 @@ Terminology used below:
 
 ## How To Choose (Quick Guidance)
 
-These recommendations mirror the latest benchmark guide in `docs/benchmarks/latest/index.md`.
+These recommendations mirror the latest benchmark guide in [Benchmarks](../benchmarks/latest/index.md).
 
 Pick based on workload first:
 - **Strong temporal locality + low latency**: `LRU` or `Clock` (fastest in benchmarks).

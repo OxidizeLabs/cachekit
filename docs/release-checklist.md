@@ -1,6 +1,6 @@
 # Release Checklist
 
-- For the full workflow (release PR → tag → automation), see `docs/releasing.md`.
+- For the full workflow (release PR → tag → automation), see [Releasing CacheKit](releasing.md).
 
 - Update `CHANGELOG.md` with final date/version and review entries.
 - Run `cargo fmt` if needed.

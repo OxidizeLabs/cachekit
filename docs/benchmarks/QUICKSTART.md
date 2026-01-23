@@ -218,7 +218,7 @@ Check `Last-Modified` header.
 
 ## 📚 Documentation
 
-- **Methodology**: `docs/benchmarking-plan.md`
+- **Methodology**: [Benchmark docs](README.md)
 - **CI/CD Details**: `CI_CD_SUMMARY.md`
 - **Workflow Docs**: `.github/workflows/README.md`
 - **Local Usage**: `benches/README.md`
