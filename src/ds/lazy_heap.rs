@@ -732,3 +732,543 @@ mod tests {
         assert_eq!(scores.len(), 2);
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Min-Heap Ordering
+    // =============================================================================
+
+    proptest! {
+        /// Property: pop_best returns items in ascending score order
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_min_heap_ordering(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 0..50)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            // Insert entries
+            for (key, score) in entries {
+                heap.update(key, score);
+            }
+
+            // Pop all - scores should be in ascending order
+            let mut last_score = None;
+            while let Some((_key, score)) = heap.pop_best() {
+                if let Some(prev_score) = last_score {
+                    prop_assert!(score >= prev_score);
+                }
+                last_score = Some(score);
+            }
+
+            prop_assert!(heap.is_empty());
+        }
+
+        /// Property: pop_best with tie-breaking uses FIFO order
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_tie_breaking_fifo(
+            keys in prop::collection::vec(any::<u32>(), 3..20)
+        ) {
+            let mut heap = LazyMinHeap::new();
+            let score = 1u32; // Same score for all
+
+            // Insert all with same score
+            for key in &keys {
+                heap.update(*key, score);
+            }
+
+            // Pop should return in insertion order (FIFO)
+            for expected_key in keys {
+                if let Some((key, s)) = heap.pop_best() {
+                    prop_assert_eq!(s, score);
+                    prop_assert_eq!(key, expected_key);
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Update Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: update overwrites previous score
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_update_overwrites(
+            key in any::<u32>(),
+            scores in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            // Update same key multiple times
+            for score in &scores {
+                heap.update(key, *score);
+                prop_assert_eq!(heap.score_of(&key), Some(score));
+                prop_assert_eq!(heap.len(), 1);
+            }
+
+            // Pop should return the last score
+            let popped = heap.pop_best();
+            prop_assert!(popped.is_some());
+            let (k, s) = popped.unwrap();
+            prop_assert_eq!(k, key);
+            prop_assert_eq!(s, *scores.last().unwrap());
+        }
+
+        /// Property: update with same score is idempotent
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_update_idempotent(
+            key in any::<u32>(),
+            score in any::<u32>(),
+            repeat_count in 1usize..10
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for _ in 0..repeat_count {
+                heap.update(key, score);
+                prop_assert_eq!(heap.score_of(&key), Some(&score));
+                prop_assert_eq!(heap.len(), 1);
+            }
+        }
+
+        /// Property: update returns old score
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_update_returns_old_score(
+            key in any::<u32>(),
+            score1 in any::<u32>(),
+            score2 in any::<u32>()
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            let old = heap.update(key, score1);
+            prop_assert_eq!(old, None);
+
+            let old = heap.update(key, score2);
+            prop_assert_eq!(old, Some(score1));
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Remove Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: remove decreases length by 1
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_decreases_length(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 1..30)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            // Insert entries
+            for (key, score) in &entries {
+                heap.update(*key, *score);
+            }
+
+            // Remove each key
+            for (key, score) in entries {
+                let old_len = heap.len();
+                let removed = heap.remove(&key);
+
+                if removed == Some(score) {
+                    prop_assert_eq!(heap.len(), old_len - 1);
+                    prop_assert_eq!(heap.score_of(&key), None);
+                }
+            }
+        }
+
+        /// Property: remove makes key unavailable
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_makes_unavailable(
+            key in any::<u32>(),
+            score in any::<u32>()
+        ) {
+            let mut heap = LazyMinHeap::new();
+            heap.update(key, score);
+
+            prop_assert_eq!(heap.score_of(&key), Some(&score));
+
+            let removed = heap.remove(&key);
+            prop_assert_eq!(removed, Some(score));
+            prop_assert_eq!(heap.score_of(&key), None);
+            prop_assert!(heap.is_empty());
+        }
+
+        /// Property: removing non-existent key returns None
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_missing_returns_none(
+            insert_keys in prop::collection::vec(0u32..20, 1..10),
+            query_key in 20u32..40
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for key in insert_keys {
+                heap.update(key, 1);
+            }
+
+            let removed = heap.remove(&query_key);
+            prop_assert_eq!(removed, None);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Pop Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: pop_best decreases length by 1
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_pop_decreases_length(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 1..30)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for (key, score) in entries {
+                heap.update(key, score);
+            }
+
+            while !heap.is_empty() {
+                let old_len = heap.len();
+                let popped = heap.pop_best();
+
+                prop_assert!(popped.is_some());
+                prop_assert_eq!(heap.len(), old_len - 1);
+            }
+
+            prop_assert_eq!(heap.pop_best(), None);
+        }
+
+        /// Property: pop_best removes key from scores
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_pop_removes_key(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 1..30)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for (key, score) in entries {
+                heap.update(key, score);
+            }
+
+            while let Some((key, _score)) = heap.pop_best() {
+                prop_assert_eq!(heap.score_of(&key), None);
+            }
+        }
+
+        /// Property: pop_best on empty returns None
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_pop_empty_returns_none(_unit in any::<()>()) {
+            let mut heap: LazyMinHeap<u32, u32> = LazyMinHeap::new();
+            prop_assert_eq!(heap.pop_best(), None);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Stale Entry Handling
+    // =============================================================================
+
+    proptest! {
+        /// Property: stale entries are skipped during pop_best
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_stale_entries_skipped(
+            updates in prop::collection::vec((0u32..10, any::<u32>()), 10..50)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            // Insert many updates to create stale entries
+            for (key, score) in updates {
+                heap.update(key, score);
+            }
+
+            // Each key should only be popped once
+            let mut seen_keys = std::collections::HashSet::new();
+
+            while let Some((key, _score)) = heap.pop_best() {
+                prop_assert!(!seen_keys.contains(&key));
+                seen_keys.insert(key);
+            }
+
+            prop_assert!(heap.is_empty());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Rebuild Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: rebuild preserves length and order
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_rebuild_preserves_order(
+            updates in prop::collection::vec((0u32..20, any::<u32>()), 10..50)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            // Insert with updates to create stale entries
+            for (key, score) in updates {
+                heap.update(key, score);
+            }
+
+            let len_before = heap.len();
+
+            // Rebuild
+            heap.rebuild();
+
+            // Length should be preserved
+            prop_assert_eq!(heap.len(), len_before);
+
+            // heap_len should now equal len (no stale entries)
+            prop_assert_eq!(heap.heap_len(), heap.len());
+
+            // Pop order should still be ascending
+            let mut last_score = None;
+            while let Some((_key, score)) = heap.pop_best() {
+                if let Some(prev_score) = last_score {
+                    prop_assert!(score >= prev_score);
+                }
+                last_score = Some(score);
+            }
+        }
+
+        /// Property: maybe_rebuild with factor triggers correctly
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_maybe_rebuild_factor(
+            key in any::<u32>(),
+            updates in prop::collection::vec(any::<u32>(), 3..20)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            // Update same key multiple times to create stale entries
+            for score in updates {
+                heap.update(key, score);
+            }
+
+            let heap_len_before = heap.heap_len();
+            let len = heap.len();
+
+            // maybe_rebuild with factor 1 should always rebuild if heap_len > len
+            if heap_len_before > len {
+                heap.maybe_rebuild(1);
+                prop_assert_eq!(heap.heap_len(), heap.len());
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Length and Empty State
+    // =============================================================================
+
+    proptest! {
+        /// Property: len tracks number of unique keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_len_tracks_unique_keys(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 0..50)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for (key, score) in &entries {
+                heap.update(*key, *score);
+            }
+
+            let unique_count = {
+                let mut unique = std::collections::HashSet::new();
+                for (key, _) in entries {
+                    unique.insert(key);
+                }
+                unique.len()
+            };
+
+            prop_assert_eq!(heap.len(), unique_count);
+        }
+
+        /// Property: is_empty is consistent with len
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_is_empty_consistent(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 0..30)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for (key, score) in entries {
+                heap.update(key, score);
+
+                if heap.is_empty() {
+                    prop_assert_eq!(heap.len(), 0);
+                } else {
+                    prop_assert!(!heap.is_empty());
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Score Queries
+    // =============================================================================
+
+    proptest! {
+        /// Property: score_of returns current score
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_score_of_returns_current(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 1..30)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for (key, score) in &entries {
+                heap.update(*key, *score);
+            }
+
+            // Verify score_of for all keys
+            for (key, expected_score) in entries {
+                if let Some(&actual_score) = heap.score_of(&key) {
+                    prop_assert_eq!(actual_score, expected_score);
+                }
+            }
+        }
+
+        /// Property: score_of returns None for removed keys
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_score_of_removed_is_none(
+            key in any::<u32>(),
+            score in any::<u32>()
+        ) {
+            let mut heap = LazyMinHeap::new();
+            heap.update(key, score);
+            heap.remove(&key);
+
+            prop_assert_eq!(heap.score_of(&key), None);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Clear Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: clear_shrink resets to empty state
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_resets_state(
+            entries in prop::collection::vec((any::<u32>(), any::<u32>()), 1..30)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for (key, score) in entries {
+                heap.update(key, score);
+            }
+
+            heap.clear_shrink();
+
+            prop_assert!(heap.is_empty());
+            prop_assert_eq!(heap.len(), 0);
+            prop_assert_eq!(heap.pop_best(), None);
+        }
+
+        /// Property: usable after clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_usable_after_clear(
+            entries1 in prop::collection::vec((any::<u32>(), any::<u32>()), 1..20),
+            entries2 in prop::collection::vec((any::<u32>(), any::<u32>()), 1..20)
+        ) {
+            let mut heap = LazyMinHeap::new();
+
+            for (key, score) in entries1 {
+                heap.update(key, score);
+            }
+
+            heap.clear_shrink();
+
+            // Should be usable after clear
+            for (key, score) in &entries2 {
+                heap.update(*key, *score);
+            }
+
+            let unique_count = {
+                let mut unique = std::collections::HashSet::new();
+                for (key, _) in entries2 {
+                    unique.insert(key);
+                }
+                unique.len()
+            };
+
+            prop_assert_eq!(heap.len(), unique_count);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Reference Implementation Equivalence
+    // =============================================================================
+
+    proptest! {
+        /// Property: Behavior matches reference BinaryHeap for basic operations
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_matches_binary_heap(
+            operations in prop::collection::vec((0u8..3, any::<u32>(), any::<u32>()), 0..50)
+        ) {
+            let mut heap = LazyMinHeap::new();
+            let mut reference = std::collections::BinaryHeap::new();
+            let mut live_keys = std::collections::HashSet::new();
+            use std::cmp::Reverse;
+
+            for (op, key, score) in operations {
+                match op % 3 {
+                    0 => {
+                        // update
+                        heap.update(key, score);
+
+                        // Update reference: remove old, add new
+                        reference.retain(|&Reverse((_s, k))| k != key);
+                        reference.push(Reverse((score, key)));
+                        live_keys.insert(key);
+                    }
+                    1 => {
+                        // pop_best
+                        let heap_val = heap.pop_best();
+
+                        // Find min in reference that's still live
+                        let mut ref_val = None;
+                        while let Some(Reverse((score, key))) = reference.pop() {
+                            if live_keys.contains(&key) {
+                                ref_val = Some((key, score));
+                                live_keys.remove(&key);
+                                break;
+                            }
+                        }
+
+                        prop_assert_eq!(heap_val, ref_val);
+                    }
+                    2 => {
+                        // remove
+                        heap.remove(&key);
+                        live_keys.remove(&key);
+                    }
+                    _ => unreachable!(),
+                }
+
+                // Verify consistency
+                prop_assert_eq!(heap.len(), live_keys.len());
+                prop_assert_eq!(heap.is_empty(), live_keys.is_empty());
+            }
+        }
+    }
+}

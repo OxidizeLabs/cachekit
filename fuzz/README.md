@@ -264,6 +264,49 @@ cd fuzz
 cargo fuzz run intrusive_list_property_tests
 ```
 
+## LazyMinHeap Fuzz Targets
+
+### 19. `lazy_heap_arbitrary_ops`
+
+Tests arbitrary sequences of all LazyMinHeap operations (update, remove, pop_best, score_of, rebuild, maybe_rebuild, clear).
+
+**Purpose**: Find edge cases in lazy heap operation interleaving and stale entry handling.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run lazy_heap_arbitrary_ops
+```
+
+### 20. `lazy_heap_stress`
+
+Stress tests with heavy update/pop operations using reference BinaryHeap validation.
+
+**Purpose**: Find min-heap ordering bugs under high load. Validates against BinaryHeap to ensure correct priority ordering and stale entry skipping.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run lazy_heap_stress
+```
+
+### 21. `lazy_heap_property_tests`
+
+Property-based tests verifying specific invariants:
+- Min-heap ordering (pop returns smallest score)
+- Update idempotency and overwriting
+- Stale entry skipping during pop
+- Rebuild correctness
+- Clear operation correctness
+
+**Purpose**: Verify fundamental lazy min-heap properties and invariants hold under all conditions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run lazy_heap_property_tests
+```
+
 ## Running Fuzz Tests
 
 ### Run a specific target
@@ -339,6 +382,9 @@ Add to your CI pipeline:
     cargo fuzz run intrusive_list_arbitrary_ops -- -max_total_time=60 -seed=16
     cargo fuzz run intrusive_list_stress -- -max_total_time=60 -seed=17
     cargo fuzz run intrusive_list_property_tests -- -max_total_time=60 -seed=18
+    cargo fuzz run lazy_heap_arbitrary_ops -- -max_total_time=60 -seed=19
+    cargo fuzz run lazy_heap_stress -- -max_total_time=60 -seed=20
+    cargo fuzz run lazy_heap_property_tests -- -max_total_time=60 -seed=21
 ```
 
 ## Coverage
@@ -371,5 +417,6 @@ cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-
 - [GhostList Tests](../src/ds/ghost_list.rs) - Unit and property tests for GhostList
 - [KeyInterner Tests](../src/ds/interner.rs) - Unit and property tests for KeyInterner
 - [IntrusiveList Tests](../src/ds/intrusive_list.rs) - Unit and property tests for IntrusiveList
+- [LazyMinHeap Tests](../src/ds/lazy_heap.rs) - Unit and property tests for LazyMinHeap
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)

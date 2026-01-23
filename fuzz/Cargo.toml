@@ -145,3 +145,24 @@ path = "fuzz_targets/intrusive_list_property_tests.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "lazy_heap_arbitrary_ops"
+path = "fuzz_targets/lazy_heap_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lazy_heap_stress"
+path = "fuzz_targets/lazy_heap_stress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lazy_heap_property_tests"
+path = "fuzz_targets/lazy_heap_property_tests.rs"
+test = false
+doc = false
+bench = false
