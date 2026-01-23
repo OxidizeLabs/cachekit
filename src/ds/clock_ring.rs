@@ -1356,7 +1356,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[cfg_attr(miri, ignore)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
@@ -1367,6 +1366,7 @@ mod property_tests {
 
     proptest! {
         /// Property: len() never exceeds capacity
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_len_within_capacity(
             capacity in 1usize..100,
@@ -1381,6 +1381,7 @@ mod property_tests {
         }
 
         /// Property: Index and slot consistency - every indexed key has matching slot
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_index_slot_consistency(
             capacity in 1usize..50,
@@ -1395,6 +1396,7 @@ mod property_tests {
         }
 
         /// Property: Get after insert returns the correct value
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_get_after_insert(
             capacity in 1usize..50,
@@ -1410,6 +1412,7 @@ mod property_tests {
         }
 
         /// Property: Insert on full ring returns eviction or None
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_insert_eviction_behavior(
             capacity in 1usize..20,
@@ -1437,6 +1440,7 @@ mod property_tests {
         }
 
         /// Property: Remove decreases length and makes key absent
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_remove_behavior(
             capacity in 1usize..50,
@@ -1464,6 +1468,7 @@ mod property_tests {
         }
 
         /// Property: Update doesn't change len, only value
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_update_preserves_len(
             capacity in 1usize..50,
@@ -1489,6 +1494,7 @@ mod property_tests {
         }
 
         /// Property: Referenced entries survive longer than unreferenced
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_second_chance_behavior(
             capacity in 2usize..10
@@ -1511,6 +1517,7 @@ mod property_tests {
         }
 
         /// Property: peek doesn't modify state (can be called multiple times)
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_peek_idempotent(
             capacity in 1usize..50,
@@ -1537,6 +1544,7 @@ mod property_tests {
         }
 
         /// Property: Hand position stays within bounds
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_hand_within_bounds(
             capacity in 1usize..50,
@@ -1551,6 +1559,7 @@ mod property_tests {
         }
 
         /// Property: pop_victim decreases length
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_pop_victim_decreases_len(
             capacity in 1usize..50,
@@ -1577,6 +1586,7 @@ mod property_tests {
         }
 
         /// Property: Clear empties the ring
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_clear_empties(
             capacity in 1usize..50,
@@ -1625,6 +1635,7 @@ mod property_tests {
 
     proptest! {
         /// Property: Arbitrary operation sequences maintain all invariants
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_arbitrary_ops_maintain_invariants(
             capacity in 1usize..30,
@@ -1664,6 +1675,7 @@ mod property_tests {
         }
 
         /// Property: Interleaved inserts/removes maintain consistency
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_interleaved_insert_remove(
             capacity in 1usize..30,
@@ -1690,6 +1702,7 @@ mod property_tests {
 
     proptest! {
         /// Property: Zero capacity ring stays empty
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_zero_capacity_noop(
             ops in prop::collection::vec((0u32..100, 0u32..100), 0..50)
@@ -1705,6 +1718,7 @@ mod property_tests {
         }
 
         /// Property: Capacity 1 ring never exceeds 1 entry
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_capacity_one_single_entry(
             keys in prop::collection::vec(0u32..100, 1..50)
@@ -1719,6 +1733,7 @@ mod property_tests {
         }
 
         /// Property: Duplicate inserts don't grow the ring
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_duplicate_inserts_no_growth(
             capacity in 1usize..30,
@@ -1744,6 +1759,7 @@ mod property_tests {
     #[cfg(feature = "concurrency")]
     proptest! {
         /// Property: Concurrent wrapper maintains same invariants
+        #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_concurrent_maintains_invariants(
             capacity in 1usize..30,
@@ -1760,7 +1776,6 @@ mod property_tests {
 }
 
 #[cfg(test)]
-#[cfg_attr(miri, ignore)]
 mod fuzz_tests {
     use super::*;
 
@@ -1880,6 +1895,7 @@ mod fuzz_tests {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_fuzz_arbitrary_operations_smoke() {
         // Smoke test with some sample inputs
@@ -1894,6 +1910,7 @@ mod fuzz_tests {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_fuzz_insert_stress_smoke() {
         let inputs = vec![
@@ -1907,6 +1924,7 @@ mod fuzz_tests {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_fuzz_eviction_patterns_smoke() {
         let inputs = vec![
