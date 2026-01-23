@@ -11,7 +11,6 @@ Welcome to the CacheKit documentation site.
 
 - [Policy overview](policies/README.md) — Implemented policies
 - [Policy roadmap](policies/roadmap/README.md) — Future policies
-- [Policy survey and tradeoffs](policies.md) — Comparison and selection guide
 
 ## Internals
 
@@ -20,13 +19,10 @@ Welcome to the CacheKit documentation site.
 - [Benchmarks](benchmarks.md) — Performance benchmarks
 - [Workloads](workloads.md) — Synthetic workload generators for benchmarking
 
-## Observability
-
-- [Metrics](metrics.md) — Metrics integration and usage
-
 ## Release and Maintenance
 
 - [Release checklist](release-checklist.md)
 - [Releasing CacheKit](releasing.md)
 - [CI/CD release cycle](ci-cd-release-cycle.md)
+- [CD/CI continuous fuzzing](fuzzing-cicd.md)
 - [Documentation style guide](style-guide.md)
