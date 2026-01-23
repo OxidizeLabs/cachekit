@@ -639,16 +639,15 @@ mod property_tests {
             keys in prop::collection::vec(any::<u32>(), 0..30)
         ) {
             let mut interner: KeyInterner<u32> = KeyInterner::new();
+            let mut unique_keys = std::collections::HashSet::new();
 
             for key in keys {
                 interner.intern(&key);
+                unique_keys.insert(key);
 
-                // Check consistency: is_empty() ⟺ len() has no items
-                if interner.is_empty() {
-                    prop_assert_eq!(interner.len(), 0);
-                } else {
-                    prop_assert!(!interner.is_empty());
-                }
+                // Check consistency: is_empty() matches whether we have any unique keys
+                prop_assert_eq!(interner.is_empty(), unique_keys.is_empty());
+                prop_assert_eq!(interner.len(), unique_keys.len());
             }
         }
     }
