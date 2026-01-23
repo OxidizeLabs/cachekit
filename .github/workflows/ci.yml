@@ -81,6 +81,8 @@ jobs:
         run: |
           cargo miri test --package cachekit --lib ds:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
           cargo miri test --package cachekit --lib policy:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+        env:
+          MIRIFLAGS: -Zmiri-isolation-error=warn
 
   # Property-based tests with higher case count
   property-tests:
