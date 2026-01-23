@@ -350,6 +350,50 @@ cd fuzz
 cargo fuzz run shard_selector_property_tests
 ```
 
+## SlotArena Fuzz Targets
+
+### 25. `slot_arena_arbitrary_ops`
+
+Tests arbitrary sequences of all SlotArena operations (insert, remove, get, get_mut, contains, iter, clear).
+
+**Purpose**: Find edge cases in slot arena operation interleaving and slot reuse.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run slot_arena_arbitrary_ops
+```
+
+### 26. `slot_arena_stress`
+
+Stress tests with heavy insert/remove operations using reference HashMap validation.
+
+**Purpose**: Find bugs under high load. Validates against HashMap to ensure correct slot tracking and value storage.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run slot_arena_stress
+```
+
+### 27. `slot_arena_property_tests`
+
+Property-based tests verifying specific invariants:
+- SlotId stability (valid until removed)
+- Free slot reuse
+- Length tracking
+- Contains consistency with get
+- Iterator correctness
+- Clear operation correctness
+
+**Purpose**: Verify fundamental slot arena properties and invariants hold under all conditions.
+
+**Run**:
+```bash
+cd fuzz
+cargo fuzz run slot_arena_property_tests
+```
+
 ## Running Fuzz Tests
 
 ### Run a specific target
@@ -431,6 +475,9 @@ Add to your CI pipeline:
     cargo fuzz run shard_selector_arbitrary_ops -- -max_total_time=60 -seed=22
     cargo fuzz run shard_selector_distribution -- -max_total_time=60 -seed=23
     cargo fuzz run shard_selector_property_tests -- -max_total_time=60 -seed=24
+    cargo fuzz run slot_arena_arbitrary_ops -- -max_total_time=60 -seed=25
+    cargo fuzz run slot_arena_stress -- -max_total_time=60 -seed=26
+    cargo fuzz run slot_arena_property_tests -- -max_total_time=60 -seed=27
 ```
 
 ## Coverage
@@ -465,5 +512,6 @@ cargo cov -- show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-
 - [IntrusiveList Tests](../src/ds/intrusive_list.rs) - Unit and property tests for IntrusiveList
 - [LazyMinHeap Tests](../src/ds/lazy_heap.rs) - Unit and property tests for LazyMinHeap
 - [ShardSelector Tests](../src/ds/shard.rs) - Unit and property tests for ShardSelector
+- [SlotArena Tests](../src/ds/slot_arena.rs) - Unit and property tests for SlotArena
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)

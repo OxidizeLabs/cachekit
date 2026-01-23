@@ -1646,3 +1646,526 @@ mod tests {
         arena.debug_validate_invariants();
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // =============================================================================
+    // Property Tests - Insert Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: insert returns valid SlotId
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_insert_returns_valid_id(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut arena = SlotArena::new();
+
+            for value in values {
+                let id = arena.insert(value);
+
+                prop_assert_eq!(arena.get(id), Some(&value));
+                prop_assert!(arena.contains(id));
+            }
+        }
+
+        /// Property: inserted values can be retrieved
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_insert_and_get(
+            value in any::<u32>()
+        ) {
+            let mut arena = SlotArena::new();
+            let id = arena.insert(value);
+
+            prop_assert_eq!(arena.get(id), Some(&value));
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Remove Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: remove decreases length by 1
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_decreases_length(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = arena.insert(*value);
+                ids.push(id);
+            }
+
+            for id in ids {
+                let old_len = arena.len();
+                let removed = arena.remove(id);
+
+                prop_assert!(removed.is_some());
+                prop_assert_eq!(arena.len(), old_len - 1);
+                prop_assert!(!arena.contains(id));
+            }
+
+            prop_assert!(arena.is_empty());
+        }
+
+        /// Property: remove returns the correct value
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_returns_value(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = arena.insert(*value);
+                ids.push((id, *value));
+            }
+
+            for (id, expected_value) in ids {
+                let removed = arena.remove(id);
+                prop_assert_eq!(removed, Some(expected_value));
+            }
+        }
+
+        /// Property: removing twice returns None
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_twice_returns_none(
+            value in any::<u32>()
+        ) {
+            let mut arena = SlotArena::new();
+            let id = arena.insert(value);
+
+            let first = arena.remove(id);
+            let second = arena.remove(id);
+
+            prop_assert_eq!(first, Some(value));
+            prop_assert_eq!(second, None);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - SlotId Stability
+    // =============================================================================
+
+    proptest! {
+        /// Property: SlotId remains valid until removed
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_slot_id_stable_until_removed(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = arena.insert(*value);
+                ids.push((id, *value));
+            }
+
+            // All SlotIds should be valid
+            for (id, value) in &ids {
+                prop_assert_eq!(arena.get(*id), Some(value));
+                prop_assert!(arena.contains(*id));
+            }
+
+            // Remove every other slot
+            for (idx, (id, _value)) in ids.iter().enumerate() {
+                if idx % 2 == 0 {
+                    arena.remove(*id);
+                }
+            }
+
+            // Remaining slots should still be valid
+            for (idx, (id, value)) in ids.iter().enumerate() {
+                if idx % 2 != 0 {
+                    prop_assert_eq!(arena.get(*id), Some(value));
+                } else {
+                    prop_assert_eq!(arena.get(*id), None);
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Free Slot Reuse
+    // =============================================================================
+
+    proptest! {
+        /// Property: Freed slots are reused
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_free_slot_reuse(
+            values1 in prop::collection::vec(any::<u32>(), 5..20),
+            values2 in prop::collection::vec(any::<u32>(), 5..20)
+        ) {
+            let mut arena = SlotArena::new();
+
+            // Insert and collect indices
+            let mut ids = Vec::new();
+            for value in &values1 {
+                let id = arena.insert(*value);
+                ids.push(id);
+            }
+
+            let removed_indices: Vec<_> = ids.iter().map(|id| id.index()).collect();
+
+            // Remove all slots
+            for id in ids {
+                arena.remove(id);
+            }
+
+            prop_assert!(arena.is_empty());
+
+            // Insert new values - should reuse freed slots
+            let mut reused_count = 0;
+            for value in &values2 {
+                let id = arena.insert(*value);
+                if removed_indices.contains(&id.index()) {
+                    reused_count += 1;
+                }
+            }
+
+            // At least some slots should have been reused
+            prop_assert!(reused_count > 0);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Length Tracking
+    // =============================================================================
+
+    proptest! {
+        /// Property: len() tracks number of live entries
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_len_tracks_entries(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut arena = SlotArena::new();
+
+            for (idx, value) in values.iter().enumerate() {
+                arena.insert(*value);
+                prop_assert_eq!(arena.len(), idx + 1);
+            }
+
+            let total = values.len();
+            let mut ids: Vec<_> = arena.iter_ids().collect();
+
+            for (idx, id) in ids.drain(..).enumerate() {
+                arena.remove(id);
+                prop_assert_eq!(arena.len(), total - idx - 1);
+            }
+
+            prop_assert_eq!(arena.len(), 0);
+        }
+
+        /// Property: is_empty is consistent with len
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_is_empty_consistent(
+            values in prop::collection::vec(any::<u32>(), 0..30)
+        ) {
+            let mut arena = SlotArena::new();
+
+            for value in values {
+                arena.insert(value);
+
+                if arena.is_empty() {
+                    prop_assert_eq!(arena.len(), 0);
+                } else {
+                    prop_assert!(!arena.is_empty());
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Get and Contains
+    // =============================================================================
+
+    proptest! {
+        /// Property: get returns Some for all inserted values
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_get_returns_inserted_values(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = arena.insert(*value);
+                ids.push((id, *value));
+            }
+
+            for (id, value) in ids {
+                prop_assert_eq!(arena.get(id), Some(&value));
+            }
+        }
+
+        /// Property: contains is consistent with get
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_contains_consistent_with_get(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = arena.insert(*value);
+                ids.push(id);
+            }
+
+            for id in ids {
+                let contains = arena.contains(id);
+                let get_result = arena.get(id);
+
+                if contains {
+                    prop_assert!(get_result.is_some());
+                } else {
+                    prop_assert!(get_result.is_none());
+                }
+            }
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Get Mut
+    // =============================================================================
+
+    proptest! {
+        /// Property: get_mut allows modification
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_get_mut_modifies(
+            value1 in any::<u32>(),
+            value2 in any::<u32>()
+        ) {
+            let mut arena = SlotArena::new();
+            let id = arena.insert(value1);
+
+            if let Some(val) = arena.get_mut(id) {
+                *val = value2;
+            }
+
+            prop_assert_eq!(arena.get(id), Some(&value2));
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Iterator
+    // =============================================================================
+
+    proptest! {
+        /// Property: iter returns exactly len() items
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_iter_returns_len_items(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut arena = SlotArena::new();
+
+            for value in values {
+                arena.insert(value);
+            }
+
+            let iter_count = arena.iter().count();
+            prop_assert_eq!(iter_count, arena.len());
+        }
+
+        /// Property: iter_ids returns exactly len() items
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_iter_ids_returns_len_items(
+            values in prop::collection::vec(any::<u32>(), 0..50)
+        ) {
+            let mut arena = SlotArena::new();
+
+            for value in values {
+                arena.insert(value);
+            }
+
+            let ids_count = arena.iter_ids().count();
+            prop_assert_eq!(ids_count, arena.len());
+        }
+
+        /// Property: iter skips removed slots
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_iter_skips_removed(
+            values in prop::collection::vec(any::<u32>(), 5..30)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut ids = Vec::new();
+
+            for value in &values {
+                let id = arena.insert(*value);
+                ids.push(id);
+            }
+
+            // Remove every other slot
+            for (idx, id) in ids.iter().enumerate() {
+                if idx % 2 == 0 {
+                    arena.remove(*id);
+                }
+            }
+
+            let iter_count = arena.iter().count();
+            let expected_count = values.len().div_ceil(2);
+            prop_assert_eq!(iter_count, expected_count);
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Clear Operations
+    // =============================================================================
+
+    proptest! {
+        /// Property: clear_shrink resets to empty state
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_resets_state(
+            values in prop::collection::vec(any::<u32>(), 1..30)
+        ) {
+            let mut arena = SlotArena::new();
+
+            for value in values {
+                arena.insert(value);
+            }
+
+            arena.clear_shrink();
+
+            prop_assert!(arena.is_empty());
+            prop_assert_eq!(arena.len(), 0);
+            prop_assert_eq!(arena.iter().count(), 0);
+        }
+
+        /// Property: clear invalidates all SlotIds
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_clear_invalidates_ids(
+            values in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut ids = Vec::new();
+
+            for value in values {
+                let id = arena.insert(value);
+                ids.push(id);
+            }
+
+            arena.clear_shrink();
+
+            // All previous ids should be invalid
+            for id in ids {
+                prop_assert!(!arena.contains(id));
+                prop_assert_eq!(arena.get(id), None);
+            }
+        }
+
+        /// Property: usable after clear
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_usable_after_clear(
+            values1 in prop::collection::vec(any::<u32>(), 1..20),
+            values2 in prop::collection::vec(any::<u32>(), 1..20)
+        ) {
+            let mut arena = SlotArena::new();
+
+            for value in values1 {
+                arena.insert(value);
+            }
+
+            arena.clear_shrink();
+
+            // Should be usable after clear
+            for value in &values2 {
+                arena.insert(*value);
+            }
+
+            prop_assert_eq!(arena.len(), values2.len());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Capacity
+    // =============================================================================
+
+    proptest! {
+        /// Property: with_capacity pre-allocates
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_with_capacity_preallocates(
+            capacity in 1usize..100
+        ) {
+            let arena: SlotArena<u32> = SlotArena::with_capacity(capacity);
+
+            prop_assert!(arena.capacity() >= capacity);
+            prop_assert_eq!(arena.len(), 0);
+            prop_assert!(arena.is_empty());
+        }
+    }
+
+    // =============================================================================
+    // Property Tests - Reference Implementation Equivalence
+    // =============================================================================
+
+    proptest! {
+        /// Property: Behavior matches reference HashMap
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_matches_hashmap(
+            operations in prop::collection::vec((0u8..3, any::<u32>()), 0..50)
+        ) {
+            let mut arena = SlotArena::new();
+            let mut reference: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+
+            for (op, value) in operations {
+                match op % 3 {
+                    0 => {
+                        // insert
+                        let id = arena.insert(value);
+                        reference.insert(id.index(), value);
+                    }
+                    1 => {
+                        // remove
+                        if !reference.is_empty() {
+                            let keys: Vec<_> = reference.keys().copied().collect();
+                            let key = keys[0];
+                            let id = SlotId(key);
+
+                            let arena_val = arena.remove(id);
+                            let ref_val = reference.remove(&key);
+
+                            prop_assert_eq!(arena_val, ref_val);
+                        }
+                    }
+                    2 => {
+                        // verify
+                        for (&key, &expected_value) in &reference {
+                            let id = SlotId(key);
+                            prop_assert_eq!(arena.get(id), Some(&expected_value));
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+
+                // Verify consistency
+                prop_assert_eq!(arena.len(), reference.len());
+                prop_assert_eq!(arena.is_empty(), reference.is_empty());
+            }
+        }
+    }
+}

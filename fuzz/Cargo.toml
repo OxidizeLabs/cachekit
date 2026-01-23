@@ -187,3 +187,24 @@ path = "fuzz_targets/shard_selector_property_tests.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "slot_arena_arbitrary_ops"
+path = "fuzz_targets/slot_arena_arbitrary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slot_arena_stress"
+path = "fuzz_targets/slot_arena_stress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slot_arena_property_tests"
+path = "fuzz_targets/slot_arena_property_tests.rs"
+test = false
+doc = false
+bench = false
