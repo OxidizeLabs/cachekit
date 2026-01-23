@@ -396,6 +396,17 @@ cargo fuzz run slot_arena_property_tests
 
 ## Running Fuzz Tests
 
+### Quick Smoke Test (Recommended)
+
+Run all smoke tests (60 seconds per target, ~9 minutes total):
+
+```bash
+cd fuzz
+./run_smoke_tests.sh
+```
+
+This runs one representative target per data structure and is the same test suite that runs on pull requests.
+
 ### Run a specific target
 ```bash
 cd fuzz
@@ -440,7 +451,33 @@ cargo fuzz cmin clock_ring_arbitrary_ops
 cargo fuzz tmin clock_ring_arbitrary_ops fuzz/artifacts/clock_ring_arbitrary_ops/crash-<hash>
 ```
 
-## Integration with CI
+## CI/CD Integration
+
+CacheKit has comprehensive fuzzing integrated into CI/CD with **automatic target discovery**:
+
+- ✅ **Dynamic Discovery**: CI automatically finds all fuzz targets using `cargo fuzz list`
+- ✅ **Zero Configuration**: Add new targets without updating workflows
+- ✅ **Pull Request Smoke Tests**: Every PR runs `*_arbitrary_ops` targets (60s each)
+- ✅ **Continuous Fuzzing**: Nightly deep fuzzing runs ALL targets (1 hour each)
+- ✅ **Automatic Issue Creation**: Crashes found during nightly runs create GitHub issues
+- ✅ **Corpus Management**: Fuzzing corpora are cached and preserved between runs
+
+### Adding New Fuzz Targets
+
+When you add a new fuzz target:
+
+1. Create the target file in `fuzz/fuzz_targets/`
+2. Register it in `fuzz/Cargo.toml`
+3. **That's it!** CI automatically discovers and runs it
+
+**No workflow updates needed!** See [Adding Fuzz Targets Guide](../docs/adding-fuzz-targets.md) for details.
+
+### Documentation
+
+- [Adding Fuzz Targets Guide](../docs/adding-fuzz-targets.md) - How to create new fuzz targets
+- [Fuzzing CI/CD Documentation](../docs/fuzzing-cicd.md) - Complete CI/CD integration details
+
+### Manual Integration Example
 
 Add to your CI pipeline:
 

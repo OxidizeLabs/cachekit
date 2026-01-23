@@ -1,334 +1,324 @@
-# Fuzzing in CI/CD
+# Fuzzing Integration with CI/CD
 
-This document explains how fuzzing is integrated into the CacheKit CI/CD pipeline.
+This document describes how fuzz testing is integrated into the CacheKit CI/CD pipeline.
 
 ## Overview
 
-CacheKit uses a multi-layered fuzzing approach in CI:
+CacheKit uses comprehensive fuzz testing with **27 fuzz targets** covering 9 core data structures. Fuzzing runs automatically in CI/CD to catch bugs, edge cases, and security issues.
 
-1. **Quick fuzz tests on PRs** - Fast smoke tests (60s per target)
-2. **Long-running continuous fuzzing** - Nightly 1-hour runs
-3. **Manual fuzzing** - On-demand with custom duration
-4. **Corpus management** - Automatic corpus preservation and minimization
+## Fuzz Target Coverage
 
-## CI Workflows
+| Data Structure | Fuzz Targets | Coverage |
+|----------------|--------------|----------|
+| **ClockRing** | 3 | Arbitrary ops, insert stress, eviction patterns |
+| **FixedHistory** | 3 | Arbitrary ops, record stress, property tests |
+| **FrequencyBuckets** | 3 | Arbitrary ops, stress, property tests |
+| **GhostList** | 3 | Arbitrary ops, LRU stress, property tests |
+| **KeyInterner** | 3 | Arbitrary ops, stress, property tests |
+| **IntrusiveList** | 3 | Arbitrary ops, stress, property tests |
+| **LazyMinHeap** | 3 | Arbitrary ops, stress, property tests |
+| **ShardSelector** | 3 | Arbitrary ops, distribution, property tests |
+| **SlotArena** | 3 | Arbitrary ops, stress, property tests |
+| **Total** | **27** | All core data structures |
 
-### 1. Quick Fuzz Tests (ci.yml)
+## CI/CD Integration
 
-**Triggers**: Every pull request
+### Dynamic Target Discovery
 
-**Duration**: ~3 minutes total
+**Zero Configuration Required!** 🎉
 
-**Purpose**: Catch obvious bugs before merge
+The CI/CD pipeline automatically discovers all fuzz targets using `cargo fuzz list`. When you add a new fuzz target to `fuzz/fuzz_targets/` and register it in `fuzz/Cargo.toml`, the CI/CD pipeline will automatically:
 
-```yaml
-fuzz-quick:
-  - Runs 3 fuzz targets for 60 seconds each
-  - Uses deterministic seeds for reproducibility
-  - Runs in-tree fuzz smoke tests
-  - Fast feedback on PRs
-```
+- ✅ Include it in nightly continuous fuzzing
+- ✅ Run it in PR smoke tests (if it matches naming convention)
+- ✅ Generate coverage reports for it
 
-**What it catches**:
-- Panics from new code
-- Obvious assertion failures
-- Simple invariant violations
-- Regressions in existing fuzz cases
+**No workflow file updates needed!**
 
-### 2. Continuous Fuzzing (fuzz.yml)
+### Naming Convention
 
-**Triggers**:
-- Push to main branch
-- Nightly at 2 AM UTC
-- Manual dispatch
+For best CI integration, follow this naming convention:
 
-**Duration**: 1 hour per target (configurable)
+- `<module>_arbitrary_ops.rs` - Random operation sequences (used in PR smoke tests)
+- `<module>_stress.rs` - Heavy load testing
+- `<module>_property_tests.rs` - Specific invariant testing
 
-**Purpose**: Deep bug hunting and corpus building
+Targets ending in `_arbitrary_ops` are automatically used for PR smoke tests as they provide the best general-purpose testing.
 
-```yaml
-fuzz-continuous:
-  - Runs all targets in parallel
-  - 1 hour per target by default
-  - Corpus caching and minimization
-  - Automatic issue creation on crashes
-  - Coverage reporting
-```
+### 1. Pull Request Smoke Tests (`.github/workflows/ci.yml`)
 
-**What it catches**:
-- Deep edge cases requiring many mutations
-- Complex state machine bugs
-- Race conditions (with longer runs)
-- Subtle invariant violations
+**When**: Every pull request
+**Duration**: ~60 seconds per `_arbitrary_ops` target
+**Purpose**: Catch obvious bugs early before merging
 
-## Workflow Details
-
-### Quick Fuzz on PRs
-
-```yaml
-# .github/workflows/ci.yml
-fuzz-quick:
-  name: Fuzz Tests (Quick)
-  runs-on: ubuntu-latest
-  if: github.event_name == 'pull_request'
-  steps:
-    - Install nightly Rust
-    - Install cargo-fuzz
-    - Run each target for 60s with fixed seed
-    - Run in-tree smoke tests
-```
-
-**Execution**:
+Automatically discovers and runs all `_arbitrary_ops` targets:
 ```bash
-cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=60 -seed=1
-cargo fuzz run clock_ring_insert_stress -- -max_total_time=60 -seed=2
-cargo fuzz run clock_ring_eviction_patterns -- -max_total_time=60 -seed=3
+# Automatic discovery
+TARGETS=$(cargo fuzz list | grep '_arbitrary_ops$')
+
+# Run each with different seed for reproducibility
+for target in $TARGETS; do
+  cargo fuzz run "$target" -- -max_total_time=60 -seed=$seed
+done
 ```
 
-**When it fails**: PR is blocked until fixed
+**What it catches**:
+- Basic crashes and panics
+- Obvious logic errors
+- Assertion failures
+- Memory safety issues
 
-### Continuous Fuzzing
+### 2. Continuous Fuzzing (`.github/workflows/fuzz.yml`)
 
+**When**:
+- Nightly at 2 AM UTC
+- On pushes to main branch
+- Manual trigger with configurable duration
+
+**Duration**: 1 hour per target by default (configurable)
+**Purpose**: Deep fuzzing to find subtle bugs
+
+**Strategy**:
+- **Automatically discovers ALL fuzz targets** using `cargo fuzz list`
+- Runs all targets in parallel (GitHub Actions matrix strategy)
+- Each target runs independently with its own corpus
+- Failures don't block other targets (`fail-fast: false`)
+
+**How Discovery Works**:
 ```yaml
-# .github/workflows/fuzz.yml
+discover-targets:
+  steps:
+    - name: List fuzz targets
+      run: |
+        cd fuzz
+        TARGETS=$(cargo fuzz list | jq -R -s -c 'split("\n") | map(select(length > 0))')
+        echo "targets=$TARGETS" >> $GITHUB_OUTPUT
+
 fuzz-continuous:
-  name: Fuzz ${{ matrix.target }}
-  runs-on: ubuntu-latest
+  needs: discover-targets
   strategy:
     matrix:
-      target: [arbitrary_ops, insert_stress, eviction_patterns]
-  steps:
-    - Restore corpus from cache
-    - Run fuzz target for 1 hour
-    - Minimize corpus
-    - Save corpus to cache
-    - Check for crashes
-    - Create GitHub issue if crashes found
-    - Upload crash artifacts
+      target: ${{ fromJson(needs.discover-targets.outputs.targets) }}
 ```
 
-**Corpus Management**:
-- Each target has its own corpus directory
-- Corpus cached between runs (key: `fuzz-corpus-<target>-<sha>`)
-- Automatically minimized after each run
-- Interesting inputs preserved across runs
+**Features**:
+- **Corpus Management**: Corpora are cached and restored between runs
+- **Corpus Minimization**: Automatically minimizes corpus after each run
+- **Crash Detection**: Uploads crash artifacts for reproduction
+- **Issue Creation**: Automatically creates GitHub issues for crashes found during nightly runs
+- **Coverage Reporting**: Generates coverage reports for representative targets
 
-**Crash Handling**:
-1. Crashes saved to `fuzz/artifacts/<target>/`
-2. Uploaded as GitHub Actions artifacts (90-day retention)
-3. GitHub issue automatically created with reproduction steps
-4. Workflow marked as failed
+### 3. Corpus Management
 
-### Coverage Reporting
+Fuzzing corpora (interesting test inputs) are preserved across runs:
 
 ```yaml
-fuzz-coverage:
-  name: Fuzz Coverage Report
-  runs-on: ubuntu-latest
-  needs: fuzz-continuous
-  if: always() && github.event_name == 'schedule'
-  steps:
-    - Generate coverage for each target
-    - Upload coverage reports
-    - Post summary to workflow
+- name: Restore corpus
+  uses: actions/cache@v4
+  with:
+    path: fuzz/corpus/${{ matrix.target }}
+    key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+    restore-keys: |
+      fuzz-corpus-${{ matrix.target }}-
 ```
 
-**Output**: Coverage JSON showing which code paths were exercised
+This ensures:
+- Accumulated fuzzing progress is preserved
+- Previously discovered interesting inputs are retained
+- Each run builds on previous fuzzing efforts
 
-## Manual Fuzzing
+### 4. Crash Handling
 
-You can manually trigger long-running fuzz sessions:
+When crashes are detected:
 
-**Via GitHub UI**:
-1. Go to Actions → Continuous Fuzzing
-2. Click "Run workflow"
-3. Set duration (default: 3600s = 1 hour)
-4. Click "Run workflow"
+1. **Artifacts Upload**: Crash inputs are uploaded for 90 days
+   ```yaml
+   name: fuzz-crashes-${{ matrix.target }}-${{ github.sha }}
+   path: fuzz/artifacts/${{ matrix.target }}/
+   retention-days: 90
+   ```
 
-**Custom duration example**:
-```yaml
-inputs:
-  duration: 7200  # 2 hours
+2. **GitHub Issue Creation** (nightly runs only):
+   - Creates issue with `bug`, `fuzzing`, `security` labels
+   - Includes reproduction instructions
+   - Links to artifact downloads
+   - Provides debugging guidance
+
+3. **Workflow Failure**: Pipeline fails to alert maintainers
+
+### 5. Coverage Reporting
+
+For nightly runs, coverage is generated for representative targets:
+- One arbitrary_ops target per data structure
+- Generates JSON coverage reports
+- Uploaded as artifacts for analysis
+
+## Running Fuzzing Locally
+
+### Quick Smoke Test
+
+Run all smoke tests (60 seconds each):
+```bash
+cd fuzz
+./run_smoke_tests.sh
 ```
 
-## Interpreting Results
-
-### Successful Run
-
-```
-✅ All fuzz targets passed
-No crashes found in any target
-Corpus size: 234 inputs
+Or manually:
+```bash
+cd fuzz
+cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=60 -seed=1
+cargo fuzz run fixed_history_arbitrary_ops -- -max_total_time=60 -seed=2
+# ... etc
 ```
 
-### Crashes Found
+### Deep Fuzzing
 
-```
-⚠️ Some fuzz targets found issues
-
-## Crashes found in clock_ring_arbitrary_ops
-- crash-a1b2c3d4e5f6...
-- crash-f6e5d4c3b2a1...
+Run a single target for extended duration:
+```bash
+cd fuzz
+cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=3600
 ```
 
-**GitHub Issue Created**:
-- Title: `[FUZZ] Crashes found in clock_ring_arbitrary_ops`
-- Labels: `bug`, `fuzzing`, `security`
-- Body: Reproduction steps and artifact links
-
-## Corpus Evolution
-
-The corpus grows over time as fuzzing finds interesting inputs:
-
-```
-Day 1:  50 inputs, 60% coverage
-Day 7:  150 inputs, 75% coverage
-Day 30: 300 inputs, 85% coverage
+Run all targets (from fuzz/README.md):
+```bash
+cd fuzz
+for target in $(cargo fuzz list); do
+  echo "Fuzzing $target..."
+  cargo fuzz run $target -- -max_total_time=300 -jobs=4
+done
 ```
 
-**Corpus is**:
-- Cached in GitHub Actions cache
-- Minimized to remove redundant inputs
-- Shared across runs on the same target
-- Can be committed to git for regression testing
+### Reproducing Crashes
+
+If CI finds a crash:
+
+1. Download the crash artifact from the GitHub Actions run
+2. Reproduce locally:
+   ```bash
+   cd fuzz
+   cargo fuzz run <target> fuzz/artifacts/<target>/<crash-file>
+   ```
+3. Debug with full backtrace:
+   ```bash
+   RUST_BACKTRACE=full cargo fuzz run <target> <crash-file>
+   ```
+
+## Monitoring and Maintenance
+
+### Monitoring Fuzzing Health
+
+Check the following regularly:
+
+1. **GitHub Issues**: Look for `[FUZZ]` prefix and `fuzzing` label
+2. **Actions Tab**: Review nightly fuzzing workflow results
+3. **Corpus Growth**: Ensure corpora are growing over time
+4. **Coverage Reports**: Check coverage artifacts for code coverage
+
+### Corpus Maintenance
+
+Periodically minimize corpora to remove redundant inputs:
+```bash
+cd fuzz
+for target in $(cargo fuzz list); do
+  cargo fuzz cmin $target
+done
+```
+
+This is automatically done in CI after each run.
+
+### Adding New Fuzz Targets
+
+When adding new data structures or major features:
+
+1. **Create fuzz target** in `fuzz/fuzz_targets/`:
+   ```rust
+   // fuzz/fuzz_targets/my_module_arbitrary_ops.rs
+   #![no_main]
+   use libfuzzer_sys::fuzz_target;
+   // ... implementation
+   ```
+
+2. **Register in `fuzz/Cargo.toml`**:
+   ```toml
+   [[bin]]
+   name = "my_module_arbitrary_ops"
+   path = "fuzz_targets/my_module_arbitrary_ops.rs"
+   test = false
+   doc = false
+   ```
+
+3. **Document in `fuzz/README.md`** (optional but recommended)
+
+**That's it!** ✅ The CI/CD pipeline will automatically discover and run your new target.
+
+**Naming Tips**:
+- End with `_arbitrary_ops` to include in PR smoke tests
+- End with `_stress` or `_property_tests` for specialized testing (runs in nightly only)
+- Use descriptive names like `<module>_<test_type>` for clarity
 
 ## Best Practices
 
-### 1. Monitor Fuzzing Results
+### For Contributors
 
-Check the Continuous Fuzzing workflow regularly:
-- Look for new crashes
-- Monitor coverage trends
-- Review corpus growth
+1. **Run smoke tests before pushing**:
+   ```bash
+   cd fuzz && ./run_smoke_tests.sh
+   ```
 
-### 2. Fix Crashes Promptly
+2. **Fix fuzzing failures immediately**: Fuzzing bugs often indicate real issues
 
-When fuzzing finds a crash:
-1. Download the crash artifact
-2. Reproduce locally: `cargo fuzz run <target> fuzz/artifacts/<target>/crash-...`
-3. Debug and fix the issue
-4. Add a regression test
-5. Verify fix with local fuzzing
+3. **Don't disable fuzz tests**: If a fuzz test is flaky, fix the test or the code
 
-### 3. Commit Important Corpus Entries
+### For Maintainers
 
-After fixing a bug:
-```bash
-# Copy crash input to corpus for regression testing
-cp fuzz/artifacts/<target>/crash-abc123 fuzz/corpus/<target>/
-git add fuzz/corpus/<target>/crash-abc123
-git commit -m "Add regression test for issue #123"
-```
+1. **Review fuzzing issues promptly**: They often reveal security issues
+2. **Keep corpora**: Don't delete cached corpora without good reason
+3. **Monitor nightly runs**: Check for patterns in failures
+4. **Update fuzz targets**: When APIs change, update fuzz targets accordingly
 
-### 4. Extend Fuzzing for Major Changes
+## Configuration
 
-For significant refactors or new features:
-```bash
-# Run locally for extended period
-cd fuzz
-cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=7200
-```
+### Workflow Configuration
 
-Or trigger manual GitHub Actions run with longer duration.
+Edit `.github/workflows/fuzz.yml` to adjust:
+- `duration`: Default 3600 seconds (1 hour), configurable via manual trigger
+- `timeout-minutes`: Maximum 120 minutes per target
+- `rss_limit_mb`: Memory limit 4096 MB
+- `schedule`: Currently runs at 2 AM UTC daily
 
-### 5. Keep Corpus Manageable
+### Resource Limits
 
-Regularly minimize corpus:
-```bash
-cd fuzz
-cargo fuzz cmin clock_ring_arbitrary_ops
-```
-
-CI does this automatically, but local minimization helps too.
+Current limits:
+- **Memory**: 4 GB per target
+- **Time**: 2 hours maximum (including setup)
+- **Parallelism**: All 27 targets run in parallel (GitHub Actions manages)
 
 ## Troubleshooting
 
-### "cargo-fuzz not found"
+### Fuzzing Timeouts
 
-CI installs it automatically. Locally:
-```bash
-cargo install cargo-fuzz
-```
+If targets timeout:
+- Check if the fuzz target is too slow
+- Consider reducing complexity or using faster operations
+- Adjust `timeout-minutes` in workflow
 
-### "Fuzzing timeout"
+### Corpus Cache Misses
 
-Increase timeout in workflow:
-```yaml
-timeout-minutes: 120  # Increase if needed
-```
+If corpora aren't being restored:
+- Check cache key format in workflow
+- Verify artifact upload/download steps
+- Check GitHub Actions cache limits (10 GB per repo)
 
-### "Corpus cache too large"
+### False Positives
 
-GitHub Actions cache limit is 10GB per repo. If exceeded:
-1. Minimize corpus more aggressively
-2. Clear old cache entries manually
-3. Reduce corpus size in workflow
+If fuzz tests find "issues" that aren't real bugs:
+- Review the fuzz target logic
+- Add proper preconditions (prop_assume, input validation)
+- Consider if the behavior is actually a bug
 
-### "False positive crashes"
+## Resources
 
-If a crash is expected behavior:
-1. Add filtering in fuzz target
-2. Document why it's expected
-3. Consider if it should be an error instead
-
-## Performance Optimization
-
-### Faster Fuzzing
-
-```yaml
-# Use more workers
-cargo fuzz run <target> -- -workers=4
-
-# Reduce memory limit for faster restarts
-cargo fuzz run <target> -- -rss_limit_mb=2048
-```
-
-### Better Coverage
-
-```yaml
-# Use different dictionaries
-cargo fuzz run <target> -- -dict=fuzz/dictionaries/clockring.dict
-
-# Try different mutation strategies
-cargo fuzz run <target> -- -mutate_depth=5
-```
-
-## Integration with Other Tools
-
-### OSS-Fuzz (Optional)
-
-For continuous fuzzing at scale:
-1. Submit project to OSS-Fuzz
-2. They run fuzz tests 24/7
-3. Private bug reports for security issues
-4. Free for open-source projects
-
-### ClusterFuzz (Optional)
-
-Google's fuzzing infrastructure:
-- Massive parallel fuzzing
-- Automatic bug filing
-- Regression verification
-
-## Metrics
-
-Track these fuzzing metrics over time:
-
-- **Corpus Size**: Number of unique inputs
-- **Coverage**: Percentage of code exercised
-- **Exec/sec**: Fuzzing throughput
-- **Crashes Found**: Total bugs discovered
-- **Time to First Crash**: How fast bugs are found
-
-## Related Documentation
-
-- [Testing Strategy](testing.md) - Overall testing approach
-- [Fuzz README](../fuzz/README.md) - Local fuzzing guide
-- [ClockRing Tests](../src/ds/clock_ring.rs) - Property and fuzz tests
-- [Contributing](../CONTRIBUTING.md) - How to contribute
-
-## References
-
+- [Fuzz Target Documentation](../fuzz/README.md)
 - [libFuzzer Documentation](https://llvm.org/docs/LibFuzzer.html)
 - [cargo-fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz.html)
-- [Fuzzing in Rust](https://rust-fuzz.github.io/book/)
+- [GitHub Actions Workflow Syntax](https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions)

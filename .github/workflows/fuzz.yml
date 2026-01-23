@@ -23,18 +23,42 @@ permissions:
   issues: write  # To create issues on fuzzing failures
 
 jobs:
+  # Discover all fuzz targets dynamically
+  discover-targets:
+    name: Discover Fuzz Targets
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list-targets.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: List fuzz targets
+        id: list-targets
+        run: |
+          cd fuzz
+          # Get all fuzz targets and format as JSON array
+          TARGETS=$(cargo fuzz list | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "targets=$TARGETS" >> $GITHUB_OUTPUT
+          echo "Found targets:"
+          echo "$TARGETS" | jq -r '.[]'
+
   # Long-running fuzz tests
   fuzz-continuous:
     name: Fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    needs: discover-targets
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - clock_ring_arbitrary_ops
-          - clock_ring_insert_stress
-          - clock_ring_eviction_patterns
+        target: ${{ fromJson(needs.discover-targets.outputs.targets) }}
     steps:
       - uses: actions/checkout@v6
 
@@ -188,14 +212,27 @@ jobs:
       - name: Generate coverage report
         run: |
           cd fuzz
-          for target in clock_ring_arbitrary_ops clock_ring_insert_stress clock_ring_eviction_patterns; do
-            echo "## Coverage for $target" >> $GITHUB_STEP_SUMMARY
+          # Sample arbitrary_ops targets for coverage (representative subset)
+          # This avoids running coverage for all targets which would be too slow
+          TARGETS=$(cargo fuzz list | grep '_arbitrary_ops$' || true)
+
+          if [ -z "$TARGETS" ]; then
+            echo "No arbitrary_ops targets found, using all targets" >> $GITHUB_STEP_SUMMARY
+            TARGETS=$(cargo fuzz list)
+          fi
+
+          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          for target in $TARGETS; do
+            echo "### Coverage for $target" >> $GITHUB_STEP_SUMMARY
             cargo fuzz coverage $target || true
             if [ -f "coverage/$target/coverage.json" ]; then
               echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
               cat "coverage/$target/coverage.json" >> $GITHUB_STEP_SUMMARY
               echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             fi
+            echo "" >> $GITHUB_STEP_SUMMARY
           done
 
       - name: Upload coverage artifacts

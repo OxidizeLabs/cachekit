@@ -114,14 +114,24 @@ jobs:
           workspaces: "fuzz -> target"
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
-      - name: Run fuzz tests (60s each)
+      - name: Run fuzz smoke tests (60s each)
         run: |
           cd fuzz
-          cargo fuzz run clock_ring_arbitrary_ops -- -max_total_time=60 -seed=1
-          cargo fuzz run clock_ring_insert_stress -- -max_total_time=60 -seed=2
-          cargo fuzz run clock_ring_eviction_patterns -- -max_total_time=60 -seed=3
-      - name: Run in-tree fuzz smoke tests
-        run: cargo test --lib fuzz_tests
+          # Run arbitrary_ops targets for smoke testing (representative subset)
+          # Convention: targets ending in _arbitrary_ops test general operation sequences
+          TARGETS=$(cargo fuzz list | grep '_arbitrary_ops$' || cargo fuzz list | head -n 10)
+
+          echo "Running smoke tests for the following targets:"
+          echo "$TARGETS"
+          echo ""
+
+          seed=1
+          for target in $TARGETS; do
+            echo "[$seed] Fuzzing $target for 60 seconds..."
+            cargo fuzz run "$target" -- -max_total_time=60 -seed=$seed -print_final_stats=1
+            seed=$((seed + 1))
+            echo ""
+          done
 
   # Documentation build check
   docs:
