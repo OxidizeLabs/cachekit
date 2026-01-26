@@ -132,7 +132,7 @@ jobs:
 
       - name: Create issue for crashes
         if: steps.check_crashes.outputs.crashes_found == 'true' && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
