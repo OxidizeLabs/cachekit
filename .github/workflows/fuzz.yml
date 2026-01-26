@@ -74,7 +74,7 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Restore corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
@@ -104,7 +104,7 @@ jobs:
 
       - name: Save corpus
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
@@ -202,7 +202,7 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Restore all corpora
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: fuzz/corpus/
           key: fuzz-corpus-all-${{ github.sha }}
