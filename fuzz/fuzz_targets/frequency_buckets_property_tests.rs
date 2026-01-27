@@ -54,17 +54,18 @@ fn test_frequency_monotonicity(data: &[u8]) {
 fn test_fifo_within_frequency(data: &[u8]) {
     let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
 
-    // Insert keys in order
+    // Insert keys in order, tracking which ones actually succeed
     let keys: Vec<u32> = data.iter().map(|&b| u32::from(b)).collect();
+    let mut expected_order = Vec::new();
     for &key in &keys {
-        buckets.insert(key);
+        if buckets.insert(key) {
+            // Only add to expected order if insert succeeded (wasn't a duplicate)
+            expected_order.push(key);
+        }
     }
 
     // All keys should be at freq=1
     // Pop should return them in insertion order (FIFO)
-    let mut expected_order = keys.clone();
-    expected_order.dedup();
-
     for expected_key in expected_order {
         if let Some((popped_key, freq)) = buckets.pop_min() {
             assert_eq!(popped_key, expected_key);

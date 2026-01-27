@@ -2777,6 +2777,40 @@ mod tests {
     }
 
     #[test]
+    fn frequency_buckets_fifo_regression_fuzz_crash() {
+        // Regression test for fuzzing crash with input: [1, 92, 13, 92, 83]
+        // Keys: [92, 13, 92, 83]
+        // The duplicate 92 should be ignored, so FIFO order is [92, 13, 83]
+        let mut buckets: FrequencyBuckets<u32> = FrequencyBuckets::new();
+        let keys = vec![92, 13, 92, 83];
+
+        // Track which keys were actually inserted (not duplicates)
+        let mut expected_order = Vec::new();
+        for &key in &keys {
+            if buckets.insert(key) {
+                expected_order.push(key);
+            }
+        }
+
+        // Expected: [92, 13, 83] (the second 92 was rejected as duplicate)
+        assert_eq!(expected_order, vec![92, 13, 83]);
+
+        // Pop should return them in FIFO order
+        for expected_key in expected_order {
+            if let Some((popped_key, freq)) = buckets.pop_min() {
+                assert_eq!(
+                    popped_key, expected_key,
+                    "Expected {} but got {}",
+                    expected_key, popped_key
+                );
+                assert_eq!(freq, 1);
+            }
+        }
+
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
     fn frequency_buckets_min_freq_tracks_next_bucket() {
         let mut buckets = FrequencyBuckets::new();
         buckets.insert("a");
