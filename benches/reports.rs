@@ -13,8 +13,8 @@ use common::metrics::{
     BenchmarkConfig, PolicyComparison, estimate_entry_overhead, measure_adaptation_speed,
     measure_scan_resistance, run_benchmark, standard_workload_suite,
 };
+use common::operation::{ReadThrough, run_operations};
 use common::registry::{EXTENDED_WORKLOADS, STANDARD_WORKLOADS};
-use common::workload::run_hit_rate;
 
 const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
@@ -75,7 +75,8 @@ fn run_workload<C: CoreCache<u64, Arc<u64>>>(
     workload_case: &common::registry::WorkloadCase,
 ) -> f64 {
     let mut generator = workload_case.with_params(UNIVERSE, SEED).generator();
-    let stats = run_hit_rate(cache, &mut generator, OPS, Arc::new);
+    let mut op_model = ReadThrough::new(1.0, SEED);
+    let stats = run_operations(cache, &mut generator, OPS, &mut op_model, Arc::new);
     stats.hit_rate()
 }
 

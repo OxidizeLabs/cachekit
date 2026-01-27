@@ -1,3 +1,4 @@
 title: CacheKit Docs
 description: High-performance cache policies and supporting data structures.
 theme: jekyll-theme-minimal
+show_downloads: true

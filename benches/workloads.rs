@@ -21,8 +21,9 @@ use common::metrics::{
     BenchmarkConfig, measure_adaptation_speed, measure_scan_resistance, run_benchmark,
     standard_workload_suite,
 };
+use common::operation::{ReadThrough, run_operations};
 use common::registry::STANDARD_WORKLOADS;
-use common::workload::{WorkloadSpec, run_hit_rate};
+use common::workload::WorkloadSpec;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const CAPACITY: usize = 4096;
@@ -58,8 +59,15 @@ fn bench_hit_rates(c: &mut Criterion) {
                                     seed: SEED,
                                 }
                                 .generator();
+                                let mut op_model = ReadThrough::new(1.0, SEED);
                                 let start = Instant::now();
-                                let _ = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
+                                let _ = run_operations(
+                                    &mut cache,
+                                    &mut generator,
+                                    OPS,
+                                    &mut op_model,
+                                    Arc::new,
+                                );
                                 total += start.elapsed();
                             }
                             total

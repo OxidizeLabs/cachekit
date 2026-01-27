@@ -22,8 +22,8 @@ use common::metrics::{
     BenchmarkConfig as InternalConfig, measure_adaptation_speed, measure_scan_resistance,
     run_benchmark,
 };
+use common::operation::{ReadThrough, run_operations};
 use common::registry::STANDARD_WORKLOADS;
-use common::workload::run_hit_rate;
 
 // Benchmark configuration constants
 const CAPACITY: usize = 4096;
@@ -215,7 +215,8 @@ fn run_hit_rate_benchmarks(artifact: &mut BenchmarkArtifact) {
                 let mut cache = make_cache(CAPACITY);
                 let mut generator = workload_case.with_params(UNIVERSE, SEED).generator();
 
-                let stats = run_hit_rate(&mut cache, &mut generator, OPS, Arc::new);
+                let mut op_model = ReadThrough::new(1.0, SEED);
+                let stats = run_operations(&mut cache, &mut generator, OPS, &mut op_model, Arc::new);
 
                 artifact.add_result(ResultRow {
                     policy_id: policy_id.to_string(),
@@ -227,8 +228,8 @@ fn run_hit_rate_benchmarks(artifact: &mut BenchmarkArtifact) {
                         hit_stats: Some(HitStats {
                             hits: stats.hits,
                             misses: stats.misses,
-                            inserts: 0,
-                            updates: 0,
+                            inserts: stats.inserts,
+                            updates: stats.updates,
                             hit_rate: stats.hit_rate(),
                             miss_rate: 1.0 - stats.hit_rate(),
                         }),

@@ -5,6 +5,7 @@
 
 pub mod json_results;
 pub mod metrics;
+pub mod operation;
 pub mod registry;
 pub mod workload;
 

@@ -11,6 +11,8 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Exp, Pareto as ParetoDistr, Zipf};
 
+use crate::operation::{ReadThrough, run_operations};
+
 #[derive(Debug, Clone, Copy)]
 pub enum Workload {
     /// Uniform random keys in `[0, universe)`.
@@ -496,20 +498,10 @@ where
     C: CoreCache<u64, Arc<V>>,
     F: Fn(u64) -> Arc<V>,
 {
-    let mut hits = 0u64;
-    let mut misses = 0u64;
-
-    for _ in 0..operations {
-        let key = generator.next_key();
-        if cache.get(&key).is_some() {
-            hits += 1;
-        } else {
-            misses += 1;
-            let value = value_for_key(key);
-            let _ = cache.insert(key, value);
-            generator.record_insert();
-        }
+    let mut op_model = ReadThrough::new(1.0, 0);
+    let counts = run_operations(cache, generator, operations, &mut op_model, value_for_key);
+    HitRate {
+        hits: counts.hits,
+        misses: counts.misses,
     }
-
-    HitRate { hits, misses }
 }
