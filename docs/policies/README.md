@@ -37,6 +37,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 | Policy | Summary | Doc |
 |--------|---------|-----|
 | LRU | Strong default for temporal locality | [LRU doc](lru.md) |
+| SLRU | Segmented LRU with probation/protected | [SLRU doc](slru.md) |
 | LFU | Frequency-driven, stable hot sets | [LFU doc](lfu.md) |
 | Heap-LFU | LFU with heap eviction | [Heap-LFU doc](heap-lfu.md) |
 | LRU-K | Scan-resistant recency | [LRU-K doc](lru-k.md) |
@@ -53,6 +54,7 @@ See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, e
 ### Implemented Policy Summaries (Short)
 
 - **LRU**: Strong default for temporal locality; fast; scan-vulnerable.
+- **SLRU**: Segmented LRU; simple scan resistance via probation/protected segments.
 - **Clock**: LRU-like with lower overhead; good for low-latency paths.
 - **S3-FIFO**: Scan-resistant FIFO with ghost history; strong general-purpose choice.
 - **LFU / Heap-LFU**: Frequency-driven; stable hot sets; slower to adapt.

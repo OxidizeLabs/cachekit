@@ -20,5 +20,4 @@ If a policy moves into production code, its document should be moved back to
 - [NRU](nru.md)
 - [OPT](opt.md)
 - [Random](random.md)
-- [SLRU](slru.md)
 - [TTL](ttl.md)
