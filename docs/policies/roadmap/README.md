@@ -16,7 +16,6 @@ If a policy moves into production code, its document should be moved back to
 - [LIFO](lifo.md)
 - [LIRS](lirs.md)
 - [MFU](mfu.md)
-- [MRU](mru.md)
 - [NRU](nru.md)
 - [OPT](opt.md)
 - [Random](random.md)
