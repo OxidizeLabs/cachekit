@@ -43,7 +43,8 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 | Heap-LFU | LFU with heap eviction | [Heap-LFU doc](heap-lfu.md) |
 | LRU-K | Scan-resistant recency | [LRU-K doc](lru-k.md) |
 | 2Q | Probation + protected queues | [2Q doc](2q.md) |
-| FIFO | Simple insertion-order | [FIFO doc](fifo.md) |
+| FIFO | Simple insertion-order (oldest first) | [FIFO doc](fifo.md) |
+| LIFO | Stack-based (newest first) | [LIFO doc](lifo.md) |
 | Clock | Approximate LRU | [Clock doc](clock.md) |
 | Clock-PRO | Scan-resistant Clock variant | [Clock-PRO doc](clock-pro.md) |
 | S3-FIFO | Scan-resistant FIFO | [S3-FIFO doc](s3-fifo.md) |
@@ -63,7 +64,8 @@ See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, e
 - **LFU / Heap-LFU**: Frequency-driven; stable hot sets; slower to adapt.
 - **LRU-K**: Good scan resistance; more metadata per entry.
 - **2Q**: Simple scan resistance; requires queue sizing.
-- **FIFO**: Predictable insertion order; weak under strong locality.
+- **FIFO**: Predictable insertion order (oldest first); weak under strong locality.
+- **LIFO**: Stack order (newest first); niche use for undo buffers.
 - **Clock-PRO**: Scan-resistant Clock variant; more complexity.
 - **Random**: Baseline; uniform random eviction; minimal overhead; benchmark reference.
 

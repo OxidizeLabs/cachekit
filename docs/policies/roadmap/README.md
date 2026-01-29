@@ -13,7 +13,6 @@ If a policy moves into production code, its document should be moved back to
 - [CAR](car.md)
 - [GDSF](gdsf.md)
 - [LFU Aging](lfu-aging.md)
-- [LIFO](lifo.md)
 - [LIRS](lirs.md)
 - [MFU](mfu.md)
 - [NRU](nru.md)
