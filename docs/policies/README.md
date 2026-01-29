@@ -47,6 +47,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 | Clock | Approximate LRU | [Clock doc](clock.md) |
 | Clock-PRO | Scan-resistant Clock variant | [Clock-PRO doc](clock-pro.md) |
 | S3-FIFO | Scan-resistant FIFO | [S3-FIFO doc](s3-fifo.md) |
+| Random | Baseline: uniform random eviction | [Random doc](random.md) |
 
 ### Roadmap Policies (Planned)
 
@@ -64,6 +65,7 @@ See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, e
 - **2Q**: Simple scan resistance; requires queue sizing.
 - **FIFO**: Predictable insertion order; weak under strong locality.
 - **Clock-PRO**: Scan-resistant Clock variant; more complexity.
+- **Random**: Baseline; uniform random eviction; minimal overhead; benchmark reference.
 
 For broader policy taxonomy (OPT, ARC, CAR, LIRS, Random, etc.), use the
 [Policy roadmap](roadmap/README.md) and reference material below.

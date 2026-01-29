@@ -7,6 +7,7 @@ pub mod lfu;
 pub mod lru;
 pub mod lru_k;
 pub mod mru;
+pub mod random;
 pub mod s3_fifo;
 pub mod slru;
 pub mod two_q;

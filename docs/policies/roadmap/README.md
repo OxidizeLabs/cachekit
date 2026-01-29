@@ -18,5 +18,4 @@ If a policy moves into production code, its document should be moved back to
 - [MFU](mfu.md)
 - [NRU](nru.md)
 - [OPT](opt.md)
-- [Random](random.md)
 - [TTL](ttl.md)
