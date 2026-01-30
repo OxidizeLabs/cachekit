@@ -25,7 +25,10 @@
 //! │         ├─── CachePolicy::Mfu ─────► MfuCore<K, V>                         │
 //! │         ├─── CachePolicy::Mru ─────► MruCore<K, V>                         │
 //! │         ├─── CachePolicy::Random ──► RandomCore<K, V>                      │
-//! │         └─── CachePolicy::Slru ────► SlruCore<K, V>                        │
+//! │         ├─── CachePolicy::Slru ────► SlruCore<K, V>                        │
+//! │         ├─── CachePolicy::Clock ───► ClockCache<K, V>                      │
+//! │         ├─── CachePolicy::ClockPro ► ClockProCache<K, V>                   │
+//! │         └─── CachePolicy::Nru ─────► NruCache<K, V>                        │
 //! │                                                                             │
 //! │         ▼                                                                   │
 //! │   Cache<K, V>  (unified wrapper)                                            │
@@ -98,6 +101,8 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use crate::ds::frequency_buckets::DEFAULT_BUCKET_PREALLOC;
+use crate::policy::clock::ClockCache;
+use crate::policy::clock_pro::ClockProCache;
 use crate::policy::fifo::FifoCache;
 use crate::policy::heap_lfu::HeapLfuCache;
 use crate::policy::lfu::LfuCache;
@@ -106,6 +111,7 @@ use crate::policy::lru::LruCore;
 use crate::policy::lru_k::LrukCache;
 use crate::policy::mfu::MfuCore;
 use crate::policy::mru::MruCore;
+use crate::policy::nru::NruCache;
 use crate::policy::random::RandomCore;
 use crate::policy::s3_fifo::S3FifoCache;
 use crate::policy::slru::SlruCore;
@@ -281,6 +287,30 @@ pub enum CachePolicy {
         /// Fraction of capacity for the probationary segment.
         probationary_frac: f64,
     },
+
+    /// Clock (Second-Chance) eviction.
+    ///
+    /// Approximates LRU using reference bits and a clock hand.
+    /// Lower overhead than full LRU (no list manipulation on access).
+    ///
+    /// Good for: Low-latency caching, LRU approximation with lower overhead.
+    Clock,
+
+    /// Clock-PRO eviction.
+    ///
+    /// Scan-resistant Clock variant with adaptive promotion.
+    /// Combines Clock mechanics with ghost history tracking.
+    ///
+    /// Good for: Scan-heavy workloads, adaptive caching needs.
+    ClockPro,
+
+    /// NRU (Not Recently Used) eviction.
+    ///
+    /// Simple reference bit tracking with O(n) worst-case eviction.
+    /// Coarser granularity than Clock, simpler implementation.
+    ///
+    /// Good for: Small-to-medium caches, simple coarse recency tracking.
+    Nru,
 }
 
 /// Unified cache wrapper that provides a consistent API regardless of policy.
@@ -350,6 +380,9 @@ where
     Mru(MruCore<K, V>),
     Random(RandomCore<K, V>),
     Slru(SlruCore<K, V>),
+    Clock(ClockCache<K, V>),
+    ClockPro(ClockProCache<K, V>),
+    Nru(NruCache<K, V>),
 }
 
 impl<K, V> Cache<K, V>
@@ -402,6 +435,9 @@ where
             CacheInner::Mru(mru) => CoreCache::insert(mru, key, value),
             CacheInner::Random(random) => CoreCache::insert(random, key, value),
             CacheInner::Slru(slru) => CoreCache::insert(slru, key, value),
+            CacheInner::Clock(clock) => CoreCache::insert(clock, key, value),
+            CacheInner::ClockPro(clock_pro) => CoreCache::insert(clock_pro, key, value),
+            CacheInner::Nru(nru) => CoreCache::insert(nru, key, value),
         }
     }
 
@@ -434,6 +470,9 @@ where
             CacheInner::Mru(mru) => mru.get(key),
             CacheInner::Random(random) => random.get(key),
             CacheInner::Slru(slru) => slru.get(key),
+            CacheInner::Clock(clock) => clock.get(key),
+            CacheInner::ClockPro(clock_pro) => clock_pro.get(key),
+            CacheInner::Nru(nru) => nru.get(key),
         }
     }
 
@@ -466,6 +505,9 @@ where
             CacheInner::Mru(mru) => mru.contains(key),
             CacheInner::Random(random) => random.contains(key),
             CacheInner::Slru(slru) => slru.contains(key),
+            CacheInner::Clock(clock) => clock.contains(key),
+            CacheInner::ClockPro(clock_pro) => clock_pro.contains(key),
+            CacheInner::Nru(nru) => nru.contains(key),
         }
     }
 
@@ -497,6 +539,9 @@ where
             CacheInner::Mru(mru) => mru.len(),
             CacheInner::Random(random) => CoreCache::len(random),
             CacheInner::Slru(slru) => slru.len(),
+            CacheInner::Clock(clock) => CoreCache::len(clock),
+            CacheInner::ClockPro(clock_pro) => CoreCache::len(clock_pro),
+            CacheInner::Nru(nru) => CoreCache::len(nru),
         }
     }
 
@@ -541,6 +586,9 @@ where
             CacheInner::Mru(mru) => mru.capacity(),
             CacheInner::Random(random) => CoreCache::capacity(random),
             CacheInner::Slru(slru) => slru.capacity(),
+            CacheInner::Clock(clock) => CoreCache::capacity(clock),
+            CacheInner::ClockPro(clock_pro) => CoreCache::capacity(clock_pro),
+            CacheInner::Nru(nru) => CoreCache::capacity(nru),
         }
     }
 
@@ -574,6 +622,9 @@ where
             CacheInner::Mru(mru) => mru.clear(),
             CacheInner::Random(random) => random.clear(),
             CacheInner::Slru(slru) => slru.clear(),
+            CacheInner::Clock(clock) => clock.clear(),
+            CacheInner::ClockPro(clock_pro) => clock_pro.clear(),
+            CacheInner::Nru(nru) => nru.clear(),
         }
     }
 }
@@ -666,6 +717,9 @@ impl CacheBuilder {
             CachePolicy::Slru { probationary_frac } => {
                 CacheInner::Slru(SlruCore::new(self.capacity, probationary_frac))
             },
+            CachePolicy::Clock => CacheInner::Clock(ClockCache::new(self.capacity)),
+            CachePolicy::ClockPro => CacheInner::ClockPro(ClockProCache::new(self.capacity)),
+            CachePolicy::Nru => CacheInner::Nru(NruCache::new(self.capacity)),
         };
 
         Cache { inner }
@@ -698,6 +752,9 @@ mod tests {
             CachePolicy::Slru {
                 probationary_frac: 0.25,
             },
+            CachePolicy::Clock,
+            CachePolicy::ClockPro,
+            CachePolicy::Nru,
         ];
 
         for policy in policies {

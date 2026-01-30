@@ -135,6 +135,15 @@ let random = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Random);
 let slru = CacheBuilder::new(100).build::<u64, String>(
     CachePolicy::Slru { probationary_frac: 0.25 }
 );
+
+// Clock - Approximate LRU with reference bits (lower overhead)
+let clock = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Clock);
+
+// Clock-PRO - Scan-resistant Clock variant
+let clock_pro = CacheBuilder::new(100).build::<u64, String>(CachePolicy::ClockPro);
+
+// NRU - Not Recently Used (simple reference bit tracking)
+let nru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Nru);
 ```
 
 ### Policy Selection Guide
@@ -153,35 +162,30 @@ let slru = CacheBuilder::new(100).build::<u64, String>(
 | MRU     | Anti-recency patterns | Most recent access |
 | Random  | Baseline/uniform distribution | Random selection |
 | SLRU    | Scan resistance | Segmented LRU |
+| Clock   | Low-overhead LRU approximation | Reference bits + hand |
+| ClockPro| Scan-resistant Clock variant | Clock + ghost history |
+| NRU     | Simple coarse tracking | Reference bits (binary) |
 
 See [Choosing a policy](docs/guides/choosing-a-policy.md) for benchmark-driven guidance.
 
 ### Direct Policy Access
 
-For advanced use cases requiring policy-specific operations, or to use policies not yet in the builder (like Clock, Clock-PRO, NRU), use the underlying implementations directly:
+For advanced use cases requiring policy-specific operations, use the underlying implementations directly:
 
 ```rust
 use std::sync::Arc;
 use cachekit::policy::lru::LruCore;
-use cachekit::policy::nru::NruCache;
-use cachekit::policy::clock::ClockCache;
 use cachekit::traits::{CoreCache, LruCacheTrait};
 
 fn main() {
     // LRU with policy-specific operations
     let mut lru_cache: LruCore<u64, &str> = LruCore::new(100);
     lru_cache.insert(1, Arc::new("value"));
+
+    // Access LRU-specific methods
     if let Some((key, _)) = lru_cache.peek_lru() {
         println!("LRU key: {}", key);
     }
-
-    // NRU cache (not yet in builder)
-    let mut nru_cache = NruCache::new(100);
-    nru_cache.insert(1, "value");
-
-    // Clock cache (not yet in builder)
-    let mut clock_cache = ClockCache::new(100);
-    clock_cache.insert(1, "value");
 }
 ```
 
