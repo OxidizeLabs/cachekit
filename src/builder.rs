@@ -20,7 +20,12 @@
 //! │         ├─── CachePolicy::Lfu ─────► LfuCache<K, V>                        │
 //! │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                    │
 //! │         ├─── CachePolicy::TwoQ ────► TwoQCore<K, V>                        │
-//! │         └─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                     │
+//! │         ├─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                     │
+//! │         ├─── CachePolicy::Lifo ────► LifoCore<K, V>                        │
+//! │         ├─── CachePolicy::Mfu ─────► MfuCore<K, V>                         │
+//! │         ├─── CachePolicy::Mru ─────► MruCore<K, V>                         │
+//! │         ├─── CachePolicy::Random ──► RandomCore<K, V>                      │
+//! │         └─── CachePolicy::Slru ────► SlruCore<K, V>                        │
 //! │                                                                             │
 //! │         ▼                                                                   │
 //! │   Cache<K, V>  (unified wrapper)                                            │
@@ -37,15 +42,20 @@
 //!
 //! ## Policy Comparison
 //!
-//! | Policy    | Best For                          | Eviction Basis      |
-//! |-----------|-----------------------------------|---------------------|
-//! | FIFO      | Simple, predictable workloads     | Insertion order     |
-//! | LRU       | Temporal locality                 | Recency             |
-//! | LRU-K     | Scan-resistant workloads          | K-th access time    |
-//! | LFU       | Stable access patterns            | Frequency (O(1))    |
-//! | HeapLFU   | Frequent evictions, large caches  | Frequency (O(log n))|
-//! | 2Q        | Mixed workloads                   | Two-queue promotion |
-//! | S3-FIFO   | CDN, scan-heavy workloads         | Three-queue FIFO    |
+//! | Policy    | Best For                          | Eviction Basis        |
+//! |-----------|-----------------------------------|-----------------------|
+//! | FIFO      | Simple, predictable workloads     | Insertion order       |
+//! | LRU       | Temporal locality                 | Recency               |
+//! | LRU-K     | Scan-resistant workloads          | K-th access time      |
+//! | LFU       | Stable access patterns            | Frequency (O(1))      |
+//! | HeapLFU   | Frequent evictions, large caches  | Frequency (O(log n))  |
+//! | 2Q        | Mixed workloads                   | Two-queue promotion   |
+//! | S3-FIFO   | CDN, scan-heavy workloads         | Three-queue FIFO      |
+//! | LIFO      | Stack-like caching                | Reverse insertion     |
+//! | MFU       | Inverse frequency patterns        | Highest frequency     |
+//! | MRU       | Cyclic access patterns            | Most recent access    |
+//! | Random    | Baseline comparisons              | Random selection      |
+//! | SLRU      | Database buffer pools, scans      | Segmented LRU         |
 //!
 //! ## Example
 //!
@@ -91,9 +101,14 @@ use crate::ds::frequency_buckets::DEFAULT_BUCKET_PREALLOC;
 use crate::policy::fifo::FifoCache;
 use crate::policy::heap_lfu::HeapLfuCache;
 use crate::policy::lfu::LfuCache;
+use crate::policy::lifo::LifoCore;
 use crate::policy::lru::LruCore;
 use crate::policy::lru_k::LrukCache;
+use crate::policy::mfu::MfuCore;
+use crate::policy::mru::MruCore;
+use crate::policy::random::RandomCore;
 use crate::policy::s3_fifo::S3FifoCache;
+use crate::policy::slru::SlruCore;
 use crate::policy::two_q::TwoQCore;
 use crate::traits::CoreCache;
 
@@ -130,6 +145,23 @@ use crate::traits::CoreCache;
 /// // S3-FIFO for scan-heavy workloads (10% small queue, 90% ghost list)
 /// let s3_fifo = CacheBuilder::new(100).build::<u64, String>(
 ///     CachePolicy::S3Fifo { small_ratio: 0.1, ghost_ratio: 0.9 }
+/// );
+///
+/// // LIFO for stack-like eviction
+/// let lifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lifo);
+///
+/// // MFU for inverse frequency (evicts hot items)
+/// let mfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mfu { bucket_hint: None });
+///
+/// // MRU for anti-recency patterns
+/// let mru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mru);
+///
+/// // Random for baseline comparisons
+/// let random = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Random);
+///
+/// // SLRU for scan resistance with two segments
+/// let slru = CacheBuilder::new(100).build::<u64, String>(
+///     CachePolicy::Slru { probationary_frac: 0.25 }
 /// );
 /// ```
 #[derive(Debug, Clone)]
@@ -205,6 +237,50 @@ pub enum CachePolicy {
         /// Fraction of capacity for the Ghost list (tracks evicted keys).
         ghost_ratio: f64,
     },
+
+    /// Last In, First Out eviction.
+    ///
+    /// Evicts the most recently inserted item (stack-like behavior).
+    /// Good for: Undo buffers, temporary scratch space.
+    Lifo,
+
+    /// Most Frequently Used eviction (bucket-based, O(1)).
+    ///
+    /// Evicts the item with the highest access count.
+    /// Inverse of LFU - useful for specific niche workloads.
+    ///
+    /// - `bucket_hint: Option<usize>` - Pre-allocated frequency buckets (default: 32)
+    ///
+    /// Good for: Niche cases where most frequent = least needed next.
+    Mfu {
+        /// Pre-allocated frequency buckets for high-frequency items.
+        bucket_hint: Option<usize>,
+    },
+
+    /// Most Recently Used eviction.
+    ///
+    /// Evicts the most recently accessed item (opposite of LRU).
+    /// Good for: Cyclic access patterns, sequential scans.
+    Mru,
+
+    /// Random eviction.
+    ///
+    /// Evicts a uniformly random item when capacity is reached.
+    /// Good for: Baseline comparisons, truly random workloads.
+    Random,
+
+    /// Segmented LRU with probationary and protected segments.
+    ///
+    /// Uses two LRU queues: probationary (for new items) and protected (for promoted items).
+    /// Items are promoted on re-access. Provides excellent scan resistance.
+    ///
+    /// - `probationary_frac: f64` - Fraction of capacity for probationary queue (0.0-1.0)
+    ///
+    /// Good for: Database buffer pools, scan-resistant workloads.
+    Slru {
+        /// Fraction of capacity for the probationary segment.
+        probationary_frac: f64,
+    },
 }
 
 /// Unified cache wrapper that provides a consistent API regardless of policy.
@@ -269,6 +345,11 @@ where
     HeapLfu(HeapLfuCache<K, V>),
     TwoQ(TwoQCore<K, V>),
     S3Fifo(S3FifoCache<K, V>),
+    Lifo(LifoCore<K, V>),
+    Mfu(MfuCore<K, V>),
+    Mru(MruCore<K, V>),
+    Random(RandomCore<K, V>),
+    Slru(SlruCore<K, V>),
 }
 
 impl<K, V> Cache<K, V>
@@ -316,6 +397,11 @@ where
             },
             CacheInner::TwoQ(twoq) => CoreCache::insert(twoq, key, value),
             CacheInner::S3Fifo(s3fifo) => CoreCache::insert(s3fifo, key, value),
+            CacheInner::Lifo(lifo) => CoreCache::insert(lifo, key, value),
+            CacheInner::Mfu(mfu) => CoreCache::insert(mfu, key, value),
+            CacheInner::Mru(mru) => CoreCache::insert(mru, key, value),
+            CacheInner::Random(random) => CoreCache::insert(random, key, value),
+            CacheInner::Slru(slru) => CoreCache::insert(slru, key, value),
         }
     }
 
@@ -343,6 +429,11 @@ where
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.get(key).map(|arc| arc.as_ref()),
             CacheInner::TwoQ(twoq) => twoq.get(key),
             CacheInner::S3Fifo(s3fifo) => s3fifo.get(key),
+            CacheInner::Lifo(lifo) => lifo.get(key),
+            CacheInner::Mfu(mfu) => mfu.get(key),
+            CacheInner::Mru(mru) => mru.get(key),
+            CacheInner::Random(random) => random.get(key),
+            CacheInner::Slru(slru) => slru.get(key),
         }
     }
 
@@ -370,6 +461,11 @@ where
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.contains(key),
             CacheInner::TwoQ(twoq) => twoq.contains(key),
             CacheInner::S3Fifo(s3fifo) => s3fifo.contains(key),
+            CacheInner::Lifo(lifo) => lifo.contains(key),
+            CacheInner::Mfu(mfu) => mfu.contains(key),
+            CacheInner::Mru(mru) => mru.contains(key),
+            CacheInner::Random(random) => random.contains(key),
+            CacheInner::Slru(slru) => slru.contains(key),
         }
     }
 
@@ -396,6 +492,11 @@ where
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.len(),
             CacheInner::TwoQ(twoq) => twoq.len(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.len(),
+            CacheInner::Lifo(lifo) => CoreCache::len(lifo),
+            CacheInner::Mfu(mfu) => mfu.len(),
+            CacheInner::Mru(mru) => mru.len(),
+            CacheInner::Random(random) => CoreCache::len(random),
+            CacheInner::Slru(slru) => slru.len(),
         }
     }
 
@@ -435,6 +536,11 @@ where
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.capacity(),
             CacheInner::TwoQ(twoq) => twoq.capacity(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.capacity(),
+            CacheInner::Lifo(lifo) => CoreCache::capacity(lifo),
+            CacheInner::Mfu(mfu) => mfu.capacity(),
+            CacheInner::Mru(mru) => mru.capacity(),
+            CacheInner::Random(random) => CoreCache::capacity(random),
+            CacheInner::Slru(slru) => slru.capacity(),
         }
     }
 
@@ -463,6 +569,11 @@ where
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.clear(),
             CacheInner::TwoQ(twoq) => twoq.clear(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.clear(),
+            CacheInner::Lifo(lifo) => lifo.clear(),
+            CacheInner::Mfu(mfu) => mfu.clear(),
+            CacheInner::Mru(mru) => mru.clear(),
+            CacheInner::Random(random) => random.clear(),
+            CacheInner::Slru(slru) => slru.clear(),
         }
     }
 }
@@ -545,6 +656,16 @@ impl CacheBuilder {
                 small_ratio,
                 ghost_ratio,
             )),
+            CachePolicy::Lifo => CacheInner::Lifo(LifoCore::new(self.capacity)),
+            CachePolicy::Mfu { bucket_hint: _ } => {
+                // MfuCore uses heap internally, bucket_hint is ignored
+                CacheInner::Mfu(MfuCore::new(self.capacity))
+            },
+            CachePolicy::Mru => CacheInner::Mru(MruCore::new(self.capacity)),
+            CachePolicy::Random => CacheInner::Random(RandomCore::new(self.capacity)),
+            CachePolicy::Slru { probationary_frac } => {
+                CacheInner::Slru(SlruCore::new(self.capacity, probationary_frac))
+            },
         };
 
         Cache { inner }
@@ -569,6 +690,13 @@ mod tests {
             CachePolicy::S3Fifo {
                 small_ratio: 0.1,
                 ghost_ratio: 0.9,
+            },
+            CachePolicy::Lifo,
+            CachePolicy::Mfu { bucket_hint: None },
+            CachePolicy::Mru,
+            CachePolicy::Random,
+            CachePolicy::Slru {
+                probationary_frac: 0.25,
             },
         ];
 

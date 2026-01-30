@@ -85,7 +85,7 @@ fn main() {
 
 ### Available Policies
 
-#### Builder API Policies
+All policies are available through the unified builder API:
 
 ```rust
 use cachekit::builder::{CacheBuilder, CachePolicy};
@@ -116,51 +116,43 @@ let two_q = CacheBuilder::new(100).build::<u64, String>(
 let s3_fifo = CacheBuilder::new(100).build::<u64, String>(
     CachePolicy::S3Fifo { small_ratio: 0.1, ghost_ratio: 0.9 }
 );
-```
-
-#### Additional Policies (Direct Access)
-
-These policies are available through direct instantiation but not yet exposed in the builder API:
-
-```rust
-use cachekit::policy::lifo::LifoCore;
-use cachekit::policy::mfu::MfuCore;
-use cachekit::policy::mru::MruCore;
-use cachekit::policy::random::RandomCore;
-use cachekit::policy::slru::SlruCore;
 
 // LIFO - Last In, First Out (stack-like eviction)
-let mut lifo: LifoCore<u64, String> = LifoCore::new(100);
+let lifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lifo);
 
 // MFU - Most Frequently Used (evicts hot items)
-let mut mfu: MfuCore<u64, String> = MfuCore::with_bucket_hint(100, 32);
+let mfu = CacheBuilder::new(100).build::<u64, String>(
+    CachePolicy::Mfu { bucket_hint: None }
+);
 
 // MRU - Most Recently Used (evicts recently accessed)
-let mut mru: MruCore<u64, String> = MruCore::new(100);
+let mru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mru);
 
 // Random - Uniform random eviction
-let mut random: RandomCore<u64, String> = RandomCore::new(100);
+let random = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Random);
 
 // SLRU - Segmented LRU with probationary/protected segments
-let mut slru: SlruCore<u64, String> = SlruCore::new(100, 0.25);
+let slru = CacheBuilder::new(100).build::<u64, String>(
+    CachePolicy::Slru { probationary_frac: 0.25 }
+);
 ```
 
 ### Policy Selection Guide
 
-| Policy  | Best For | Eviction Basis | Builder API |
-|---------|----------|----------------|-------------|
-| FIFO    | Simple, predictable workloads | Insertion order | ✓ |
-| LRU     | Temporal locality | Recency | ✓ |
-| LRU-K   | Scan-resistant workloads | K-th access time | ✓ |
-| LFU     | Stable access patterns | Frequency (O(1)) | ✓ |
-| HeapLFU | Large caches, frequent evictions | Frequency (O(log n)) | ✓ |
-| 2Q      | Mixed workloads | Two-queue promotion | ✓ |
-| S3-FIFO | Scan-heavy workloads | FIFO + ghost history | ✓ |
-| LIFO    | Stack-like caching | Reverse insertion order | - |
-| MFU     | Inverse frequency | Highest frequency | - |
-| MRU     | Anti-recency patterns | Most recent access | - |
-| Random  | Baseline/uniform distribution | Random selection | - |
-| SLRU    | Scan resistance | Segmented LRU | - |
+| Policy  | Best For | Eviction Basis |
+|---------|----------|----------------|
+| FIFO    | Simple, predictable workloads | Insertion order |
+| LRU     | Temporal locality | Recency |
+| LRU-K   | Scan-resistant workloads | K-th access time |
+| LFU     | Stable access patterns | Frequency (O(1)) |
+| HeapLFU | Large caches, frequent evictions | Frequency (O(log n)) |
+| 2Q      | Mixed workloads | Two-queue promotion |
+| S3-FIFO | Scan-heavy workloads | FIFO + ghost history |
+| LIFO    | Stack-like caching | Reverse insertion order |
+| MFU     | Inverse frequency patterns | Highest frequency |
+| MRU     | Anti-recency patterns | Most recent access |
+| Random  | Baseline/uniform distribution | Random selection |
+| SLRU    | Scan resistance | Segmented LRU |
 
 See [Choosing a policy](docs/guides/choosing-a-policy.md) for benchmark-driven guidance.
 
