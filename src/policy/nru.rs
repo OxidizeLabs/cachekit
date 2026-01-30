@@ -192,15 +192,15 @@ struct Entry<V> {
 ///
 /// let mut cache = NruCache::new(100);
 ///
-/// cache.insert("key1", "value1");
-/// cache.insert("key2", "value2");
+/// cache.insert(1, "value1");
+/// cache.insert(2, "value2");
 ///
 /// // Access sets reference bit
-/// assert_eq!(cache.get(&"key1"), Some(&"value1"));
+/// assert_eq!(cache.get(&1), Some(&"value1"));
 ///
 /// // When cache is full, unreferenced items are evicted first
 /// for i in 3..=110 {
-///     cache.insert(i, format!("value{}", i));
+///     cache.insert(i, "value");
 /// }
 ///
 /// assert_eq!(cache.len(), 100);
