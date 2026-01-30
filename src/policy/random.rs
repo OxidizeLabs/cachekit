@@ -307,6 +307,9 @@ where
         while self.len() >= self.capacity && self.capacity > 0 && !self.keys.is_empty() {
             self.evict_random();
         }
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
     }
 
     /// Evicts a uniformly random entry.
@@ -441,6 +444,53 @@ where
     pub fn clear(&mut self) {
         self.map.clear();
         self.keys.clear();
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+    }
+
+    /// Validates internal data structure invariants.
+    ///
+    /// This method checks that:
+    /// - Map size matches keys vector size
+    /// - All keys in map have correct indices
+    /// - All keys in vector exist in map
+    /// - No duplicate keys in vector
+    ///
+    /// Only runs when debug assertions are enabled.
+    #[cfg(debug_assertions)]
+    fn validate_invariants(&self) {
+        // Map and keys should have same size
+        debug_assert_eq!(
+            self.map.len(),
+            self.keys.len(),
+            "Map and keys vector have different sizes"
+        );
+
+        // All keys in map should have valid indices
+        for (key, &(idx, _)) in &self.map {
+            debug_assert!(idx < self.keys.len(), "Index out of bounds");
+            debug_assert!(
+                &self.keys[idx] == key,
+                "Index mismatch: map points to wrong position"
+            );
+        }
+
+        // All keys in vector should exist in map
+        for (i, key) in self.keys.iter().enumerate() {
+            debug_assert!(self.map.contains_key(key), "Key in vector not found in map");
+            if let Some(&(idx, _)) = self.map.get(key) {
+                debug_assert!(idx == i, "Vector position doesn't match map index");
+            }
+        }
+
+        // No duplicates in keys vector
+        let unique_count = self
+            .keys
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        debug_assert!(unique_count == self.keys.len(), "Duplicate keys in vector");
     }
 }
 
@@ -928,6 +978,67 @@ mod tests {
             // Verify it can store and retrieve
             let count = (0..10).filter(|i| cache.contains(i)).count();
             assert_eq!(count, 5);
+        }
+    }
+
+    // ==============================================
+    // Validation Tests
+    // ==============================================
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_after_operations() {
+        let mut cache = RandomCore::new(10);
+
+        // Insert items
+        for i in 1..=10 {
+            cache.insert(i, i * 100);
+        }
+        cache.validate_invariants();
+
+        // Access items (doesn't affect eviction)
+        for _ in 0..5 {
+            cache.get(&5);
+        }
+        cache.validate_invariants();
+
+        // Trigger evictions
+        cache.insert(11, 1100);
+        cache.validate_invariants();
+
+        cache.insert(12, 1200);
+        cache.validate_invariants();
+
+        // Clear
+        cache.clear();
+        cache.validate_invariants();
+
+        // Verify empty state
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.keys.len(), 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_with_index_consistency() {
+        let mut cache = RandomCore::new(5);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+        cache.validate_invariants();
+
+        // Multiple inserts to trigger evictions and index updates
+        for i in 4..=10 {
+            cache.insert(i, i * 100);
+            cache.validate_invariants();
+        }
+
+        assert_eq!(cache.len(), 5);
+        assert_eq!(cache.keys.len(), 5);
+
+        // Verify all indices are correct
+        for (key, &(idx, _)) in &cache.map {
+            assert_eq!(&cache.keys[idx], key);
         }
     }
 }

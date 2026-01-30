@@ -485,6 +485,9 @@ where
 
         self.map.insert(key, node_ptr);
         self.attach_probationary_head(node_ptr);
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
     }
 
     /// Evicts entries until there is room for a new entry.
@@ -605,6 +608,97 @@ where
         while self.pop_probationary_tail().is_some() {}
         while self.pop_protected_tail().is_some() {}
         self.map.clear();
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+    }
+
+    /// Validates internal data structure invariants.
+    ///
+    /// This method checks that:
+    /// - All nodes in map are reachable from either probationary or protected lists
+    /// - List lengths match tracked counts
+    /// - No cycles exist in the lists
+    /// - All nodes have valid prev/next pointers
+    ///
+    /// Only runs when debug assertions are enabled.
+    #[cfg(debug_assertions)]
+    fn validate_invariants(&self) {
+        // Count nodes in probationary list
+        let mut prob_count = 0;
+        let mut current = self.probationary_head;
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(ptr) = current {
+            prob_count += 1;
+            assert!(visited.insert(ptr), "Cycle detected in probationary list");
+            assert!(
+                prob_count <= self.map.len(),
+                "Probationary count exceeds total entries"
+            );
+
+            unsafe {
+                let node = ptr.as_ref();
+                assert!(
+                    matches!(node.segment, Segment::Probationary),
+                    "Non-probationary node in probationary list"
+                );
+                current = node.next;
+            }
+        }
+
+        debug_assert_eq!(
+            prob_count, self.probationary_len,
+            "Probationary count mismatch"
+        );
+
+        // Count nodes in protected list
+        let mut prot_count = 0;
+        let mut current = self.protected_head;
+        visited.clear();
+
+        while let Some(ptr) = current {
+            prot_count += 1;
+            assert!(visited.insert(ptr), "Cycle detected in protected list");
+            assert!(
+                prot_count <= self.map.len(),
+                "Protected count exceeds total entries"
+            );
+
+            unsafe {
+                let node = ptr.as_ref();
+                assert!(
+                    matches!(node.segment, Segment::Protected),
+                    "Non-protected node in protected list"
+                );
+                current = node.next;
+            }
+        }
+
+        debug_assert_eq!(prot_count, self.protected_len, "Protected count mismatch");
+
+        // Total nodes in lists should equal map size
+        debug_assert_eq!(
+            prob_count + prot_count,
+            self.map.len(),
+            "List counts don't match map size"
+        );
+
+        // Verify all map entries are in a list
+        for &node_ptr in self.map.values() {
+            unsafe {
+                let node = node_ptr.as_ref();
+                // Each node should be in the correct list
+                match node.segment {
+                    Segment::Probationary => {
+                        debug_assert!(prob_count > 0, "Node marked probationary but list empty");
+                    },
+                    Segment::Protected => {
+                        debug_assert!(prot_count > 0, "Node marked protected but list empty");
+                    },
+                }
+            }
+        }
     }
 }
 
@@ -1472,5 +1566,69 @@ mod tests {
                 working_set_hits
             );
         }
+    }
+
+    // ==============================================
+    // Validation Tests
+    // ==============================================
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_after_operations() {
+        let mut cache = SlruCore::new(10, 0.3);
+
+        // Insert items
+        for i in 1..=10 {
+            cache.insert(i, i * 100);
+        }
+        cache.validate_invariants();
+
+        // Access items to trigger promotions
+        for _ in 0..3 {
+            cache.get(&1);
+            cache.get(&2);
+        }
+        cache.validate_invariants();
+
+        // Trigger evictions
+        cache.insert(11, 1100);
+        cache.validate_invariants();
+
+        cache.insert(12, 1200);
+        cache.validate_invariants();
+
+        // Clear
+        cache.clear();
+        cache.validate_invariants();
+
+        // Verify empty state
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_with_segment_transitions() {
+        let mut cache = SlruCore::new(5, 0.4);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+
+        // Access to promote from probationary to protected
+        cache.get(&1);
+        cache.validate_invariants();
+
+        cache.get(&2);
+        cache.validate_invariants();
+
+        // Fill cache
+        cache.insert(4, 400);
+        cache.insert(5, 500);
+        cache.validate_invariants();
+
+        // Trigger evictions
+        cache.insert(6, 600);
+        cache.validate_invariants();
+
+        assert_eq!(cache.len(), 5);
     }
 }

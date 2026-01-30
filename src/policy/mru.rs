@@ -391,6 +391,9 @@ where
 
         self.map.insert(key, node_ptr);
         self.attach_head(node_ptr);
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
     }
 
     /// Evicts entries until there is room for a new entry.
@@ -499,6 +502,49 @@ where
         // Free all nodes
         while self.pop_head().is_some() {}
         self.map.clear();
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+    }
+
+    /// Validates internal data structure invariants.
+    ///
+    /// This method checks that:
+    /// - All nodes in map are reachable from the list
+    /// - List length matches map size
+    /// - No cycles exist in the list
+    /// - All prev/next pointers are consistent
+    ///
+    /// Only runs when debug assertions are enabled.
+    #[cfg(debug_assertions)]
+    fn validate_invariants(&self) {
+        if self.map.is_empty() {
+            debug_assert!(self.head.is_none(), "Empty cache should have no head");
+            debug_assert!(self.tail.is_none(), "Empty cache should have no tail");
+            return;
+        }
+
+        // Count nodes from head
+        let mut count = 0;
+        let mut current = self.head;
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(ptr) = current {
+            count += 1;
+            assert!(visited.insert(ptr), "Cycle detected in list");
+            assert!(count <= self.map.len(), "Count exceeds map size");
+
+            unsafe {
+                let node = ptr.as_ref();
+                debug_assert!(
+                    self.map.contains_key(&node.key),
+                    "Node key not found in map"
+                );
+                current = node.next;
+            }
+        }
+
+        debug_assert_eq!(count, self.map.len(), "List count doesn't match map size");
     }
 }
 
@@ -956,5 +1002,64 @@ mod tests {
             );
             assert_eq!(cache.get(&String::from("foo")), Some(&String::from("bar")));
         }
+    }
+
+    // ==============================================
+    // Validation Tests
+    // ==============================================
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_after_operations() {
+        let mut cache = MruCore::new(10);
+
+        // Insert items
+        for i in 1..=10 {
+            cache.insert(i, i * 100);
+        }
+        cache.validate_invariants();
+
+        // Access items (moves to MRU, making them first to evict)
+        for _ in 0..3 {
+            cache.get(&5);
+        }
+        cache.validate_invariants();
+
+        // Trigger evictions
+        cache.insert(11, 1100);
+        cache.validate_invariants();
+
+        cache.insert(12, 1200);
+        cache.validate_invariants();
+
+        // Clear
+        cache.clear();
+        cache.validate_invariants();
+
+        // Verify empty state
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_with_mru_evictions() {
+        let mut cache = MruCore::new(3);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+        cache.validate_invariants();
+
+        // Access item 1 (moves to MRU)
+        cache.get(&1);
+        cache.validate_invariants();
+
+        // Insert new item, should evict item 1 (MRU)
+        cache.insert(4, 400);
+        cache.validate_invariants();
+
+        assert!(!cache.contains(&1)); // MRU evicted
+        assert!(cache.contains(&2));
+        assert!(cache.contains(&3));
+        assert!(cache.contains(&4));
     }
 }

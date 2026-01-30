@@ -303,6 +303,9 @@ where
                 break;
             }
         }
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
     }
 
     /// Returns the number of entries in the cache.
@@ -393,6 +396,46 @@ where
     pub fn clear(&mut self) {
         self.map.clear();
         self.stack.clear();
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+    }
+
+    /// Validates internal data structure invariants.
+    ///
+    /// This method checks that:
+    /// - Map size matches stack size
+    /// - All keys in map exist in stack
+    /// - All keys in stack exist in map
+    /// - No duplicate keys in stack
+    ///
+    /// Only runs when debug assertions are enabled.
+    #[cfg(debug_assertions)]
+    fn validate_invariants(&self) {
+        // Map and stack should have same size
+        debug_assert_eq!(
+            self.map.len(),
+            self.stack.len(),
+            "Map and stack have different sizes"
+        );
+
+        // All keys in map should exist in stack
+        for key in self.map.keys() {
+            debug_assert!(self.stack.contains(key), "Key in map not found in stack");
+        }
+
+        // All keys in stack should exist in map
+        for key in &self.stack {
+            debug_assert!(self.map.contains_key(key), "Key in stack not found in map");
+        }
+
+        // No duplicates in stack
+        let unique_count = self
+            .stack
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        debug_assert_eq!(unique_count, self.stack.len(), "Duplicate keys in stack");
     }
 }
 
@@ -902,6 +945,67 @@ mod tests {
             assert!(cache.contains(&2));
             assert!(!cache.contains(&3), "Most recent insert still evicted");
             assert!(cache.contains(&4));
+        }
+    }
+
+    // ==============================================
+    // Validation Tests
+    // ==============================================
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_after_operations() {
+        let mut cache = LifoCore::new(10);
+
+        // Insert items
+        for i in 1..=10 {
+            cache.insert(i, i * 100);
+        }
+        cache.validate_invariants();
+
+        // Access items (doesn't affect eviction in LIFO)
+        for _ in 0..5 {
+            cache.get(&5);
+        }
+        cache.validate_invariants();
+
+        // Trigger evictions (evicts most recent)
+        cache.insert(11, 1100);
+        cache.validate_invariants();
+
+        cache.insert(12, 1200);
+        cache.validate_invariants();
+
+        // Clear
+        cache.clear();
+        cache.validate_invariants();
+
+        // Verify empty state
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.stack.len(), 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validate_invariants_with_stack_consistency() {
+        let mut cache = LifoCore::new(5);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+        cache.validate_invariants();
+
+        // Multiple inserts to trigger LIFO evictions
+        for i in 4..=10 {
+            cache.insert(i, i * 100);
+            cache.validate_invariants();
+        }
+
+        assert_eq!(cache.len(), 5);
+        assert_eq!(cache.stack.len(), 5);
+
+        // Verify all stack keys exist in map
+        for key in &cache.stack {
+            assert!(cache.map.contains_key(key));
         }
     }
 }
