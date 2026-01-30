@@ -5,6 +5,33 @@ All notable changes to cachekit will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- MFU (Most Frequently Used) cache policy (`MfuCache`) with frequency-based eviction that keeps most frequently accessed items.
+- LIFO (Last In, First Out) cache policy (`LifoCache`) with stack-based eviction.
+- Random eviction cache policy (`RandomCache`) with XorShift64 RNG for unpredictable eviction patterns.
+- MRU (Most Recently Used) cache policy (`MruCache`) with recency-based eviction of most recently accessed items.
+- Segmented LRU (SLRU) cache policy (`SlruCache`) with probationary and protected segments for scan resistance.
+- Example programs: `basic_mfu.rs`, `basic_lifo.rs`, `basic_random.rs`, `basic_mru.rs`, `basic_slru.rs`.
+- Invariant validation for cache policies to ensure internal consistency during operations.
+- Regression test for FIFO behavior in `FrequencyBuckets`.
+
+### Documentation
+- Complete documentation for MFU policy (`docs/policies/mfu.md`) with architecture and usage patterns.
+- Complete documentation for LIFO policy (`docs/policies/lifo.md`) with stack semantics and use cases.
+- Complete documentation for Random eviction policy (`docs/policies/random.md`) with RNG strategy.
+- Complete documentation for MRU policy (`docs/policies/mru.md`) with recency-based eviction.
+- Complete documentation for SLRU policy (`docs/policies/slru.md`) with segment management and promotion strategies.
+- Updated examples in cache policy documentation to use integer keys and values for consistency.
+
+### Changed
+- Random eviction policy now uses XorShift64 for RNG state management, improving performance and predictability.
+- Updated dependencies and enhanced benchmarking structure for better performance analysis.
+
+### Removed
+- Legacy performance tests for LFU, LRU-K, and LRU policies (consolidated into newer test suite).
+
 ## [0.2.0-alpha] - 2026-01-19
 
 ### Added
