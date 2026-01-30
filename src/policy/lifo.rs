@@ -102,16 +102,16 @@
 //! let mut cache = LifoCore::new(10);
 //!
 //! // Insert items (pushed to stack)
-//! cache.insert("page1", "content1");
-//! cache.insert("page2", "content2");
-//! cache.insert("page3", "content3");
+//! cache.insert(1, 100);
+//! cache.insert(2, 200);
+//! cache.insert(3, 300);
 //!
 //! // Get doesn't affect eviction order (unlike LRU)
-//! assert_eq!(cache.get(&"page1"), Some(&"content1"));
+//! assert_eq!(cache.get(&1), Some(&100));
 //!
 //! // When cache is full, most recent insertion will be evicted!
 //! for i in 4..=15 {
-//!     cache.insert(format!("page{}", i).as_str(), format!("content{}", i).as_str());
+//!     cache.insert(i, i * 10);
 //! }
 //!
 //! assert_eq!(cache.len(), 10);
