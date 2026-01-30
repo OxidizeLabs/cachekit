@@ -9,6 +9,7 @@ pub mod lru;
 pub mod lru_k;
 pub mod mfu;
 pub mod mru;
+pub mod nru;
 pub mod random;
 pub mod s3_fifo;
 pub mod slru;

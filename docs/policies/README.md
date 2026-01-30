@@ -48,6 +48,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 | LIFO | Stack-based (newest first) | [LIFO doc](lifo.md) |
 | Clock | Approximate LRU | [Clock doc](clock.md) |
 | Clock-PRO | Scan-resistant Clock variant | [Clock-PRO doc](clock-pro.md) |
+| NRU | Coarse recency tracking | [NRU doc](nru.md) |
 | S3-FIFO | Scan-resistant FIFO | [S3-FIFO doc](s3-fifo.md) |
 | Random | Baseline: uniform random eviction | [Random doc](random.md) |
 
@@ -61,6 +62,7 @@ See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, e
 - **MRU**: Opposite of LRU; evicts most recent; only for specific cyclic patterns.
 - **SLRU**: Segmented LRU; simple scan resistance via probation/protected segments.
 - **Clock**: LRU-like with lower overhead; good for low-latency paths.
+- **NRU**: Coarse recency tracking with reference bits; simpler than Clock; O(n) worst-case eviction.
 - **S3-FIFO**: Scan-resistant FIFO with ghost history; strong general-purpose choice.
 - **LFU / Heap-LFU**: Frequency-driven; stable hot sets; slower to adapt.
 - **MFU**: Opposite of LFU; evicts highest frequency; burst detection or baseline comparisons.

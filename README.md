@@ -42,7 +42,7 @@ cachekit = { git = "https://github.com/OxidizeLabs/cachekit" }
 
 CacheKit is a Rust library that provides:
 
-- High-performance cache replacement policies (e.g., **FIFO**, **LRU**, **LRU-K**, **S3-FIFO**, **SLRU**, **2Q**, and more).
+- High-performance cache replacement policies (e.g., **FIFO**, **LRU**, **LRU-K**, **Clock**, **NRU**, **S3-FIFO**, **SLRU**, **2Q**, and more).
 - Supporting data structures and policy primitives for building caches.
 - Optional metrics and benchmark harnesses.
 - A modular API suitable for embedding in systems where control over caching behavior is critical.
@@ -158,21 +158,30 @@ See [Choosing a policy](docs/guides/choosing-a-policy.md) for benchmark-driven g
 
 ### Direct Policy Access
 
-For advanced use cases requiring policy-specific operations, use the underlying implementations directly:
+For advanced use cases requiring policy-specific operations, or to use policies not yet in the builder (like Clock, Clock-PRO, NRU), use the underlying implementations directly:
 
 ```rust
 use std::sync::Arc;
 use cachekit::policy::lru::LruCore;
+use cachekit::policy::nru::NruCache;
+use cachekit::policy::clock::ClockCache;
 use cachekit::traits::{CoreCache, LruCacheTrait};
 
 fn main() {
-    let mut cache: LruCore<u64, &str> = LruCore::new(100);
-    cache.insert(1, Arc::new("value"));
-
-    // Policy-specific operations
-    if let Some((key, _)) = cache.peek_lru() {
+    // LRU with policy-specific operations
+    let mut lru_cache: LruCore<u64, &str> = LruCore::new(100);
+    lru_cache.insert(1, Arc::new("value"));
+    if let Some((key, _)) = lru_cache.peek_lru() {
         println!("LRU key: {}", key);
     }
+
+    // NRU cache (not yet in builder)
+    let mut nru_cache = NruCache::new(100);
+    nru_cache.insert(1, "value");
+
+    // Clock cache (not yet in builder)
+    let mut clock_cache = ClockCache::new(100);
+    clock_cache.insert(1, "value");
 }
 ```
 
