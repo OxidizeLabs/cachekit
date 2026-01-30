@@ -14,7 +14,6 @@ If a policy moves into production code, its document should be moved back to
 - [GDSF](gdsf.md)
 - [LFU Aging](lfu-aging.md)
 - [LIRS](lirs.md)
-- [MFU](mfu.md)
 - [NRU](nru.md)
 - [OPT](opt.md)
 - [TTL](ttl.md)

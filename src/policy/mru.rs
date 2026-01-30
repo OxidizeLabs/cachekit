@@ -754,12 +754,13 @@ mod tests {
                 }
             }
 
-            // The last 5 inserted items should remain (from cycle 2)
-            // Items from earlier cycles should be evicted
-            assert!(!cache.contains(&"cycle0_1".to_string()));
-            assert!(!cache.contains(&"cycle1_3".to_string()));
-            assert!(cache.contains(&"cycle2_1".to_string()));
-            assert!(cache.contains(&"cycle2_5".to_string()));
+            // With MRU: most recent inserts get evicted, oldest items survive
+            // The first 4 items from cycle 0 survive + last item from cycle 2
+            assert!(cache.contains(&"cycle0_1".to_string())); // Oldest, survives
+            assert!(cache.contains(&"cycle0_4".to_string())); // Old, survives
+            assert!(!cache.contains(&"cycle1_3".to_string())); // Evicted
+            assert!(!cache.contains(&"cycle2_1".to_string())); // Evicted
+            assert!(cache.contains(&"cycle2_5".to_string())); // Last inserted, survives
         }
     }
 

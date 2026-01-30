@@ -41,6 +41,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 | SLRU | Segmented LRU with probation/protected | [SLRU doc](slru.md) |
 | LFU | Frequency-driven, stable hot sets | [LFU doc](lfu.md) |
 | Heap-LFU | LFU with heap eviction | [Heap-LFU doc](heap-lfu.md) |
+| MFU | Evicts highest frequency (niche/baseline) | [MFU doc](mfu.md) |
 | LRU-K | Scan-resistant recency | [LRU-K doc](lru-k.md) |
 | 2Q | Probation + protected queues | [2Q doc](2q.md) |
 | FIFO | Simple insertion-order (oldest first) | [FIFO doc](fifo.md) |
@@ -62,6 +63,7 @@ See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, e
 - **Clock**: LRU-like with lower overhead; good for low-latency paths.
 - **S3-FIFO**: Scan-resistant FIFO with ghost history; strong general-purpose choice.
 - **LFU / Heap-LFU**: Frequency-driven; stable hot sets; slower to adapt.
+- **MFU**: Opposite of LFU; evicts highest frequency; burst detection or baseline comparisons.
 - **LRU-K**: Good scan resistance; more metadata per entry.
 - **2Q**: Simple scan resistance; requires queue sizing.
 - **FIFO**: Predictable insertion order (oldest first); weak under strong locality.
