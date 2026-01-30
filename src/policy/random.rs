@@ -133,7 +133,7 @@
 //!
 //! - Uses `Vec<K>` for O(1) random access and swap-remove
 //! - Uses `HashMap<K, (usize, V)>` to store index and value
-//! - RNG state managed internally (uses `rand` crate)
+//! - RNG state managed internally using XorShift64 (Miri-compatible)
 //! - No access pattern tracking = zero metadata overhead
 //!
 //! ## When to Use
@@ -194,6 +194,7 @@ use std::hash::Hash;
 /// # Implementation
 ///
 /// Uses Vec + HashMap for O(1) random eviction via swap-remove.
+/// RNG state uses XorShift64 for deterministic testing and Miri compatibility.
 pub struct RandomCore<K, V>
 where
     K: Clone + Eq + Hash,
@@ -204,6 +205,8 @@ where
     keys: Vec<K>,
     /// Maximum cache capacity
     capacity: usize,
+    /// Internal PRNG state for random eviction (XorShift)
+    rng_state: u64,
 }
 
 impl<K, V> RandomCore<K, V>
@@ -231,6 +234,8 @@ where
             map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             keys: Vec::with_capacity(capacity),
             capacity,
+            // Initialize with non-zero seed for XorShift (capacity + 1 ensures non-zero)
+            rng_state: capacity as u64 + 0x9e3779b97f4a7c15,
         }
     }
 
@@ -315,7 +320,7 @@ where
     /// Evicts a uniformly random entry.
     ///
     /// Implementation:
-    /// 1. Pick random index (using simple XorShift)
+    /// 1. Pick random index (using XorShift64)
     /// 2. Swap with last element
     /// 3. Update swapped element's index
     /// 4. Pop last element
@@ -327,12 +332,13 @@ where
         }
 
         let len = self.keys.len();
-        // Simple random: use current time + length for seed
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as usize;
-        let random_idx = (seed ^ len).wrapping_mul(2654435761) % len;
+        // XorShift64 PRNG (fast and doesn't require system time)
+        let mut x = self.rng_state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng_state = x;
+        let random_idx = (x as usize) % len;
 
         // Get the victim key
         let victim_key = self.keys[random_idx].clone();
