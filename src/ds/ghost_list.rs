@@ -105,22 +105,22 @@
 //!         }
 //!     }
 //!
-//!     fn on_miss(&mut self, key: &str) {
-//!         if self.ghost_recent.contains(&key.to_string()) {
+//!     fn on_miss(&mut self, key: String) {
+//!         if self.ghost_recent.contains(&key) {
 //!             // Hit in B1: increase recency preference
 //!             self.p = self.p.saturating_add(1);
-//!             self.ghost_recent.remove(&key.to_string());
-//!         } else if self.ghost_frequent.contains(&key.to_string()) {
+//!             self.ghost_recent.remove(&key);
+//!         } else if self.ghost_frequent.contains(&key) {
 //!             // Hit in B2: increase frequency preference
 //!             self.p = self.p.saturating_sub(1);
-//!             self.ghost_frequent.remove(&key.to_string());
+//!             self.ghost_frequent.remove(&key);
 //!         }
 //!     }
 //! }
 //!
 //! let mut cache = AdaptiveCache::new(100);
 //! cache.ghost_recent.record("evicted_key".to_string());
-//! cache.on_miss("evicted_key");  // Adapts based on ghost hit
+//! cache.on_miss("evicted_key".to_string());  // Adapts based on ghost hit
 //! ```
 //!
 //! ## Thread Safety
@@ -208,6 +208,76 @@ pub struct GhostList<K> {
     capacity: usize,
 }
 
+impl<K> Clone for GhostList<K>
+where
+    K: Eq + Hash + Clone,
+{
+    fn clone(&self) -> Self {
+        let mut new_list = IntrusiveList::with_capacity(self.capacity);
+        let mut new_index = FxHashMap::with_capacity_and_hasher(self.capacity, Default::default());
+
+        // Rebuild list and index from current state
+        for (_, key) in self.list.iter_entries() {
+            let id = new_list.push_back(key.clone());
+            new_index.insert(key.clone(), id);
+        }
+
+        Self {
+            list: new_list,
+            index: new_index,
+            capacity: self.capacity,
+        }
+    }
+}
+
+/// Iterator over keys in a [`GhostList`], yielding references in MRU to LRU order.
+///
+/// Created by [`GhostList::iter`].
+pub struct Iter<'a, K> {
+    inner: MapToKey<'a, K>,
+}
+
+type MapToKey<'a, K> = std::iter::Map<
+    crate::ds::intrusive_list::IntrusiveListEntryIter<'a, K>,
+    fn((SlotId, &'a K)) -> &'a K,
+>;
+
+impl<'a, K> Iterator for Iter<'a, K> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K> ExactSizeIterator for Iter<'a, K> {}
+
+impl<'a, K> std::iter::FusedIterator for Iter<'a, K> {}
+
+impl<K> Default for GhostList<K>
+where
+    K: Eq + Hash + Clone,
+{
+    /// Creates an empty ghost list with zero capacity (no-op mode).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let ghost: GhostList<String> = GhostList::default();
+    /// assert_eq!(ghost.capacity(), 0);
+    /// assert!(ghost.is_empty());
+    /// ```
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 impl<K> GhostList<K>
 where
     K: Eq + Hash + Clone,
@@ -290,6 +360,10 @@ where
     ///
     /// This is the "ghost hit" check used by adaptive policies.
     ///
+    /// # Complexity
+    ///
+    /// O(1) average case, O(n) worst case due to hash collisions.
+    ///
     /// # Example
     ///
     /// ```
@@ -312,8 +386,13 @@ where
 
     /// Records `key` as most-recently-seen, evicting the least recent if needed.
     ///
-    /// If the key is already present, it is promoted to MRU position.
-    /// If at capacity, the LRU key is evicted before inserting.
+    /// If the key is already present, it is promoted to MRU position and returns `None`.
+    /// If at capacity, the LRU key is evicted before inserting and returned.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(evicted_key)` if a key was evicted to make room
+    /// - `None` if the key was already present (promoted) or capacity not reached
     ///
     /// # Example
     ///
@@ -322,44 +401,51 @@ where
     ///
     /// let mut ghost = GhostList::new(2);
     ///
-    /// ghost.record("a");
-    /// ghost.record("b");
+    /// assert_eq!(ghost.record("a"), None);  // No eviction
+    /// assert_eq!(ghost.record("b"), None);  // No eviction
     /// assert!(ghost.contains(&"a"));
     /// assert!(ghost.contains(&"b"));
     ///
     /// // At capacity: "a" is LRU, will be evicted
-    /// ghost.record("c");
+    /// assert_eq!(ghost.record("c"), Some("a"));  // Returns evicted key
     /// assert!(!ghost.contains(&"a"));  // Evicted
     /// assert!(ghost.contains(&"b"));
     /// assert!(ghost.contains(&"c"));
     ///
-    /// // Re-recording "b" promotes it to MRU
-    /// ghost.record("b");
-    /// ghost.record("d");
+    /// // Re-recording "b" promotes it to MRU (no eviction)
+    /// assert_eq!(ghost.record("b"), None);  // Already present
+    /// assert_eq!(ghost.record("d"), Some("c"));  // Evicts "c"
     /// assert!(ghost.contains(&"b"));   // Survived (was MRU)
     /// assert!(!ghost.contains(&"c"));  // Evicted (was LRU)
     /// ```
-    pub fn record(&mut self, key: K) {
+    pub fn record(&mut self, key: K) -> Option<K> {
         if self.capacity == 0 {
-            return;
+            return None;
         }
 
         if let Some(&id) = self.index.get(&key) {
             self.list.move_to_front(id);
-            return;
+            return None;
         }
 
-        if self.list.len() >= self.capacity {
-            if let Some(old_key) = self.list.pop_back() {
-                self.index.remove(&old_key);
-            }
-        }
+        let evicted = if self.list.len() >= self.capacity {
+            let old_key = self.list.pop_back()?;
+            self.index.remove(&old_key);
+            Some(old_key)
+        } else {
+            None
+        };
 
         let id = self.list.push_front(key.clone());
         self.index.insert(key, id);
+
+        evicted
     }
 
     /// Records a batch of keys; returns number of keys processed.
+    ///
+    /// Note: All keys are processed (count equals input length), since `record` is infallible.
+    /// Duplicates are automatically promoted to MRU rather than inserted twice.
     ///
     /// # Example
     ///
@@ -369,18 +455,19 @@ where
     /// let mut ghost = GhostList::new(10);
     ///
     /// let evicted = vec!["page_1", "page_2", "page_3"];
-    /// let count = ghost.record_batch(evicted);
+    /// let count = ghost.record_batch(&evicted);
     ///
     /// assert_eq!(count, 3);
     /// assert_eq!(ghost.len(), 3);
     /// ```
-    pub fn record_batch<I>(&mut self, keys: I) -> usize
+    pub fn record_batch<'a, I>(&mut self, keys: I) -> usize
     where
-        I: IntoIterator<Item = K>,
+        I: IntoIterator<Item = &'a K>,
+        K: 'a,
     {
         let mut count = 0;
         for key in keys {
-            self.record(key);
+            self.record(key.clone());
             count += 1;
         }
         count
@@ -389,6 +476,10 @@ where
     /// Removes `key` from the ghost list; returns `true` if it was present.
     ///
     /// Typically called after a ghost hit to prevent double-counting.
+    ///
+    /// # Complexity
+    ///
+    /// O(1) average case, O(n) worst case due to hash collisions.
     ///
     /// # Example
     ///
@@ -422,21 +513,22 @@ where
     /// use cachekit::ds::GhostList;
     ///
     /// let mut ghost = GhostList::new(10);
-    /// ghost.record_batch(["a", "b", "c"]);
+    /// ghost.record_batch(&["a", "b", "c"]);
     ///
     /// // Remove some keys (including one that doesn't exist)
-    /// let removed = ghost.remove_batch(["a", "c", "missing"]);
+    /// let removed = ghost.remove_batch(&["a", "c", "missing"]);
     ///
     /// assert_eq!(removed, 2);  // Only "a" and "c" were removed
     /// assert!(ghost.contains(&"b"));
     /// ```
-    pub fn remove_batch<I>(&mut self, keys: I) -> usize
+    pub fn remove_batch<'a, I>(&mut self, keys: I) -> usize
     where
-        I: IntoIterator<Item = K>,
+        I: IntoIterator<Item = &'a K>,
+        K: 'a,
     {
         let mut removed = 0;
         for key in keys {
-            if self.remove(&key) {
+            if self.remove(key) {
                 removed += 1;
             }
         }
@@ -471,7 +563,8 @@ where
     /// use cachekit::ds::GhostList;
     ///
     /// let mut ghost = GhostList::new(100);
-    /// ghost.record_batch((0..50).map(|i| format!("key_{}", i)));
+    /// let keys: Vec<_> = (0..50).map(|i| format!("key_{}", i)).collect();
+    /// ghost.record_batch(&keys);
     ///
     /// ghost.clear_shrink();
     /// assert!(ghost.is_empty());
@@ -482,7 +575,17 @@ where
         self.index.shrink_to_fit();
     }
 
-    /// Returns an approximate memory footprint in bytes.
+    /// Returns a conservative lower-bound memory footprint in bytes.
+    ///
+    /// This estimate includes the struct size, intrusive list overhead,
+    /// and HashMap entry storage. It underestimates actual memory usage by
+    /// approximately 20-30% for small capacities due to:
+    /// - HashMap control bytes and alignment padding
+    /// - Key storage overhead in both structures
+    /// - Internal capacity buffering
+    ///
+    /// Use this for rough capacity planning, not precise memory accounting.
+    /// For accurate measurements, use a memory profiler.
     ///
     /// # Example
     ///
@@ -492,11 +595,69 @@ where
     /// let ghost: GhostList<u64> = GhostList::new(100);
     /// let bytes = ghost.approx_bytes();
     /// assert!(bytes > 0);
+    ///
+    /// // Approximate memory per entry
+    /// let per_entry = bytes / 100.max(1);
+    /// println!("~{} bytes per entry (lower bound)", per_entry);
     /// ```
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.list.approx_bytes()
             + self.index.capacity() * std::mem::size_of::<(K, SlotId)>()
+    }
+
+    /// Returns an iterator over keys in MRU -> LRU order.
+    ///
+    /// Useful for observability and advanced use cases. However, prefer point lookups
+    /// via `contains()` for performance-critical paths.
+    ///
+    /// # Complexity
+    ///
+    /// Iteration is O(n) where n is the number of keys tracked.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let mut ghost = GhostList::new(3);
+    /// ghost.record("a");
+    /// ghost.record("b");
+    /// ghost.record("c");
+    ///
+    /// let keys: Vec<_> = ghost.iter().collect();
+    /// assert_eq!(keys, vec![&"c", &"b", &"a"]);  // MRU to LRU
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K> {
+        fn extract_key<K>((_, key): (SlotId, &K)) -> &K {
+            key
+        }
+        Iter {
+            inner: self.list.iter_entries().map(extract_key),
+        }
+    }
+
+    /// Returns an iterator over keys in MRU -> LRU order.
+    ///
+    /// This is a semantic alias for [`iter()`](Self::iter) that makes the intent clearer,
+    /// matching the convention of `HashMap::keys()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let mut ghost = GhostList::new(3);
+    /// ghost.record("a");
+    /// ghost.record("b");
+    ///
+    /// // More explicit than iter()
+    /// for key in ghost.keys() {
+    ///     println!("Ghost entry: {}", key);
+    /// }
+    /// ```
+    pub fn keys(&self) -> Iter<'_, K> {
+        self.iter()
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -509,6 +670,48 @@ where
             .iter_entries()
             .map(|(_, key)| key.clone())
             .collect()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns a reference to the LRU (least recently used) key, if any.
+    ///
+    /// Useful for debugging and observability.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let mut ghost = GhostList::new(3);
+    /// ghost.record("a");
+    /// ghost.record("b");
+    /// ghost.record("c");
+    ///
+    /// assert_eq!(ghost.debug_peek_lru(), Some(&"a"));
+    /// ```
+    pub fn debug_peek_lru(&self) -> Option<&K> {
+        self.list.iter_entries().last().map(|(_, k)| k)
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    /// Returns a reference to the MRU (most recently used) key, if any.
+    ///
+    /// Useful for debugging and observability.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let mut ghost = GhostList::new(3);
+    /// ghost.record("a");
+    /// ghost.record("b");
+    /// ghost.record("c");
+    ///
+    /// assert_eq!(ghost.debug_peek_mru(), Some(&"c"));
+    /// ```
+    pub fn debug_peek_mru(&self) -> Option<&K> {
+        self.list.iter_entries().next().map(|(_, k)| k)
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -652,11 +855,114 @@ mod tests {
     #[test]
     fn ghost_list_batch_ops() {
         let mut ghost = GhostList::new(3);
-        assert_eq!(ghost.record_batch(["a", "b", "c"]), 3);
-        assert_eq!(ghost.remove_batch(["b", "d"]), 1);
+        assert_eq!(ghost.record_batch(&["a", "b", "c"]), 3);
+        assert_eq!(ghost.remove_batch(&["b", "d"]), 1);
         assert!(ghost.contains(&"a"));
         assert!(ghost.contains(&"c"));
         assert!(!ghost.contains(&"b"));
+    }
+
+    #[test]
+    fn ghost_list_iter() {
+        let mut ghost = GhostList::new(5);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        let keys: Vec<_> = ghost.iter().cloned().collect();
+        assert_eq!(keys, vec!["c", "b", "a"]); // MRU to LRU
+
+        // Verify iterator works on empty list
+        ghost.clear();
+        assert_eq!(ghost.iter().count(), 0);
+    }
+
+    #[test]
+    fn ghost_list_debug_peek_lru_mru() {
+        let mut ghost = GhostList::new(3);
+        assert_eq!(ghost.debug_peek_lru(), None);
+        assert_eq!(ghost.debug_peek_mru(), None);
+
+        ghost.record("a");
+        assert_eq!(ghost.debug_peek_lru(), Some(&"a"));
+        assert_eq!(ghost.debug_peek_mru(), Some(&"a"));
+
+        ghost.record("b");
+        ghost.record("c");
+        assert_eq!(ghost.debug_peek_lru(), Some(&"a")); // Oldest
+        assert_eq!(ghost.debug_peek_mru(), Some(&"c")); // Newest
+
+        // Promote "a" to MRU
+        assert_eq!(ghost.record("a"), None); // No eviction (already present)
+        assert_eq!(ghost.debug_peek_lru(), Some(&"b"));
+        assert_eq!(ghost.debug_peek_mru(), Some(&"a"));
+    }
+
+    #[test]
+    fn ghost_list_record_returns_evicted() {
+        let mut ghost = GhostList::new(2);
+
+        // No eviction when capacity not reached
+        assert_eq!(ghost.record("a"), None);
+        assert_eq!(ghost.record("b"), None);
+        assert_eq!(ghost.len(), 2);
+
+        // Eviction when at capacity
+        assert_eq!(ghost.record("c"), Some("a")); // "a" was LRU
+        assert!(!ghost.contains(&"a"));
+        assert!(ghost.contains(&"b"));
+        assert!(ghost.contains(&"c"));
+
+        // Re-recording existing key returns None (no eviction)
+        assert_eq!(ghost.record("b"), None);
+        assert_eq!(ghost.record("d"), Some("c")); // "c" was LRU
+
+        // Zero-capacity ghost list never evicts
+        let mut zero_ghost = GhostList::new(0);
+        assert_eq!(zero_ghost.record("x"), None);
+        assert!(zero_ghost.is_empty());
+    }
+
+    #[test]
+    fn ghost_list_keys_alias() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        // keys() should work identically to iter()
+        let keys_via_keys: Vec<_> = ghost.keys().cloned().collect();
+        let keys_via_iter: Vec<_> = ghost.iter().cloned().collect();
+        assert_eq!(keys_via_keys, keys_via_iter);
+        assert_eq!(keys_via_keys, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn ghost_list_default() {
+        let ghost: GhostList<String> = GhostList::default();
+        assert_eq!(ghost.capacity(), 0);
+        assert!(ghost.is_empty());
+        assert_eq!(ghost.len(), 0);
+    }
+
+    #[test]
+    fn ghost_list_clone() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        let cloned = ghost.clone();
+        assert_eq!(cloned.len(), ghost.len());
+        assert_eq!(cloned.capacity(), ghost.capacity());
+        assert!(cloned.contains(&"a"));
+        assert!(cloned.contains(&"b"));
+        assert!(cloned.contains(&"c"));
+
+        // Verify they are independent
+        ghost.record("d");
+        assert!(ghost.contains(&"d"));
+        assert!(!cloned.contains(&"d"));
     }
 }
 
@@ -1025,7 +1331,7 @@ mod property_tests {
         ) {
             let mut ghost: GhostList<u32> = GhostList::new(capacity);
 
-            let count = ghost.record_batch(keys.clone());
+            let count = ghost.record_batch(&keys);
 
             prop_assert_eq!(count, keys.len());
 
@@ -1044,9 +1350,9 @@ mod property_tests {
         ) {
             let mut ghost: GhostList<u32> = GhostList::new(capacity);
 
-            ghost.record_batch(record_keys.clone());
+            ghost.record_batch(&record_keys);
 
-            let removed = ghost.remove_batch(remove_keys.clone());
+            let removed = ghost.remove_batch(&remove_keys);
 
             let record_set: std::collections::HashSet<_> = record_keys.into_iter().collect();
             let remove_set: std::collections::HashSet<_> = remove_keys.into_iter().collect();
