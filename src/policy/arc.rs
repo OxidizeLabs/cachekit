@@ -121,6 +121,7 @@
 //!
 //! ```
 //! use cachekit::policy::arc::ARCCore;
+//! use cachekit::traits::{CoreCache, ReadOnlyCache};
 //!
 //! // Create ARC cache with 100 entry capacity
 //! let mut cache = ARCCore::new(100);
@@ -214,6 +215,7 @@ struct Node<K, V> {
 ///
 /// ```
 /// use cachekit::policy::arc::ARCCore;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 ///
 /// // 100 capacity ARC cache
 /// let mut cache = ARCCore::new(100);
@@ -303,6 +305,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ARCCore;
+    /// use cachekit::traits::ReadOnlyCache;
     ///
     /// // 100 capacity ARC cache
     /// let cache: ARCCore<String, i32> = ARCCore::new(100);
@@ -493,6 +496,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ARCCore;
+    /// use cachekit::traits::CoreCache;
     ///
     /// let mut cache = ARCCore::new(100);
     /// cache.insert("key", "value");
@@ -508,6 +512,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ARCCore;
+    /// use cachekit::traits::CoreCache;
     ///
     /// let mut cache = ARCCore::new(100);
     /// cache.insert("key", "value");
