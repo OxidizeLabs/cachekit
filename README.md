@@ -21,7 +21,7 @@ Add `cachekit` as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachekit = "0.2.0-alpha"
+cachekit = "0.2.0"
 ```
 
 From git (bleeding edge):

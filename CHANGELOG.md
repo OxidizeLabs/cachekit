@@ -7,13 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-01-31
+
 ### Added
 - MFU (Most Frequently Used) cache policy (`MfuCache`) with frequency-based eviction that keeps most frequently accessed items.
 - LIFO (Last In, First Out) cache policy (`LifoCache`) with stack-based eviction.
 - Random eviction cache policy (`RandomCache`) with XorShift64 RNG for unpredictable eviction patterns.
 - MRU (Most Recently Used) cache policy (`MruCache`) with recency-based eviction of most recently accessed items.
 - Segmented LRU (SLRU) cache policy (`SlruCache`) with probationary and protected segments for scan resistance.
-- Example programs: `basic_mfu.rs`, `basic_lifo.rs`, `basic_random.rs`, `basic_mru.rs`, `basic_slru.rs`.
+- Clock cache replacement policy (`ClockCache`) implementing the Clock (Second-Chance) algorithm with O(1) access operations.
+- Clock-PRO cache policy (`ClockProCache`) implementing the advanced Clock algorithm with hot/cold/test page classification.
+- NRU (Not Recently Used) cache policy (`NruCache`) with simple reference bit tracking.
+- Example programs: `basic_mfu.rs`, `basic_lifo.rs`, `basic_random.rs`, `basic_mru.rs`, `basic_slru.rs`, `basic_clock.rs`, `basic_clock_pro.rs`, `basic_nru.rs`.
 - Invariant validation for cache policies to ensure internal consistency during operations.
 - Regression test for FIFO behavior in `FrequencyBuckets`.
 
@@ -23,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Complete documentation for Random eviction policy (`docs/policies/random.md`) with RNG strategy.
 - Complete documentation for MRU policy (`docs/policies/mru.md`) with recency-based eviction.
 - Complete documentation for SLRU policy (`docs/policies/slru.md`) with segment management and promotion strategies.
+- Complete documentation for Clock policy (`docs/policies/clock.md`) with second-chance algorithm details.
+- Complete documentation for Clock-PRO policy (`docs/policies/clock-pro.md`) with hot/cold/test page management.
+- Complete documentation for NRU policy (`docs/policies/nru.md`) with reference bit tracking.
 - Updated examples in cache policy documentation to use integer keys and values for consistency.
 
 ### Changed
