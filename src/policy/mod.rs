@@ -1,3 +1,4 @@
+pub mod arc;
 pub mod clock;
 pub mod clock_pro;
 pub mod fast_lru;
