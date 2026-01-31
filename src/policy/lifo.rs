@@ -475,7 +475,7 @@ where
     }
 }
 
-/// Implementation of the [`CoreCache`](crate::traits::CoreCache) trait for LIFO.
+/// Implementation of the [`CoreCache`] trait for LIFO.
 ///
 /// Allows `LifoCore` to be used through the unified cache interface.
 ///

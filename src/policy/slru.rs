@@ -751,7 +751,7 @@ where
     }
 }
 
-/// Implementation of the [`CoreCache`](CoreCache) trait for SLRU.
+/// Implementation of the [`CoreCache`] trait for SLRU.
 ///
 /// Allows `SlruCore` to be used through the unified cache interface.
 ///

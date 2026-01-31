@@ -593,7 +593,7 @@ where
     }
 }
 
-/// Implementation of the [`CoreCache`](crate::traits::CoreCache) trait for MRU.
+/// Implementation of the [`CoreCache`] trait for MRU.
 ///
 /// Allows `MruCore` to be used through the unified cache interface.
 ///

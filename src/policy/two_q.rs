@@ -906,7 +906,7 @@ where
     }
 }
 
-/// Implementation of the [`CoreCache`](crate::traits::CoreCache) trait for 2Q.
+/// Implementation of the [`CoreCache`] trait for 2Q.
 ///
 /// Allows `TwoQCore` to be used through the unified cache interface.
 ///

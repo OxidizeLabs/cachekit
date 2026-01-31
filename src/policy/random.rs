@@ -535,7 +535,7 @@ where
     }
 }
 
-/// Implementation of the [`CoreCache`](crate::traits::CoreCache) trait for Random.
+/// Implementation of the [`CoreCache`] trait for Random.
 ///
 /// Allows `RandomCore` to be used through the unified cache interface.
 ///
