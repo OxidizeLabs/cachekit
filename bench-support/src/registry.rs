@@ -39,11 +39,19 @@ use crate::workload::{Workload, WorkloadSpec};
 macro_rules! for_each_policy {
     (with |$policy_id:ident, $display_name:ident, $make_cache:ident| $body:block) => {{
         use cachekit::policy::clock::ClockCache;
+        use cachekit::policy::clock_pro::ClockProCache;
+        use cachekit::policy::fifo::FifoCache;
         use cachekit::policy::heap_lfu::HeapLfuCache;
         use cachekit::policy::lfu::LfuCache;
+        use cachekit::policy::lifo::LifoCore;
         use cachekit::policy::lru::LruCore;
         use cachekit::policy::lru_k::LrukCache;
+        use cachekit::policy::mfu::MfuCore;
+        use cachekit::policy::mru::MruCore;
+        use cachekit::policy::nru::NruCache;
+        use cachekit::policy::random::RandomCore;
         use cachekit::policy::s3_fifo::S3FifoCache;
+        use cachekit::policy::slru::SlruCore;
         use cachekit::policy::two_q::TwoQCore;
         use std::sync::Arc;
 
@@ -72,15 +80,63 @@ macro_rules! for_each_policy {
             $body
         }
         {
+            let $policy_id = "mfu";
+            let $display_name = "MFU";
+            let $make_cache = |cap: usize| MfuCore::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "fifo";
+            let $display_name = "FIFO";
+            let $make_cache = |cap: usize| FifoCache::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "lifo";
+            let $display_name = "LIFO";
+            let $make_cache = |cap: usize| LifoCore::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "mru";
+            let $display_name = "MRU";
+            let $make_cache = |cap: usize| MruCore::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "nru";
+            let $display_name = "NRU";
+            let $make_cache = |cap: usize| NruCache::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "random";
+            let $display_name = "Random";
+            let $make_cache = |cap: usize| RandomCore::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
             let $policy_id = "clock";
             let $display_name = "Clock";
             let $make_cache = |cap: usize| ClockCache::<u64, Arc<u64>>::new(cap);
             $body
         }
         {
+            let $policy_id = "clock_pro";
+            let $display_name = "Clock-Pro";
+            let $make_cache = |cap: usize| ClockProCache::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
             let $policy_id = "s3_fifo";
             let $display_name = "S3-FIFO";
             let $make_cache = |cap: usize| S3FifoCache::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "slru";
+            let $display_name = "SLRU";
+            let $make_cache = |cap: usize| SlruCore::<u64, Arc<u64>>::new(cap, 0.2);
             $body
         }
         {
