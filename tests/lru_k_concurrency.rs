@@ -10,7 +10,7 @@ use std::time::Duration;
 // Thread Safety Tests
 mod thread_safety {
     use cachekit::policy::lru_k::LrukCache;
-    use cachekit::traits::{CoreCache, LrukCacheTrait};
+    use cachekit::traits::{CoreCache, LrukCacheTrait, ReadOnlyCache};
 
     use super::*;
 
@@ -239,7 +239,7 @@ mod thread_safety {
 // Stress Testing (kept lightweight to avoid long runtimes)
 mod stress_testing {
     use cachekit::policy::lru_k::LrukCache;
-    use cachekit::traits::{CoreCache, LrukCacheTrait};
+    use cachekit::traits::{CoreCache, LrukCacheTrait, ReadOnlyCache};
 
     use super::*;
 

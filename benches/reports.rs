@@ -8,7 +8,7 @@ use bench_support::for_each_policy;
 
 use std::sync::Arc;
 
-use cachekit::traits::CoreCache;
+use cachekit::traits::{CoreCache, ReadOnlyCache};
 use common::metrics::{
     BenchmarkConfig, PolicyComparison, estimate_entry_overhead, measure_adaptation_speed,
     measure_scan_resistance, run_benchmark, standard_workload_suite,

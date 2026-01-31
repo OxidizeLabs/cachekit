@@ -240,14 +240,14 @@
 //! - **Memory overhead**: ~3x standard LFU due to three data structures
 //! - **Reverse wrapper**: Converts max-heap to min-heap for LFU semantics
 
+use crate::prelude::ReadOnlyCache;
+use crate::store::hashmap::HashMapStore;
+use crate::store::traits::{StoreCore, StoreMut};
+use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 use std::sync::Arc;
-
-use crate::store::hashmap::HashMapStore;
-use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 
 /// Heap-based LFU Cache with O(log n) eviction.
 ///
@@ -523,6 +523,23 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, Arc<V>> for HeapLfuCache<K, V>
+where
+    K: Clone + Eq + Hash + Ord,
+{
+    fn contains(&self, key: &K) -> bool {
+        self.store.contains(key)
+    }
+
+    fn len(&self) -> usize {
+        self.store.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.store.capacity()
+    }
+}
+
 /// Core cache operations for heap-based LFU.
 ///
 /// # Example
@@ -587,18 +604,6 @@ where
         } else {
             None
         }
-    }
-
-    fn contains(&self, key: &K) -> bool {
-        self.store.contains(key)
-    }
-
-    fn len(&self) -> usize {
-        self.store.len()
-    }
-
-    fn capacity(&self) -> usize {
-        self.store.capacity()
     }
 
     fn clear(&mut self) {

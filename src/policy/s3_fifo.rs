@@ -178,9 +178,11 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
 use crate::ds::GhostList;
+use crate::prelude::ReadOnlyCache;
 #[cfg(feature = "concurrency")]
 use crate::traits::ConcurrentCache;
 use crate::traits::CoreCache;
+use crate::traits::MutableCache;
 
 /// Maximum frequency value (2 bits = 0-3).
 const MAX_FREQ: u8 = 3;
@@ -1419,6 +1421,26 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, V> for S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
 /// Implementation of [`CoreCache`] for S3FifoCache.
 impl<K, V> CoreCache<K, V> for S3FifoCache<K, V>
 where
@@ -1434,23 +1456,24 @@ where
         S3FifoCache::get(self, key)
     }
 
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     fn clear(&mut self) {
         S3FifoCache::clear(self);
+    }
+}
+
+/// Implementation of [`MutableCache`] for S3FifoCache.
+///
+/// S3-FIFO supports arbitrary key removal, which allows invalidation of specific
+/// entries without disrupting the overall eviction policy. Unlike simple FIFO caches,
+/// S3-FIFO's three-queue structure handles removal gracefully by unlinking nodes
+/// from their respective queues (Small, Main, or Ghost).
+impl<K, V> MutableCache<K, V> for S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    #[inline]
+    fn remove(&mut self, key: &K) -> Option<V> {
+        S3FifoCache::remove(self, key)
     }
 }
 
@@ -2057,69 +2080,6 @@ mod tests {
 
             assert_eq!(cache.len(), 100);
             assert!(cache.len() <= cache.capacity());
-        }
-    }
-
-    // ==============================================
-    // CoreCache Trait
-    // ==============================================
-
-    mod core_cache_trait {
-        use super::*;
-
-        #[test]
-        fn trait_insert_returns_old() {
-            let mut cache: S3FifoCache<&str, i32> = S3FifoCache::new(100);
-
-            let old = CoreCache::insert(&mut cache, "key", 1);
-            assert_eq!(old, None);
-
-            let old = CoreCache::insert(&mut cache, "key", 2);
-            assert_eq!(old, Some(1));
-        }
-
-        #[test]
-        fn trait_get_works() {
-            let mut cache = S3FifoCache::new(100);
-            CoreCache::insert(&mut cache, "key", 42);
-
-            assert_eq!(CoreCache::get(&mut cache, &"key"), Some(&42));
-            assert_eq!(CoreCache::get(&mut cache, &"missing"), None);
-        }
-
-        #[test]
-        fn trait_contains_works() {
-            let mut cache = S3FifoCache::new(100);
-            CoreCache::insert(&mut cache, "key", 1);
-
-            assert!(CoreCache::contains(&cache, &"key"));
-            assert!(!CoreCache::contains(&cache, &"missing"));
-        }
-
-        #[test]
-        fn trait_len_and_capacity() {
-            let mut cache: S3FifoCache<i32, i32> = S3FifoCache::new(50);
-
-            assert_eq!(CoreCache::len(&cache), 0);
-            assert_eq!(CoreCache::capacity(&cache), 50);
-
-            for i in 0..30 {
-                CoreCache::insert(&mut cache, i, i * 10);
-            }
-
-            assert_eq!(CoreCache::len(&cache), 30);
-        }
-
-        #[test]
-        fn trait_clear_works() {
-            let mut cache = S3FifoCache::new(100);
-            CoreCache::insert(&mut cache, "a", 1);
-            CoreCache::insert(&mut cache, "b", 2);
-
-            CoreCache::clear(&mut cache);
-
-            assert_eq!(CoreCache::len(&cache), 0);
-            assert!(!CoreCache::contains(&cache, &"a"));
         }
     }
 
@@ -2905,6 +2865,88 @@ mod tests {
             cache
                 .check_invariants()
                 .expect("Invariants failed after get_mut");
+        }
+    }
+
+    // ==============================================
+    // Trait Implementations
+    // ==============================================
+
+    mod trait_implementations {
+        use super::*;
+        use crate::traits::{CoreCache, MutableCache};
+
+        #[test]
+        fn implements_core_cache() {
+            fn assert_core_cache<T: CoreCache<K, V>, K, V>(_: &T) {}
+
+            let cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            assert_core_cache(&cache);
+        }
+
+        #[test]
+        fn implements_mutable_cache() {
+            fn assert_mutable_cache<T: MutableCache<K, V>, K, V>(_: &T) {}
+
+            let cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            assert_mutable_cache(&cache);
+        }
+
+        #[test]
+        fn mutable_cache_remove() {
+            let mut cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            // Use trait method
+            assert_eq!(MutableCache::remove(&mut cache, &"b"), Some(2));
+            assert_eq!(cache.len(), 2);
+            assert!(!cache.contains(&"b"));
+            assert!(cache.contains(&"a"));
+            assert!(cache.contains(&"c"));
+
+            // Remove non-existent key
+            assert_eq!(MutableCache::remove(&mut cache, &"z"), None);
+            assert_eq!(cache.len(), 2);
+        }
+
+        #[test]
+        fn mutable_cache_remove_batch() {
+            let mut cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+            cache.insert("d", 4);
+
+            // Use trait method
+            let removed = cache.remove_batch(&["b", "d", "z"]);
+            assert_eq!(removed, vec![Some(2), Some(4), None]);
+            assert_eq!(cache.len(), 2);
+            assert!(cache.contains(&"a"));
+            assert!(cache.contains(&"c"));
+            assert!(!cache.contains(&"b"));
+            assert!(!cache.contains(&"d"));
+        }
+
+        #[test]
+        fn generic_invalidate_function() {
+            // Demonstrate that S3FifoCache can be used in generic code
+            fn invalidate_keys<C: MutableCache<u64, String>>(cache: &mut C, keys: &[u64]) {
+                for key in keys {
+                    cache.remove(key);
+                }
+            }
+
+            let mut cache: S3FifoCache<u64, String> = S3FifoCache::new(10);
+            cache.insert(1, "one".to_string());
+            cache.insert(2, "two".to_string());
+            cache.insert(3, "three".to_string());
+
+            invalidate_keys(&mut cache, &[1, 3]);
+            assert!(!cache.contains(&1));
+            assert!(cache.contains(&2));
+            assert!(!cache.contains(&3));
         }
     }
 }

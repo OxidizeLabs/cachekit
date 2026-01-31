@@ -8,43 +8,48 @@
 //!
 //! ```text
 //!                          ┌─────────────────────────────────────────┐
-//!                          │            CoreCache<K, V>              │
+//!                          │         ReadOnlyCache<K, V>             │
 //!                          │                                         │
-//!                          │  insert(&mut, K, V) → Option<V>         │
-//!                          │  get(&mut, &K) → Option<&V>             │
 //!                          │  contains(&, &K) → bool                 │
 //!                          │  len(&) → usize                         │
 //!                          │  is_empty(&) → bool                     │
 //!                          │  capacity(&) → usize                    │
-//!                          │  clear(&mut)                            │
 //!                          └──────────────────┬──────────────────────┘
 //!                                             │
 //!                ┌────────────────────────────┴────────────────────────────┐
 //!                │                                                         │
 //!                ▼                                                         ▼
 //!   ┌────────────────────────────┐                          ┌─────────────────────────────┐
-//!   │   FifoCacheTrait<K, V>     │                          │    MutableCache<K, V>       │
-//!   │                            │                          │                             │
-//!   │  pop_oldest() → (K, V)     │                          │  remove(&K) → Option<V>     │
-//!   │  peek_oldest() → (&K, &V)  │                          │  remove_batch(&[K])         │
-//!   │  pop_oldest_batch(n)       │                          │                             │
-//!   │  age_rank(&K) → usize      │                          └──────────────┬──────────────┘
-//!   │                            │                                         │
-//!   │  ⚠ No arbitrary removal!   │          ┌──────────────────────────────┼──────────────────────────────┐
-//!   └────────────────────────────┘          │                              │                              │
-//!                                           ▼                              ▼                              ▼
-//!                          ┌────────────────────────────┐  ┌────────────────────────────┐  ┌────────────────────────────┐
-//!                          │   LruCacheTrait<K, V>      │  │   LfuCacheTrait<K, V>      │  │   LrukCacheTrait<K, V>     │
-//!                          │                            │  │                            │  │                            │
-//!                          │  pop_lru() → (K, V)        │  │  pop_lfu() → (K, V)        │  │  pop_lru_k() → (K, V)      │
-//!                          │  peek_lru() → (&K, &V)     │  │  peek_lfu() → (&K, &V)     │  │  peek_lru_k() → (&K, &V)   │
-//!                          │  touch(&K) → bool          │  │  frequency(&K) → u64       │  │  k_value() → usize         │
-//!                          │  recency_rank(&K) → usize  │  │  reset_frequency(&K)       │  │  access_history(&K)        │
-//!                          │                            │  │  increment_frequency(&K)   │  │  access_count(&K) → usize  │
-//!                          └────────────────────────────┘  └────────────────────────────┘  │  k_distance(&K) → u64      │
-//!                                                                                          │  touch(&K) → bool          │
-//!                                                                                          │  k_distance_rank(&K)       │
-//!                                                                                          └────────────────────────────┘
+//!   │      CoreCache<K, V>       │                          │  ReadOnly*Cache Traits      │
+//!   │                            │                          │  (FIFO, LRU, LFU, LRU-K)    │
+//!   │  insert(&mut, K, V)        │                          │                             │
+//!   │  get(&mut, &K) → &V        │                          │  peek_*, *_rank, frequency  │
+//!   │  clear(&mut)               │                          │                             │
+//!   └────────────┬───────────────┘                          └─────────────────────────────┘
+//!                │
+//!                ├────────────────────────────┬────────────────────────────┐
+//!                │                            │                            │
+//!                ▼                            ▼                            ▼
+//!   ┌────────────────────────────┐  ┌────────────────────────────┐  ┌──────────────────────┐
+//!   │   FifoCacheTrait<K, V>     │  │    MutableCache<K, V>      │  │  Policy-specific     │
+//!   │                            │  │                            │  │  read-only traits    │
+//!   │  pop_oldest() → (K, V)     │  │  remove(&K) → Option<V>    │  │  enable inspection   │
+//!   │  peek_oldest() → (&K, &V)  │  │  remove_batch(&[K])        │  │  without side effects│
+//!   │  age_rank(&K) → usize      │  │                            │  └──────────────────────┘
+//!   │                            │  └──────────────┬──────────────┘
+//!   │  ⚠ No arbitrary removal!   │                 │
+//!   └────────────────────────────┘                 │
+//!                                  ┌───────────────┴───────────────┬──────────────────────┐
+//!                                  │                               │                      │
+//!                                  ▼                               ▼                      ▼
+//!                ┌────────────────────────────┐  ┌────────────────────────────┐  ┌────────────────────┐
+//!                │   LruCacheTrait<K, V>      │  │   LfuCacheTrait<K, V>      │  │  LrukCacheTrait    │
+//!                │                            │  │                            │  │                    │
+//!                │  pop_lru() → (K, V)        │  │  pop_lfu() → (K, V)        │  │  pop_lru_k()       │
+//!                │  peek_lru() → (&K, &V)     │  │  peek_lfu() → (&K, &V)     │  │  peek_lru_k()      │
+//!                │  touch(&K) → bool          │  │  frequency(&K) → u64       │  │  k_value() → usize │
+//!                │  recency_rank(&K) → usize  │  │  reset_frequency(&K)       │  │  access_history    │
+//!                └────────────────────────────┘  └────────────────────────────┘  └────────────────────┘
 //! ```
 //!
 //! ## Trait Design Philosophy
@@ -53,8 +58,11 @@
 //!   ┌──────────────────────────────────────────────────────────────────────────┐
 //!   │                         TRAIT HIERARCHY DESIGN                           │
 //!   │                                                                          │
+//!   │   0. ReadOnlyCache: Pure inspection operations (no side effects)         │
+//!   │      └── contains, len, capacity, is_empty                               │
+//!   │                                                                          │
 //!   │   1. CoreCache: Universal operations ALL caches must support             │
-//!   │      └── insert, get, contains, len, capacity, clear                     │
+//!   │      └── insert, get, clear (extends ReadOnlyCache)                      │
 //!   │                                                                          │
 //!   │   2. MutableCache: Adds arbitrary key-based removal                      │
 //!   │      └── remove(&K) - NOT suitable for FIFO (breaks insertion order)     │
@@ -65,26 +73,29 @@
 //!   │      ├── LFU:  pop_lfu + frequency (frequency-based)                     │
 //!   │      └── LRU-K: pop_lru_k + k_distance (scan-resistant)                  │
 //!   │                                                                          │
-//!   │   Key Insight: FIFO extends CoreCache directly (NOT MutableCache)        │
-//!   │   because arbitrary removal would violate FIFO semantics.                │
+//!   │   Key Insights:                                                          │
+//!   │   • ReadOnlyCache enables const-safe APIs and concurrent readers         │
+//!   │   • FIFO extends CoreCache directly (NOT MutableCache)                   │
+//!   │   • Read-only traits allow policy inspection without eviction changes    │
 //!   └──────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! ## Trait Summary
 //!
-//! | Trait                | Extends         | Purpose                              |
-//! |----------------------|-----------------|--------------------------------------|
-//! | `CoreCache`          | -               | Universal cache operations           |
-//! | `MutableCache`       | `CoreCache`     | Adds arbitrary key removal           |
-//! | `FifoCacheTrait`     | `CoreCache`     | FIFO-specific (no remove!)           |
-//! | `LruCacheTrait`      | `MutableCache`  | LRU-specific with recency tracking   |
-//! | `LfuCacheTrait`      | `MutableCache`  | LFU-specific with frequency tracking |
-//! | `LrukCacheTrait`     | `MutableCache`  | LRU-K with K-distance tracking       |
-//! | `ConcurrentCache`    | `Send + Sync`   | Marker for thread-safe caches        |
-//! | -                    | -               | -                                    |
-//! | `CacheTierManager`   | -               | Multi-tier cache management          |
-//! | `CacheFactory`       | -               | Cache instance creation              |
-//! | `AsyncCacheFuture`   | `Send + Sync`   | Future async operation support       |
+//! | Trait                  | Extends           | Purpose                              |
+//! |------------------------|-------------------|--------------------------------------|
+//! | `ReadOnlyCache`        | -                 | Read-only inspection operations      |
+//! | `CoreCache`            | `ReadOnlyCache`   | Universal cache operations           |
+//! | `MutableCache`         | `CoreCache`       | Adds arbitrary key removal           |
+//! | `FifoCacheTrait`       | `CoreCache`       | FIFO-specific (no remove!)           |
+//! | `LruCacheTrait`        | `MutableCache`    | LRU-specific with recency tracking   |
+//! | `LfuCacheTrait`        | `MutableCache`    | LFU-specific with frequency tracking |
+//! | `LrukCacheTrait`       | `MutableCache`    | LRU-K with K-distance tracking       |
+//! | -                      | -                 | -                                    |
+//! | `ConcurrentCache`      | `Send + Sync`     | Marker for thread-safe caches        |
+//! | `CacheTierManager`     | -                 | Multi-tier cache management          |
+//! | `CacheFactory`         | -                 | Cache instance creation              |
+//! | `AsyncCacheFuture`     | `Send + Sync`     | Future async operation support       |
 //!
 //! ## Why FIFO Doesn't Extend MutableCache
 //!
@@ -144,8 +155,22 @@
 //!
 //! ```rust,ignore
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
+//!     ReadOnlyCache, ReadOnlyLruCache, ReadOnlyFifoCache,
 //!     CoreCache, MutableCache, FifoCacheTrait, LruCacheTrait, LfuCacheTrait,
 //! };
+//!
+//! // Read-only inspection - no side effects, works with shared references
+//! fn cache_stats<C: ReadOnlyCache<u64, Vec<u8>>>(cache: &C) -> (usize, usize, f64) {
+//!     let len = cache.len();
+//!     let cap = cache.capacity();
+//!     let utilization = len as f64 / cap as f64;
+//!     (len, cap, utilization)
+//! }
+//!
+//! // Policy-specific read-only inspection
+//! fn inspect_lru_order<C: ReadOnlyLruCache<u64, Vec<u8>>>(cache: &C) -> Option<u64> {
+//!     cache.peek_lru().map(|(k, _)| *k)
+//! }
 //!
 //! // Function accepting any cache
 //! fn warm_cache<C: CoreCache<u64, Vec<u8>>>(cache: &mut C, data: &[(u64, Vec<u8>)]) {
@@ -204,15 +229,16 @@
 //!
 //! ## Implementation Notes
 //!
-//! - **Trait Bounds**: `CoreCache` has no bounds on K, V; implementations add as needed
+//! - **Trait Bounds**: `ReadOnlyCache` and `CoreCache` have no bounds on K, V; implementations add as needed
 //! - **Default Implementations**: `is_empty()`, `total_misses()`, `remove_batch()`, `pop_oldest_batch()`
 //! - **Batch Operations**: Default implementations loop over single operations
 //! - **Async Support**: `AsyncCacheFuture` prepared for Phase 2 async-trait integration
 
-/// Core cache operations that all caches support.
+/// Read-only cache operations that don't modify cache state.
 ///
-/// This trait defines the fundamental operations that make sense for any cache type,
-/// regardless of eviction policy. All policy-specific traits extend this.
+/// This trait defines inspection operations that are safe to call from shared references
+/// and don't affect eviction order or modify the cache contents. These operations are
+/// guaranteed not to trigger evictions or update access patterns.
 ///
 /// # Type Parameters
 ///
@@ -222,69 +248,39 @@
 /// # Example
 ///
 /// ```
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 /// use cachekit::policy::lru_k::LrukCache;
 ///
-/// fn warm_cache<C: CoreCache<u64, String>>(cache: &mut C, data: &[(u64, String)]) {
-///     for (key, value) in data {
-///         cache.insert(*key, value.clone());
-///     }
+/// fn cache_stats<C: ReadOnlyCache<u64, String>>(cache: &C) -> (usize, usize, bool) {
+///     (cache.len(), cache.capacity(), cache.contains(&42))
 /// }
 ///
 /// let mut cache = LrukCache::new(100);
-/// warm_cache(&mut cache, &[(1, "one".to_string()), (2, "two".to_string())]);
-/// assert_eq!(cache.len(), 2);
+/// cache.insert(42, "answer".to_string());
+///
+/// let (len, cap, has_answer) = cache_stats(&cache);
+/// assert_eq!(len, 1);
+/// assert_eq!(cap, 100);
+/// assert!(has_answer);
 /// ```
-pub trait CoreCache<K, V> {
-    /// Inserts a key-value pair, returning the previous value if it existed.
-    ///
-    /// If the cache is at capacity, an entry may be evicted according to the
-    /// cache's eviction policy before the new entry is inserted.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::traits::CoreCache;
-    /// use cachekit::policy::lru_k::LrukCache;
-    ///
-    /// let mut cache = LrukCache::new(10);
-    ///
-    /// // New key returns None
-    /// assert_eq!(cache.insert(1, "first"), None);
-    ///
-    /// // Existing key returns previous value
-    /// assert_eq!(cache.insert(1, "second"), Some("first"));
-    /// ```
-    fn insert(&mut self, key: K, value: V) -> Option<V>;
-
-    /// Gets a reference to a value by key.
-    ///
-    /// May update internal state (access time, frequency) depending on the
-    /// eviction policy. Use [`contains`](Self::contains) if you only need
-    /// to check existence without affecting eviction order.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::traits::CoreCache;
-    /// use cachekit::policy::lru_k::LrukCache;
-    ///
-    /// let mut cache = LrukCache::new(10);
-    /// cache.insert(1, "value");
-    ///
-    /// assert_eq!(cache.get(&1), Some(&"value"));
-    /// assert_eq!(cache.get(&99), None);
-    /// ```
-    fn get(&mut self, key: &K) -> Option<&V>;
-
+///
+/// # Design Rationale
+///
+/// Separating read-only operations enables:
+/// - **Const-safe APIs**: Functions can require immutable access
+/// - **Concurrent Readers**: Read-only views don't need write locks
+/// - **Clear Intent**: Callers signal they won't modify the cache
+/// - **Policy Independence**: Works with any cache implementation
+pub trait ReadOnlyCache<K, V> {
     /// Checks if a key exists without updating access state.
     ///
-    /// Unlike [`get`](Self::get), this does not affect eviction order.
+    /// This operation never affects eviction order or triggers any policy updates.
+    /// Safe to call from any context without side effects.
     ///
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{ReadOnlyCache, CoreCache};
     /// use cachekit::policy::lru_k::LrukCache;
     ///
     /// let mut cache = LrukCache::new(10);
@@ -300,7 +296,7 @@ pub trait CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{ReadOnlyCache, CoreCache};
     /// use cachekit::policy::lru_k::LrukCache;
     ///
     /// let mut cache = LrukCache::new(10);
@@ -317,7 +313,7 @@ pub trait CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{ReadOnlyCache, CoreCache};
     /// use cachekit::policy::lru_k::LrukCache;
     ///
     /// let mut cache: LrukCache<u64, &str> = LrukCache::new(10);
@@ -335,20 +331,91 @@ pub trait CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::ReadOnlyCache;
     /// use cachekit::policy::lru_k::LrukCache;
     ///
     /// let cache: LrukCache<u64, &str> = LrukCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
     /// ```
     fn capacity(&self) -> usize;
+}
+
+/// Core cache operations that all caches support.
+///
+/// This trait defines the fundamental operations that make sense for any cache type,
+/// regardless of eviction policy. All policy-specific traits extend this. It includes
+/// both read-only operations (inherited from [`ReadOnlyCache`]) and write operations
+/// like insert and get.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type (implementations typically require `Eq + Hash`)
+/// - `V`: Value type
+///
+/// # Example
+///
+/// ```
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::policy::lru_k::LrukCache;
+///
+/// fn warm_cache<C: CoreCache<u64, String>>(cache: &mut C, data: &[(u64, String)]) {
+///     for (key, value) in data {
+///         cache.insert(*key, value.clone());
+///     }
+/// }
+///
+/// let mut cache = LrukCache::new(100);
+/// warm_cache(&mut cache, &[(1, "one".to_string()), (2, "two".to_string())]);
+/// assert_eq!(cache.len(), 2);
+/// ```
+pub trait CoreCache<K, V>: ReadOnlyCache<K, V> {
+    /// Inserts a key-value pair, returning the previous value if it existed.
+    ///
+    /// If the cache is at capacity, an entry may be evicted according to the
+    /// cache's eviction policy before the new entry is inserted.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::policy::lru_k::LrukCache;
+    ///
+    /// let mut cache = LrukCache::new(10);
+    ///
+    /// // New key returns None
+    /// assert_eq!(cache.insert(1, "first"), None);
+    ///
+    /// // Existing key returns previous value
+    /// assert_eq!(cache.insert(1, "second"), Some("first"));
+    /// ```
+    fn insert(&mut self, key: K, value: V) -> Option<V>;
+
+    /// Gets a reference to a value by key.
+    ///
+    /// May update internal state (access time, frequency) depending on the
+    /// eviction policy. Use [`contains`](ReadOnlyCache::contains) if you only need
+    /// to check existence without affecting eviction order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::policy::lru_k::LrukCache;
+    ///
+    /// let mut cache = LrukCache::new(10);
+    /// cache.insert(1, "value");
+    ///
+    /// assert_eq!(cache.get(&1), Some(&"value"));
+    /// assert_eq!(cache.get(&99), None);
+    /// ```
+    fn get(&mut self, key: &K) -> Option<&V>;
 
     /// Removes all entries from the cache.
     ///
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use cachekit::policy::lru_k::LrukCache;
     ///
     /// let mut cache = LrukCache::new(10);
@@ -374,7 +441,7 @@ pub trait CoreCache<K, V> {
 /// # Example
 ///
 /// ```
-/// use cachekit::traits::{CoreCache, MutableCache};
+/// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
 /// use cachekit::policy::lru_k::LrukCache;
 ///
 /// fn invalidate_keys<C: MutableCache<u64, String>>(cache: &mut C, keys: &[u64]) {
@@ -401,7 +468,7 @@ pub trait MutableCache<K, V>: CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::{CoreCache, MutableCache};
+    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
     /// use cachekit::policy::lru_k::LrukCache;
     ///
     /// let mut cache = LrukCache::new(10);
@@ -420,7 +487,7 @@ pub trait MutableCache<K, V>: CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::{CoreCache, MutableCache};
+    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
     /// use cachekit::policy::lru_k::LrukCache;
     ///
     /// let mut cache = LrukCache::new(10);
@@ -453,7 +520,7 @@ pub trait MutableCache<K, V>: CoreCache<K, V> {
 /// # Example
 ///
 /// ```
-/// use cachekit::traits::{CoreCache, FifoCacheTrait};
+/// use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
 /// use cachekit::policy::fifo::FifoCache;
 ///
 /// let mut cache = FifoCache::new(3);
@@ -480,7 +547,7 @@ pub trait FifoCacheTrait<K, V>: CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::{CoreCache, FifoCacheTrait};
+    /// use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
     /// use cachekit::policy::fifo::FifoCache;
     ///
     /// let mut cache = FifoCache::new(10);
@@ -500,7 +567,7 @@ pub trait FifoCacheTrait<K, V>: CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::{CoreCache, FifoCacheTrait};
+    /// use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
     /// use cachekit::policy::fifo::FifoCache;
     ///
     /// let mut cache = FifoCache::new(10);
@@ -521,7 +588,7 @@ pub trait FifoCacheTrait<K, V>: CoreCache<K, V> {
     /// # Example
     ///
     /// ```
-    /// use cachekit::traits::{CoreCache, FifoCacheTrait};
+    /// use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
     /// use cachekit::policy::fifo::FifoCache;
     ///
     /// let mut cache = FifoCache::new(10);
@@ -1083,7 +1150,7 @@ pub trait LrukCacheTrait<K, V>: MutableCache<K, V> {
 ///
 /// ```
 /// use std::sync::{Arc, RwLock};
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 /// use cachekit::policy::lru_k::LrukCache;
 ///
 /// let cache = Arc::new(RwLock::new(LrukCache::<u64, String>::new(100)));
@@ -1377,6 +1444,20 @@ mod tests {
         capacity: usize,
     }
 
+    impl ReadOnlyCache<i32, String> for MockFifoCache {
+        fn contains(&self, key: &i32) -> bool {
+            self.data.iter().any(|(k, _)| k == key)
+        }
+
+        fn len(&self) -> usize {
+            self.data.len()
+        }
+
+        fn capacity(&self) -> usize {
+            self.capacity
+        }
+    }
+
     impl CoreCache<i32, String> for MockFifoCache {
         fn insert(&mut self, key: i32, value: String) -> Option<String> {
             // Simple mock implementation
@@ -1392,18 +1473,6 @@ mod tests {
 
         fn get(&mut self, key: &i32) -> Option<&String> {
             self.data.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-        }
-
-        fn contains(&self, key: &i32) -> bool {
-            self.data.iter().any(|(k, _)| k == key)
-        }
-
-        fn len(&self) -> usize {
-            self.data.len()
-        }
-
-        fn capacity(&self) -> usize {
-            self.capacity
         }
 
         fn clear(&mut self) {

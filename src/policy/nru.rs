@@ -128,7 +128,7 @@
 //!
 //! ```
 //! use cachekit::policy::nru::NruCache;
-//! use cachekit::traits::CoreCache;
+//! use cachekit::traits::{CoreCache, ReadOnlyCache};
 //!
 //! let mut cache = NruCache::new(100);
 //!
@@ -160,7 +160,10 @@
 //!
 //! - Wikipedia: Cache replacement policies
 
+use crate::prelude::ReadOnlyCache;
+use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
+use std::fmt::{Debug, Formatter};
 use std::hash::Hash;
 
 /// Entry in the NRU cache containing value, index, and reference bit.
@@ -188,7 +191,7 @@ struct Entry<V> {
 ///
 /// ```
 /// use cachekit::policy::nru::NruCache;
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 ///
 /// let mut cache = NruCache::new(100);
 ///
@@ -237,7 +240,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let cache: NruCache<String, i32> = NruCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -318,7 +321,32 @@ where
     }
 }
 
-impl<K, V> crate::traits::CoreCache<K, V> for NruCache<K, V>
+impl<K, V> ReadOnlyCache<K, V> for NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns `true` if the cache contains the key.
+    ///
+    /// Does not affect the reference bit.
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    /// Returns the number of entries in the cache.
+    #[inline]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Returns the maximum capacity of the cache.
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl<K, V> CoreCache<K, V> for NruCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -331,7 +359,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let mut cache = NruCache::new(2);
     /// cache.insert("a", 1);
@@ -380,7 +408,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let mut cache = NruCache::new(10);
     /// cache.insert("key", 42);
@@ -398,26 +426,6 @@ where
         }
     }
 
-    /// Returns `true` if the cache contains the key.
-    ///
-    /// Does not affect the reference bit.
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    /// Returns the number of entries in the cache.
-    #[inline]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// Returns the maximum capacity of the cache.
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     /// Clears all entries from the cache.
     fn clear(&mut self) {
         self.map.clear();
@@ -425,7 +433,7 @@ where
     }
 }
 
-impl<K, V> crate::traits::MutableCache<K, V> for NruCache<K, V>
+impl<K, V> MutableCache<K, V> for NruCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -435,7 +443,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, MutableCache};
+    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
     ///
     /// let mut cache = NruCache::new(10);
     /// cache.insert("key", 42);
@@ -464,12 +472,12 @@ where
     }
 }
 
-impl<K, V> std::fmt::Debug for NruCache<K, V>
+impl<K, V> Debug for NruCache<K, V>
 where
     K: Clone + Eq + Hash + std::fmt::Debug,
     V: std::fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NruCache")
             .field("capacity", &self.capacity)
             .field("len", &self.map.len())

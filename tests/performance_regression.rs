@@ -336,7 +336,7 @@ where
 mod regression_guards {
     use super::*;
     use cachekit::policy::lru::LruCore;
-    use cachekit::traits::CoreCache;
+    use cachekit::traits::{CoreCache, ReadOnlyCache};
 
     /// Ensure basic operations complete in reasonable time
     /// This catches catastrophic regressions (e.g., accidentally O(n) operations)

@@ -14,7 +14,7 @@ use cachekit::policy::lfu::LfuCache;
 use cachekit::policy::lru::LruCore;
 use cachekit::policy::lru_k::LrukCache;
 use cachekit::policy::two_q::TwoQCore;
-use cachekit::traits::CoreCache;
+use cachekit::traits::{CoreCache, ReadOnlyCache};
 
 /// Simple XorShift64 RNG for deterministic workloads.
 struct XorShift64 {

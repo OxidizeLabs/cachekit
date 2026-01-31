@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Read-only trait support for side-effect-free cache inspection:
+  - `ReadOnlyCache<K, V>` base trait for immutable inspection operations
+  - `ReadOnlyFifoCache<K, V>` for FIFO-specific inspection (peek_oldest, age_rank)
+  - `ReadOnlyLruCache<K, V>` for LRU-specific inspection (peek_lru, recency_rank)
+  - `ReadOnlyLfuCache<K, V>` for LFU-specific inspection (peek_lfu, frequency)
+  - `ReadOnlyLruKCache<K, V>` for LRU-K-specific inspection (peek_lru_k, k_distance, access_history)
+- Documentation guide for read-only traits (`docs/guides/read-only-traits.md`)
+- Read-only trait exports in prelude for convenient access
+
+### Changed
+- `CoreCache` now extends `ReadOnlyCache` to inherit immutable inspection methods
+- Updated trait hierarchy to separate read-only operations from write operations
+- Enhanced architecture diagrams and trait documentation to show read-only pattern
+
+### Benefits
+- **No Side Effects**: Inspection operations don't trigger evictions or update access patterns
+- **Better Concurrency**: Multiple readers can use shared `&self` references with read locks
+- **Clear API Intent**: Function signatures signal whether cache state will be modified
+- **Testing Support**: Examine cache state without affecting test outcomes
+
 ## [0.2.0] - 2026-01-31
 
 ### Added

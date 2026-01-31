@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 mod thread_safe_wrapper {
     use cachekit::policy::nru::NruCache;
-    use cachekit::traits::{CoreCache, MutableCache};
+    use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
 
     use super::*;
 
@@ -479,7 +479,7 @@ mod thread_safe_wrapper {
 mod performance {
     use super::*;
     use cachekit::policy::nru::NruCache;
-    use cachekit::traits::CoreCache;
+    use cachekit::traits::{CoreCache, ReadOnlyCache};
 
     #[test]
     fn benchmark_throughput() {

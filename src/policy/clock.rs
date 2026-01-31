@@ -85,7 +85,7 @@
 //!
 //! ```
 //! use cachekit::policy::clock::ClockCache;
-//! use cachekit::traits::CoreCache;
+//! use cachekit::traits::{CoreCache, ReadOnlyCache};
 //!
 //! let mut cache = ClockCache::new(100);
 //!
@@ -110,7 +110,7 @@
 use std::hash::Hash;
 
 use crate::ds::ClockRing;
-use crate::traits::CoreCache;
+use crate::traits::{CoreCache, MutableCache, ReadOnlyCache};
 
 /// High-performance Clock cache with O(1) access operations.
 ///
@@ -126,7 +126,7 @@ use crate::traits::CoreCache;
 ///
 /// ```
 /// use cachekit::policy::clock::ClockCache;
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 ///
 /// let mut cache = ClockCache::new(100);
 ///
@@ -153,7 +153,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let cache: ClockCache<String, i32> = ClockCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -188,6 +188,23 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, V> for ClockCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn contains(&self, key: &K) -> bool {
+        self.ring.contains(key)
+    }
+
+    fn len(&self) -> usize {
+        self.ring.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.ring.capacity()
+    }
+}
+
 impl<K, V> CoreCache<K, V> for ClockCache<K, V>
 where
     K: Clone + Eq + Hash,
@@ -201,7 +218,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let mut cache = ClockCache::new(2);
     /// cache.insert("a", 1);
@@ -231,7 +248,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let mut cache = ClockCache::new(10);
     /// cache.insert("key", 42);
@@ -244,33 +261,13 @@ where
         self.ring.get(key)
     }
 
-    /// Returns `true` if the cache contains the key.
-    ///
-    /// Does not affect the reference bit.
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.ring.contains(key)
-    }
-
-    /// Returns the number of entries in the cache.
-    #[inline]
-    fn len(&self) -> usize {
-        self.ring.len()
-    }
-
-    /// Returns the maximum capacity of the cache.
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.ring.capacity()
-    }
-
     /// Clears all entries from the cache.
     fn clear(&mut self) {
         self.ring.clear();
     }
 }
 
-impl<K, V> crate::traits::MutableCache<K, V> for ClockCache<K, V>
+impl<K, V> MutableCache<K, V> for ClockCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -280,7 +277,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::{CoreCache, MutableCache};
+    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
     ///
     /// let mut cache = ClockCache::new(10);
     /// cache.insert("key", 42);

@@ -11,3 +11,8 @@ pub use crate::ds::{
 #[cfg(feature = "metrics")]
 pub use crate::metrics::snapshot::CacheMetricsSnapshot;
 pub use crate::policy::fifo::FifoCache;
+pub use crate::traits::{
+    AsyncCacheFuture, CacheConfig, CacheFactory, CacheTier, CacheTierManager, ConcurrentCache,
+    CoreCache, FifoCacheTrait, LfuCacheTrait, LruCacheTrait, LrukCacheTrait, MutableCache,
+    ReadOnlyCache,
+};

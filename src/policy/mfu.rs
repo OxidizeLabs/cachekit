@@ -161,6 +161,7 @@
 //! **⚠️ Warning**: MFU performs poorly for typical workloads with temporal locality.
 //! Use LFU, LRU, or S3-FIFO for general-purpose caching.
 
+use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
@@ -407,30 +408,27 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, V> for MfuCore<K, V>
+where
+    K: Clone + Eq + Hash + Ord,
+{
+    fn contains(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
 impl<K, V> CoreCache<K, V> for MfuCore<K, V>
 where
     K: Clone + Eq + Hash + Ord,
 {
-    fn get(&mut self, key: &K) -> Option<&V> {
-        if self.map.contains_key(key) {
-            // Increment frequency
-            let freq = self.frequencies.entry(key.clone()).or_insert(0);
-            *freq += 1;
-
-            // Push new (freq, key) entry to heap (old entries become stale)
-            self.freq_heap.push((*freq, key.clone()));
-
-            // Rebuild heap if too many stale entries accumulated
-            if self.freq_heap.len() > self.map.len() * HEAP_REBUILD_FACTOR {
-                self.rebuild_heap();
-            }
-
-            self.map.get(key)
-        } else {
-            None
-        }
-    }
-
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.capacity == 0 {
             return Some(value);
@@ -458,20 +456,24 @@ where
         }
     }
 
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
+    fn get(&mut self, key: &K) -> Option<&V> {
+        if self.map.contains_key(key) {
+            // Increment frequency
+            let freq = self.frequencies.entry(key.clone()).or_insert(0);
+            *freq += 1;
 
-    fn len(&self) -> usize {
-        self.map.len()
-    }
+            // Push new (freq, key) entry to heap (old entries become stale)
+            self.freq_heap.push((*freq, key.clone()));
 
-    fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
+            // Rebuild heap if too many stale entries accumulated
+            if self.freq_heap.len() > self.map.len() * HEAP_REBUILD_FACTOR {
+                self.rebuild_heap();
+            }
 
-    fn capacity(&self) -> usize {
-        self.capacity
+            self.map.get(key)
+        } else {
+            None
+        }
     }
 
     fn clear(&mut self) {

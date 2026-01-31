@@ -322,6 +322,7 @@ use crate::metrics::snapshot::LfuMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, LfuMetricsReadRecorder, LfuMetricsRecorder, MetricsSnapshotProvider,
 };
+use crate::prelude::ReadOnlyCache;
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
 use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
@@ -340,7 +341,7 @@ use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 ///
 /// ```
 /// use cachekit::policy::lfu::LfuCache;
-/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use cachekit::traits::{CoreCache, LfuCacheTrait, ReadOnlyCache};
 /// use std::sync::Arc;
 ///
 /// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
@@ -424,7 +425,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let cache: LfuCache<String, i32> = LfuCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -454,7 +455,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// // Expect many distinct frequencies (long-running cache)
     /// let cache: LfuCache<String, i32> = LfuCache::with_bucket_hint(100, 64);
@@ -477,7 +478,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
@@ -509,7 +510,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
@@ -587,7 +588,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LFUHandleCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let cache: LFUHandleCache<u64, String> = LFUHandleCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -607,7 +608,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LFUHandleCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
@@ -637,7 +638,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LFUHandleCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
@@ -703,13 +704,30 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, Arc<V>> for LfuCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn contains(&self, key: &K) -> bool {
+        self.store.contains(key)
+    }
+
+    fn len(&self) -> usize {
+        self.store.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.store.capacity()
+    }
+}
+
 /// Core cache operations for LFU.
 ///
 /// # Example
 ///
 /// ```
 /// use cachekit::policy::lfu::LfuCache;
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 /// use std::sync::Arc;
 ///
 /// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
@@ -791,8 +809,20 @@ where
         self.store.get(key)
     }
 
-    fn contains(&self, key: &K) -> bool {
-        self.store.contains(key)
+    fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+        self.store.clear();
+        self.buckets.clear();
+    }
+}
+
+impl<H, V> ReadOnlyCache<H, Arc<V>> for LFUHandleCache<H, V>
+where
+    H: Copy + Eq + Hash,
+{
+    fn contains(&self, handle: &H) -> bool {
+        self.store.contains(handle)
     }
 
     fn len(&self) -> usize {
@@ -802,13 +832,6 @@ where
     fn capacity(&self) -> usize {
         self.store.capacity()
     }
-
-    fn clear(&mut self) {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_clear();
-        self.store.clear();
-        self.buckets.clear();
-    }
 }
 
 /// Core cache operations for handle-based LFU.
@@ -817,7 +840,7 @@ where
 ///
 /// ```
 /// use cachekit::policy::lfu::LFUHandleCache;
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 /// use std::sync::Arc;
 ///
 /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(3);
@@ -886,18 +909,6 @@ where
         self.store.get(handle)
     }
 
-    fn contains(&self, handle: &H) -> bool {
-        self.store.contains(handle)
-    }
-
-    fn len(&self) -> usize {
-        self.store.len()
-    }
-
-    fn capacity(&self) -> usize {
-        self.store.capacity()
-    }
-
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -912,7 +923,7 @@ where
 ///
 /// ```
 /// use cachekit::policy::lfu::LfuCache;
-/// use cachekit::traits::{CoreCache, MutableCache};
+/// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
 /// use std::sync::Arc;
 ///
 /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
@@ -1165,7 +1176,7 @@ where
     ///
     /// ```ignore
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(100);

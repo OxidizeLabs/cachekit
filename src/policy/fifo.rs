@@ -277,14 +277,14 @@ use std::hash::Hash;
 #[cfg(feature = "concurrency")]
 use std::sync::Arc;
 
-#[cfg(feature = "concurrency")]
-use parking_lot::RwLock;
-
+use crate::prelude::ReadOnlyCache;
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
 #[cfg(feature = "concurrency")]
 use crate::traits::ConcurrentCache;
 use crate::traits::{CoreCache, FifoCacheTrait};
+#[cfg(feature = "concurrency")]
+use parking_lot::RwLock;
 
 /// FIFO (First In, First Out) Cache.
 ///
@@ -484,6 +484,24 @@ where
 {
 }
 
+impl<K, V> ReadOnlyCache<K, V> for FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Debug,
+{
+    fn contains(&self, key: &K) -> bool {
+        self.inner.store.contains(key)
+    }
+
+    fn len(&self) -> usize {
+        self.inner.store.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.inner.store.capacity()
+    }
+}
+
 impl<K, V> CoreCache<K, V> for FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -517,18 +535,6 @@ where
     fn get(&mut self, key: &K) -> Option<&V> {
         // In FIFO, getting an item doesn't change its position
         self.inner.store.get(key)
-    }
-
-    fn contains(&self, key: &K) -> bool {
-        self.inner.store.contains(key)
-    }
-
-    fn len(&self) -> usize {
-        self.inner.store.len()
-    }
-
-    fn capacity(&self) -> usize {
-        self.inner.store.capacity()
     }
 
     fn clear(&mut self) {
@@ -565,7 +571,7 @@ where
     }
 
     fn pop_oldest_batch(&mut self, count: usize) -> Vec<(K, V)> {
-        let mut result = Vec::with_capacity(count.min(<Self as CoreCache<K, V>>::len(self)));
+        let mut result = Vec::with_capacity(count.min(self.len()));
         for _ in 0..count {
             if let Some(entry) = self.pop_oldest() {
                 result.push(entry);
@@ -596,12 +602,11 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::policy::fifo::FifoCache;
-    use crate::traits::{CoreCache, FifoCacheTrait};
+    use crate::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
 
     // Basic FIFO Behavior Tests
     mod basic_behavior {
         use super::*;
-        use crate::traits::FifoCacheTrait;
 
         #[test]
         fn test_basic_fifo_insertion_and_retrieval() {

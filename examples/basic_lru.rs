@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cachekit::policy::lru::LruCore;
-use cachekit::traits::CoreCache;
+use cachekit::traits::{CoreCache, ReadOnlyCache};
 
 fn main() {
     let mut cache: LruCore<u32, String> = LruCore::new(2);

@@ -319,6 +319,7 @@ use crate::metrics::snapshot::LruMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, LruMetricsReadRecorder, LruMetricsRecorder, MetricsSnapshotProvider,
 };
+use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, LruCacheTrait, MutableCache};
 
 /// Node in the LRU linked list.
@@ -504,6 +505,26 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, Arc<V>> for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
 // Implementation of specialized traits for zero-copy operations
 impl<K, V> CoreCache<K, Arc<V>> for LruCore<K, V>
 where
@@ -599,21 +620,6 @@ where
         unsafe { Some(&(*node_ptr.as_ptr()).value) }
     }
 
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -639,7 +645,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lru::LruCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LruCore<u32, String> = LruCore::new(3);

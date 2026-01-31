@@ -116,7 +116,7 @@ use crate::policy::random::RandomCore;
 use crate::policy::s3_fifo::S3FifoCache;
 use crate::policy::slru::SlruCore;
 use crate::policy::two_q::TwoQCore;
-use crate::traits::CoreCache;
+use crate::traits::{CoreCache, ReadOnlyCache};
 
 /// Available cache eviction policies.
 ///
@@ -527,21 +527,21 @@ where
     /// ```
     pub fn len(&self) -> usize {
         match &self.inner {
-            CacheInner::Fifo(fifo) => CoreCache::len(fifo),
+            CacheInner::Fifo(fifo) => <dyn CoreCache<K, V>>::len(fifo),
             CacheInner::Lru(lru) => lru.len(),
-            CacheInner::LruK(lruk) => CoreCache::len(lruk),
+            CacheInner::LruK(lruk) => <dyn CoreCache<K, V>>::len(lruk),
             CacheInner::Lfu(lfu) => lfu.len(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.len(),
             CacheInner::TwoQ(twoq) => twoq.len(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.len(),
-            CacheInner::Lifo(lifo) => CoreCache::len(lifo),
+            CacheInner::Lifo(lifo) => <dyn CoreCache<K, V>>::len(lifo),
             CacheInner::Mfu(mfu) => mfu.len(),
             CacheInner::Mru(mru) => mru.len(),
-            CacheInner::Random(random) => CoreCache::len(random),
+            CacheInner::Random(random) => <dyn CoreCache<K, V>>::len(random),
             CacheInner::Slru(slru) => slru.len(),
-            CacheInner::Clock(clock) => CoreCache::len(clock),
-            CacheInner::ClockPro(clock_pro) => CoreCache::len(clock_pro),
-            CacheInner::Nru(nru) => CoreCache::len(nru),
+            CacheInner::Clock(clock) => <dyn CoreCache<K, V>>::len(clock),
+            CacheInner::ClockPro(clock_pro) => <dyn CoreCache<K, V>>::len(clock_pro),
+            CacheInner::Nru(nru) => <dyn CoreCache<K, V>>::len(nru),
         }
     }
 
@@ -574,21 +574,21 @@ where
     /// ```
     pub fn capacity(&self) -> usize {
         match &self.inner {
-            CacheInner::Fifo(fifo) => CoreCache::capacity(fifo),
+            CacheInner::Fifo(fifo) => <dyn CoreCache<K, V>>::capacity(fifo),
             CacheInner::Lru(lru) => lru.capacity(),
-            CacheInner::LruK(lruk) => CoreCache::capacity(lruk),
+            CacheInner::LruK(lruk) => <dyn CoreCache<K, V>>::capacity(lruk),
             CacheInner::Lfu(lfu) => lfu.capacity(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.capacity(),
             CacheInner::TwoQ(twoq) => twoq.capacity(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.capacity(),
-            CacheInner::Lifo(lifo) => CoreCache::capacity(lifo),
+            CacheInner::Lifo(lifo) => <dyn CoreCache<K, V>>::capacity(lifo),
             CacheInner::Mfu(mfu) => mfu.capacity(),
             CacheInner::Mru(mru) => mru.capacity(),
-            CacheInner::Random(random) => CoreCache::capacity(random),
+            CacheInner::Random(random) => <dyn CoreCache<K, V>>::capacity(random),
             CacheInner::Slru(slru) => slru.capacity(),
-            CacheInner::Clock(clock) => CoreCache::capacity(clock),
-            CacheInner::ClockPro(clock_pro) => CoreCache::capacity(clock_pro),
-            CacheInner::Nru(nru) => CoreCache::capacity(nru),
+            CacheInner::Clock(clock) => <dyn CoreCache<K, V>>::capacity(clock),
+            CacheInner::ClockPro(clock_pro) => <dyn CoreCache<K, V>>::capacity(clock_pro),
+            CacheInner::Nru(nru) => <dyn CoreCache<K, V>>::capacity(nru),
         }
     }
 

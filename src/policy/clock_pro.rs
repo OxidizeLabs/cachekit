@@ -96,7 +96,7 @@
 //!
 //! ```
 //! use cachekit::policy::clock_pro::ClockProCache;
-//! use cachekit::traits::CoreCache;
+//! use cachekit::traits::{CoreCache, ReadOnlyCache};
 //!
 //! let mut cache: ClockProCache<String, String> = ClockProCache::new(100);
 //!
@@ -117,10 +117,10 @@
 //! let _ = cache.contains(&"page1".to_string());
 //! ```
 
+use crate::prelude::ReadOnlyCache;
+use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
-
-use crate::traits::CoreCache;
 
 /// Status of a resident page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +197,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let cache: ClockProCache<String, i32> = ClockProCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -386,6 +386,31 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, V> for ClockProCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns `true` if the cache contains the key.
+    ///
+    /// Does not affect the reference bit or page status.
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        self.index.contains_key(key)
+    }
+
+    /// Returns the number of resident entries in the cache.
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns the maximum capacity of the cache.
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
 impl<K, V> CoreCache<K, V> for ClockProCache<K, V>
 where
     K: Clone + Eq + Hash,
@@ -481,26 +506,6 @@ where
         Some(&entry.value)
     }
 
-    /// Returns `true` if the cache contains the key.
-    ///
-    /// Does not affect the reference bit or page status.
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.index.contains_key(key)
-    }
-
-    /// Returns the number of resident entries in the cache.
-    #[inline]
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns the maximum capacity of the cache.
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     /// Clears all entries from the cache.
     fn clear(&mut self) {
         self.index.clear();
@@ -521,7 +526,7 @@ where
     }
 }
 
-impl<K, V> crate::traits::MutableCache<K, V> for ClockProCache<K, V>
+impl<K, V> MutableCache<K, V> for ClockProCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -531,7 +536,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::{CoreCache, MutableCache};
+    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
     ///
     /// let mut cache = ClockProCache::new(10);
     /// cache.insert("key", 42);

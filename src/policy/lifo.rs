@@ -147,6 +147,8 @@
 //!
 //! - Wikipedia: Cache replacement policies
 
+use crate::prelude::ReadOnlyCache;
+use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
@@ -453,6 +455,26 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, V> for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
 /// Implementation of the [`CoreCache`](crate::traits::CoreCache) trait for LIFO.
 ///
 /// Allows `LifoCore` to be used through the unified cache interface.
@@ -460,17 +482,17 @@ where
 /// # Example
 ///
 /// ```
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 /// use cachekit::policy::lifo::LifoCore;
 ///
 /// let mut cache: LifoCore<&str, i32> = LifoCore::new(100);
 ///
 /// // Use via CoreCache trait
-/// assert_eq!(CoreCache::insert(&mut cache, "key", 42), None);
-/// assert_eq!(CoreCache::get(&mut cache, &"key"), Some(&42));
-/// assert!(CoreCache::contains(&cache, &"key"));
+/// cache.insert("key", 42);
+/// assert_eq!(cache.get(&"key"), Some(&42));
+/// assert!(cache.contains(&"key"));
 /// ```
-impl<K, V> crate::traits::CoreCache<K, V> for LifoCore<K, V>
+impl<K, V> CoreCache<K, V> for LifoCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -491,21 +513,6 @@ where
         LifoCore::get(self, key)
     }
 
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     fn clear(&mut self) {
         LifoCore::clear(self);
     }
@@ -514,7 +521,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::CoreCache;
 
     // ==============================================
     // LifoCore Basic Operations
@@ -779,71 +785,6 @@ mod tests {
                 "Most recent insert evicted despite 1 being accessed"
             );
             assert!(cache.contains(&4));
-        }
-    }
-
-    // ==============================================
-    // CoreCache Trait Implementation
-    // ==============================================
-
-    mod core_cache_trait {
-        use super::*;
-
-        #[test]
-        fn trait_insert_returns_old_value() {
-            let mut cache: LifoCore<&str, i32> = LifoCore::new(100);
-
-            let old = CoreCache::insert(&mut cache, "key", 1);
-            assert_eq!(old, None);
-
-            let old = CoreCache::insert(&mut cache, "key", 2);
-            assert_eq!(old, Some(1));
-
-            assert_eq!(CoreCache::get(&mut cache, &"key"), Some(&2));
-        }
-
-        #[test]
-        fn trait_get_works() {
-            let mut cache = LifoCore::new(100);
-            CoreCache::insert(&mut cache, "key", 42);
-
-            assert_eq!(CoreCache::get(&mut cache, &"key"), Some(&42));
-            assert_eq!(CoreCache::get(&mut cache, &"missing"), None);
-        }
-
-        #[test]
-        fn trait_contains_works() {
-            let mut cache = LifoCore::new(100);
-            CoreCache::insert(&mut cache, "key", 1);
-
-            assert!(CoreCache::contains(&cache, &"key"));
-            assert!(!CoreCache::contains(&cache, &"missing"));
-        }
-
-        #[test]
-        fn trait_len_and_capacity() {
-            let mut cache: LifoCore<i32, i32> = LifoCore::new(50);
-
-            assert_eq!(CoreCache::len(&cache), 0);
-            assert_eq!(CoreCache::capacity(&cache), 50);
-
-            for i in 0..30 {
-                CoreCache::insert(&mut cache, i, i * 10);
-            }
-
-            assert_eq!(CoreCache::len(&cache), 30);
-        }
-
-        #[test]
-        fn trait_clear_works() {
-            let mut cache = LifoCore::new(100);
-            CoreCache::insert(&mut cache, "a", 1);
-            CoreCache::insert(&mut cache, "b", 2);
-
-            CoreCache::clear(&mut cache);
-
-            assert_eq!(CoreCache::len(&cache), 0);
-            assert!(!CoreCache::contains(&cache, &"a"));
         }
     }
 

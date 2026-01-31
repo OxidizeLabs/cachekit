@@ -276,6 +276,7 @@ use crate::metrics::traits::{
     CoreMetricsRecorder, LruKMetricsReadRecorder, LruKMetricsRecorder, LruMetricsRecorder,
     MetricsSnapshotProvider,
 };
+use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, LrukCacheTrait, MutableCache};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -316,7 +317,7 @@ struct Node<K, V> {
 ///
 /// ```
 /// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 ///
 /// // Create LRU-2 cache (default K=2)
 /// let mut cache: LrukCache<u32, String> = LrukCache::new(100);
@@ -448,7 +449,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lru_k::LrukCache;
-    /// use cachekit::traits::{CoreCache, LrukCacheTrait};
+    /// use cachekit::traits::{CoreCache, LrukCacheTrait, ReadOnlyCache};
     ///
     /// let cache: LrukCache<u32, String> = LrukCache::new(100);
     ///
@@ -477,7 +478,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lru_k::LrukCache;
-    /// use cachekit::traits::{CoreCache, LrukCacheTrait};
+    /// use cachekit::traits::{CoreCache, LrukCacheTrait, ReadOnlyCache};
     ///
     /// // LRU-3: requires 3 accesses to be considered "hot"
     /// let cache: LrukCache<u32, String> = LrukCache::with_k(100, 3);
@@ -640,13 +641,34 @@ where
     }
 }
 
+impl<K, V> ReadOnlyCache<K, V> for LrukCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
 /// Core cache operations for LRU-K.
 ///
 /// # Example
 ///
 /// ```
 /// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
 ///
 /// let mut cache: LrukCache<u32, String> = LrukCache::new(3);
 ///
@@ -758,21 +780,6 @@ where
         unsafe { Some((*node_ptr.as_ptr()).value.as_ref()) }
     }
 
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -791,7 +798,7 @@ where
 ///
 /// ```
 /// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::{CoreCache, MutableCache};
+/// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
 ///
 /// let mut cache: LrukCache<u32, String> = LrukCache::new(10);
 /// cache.insert(1, "value".to_string());
@@ -1083,7 +1090,7 @@ where
     ///
     /// ```ignore
     /// use cachekit::policy::lru_k::LrukCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
     /// let mut cache: LrukCache<u32, &str> = LrukCache::new(100);
     /// cache.insert(1, "one");
