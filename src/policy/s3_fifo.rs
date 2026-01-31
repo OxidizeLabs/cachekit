@@ -193,6 +193,7 @@ const DEFAULT_GHOST_RATIO: f64 = 0.9;
 
 /// Performance metrics for S3-FIFO cache operations.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct S3FifoMetrics {
     /// Number of cache hits.
     pub hits: u64,
@@ -214,11 +215,142 @@ pub struct S3FifoMetrics {
     pub ghost_hits: u64,
 }
 
+impl std::fmt::Display for S3FifoMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let total_accesses = self.hits + self.misses;
+        let hit_rate = if total_accesses > 0 {
+            (self.hits as f64 / total_accesses as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        write!(
+            f,
+            "S3FifoMetrics {{ hits: {}, misses: {}, hit_rate: {:.2}%, inserts: {}, updates: {}, \
+             promotions: {}, main_reinserts: {}, small_evictions: {}, main_evictions: {}, ghost_hits: {} }}",
+            self.hits,
+            self.misses,
+            hit_rate,
+            self.inserts,
+            self.updates,
+            self.promotions,
+            self.main_reinserts,
+            self.small_evictions,
+            self.main_evictions,
+            self.ghost_hits
+        )
+    }
+}
+
 /// Which queue a node belongs to.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum QueueKind {
     Small,
     Main,
+}
+
+/// Which queue an iterator is currently traversing.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum IterQueue {
+    Small,
+    Main,
+}
+
+/// Iterator over cache entries.
+pub struct Iter<'a, K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    queue: IterQueue,
+    main_head: Option<NonNull<Node<K, V>>>,
+    remaining: usize,
+    _marker: std::marker::PhantomData<&'a (K, V)>,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.remaining > 0 {
+            match self.current {
+                Some(node_ptr) => {
+                    unsafe {
+                        let node = &*node_ptr.as_ptr();
+                        // Move to next node (toward tail)
+                        self.current = node.next;
+                        self.remaining -= 1;
+                        return Some((&node.key, &node.value));
+                    }
+                },
+                None => {
+                    // Finished Small, move to Main
+                    if self.queue == IterQueue::Small {
+                        self.queue = IterQueue::Main;
+                        self.current = self.main_head;
+                        // Continue to process Main queue
+                    } else {
+                        // Both queues exhausted
+                        return None;
+                    }
+                },
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> {
+    fn len(&self) -> usize {
+        self.remaining
+    }
+}
+
+/// Iterator over cache keys.
+pub struct Keys<'a, K, V> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator for Keys<'a, K, V> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K, V> ExactSizeIterator for Keys<'a, K, V> {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+/// Iterator over cache values.
+pub struct Values<'a, K, V> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator for Values<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K, V> ExactSizeIterator for Values<'a, K, V> {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
 }
 
 /// Internal node storing key, value, and metadata.
@@ -264,10 +396,7 @@ struct Node<K, V> {
 ///
 /// let _ = cache.contains(&"hot_key".to_string());
 /// ```
-pub struct S3FifoCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct S3FifoCache<K, V> {
     /// Key -> Node pointer mapping.
     map: FxHashMap<K, NonNull<Node<K, V>>>,
 
@@ -310,6 +439,16 @@ where
     K: Clone + Eq + Hash + Sync,
     V: Sync,
 {
+}
+
+impl<K, V> Default for S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Creates a cache with default capacity of 128.
+    fn default() -> Self {
+        Self::new(128)
+    }
 }
 
 impl<K, V> S3FifoCache<K, V>
@@ -396,6 +535,32 @@ where
         self.map.contains_key(key)
     }
 
+    /// Retrieves a value by key without updating frequency.
+    ///
+    /// Unlike `get()`, this method does not increment the frequency counter,
+    /// making it useful for read-only inspection or debugging.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("key", 42);
+    ///
+    /// // Peek doesn't affect eviction priority
+    /// assert_eq!(cache.peek(&"key"), Some(&42));
+    /// assert_eq!(cache.peek(&"missing"), None);
+    /// ```
+    #[inline]
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        let node_ptr = *self.map.get(key)?;
+        unsafe {
+            let node = &*node_ptr.as_ptr();
+            Some(&node.value)
+        }
+    }
+
     /// Returns the number of entries in the Small queue.
     #[inline]
     pub fn small_len(&self) -> usize {
@@ -460,11 +625,55 @@ where
         }
     }
 
+    /// Retrieves a mutable reference to a value by key, incrementing its frequency.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("key", 42);
+    ///
+    /// if let Some(val) = cache.get_mut(&"key") {
+    ///     *val = 100;
+    /// }
+    ///
+    /// assert_eq!(cache.get(&"key"), Some(&100));
+    /// ```
+    #[inline]
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        let node_ptr = *self.map.get(key)?;
+
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.hits += 1;
+        }
+
+        unsafe {
+            let node = &mut *node_ptr.as_ptr();
+            // Increment frequency, capped at MAX_FREQ
+            if node.freq < MAX_FREQ {
+                node.freq += 1;
+            }
+            Some(&mut node.value)
+        }
+    }
+
     /// Inserts or updates a key-value pair.
     ///
     /// - If key exists: updates value and increments frequency
     /// - If key is in Ghost: inserts to Main queue (ghost-guided admission)
     /// - Otherwise: inserts to Small queue
+    ///
+    /// # Returns
+    ///
+    /// - `Some(old_value)` if the key already existed
+    /// - `None` if the key is new
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cache has zero capacity
     ///
     /// # Example
     ///
@@ -484,10 +693,8 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Zero capacity: cannot store anything
-        if self.capacity == 0 {
-            return None;
-        }
+        // Zero capacity is a programming error
+        assert!(self.capacity > 0, "cannot insert into zero-capacity cache");
 
         // Update existing key
         if let Some(&node_ptr) = self.map.get(&key) {
@@ -551,6 +758,38 @@ where
         None
     }
 
+    /// Removes a key-value pair from the cache, returning the value if it existed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("key", 42);
+    ///
+    /// assert_eq!(cache.remove(&"key"), Some(42));
+    /// assert_eq!(cache.remove(&"key"), None);
+    /// assert!(cache.is_empty());
+    /// ```
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let node_ptr = self.map.remove(key)?;
+
+        unsafe {
+            let node = &*node_ptr.as_ptr();
+            match node.queue {
+                QueueKind::Small => {
+                    self.detach_small(node_ptr);
+                },
+                QueueKind::Main => {
+                    self.detach_main(node_ptr);
+                },
+            }
+            let boxed = Box::from_raw(node_ptr.as_ptr());
+            Some(boxed.value)
+        }
+    }
+
     /// Clears all entries from the cache.
     ///
     /// # Example
@@ -571,6 +810,300 @@ where
         while self.pop_main_tail().is_some() {}
         self.map.clear();
         self.ghost.clear();
+    }
+
+    /// Returns an iterator over all key-value pairs in the cache.
+    ///
+    /// The iteration order is unspecified (determined by internal queue structure).
+    /// Entries from the Small queue are visited first, followed by the Main queue.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let items: Vec<_> = cache.iter().collect();
+    /// assert_eq!(items.len(), 2);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            current: self.small_head,
+            queue: IterQueue::Small,
+            main_head: self.main_head,
+            remaining: self.len(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Returns an iterator over keys in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let keys: Vec<_> = cache.keys().collect();
+    /// assert_eq!(keys.len(), 2);
+    /// ```
+    pub fn keys(&self) -> Keys<'_, K, V> {
+        Keys { inner: self.iter() }
+    }
+
+    /// Returns an iterator over values in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let values: Vec<_> = cache.values().collect();
+    /// assert_eq!(values.len(), 2);
+    /// ```
+    pub fn values(&self) -> Values<'_, K, V> {
+        Values { inner: self.iter() }
+    }
+
+    /// Validates internal data structure invariants.
+    ///
+    /// This method checks the consistency of the cache's internal state:
+    /// - Queue length counters match actual list lengths
+    /// - Hash map size equals total queue entries
+    /// - All nodes in Small queue have correct queue kind
+    /// - All nodes in Main queue have correct queue kind
+    /// - All prev/next pointers form valid doubly-linked lists
+    /// - All map entries point to nodes in one of the queues
+    /// - Head/tail pointer consistency
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if all invariants hold
+    /// - `Err(String)` with a description of the violated invariant
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// // Should always pass for valid cache state
+    /// cache.check_invariants().expect("Invariants violated");
+    /// ```
+    #[cfg(debug_assertions)]
+    pub fn check_invariants(&self) -> Result<(), String>
+    where
+        K: Debug,
+    {
+        // Check that map size matches queue lengths
+        let total_len = self.small_len + self.main_len;
+        if self.map.len() != total_len {
+            return Err(format!(
+                "Map size {} != small_len {} + main_len {} = {}",
+                self.map.len(),
+                self.small_len,
+                self.main_len,
+                total_len
+            ));
+        }
+
+        // Check Small queue consistency
+        let mut small_count = 0;
+        let mut current = self.small_head;
+        let mut prev_ptr: Option<NonNull<Node<K, V>>> = None;
+
+        // Check head/tail consistency for Small queue
+        if self.small_head.is_none() != self.small_tail.is_none() {
+            return Err(format!(
+                "Small head/tail inconsistent: head={:?}, tail={:?}",
+                self.small_head.is_some(),
+                self.small_tail.is_some()
+            ));
+        }
+
+        if self.small_head.is_none() && self.small_len != 0 {
+            return Err(format!(
+                "Small queue empty but small_len = {}",
+                self.small_len
+            ));
+        }
+
+        while let Some(node_ptr) = current {
+            small_count += 1;
+
+            unsafe {
+                let node = &*node_ptr.as_ptr();
+
+                // Check queue kind
+                if node.queue != QueueKind::Small {
+                    return Err(format!(
+                        "Node with key {:?} in Small queue has queue = {:?}",
+                        node.key, node.queue
+                    ));
+                }
+
+                // Check frequency bounds
+                if node.freq > MAX_FREQ {
+                    return Err(format!(
+                        "Node with key {:?} has freq {} > MAX_FREQ {}",
+                        node.key, node.freq, MAX_FREQ
+                    ));
+                }
+
+                // Check prev pointer consistency
+                if node.prev != prev_ptr {
+                    return Err(format!(
+                        "Small queue: node {:?} prev pointer inconsistent",
+                        node.key
+                    ));
+                }
+
+                // Check map entry
+                if !self.map.contains_key(&node.key) {
+                    return Err(format!(
+                        "Node with key {:?} in Small queue not in map",
+                        node.key
+                    ));
+                }
+
+                // Check that map points to this node
+                if let Some(&map_ptr) = self.map.get(&node.key) {
+                    if map_ptr != node_ptr {
+                        return Err(format!(
+                            "Map entry for key {:?} points to different node",
+                            node.key
+                        ));
+                    }
+                }
+
+                // Check tail pointer
+                if node.next.is_none() && Some(node_ptr) != self.small_tail {
+                    return Err(format!(
+                        "Small queue: last node {:?} doesn't match small_tail",
+                        node.key
+                    ));
+                }
+
+                prev_ptr = Some(node_ptr);
+                current = node.next;
+            }
+        }
+
+        if small_count != self.small_len {
+            return Err(format!(
+                "Small queue: counted {} nodes but small_len = {}",
+                small_count, self.small_len
+            ));
+        }
+
+        // Check Main queue consistency
+        let mut main_count = 0;
+        let mut current = self.main_head;
+        let mut prev_ptr: Option<NonNull<Node<K, V>>> = None;
+
+        // Check head/tail consistency for Main queue
+        if self.main_head.is_none() != self.main_tail.is_none() {
+            return Err(format!(
+                "Main head/tail inconsistent: head={:?}, tail={:?}",
+                self.main_head.is_some(),
+                self.main_tail.is_some()
+            ));
+        }
+
+        if self.main_head.is_none() && self.main_len != 0 {
+            return Err(format!("Main queue empty but main_len = {}", self.main_len));
+        }
+
+        while let Some(node_ptr) = current {
+            main_count += 1;
+
+            unsafe {
+                let node = &*node_ptr.as_ptr();
+
+                // Check queue kind
+                if node.queue != QueueKind::Main {
+                    return Err(format!(
+                        "Node with key {:?} in Main queue has queue = {:?}",
+                        node.key, node.queue
+                    ));
+                }
+
+                // Check frequency bounds
+                if node.freq > MAX_FREQ {
+                    return Err(format!(
+                        "Node with key {:?} has freq {} > MAX_FREQ {}",
+                        node.key, node.freq, MAX_FREQ
+                    ));
+                }
+
+                // Check prev pointer consistency
+                if node.prev != prev_ptr {
+                    return Err(format!(
+                        "Main queue: node {:?} prev pointer inconsistent",
+                        node.key
+                    ));
+                }
+
+                // Check map entry
+                if !self.map.contains_key(&node.key) {
+                    return Err(format!(
+                        "Node with key {:?} in Main queue not in map",
+                        node.key
+                    ));
+                }
+
+                // Check that map points to this node
+                if let Some(&map_ptr) = self.map.get(&node.key) {
+                    if map_ptr != node_ptr {
+                        return Err(format!(
+                            "Map entry for key {:?} points to different node",
+                            node.key
+                        ));
+                    }
+                }
+
+                // Check tail pointer
+                if node.next.is_none() && Some(node_ptr) != self.main_tail {
+                    return Err(format!(
+                        "Main queue: last node {:?} doesn't match main_tail",
+                        node.key
+                    ));
+                }
+
+                prev_ptr = Some(node_ptr);
+                current = node.next;
+            }
+        }
+
+        if main_count != self.main_len {
+            return Err(format!(
+                "Main queue: counted {} nodes but main_len = {}",
+                main_count, self.main_len
+            ));
+        }
+
+        // Check capacity constraint
+        if total_len > self.capacity {
+            return Err(format!(
+                "Total entries {} > capacity {}",
+                total_len, self.capacity
+            ));
+        }
+
+        Ok(())
     }
 
     /// Attaches a node at the head of Small queue.
@@ -770,13 +1303,103 @@ where
     }
 }
 
-impl<K, V> Drop for S3FifoCache<K, V>
+// Private methods needed for Drop, without trait bounds
+impl<K, V> S3FifoCache<K, V> {
+    /// Pops and deallocates from Small tail.
+    fn drop_small_tail(&mut self) -> bool {
+        if let Some(tail_ptr) = self.small_tail {
+            unsafe {
+                let node = Box::from_raw(tail_ptr.as_ptr());
+                self.small_tail = node.prev;
+                match self.small_tail {
+                    Some(mut t) => t.as_mut().next = None,
+                    None => self.small_head = None,
+                }
+                self.small_len -= 1;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Pops and deallocates from Main tail.
+    fn drop_main_tail(&mut self) -> bool {
+        if let Some(tail_ptr) = self.main_tail {
+            unsafe {
+                let node = Box::from_raw(tail_ptr.as_ptr());
+                self.main_tail = node.prev;
+                match self.main_tail {
+                    Some(mut t) => t.as_mut().next = None,
+                    None => self.main_head = None,
+                }
+                self.main_len -= 1;
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for S3FifoCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
+    /// Creates a cache from an iterator of key-value pairs.
+    ///
+    /// The capacity is determined by the iterator's size hint, with a minimum of 16.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let cache: S3FifoCache<_, _> = vec![("a", 1), ("b", 2), ("c", 3)]
+    ///     .into_iter()
+    ///     .collect();
+    ///
+    /// assert_eq!(cache.len(), 3);
+    /// ```
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut cache = Self::new(lower.max(16));
+        for (k, v) in iter {
+            cache.insert(k, v);
+        }
+        cache
+    }
+}
+
+impl<K, V> Extend<(K, V)> for S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Extends the cache with key-value pairs from an iterator.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// cache.extend(vec![("b", 2), ("c", 3)]);
+    /// assert_eq!(cache.len(), 3);
+    /// ```
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (k, v) in iter {
+            self.insert(k, v);
+        }
+    }
+}
+
+impl<K, V> Drop for S3FifoCache<K, V> {
     fn drop(&mut self) {
-        while self.pop_small_tail().is_some() {}
-        while self.pop_main_tail().is_some() {}
+        while self.drop_small_tail() {}
+        while self.drop_main_tail() {}
     }
 }
 
@@ -831,6 +1454,47 @@ where
     }
 }
 
+/// Builder for configuring concurrent S3-FIFO cache parameters.
+#[cfg(feature = "concurrency")]
+#[derive(Debug, Clone)]
+pub struct ConcurrentS3FifoCacheBuilder {
+    capacity: usize,
+    small_ratio: f64,
+    ghost_ratio: f64,
+}
+
+#[cfg(feature = "concurrency")]
+impl ConcurrentS3FifoCacheBuilder {
+    /// Creates a new builder with the specified capacity and default ratios.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            small_ratio: DEFAULT_SMALL_RATIO,
+            ghost_ratio: DEFAULT_GHOST_RATIO,
+        }
+    }
+
+    /// Sets the fraction of capacity allocated to the Small queue.
+    pub fn small_ratio(mut self, ratio: f64) -> Self {
+        self.small_ratio = ratio;
+        self
+    }
+
+    /// Sets the fraction of capacity for the Ghost list.
+    pub fn ghost_ratio(mut self, ratio: f64) -> Self {
+        self.ghost_ratio = ratio;
+        self
+    }
+
+    /// Builds the concurrent cache with the configured parameters.
+    pub fn build<K, V>(self) -> ConcurrentS3FifoCache<K, V>
+    where
+        K: Clone + Eq + Hash + Debug,
+    {
+        ConcurrentS3FifoCache::with_ratios(self.capacity, self.small_ratio, self.ghost_ratio)
+    }
+}
+
 /// Thread-safe S3-FIFO cache wrapper using RwLock.
 ///
 /// Provides concurrent access to an S3-FIFO cache with read-write locking.
@@ -863,7 +1527,6 @@ where
 impl<K, V> ConcurrentS3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Debug,
-    V: Clone,
 {
     /// Creates a new concurrent S3-FIFO cache.
     pub fn new(capacity: usize) -> Self {
@@ -883,14 +1546,69 @@ where
         }
     }
 
+    /// Returns a builder for configuring cache parameters.
+    pub fn builder(capacity: usize) -> ConcurrentS3FifoCacheBuilder {
+        ConcurrentS3FifoCacheBuilder::new(capacity)
+    }
+
     /// Inserts a key-value pair.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.inner.write().insert(key, value)
     }
 
-    /// Gets a cloned value by key.
-    pub fn get(&self, key: &K) -> Option<V> {
+    /// Gets a cloned value by key, incrementing its frequency.
+    ///
+    /// This requires `V: Clone`. For non-cloneable values, use `get_with()`.
+    pub fn get(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
         self.inner.write().get(key).cloned()
+    }
+
+    /// Gets a value by key and applies a function to it.
+    ///
+    /// This allows working with non-cloneable values by applying a transformation
+    /// inside the lock. The frequency is still incremented.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::ConcurrentS3FifoCache;
+    ///
+    /// let cache = ConcurrentS3FifoCache::new(10);
+    /// cache.insert("key".to_string(), vec![1, 2, 3]);
+    ///
+    /// // Get length without cloning the vector
+    /// let len = cache.get_with(&"key".to_string(), |v| v.len());
+    /// assert_eq!(len, Some(3));
+    /// ```
+    pub fn get_with<F, R>(&self, key: &K, f: F) -> Option<R>
+    where
+        F: FnOnce(&V) -> R,
+    {
+        self.inner.write().get(key).map(f)
+    }
+
+    /// Peeks at a value without updating frequency or cloning.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::ConcurrentS3FifoCache;
+    ///
+    /// let cache = ConcurrentS3FifoCache::new(10);
+    /// cache.insert("key".to_string(), vec![1, 2, 3]);
+    ///
+    /// // Inspect without affecting eviction priority
+    /// let len = cache.peek_with(&"key".to_string(), |v| v.len());
+    /// assert_eq!(len, Some(3));
+    /// ```
+    pub fn peek_with<F, R>(&self, key: &K, f: F) -> Option<R>
+    where
+        F: FnOnce(&V) -> R,
+    {
+        self.inner.read().peek(key).map(f)
     }
 
     /// Returns `true` if the key exists.
@@ -950,7 +1668,7 @@ where
 impl<K, V> ConcurrentCache for ConcurrentS3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Debug + Send + Sync,
-    V: Clone + Send + Sync,
+    V: Send + Sync,
 {
 }
 
@@ -1039,12 +1757,10 @@ mod tests {
         }
 
         #[test]
+        #[should_panic(expected = "cannot insert into zero-capacity cache")]
         fn zero_capacity_rejects_all() {
             let mut cache = S3FifoCache::new(0);
             cache.insert("key", "value");
-
-            assert!(cache.is_empty());
-            assert!(!cache.contains(&"key"));
         }
     }
 
@@ -1771,6 +2487,424 @@ mod tests {
                 metrics.promotions > 0 || metrics.main_reinserts > 0,
                 "Expected queue movements"
             );
+        }
+    }
+
+    // ==============================================
+    // New API Methods
+    // ==============================================
+
+    mod new_api_methods {
+        use super::*;
+
+        #[test]
+        fn get_mut_works() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("key", 42);
+
+            if let Some(val) = cache.get_mut(&"key") {
+                *val = 100;
+            }
+
+            assert_eq!(cache.get(&"key"), Some(&100));
+        }
+
+        #[test]
+        fn get_mut_missing_returns_none() {
+            let mut cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            assert_eq!(cache.get_mut(&"missing"), None);
+        }
+
+        #[test]
+        fn get_mut_increments_frequency() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("key".to_string(), 42);
+
+            // Access multiple times to increase frequency
+            cache.get_mut(&"key".to_string());
+            cache.get_mut(&"key".to_string());
+            cache.get_mut(&"key".to_string());
+
+            // Fill cache to trigger eviction
+            for i in 0..20 {
+                cache.insert(format!("filler_{}", i), i);
+            }
+
+            // "key" should survive due to high frequency
+            assert!(cache.contains(&"key".to_string()));
+        }
+
+        #[test]
+        fn remove_works() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            assert_eq!(cache.remove(&"b"), Some(2));
+            assert_eq!(cache.len(), 2);
+            assert!(!cache.contains(&"b"));
+            assert_eq!(cache.remove(&"b"), None);
+        }
+
+        #[test]
+        fn remove_from_small_queue() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("small", 1);
+
+            assert_eq!(cache.small_len(), 1);
+            assert_eq!(cache.remove(&"small"), Some(1));
+            assert_eq!(cache.small_len(), 0);
+        }
+
+        #[test]
+        fn remove_from_main_queue() {
+            let mut cache = S3FifoCache::new(5);
+
+            // Insert and access to promote to Main
+            cache.insert("main".to_string(), 1);
+            cache.get(&"main".to_string());
+
+            // Fill to trigger promotion
+            for i in 0..10 {
+                cache.insert(format!("filler_{}", i), i);
+            }
+
+            // Remove if it's in Main
+            if cache.contains(&"main".to_string()) {
+                cache.remove(&"main".to_string());
+                assert!(!cache.contains(&"main".to_string()));
+            }
+        }
+
+        #[test]
+        fn iter_empty_cache() {
+            let cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            let items: Vec<_> = cache.iter().collect();
+            assert_eq!(items.len(), 0);
+        }
+
+        #[test]
+        fn iter_over_entries() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let items: Vec<_> = cache.iter().collect();
+            assert_eq!(items.len(), 3);
+
+            // Check all entries are present (order may vary)
+            let keys: Vec<_> = items.iter().map(|(k, _)| *k).collect();
+            assert!(keys.contains(&&"a"));
+            assert!(keys.contains(&&"b"));
+            assert!(keys.contains(&&"c"));
+        }
+
+        #[test]
+        fn iter_exact_size() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let iter = cache.iter();
+            assert_eq!(iter.len(), 3);
+            assert_eq!(iter.size_hint(), (3, Some(3)));
+        }
+
+        #[test]
+        fn keys_iterator() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("x", 1);
+            cache.insert("y", 2);
+            cache.insert("z", 3);
+
+            let keys: Vec<_> = cache.keys().copied().collect();
+            assert_eq!(keys.len(), 3);
+            assert!(keys.contains(&"x"));
+            assert!(keys.contains(&"y"));
+            assert!(keys.contains(&"z"));
+        }
+
+        #[test]
+        fn values_iterator() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 10);
+            cache.insert("b", 20);
+            cache.insert("c", 30);
+
+            let values: Vec<_> = cache.values().copied().collect();
+            assert_eq!(values.len(), 3);
+            assert!(values.contains(&10));
+            assert!(values.contains(&20));
+            assert!(values.contains(&30));
+        }
+
+        #[test]
+        fn iter_with_promoted_items() {
+            let mut cache = S3FifoCache::new(10);
+
+            // Add items to Small
+            cache.insert("s1".to_string(), 1);
+            cache.insert("s2".to_string(), 2);
+
+            // Add and access to promote to Main
+            cache.insert("m1".to_string(), 3);
+            cache.get(&"m1".to_string());
+
+            // Fill to trigger promotion
+            for i in 0..10 {
+                cache.insert(format!("filler_{}", i), i);
+            }
+
+            // Iterate - should include items from both queues
+            let items: Vec<_> = cache.iter().collect();
+            assert_eq!(items.len(), cache.len());
+        }
+
+        #[test]
+        fn iter_keys_exact_size() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let mut keys = cache.keys();
+            assert_eq!(keys.len(), 2);
+            keys.next();
+            assert_eq!(keys.len(), 1);
+        }
+
+        #[test]
+        fn iter_values_exact_size() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let mut values = cache.values();
+            assert_eq!(values.len(), 2);
+            values.next();
+            assert_eq!(values.len(), 1);
+        }
+    }
+
+    // ==============================================
+    // Invariants Testing
+    // ==============================================
+
+    #[cfg(debug_assertions)]
+    mod invariants_tests {
+        use super::*;
+
+        #[test]
+        fn empty_cache_invariants() {
+            let cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            cache
+                .check_invariants()
+                .expect("Empty cache invariants failed");
+        }
+
+        #[test]
+        fn single_item_invariants() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("key", 42);
+            cache
+                .check_invariants()
+                .expect("Single item invariants failed");
+        }
+
+        #[test]
+        fn multiple_items_invariants() {
+            let mut cache = S3FifoCache::new(10);
+            for i in 0..5 {
+                cache.insert(i, i * 10);
+                cache
+                    .check_invariants()
+                    .unwrap_or_else(|e| panic!("Invariants failed after inserting {}: {}", i, e));
+            }
+        }
+
+        #[test]
+        fn after_access_invariants() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            cache.get(&"a");
+            cache
+                .check_invariants()
+                .expect("Invariants failed after get");
+
+            cache.get(&"b");
+            cache.get(&"b");
+            cache
+                .check_invariants()
+                .expect("Invariants failed after multiple gets");
+        }
+
+        #[test]
+        fn after_eviction_invariants() {
+            let mut cache = S3FifoCache::new(5);
+
+            // Fill beyond capacity
+            for i in 0..10 {
+                cache.insert(i, i * 10);
+                cache
+                    .check_invariants()
+                    .unwrap_or_else(|e| panic!("Invariants failed after inserting {}: {}", i, e));
+            }
+        }
+
+        #[test]
+        fn after_promotion_invariants() {
+            let mut cache = S3FifoCache::new(5);
+
+            // Insert and access to trigger promotion
+            cache.insert("hot".to_string(), 1);
+            cache.get(&"hot".to_string());
+
+            // Fill to trigger eviction/promotion
+            for i in 0..10 {
+                cache.insert(format!("item_{}", i), i);
+                cache
+                    .check_invariants()
+                    .unwrap_or_else(|e| panic!("Invariants failed after item_{}: {}", i, e));
+            }
+        }
+
+        #[test]
+        fn after_update_invariants() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("key", 1);
+            cache
+                .check_invariants()
+                .expect("Invariants failed after insert");
+
+            cache.insert("key", 2);
+            cache
+                .check_invariants()
+                .expect("Invariants failed after update");
+
+            cache.insert("key", 3);
+            cache
+                .check_invariants()
+                .expect("Invariants failed after second update");
+        }
+
+        #[test]
+        fn after_remove_invariants() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+            cache
+                .check_invariants()
+                .expect("Invariants failed after inserts");
+
+            cache.remove(&"b");
+            cache
+                .check_invariants()
+                .expect("Invariants failed after remove");
+
+            cache.remove(&"a");
+            cache
+                .check_invariants()
+                .expect("Invariants failed after second remove");
+        }
+
+        #[test]
+        fn after_clear_invariants() {
+            let mut cache = S3FifoCache::new(10);
+            for i in 0..5 {
+                cache.insert(i, i);
+            }
+
+            cache.clear();
+            cache
+                .check_invariants()
+                .expect("Invariants failed after clear");
+        }
+
+        #[test]
+        fn scan_workload_invariants() {
+            let mut cache = S3FifoCache::new(50);
+
+            // Create hot items
+            for i in 0..10 {
+                cache.insert(format!("hot_{}", i), i);
+                cache.get(&format!("hot_{}", i));
+            }
+
+            cache
+                .check_invariants()
+                .expect("Invariants failed after hot items");
+
+            // Scan workload
+            for i in 0..100 {
+                cache.insert(format!("scan_{}", i), i);
+                if i % 10 == 0 {
+                    cache.check_invariants().unwrap_or_else(|e| {
+                        panic!("Invariants failed at scan iteration {}: {}", i, e)
+                    });
+                }
+            }
+
+            cache
+                .check_invariants()
+                .expect("Invariants failed after scan");
+        }
+
+        #[test]
+        fn mixed_operations_invariants() {
+            let mut cache = S3FifoCache::new(20);
+
+            for round in 0..5 {
+                // Insert
+                for i in 0..10 {
+                    cache.insert(format!("r{}_i{}", round, i), i);
+                }
+
+                // Access some
+                for i in (0..10).step_by(2) {
+                    cache.get(&format!("r{}_i{}", round, i));
+                }
+
+                // Remove some
+                cache.remove(&format!("r{}_i1", round));
+
+                cache
+                    .check_invariants()
+                    .unwrap_or_else(|e| panic!("Invariants failed at round {}: {}", round, e));
+            }
+        }
+
+        #[test]
+        fn small_capacity_invariants() {
+            let mut cache = S3FifoCache::new(1);
+            cache.insert("a", 1);
+            cache
+                .check_invariants()
+                .expect("Invariants failed with capacity 1");
+
+            cache.insert("b", 2);
+            cache
+                .check_invariants()
+                .expect("Invariants failed after eviction");
+        }
+
+        #[test]
+        fn get_mut_invariants() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("key", 42);
+
+            if let Some(val) = cache.get_mut(&"key") {
+                *val = 100;
+            }
+
+            cache
+                .check_invariants()
+                .expect("Invariants failed after get_mut");
         }
     }
 }
