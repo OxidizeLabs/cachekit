@@ -7,39 +7,39 @@
 //! ## Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────────────────────┐
-//! │                           GhostList Layout                                  │
-//! │                                                                             │
+//! ┌───────────────────────────────────────────────────────────────────────────┐
+//! │                           GhostList Layout                                │
+//! │                                                                           │
 //! │   ┌─────────────────────────────┐   ┌─────────────────────────────────┐   │
 //! │   │  index: HashMap<K, SlotId>  │   │  list: IntrusiveList<K>         │   │
 //! │   │                             │   │                                 │   │
-//! │   │  ┌───────────┬──────────┐  │   │  head ──► [A] ◄──► [B] ◄──► [C] │   │
-//! │   │  │    Key    │  SlotId  │  │   │            MRU             LRU  │   │
-//! │   │  ├───────────┼──────────┤  │   │                          ▲      │   │
-//! │   │  │  "key_a"  │   id_0   │──┼───┼─────────► [A]            │      │   │
-//! │   │  │  "key_b"  │   id_1   │──┼───┼─────────► [B]            │      │   │
-//! │   │  │  "key_c"  │   id_2   │──┼───┼─────────► [C] ◄──────────┘      │   │
-//! │   │  └───────────┴──────────┘  │   │                    tail         │   │
+//! │   │  ┌───────────┬──────────┐   │   │  head ──► [A] ◄──► [B] ◄──► [C] │   │
+//! │   │  │    Key    │  SlotId  │   │   │            MRU             LRU  │   │
+//! │   │  ├───────────┼──────────┤   │   │                             ▲   │   │
+//! │   │  │  "key_a"  │   id_0   │───┼───┼─────────► [A]               │   │   │
+//! │   │  │  "key_b"  │   id_1   │───┼───┼─────────► [B]               │   │   │
+//! │   │  │  "key_c"  │   id_2   │───┼───┼─────────► [C] ◄─────────────┘   │   │
+//! │   │  └───────────┴──────────┘   │   │                    tail         │   │
 //! │   └─────────────────────────────┘   └─────────────────────────────────┘   │
-//! │                                                                             │
-//! │   Record Flow (capacity = 3)                                               │
-//! │   ──────────────────────────────                                           │
-//! │                                                                             │
-//! │   record("key_d") when full:                                               │
-//! │     1. Check index: "key_d" not found                                      │
-//! │     2. At capacity: evict LRU ("key_c")                                    │
-//! │        - pop_back() from list                                              │
-//! │        - remove("key_c") from index                                        │
-//! │     3. Insert "key_d" at front (MRU)                                       │
-//! │        - push_front("key_d") in list                                       │
-//! │        - insert("key_d", id) in index                                      │
-//! │                                                                             │
-//! │   record("key_a") when present:                                            │
-//! │     1. Check index: "key_a" found with id_0                                │
-//! │     2. move_to_front(id_0) in list                                         │
-//! │     3. Done (no eviction needed)                                           │
-//! │                                                                             │
-//! └─────────────────────────────────────────────────────────────────────────────┘
+//! │                                                                           │
+//! │   Record Flow (capacity = 3)                                              │
+//! │   ──────────────────────────────                                          │
+//! │                                                                           │
+//! │   record("key_d") when full:                                              │
+//! │     1. Check index: "key_d" not found                                     │
+//! │     2. At capacity: evict LRU ("key_c")                                   │
+//! │        - pop_back() from list                                             │
+//! │        - remove("key_c") from index                                       │
+//! │     3. Insert "key_d" at front (MRU)                                      │
+//! │        - push_front("key_d") in list                                      │
+//! │        - insert("key_d", id) in index                                     │
+//! │                                                                           │
+//! │   record("key_a") when present:                                           │
+//! │     1. Check index: "key_a" found with id_0                               │
+//! │     2. move_to_front(id_0) in list                                        │
+//! │     3. Done (no eviction needed)                                          │
+//! │                                                                           │
+//! └───────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! ## Key Components

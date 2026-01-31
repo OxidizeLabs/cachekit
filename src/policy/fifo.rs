@@ -63,7 +63,7 @@
 //!   ┌────────────────────────────────────────────────────────────────────────┐
 //!   │ FIFO Eviction:                                                         │
 //!   │                                                                        │
-//!   │   1. pop_front() from VecDeque → oldest K                         │
+//!   │   1. pop_front() from VecDeque → oldest K                              │
 //!   │   2. Skip if stale (key not in HashMap)                                │
 //!   │   3. Remove from HashMap                                               │
 //!   │   4. Add new entry: HashMap.insert + VecDeque.push_back                │
@@ -123,8 +123,8 @@
 //!
 //! | Component         | Type                     | Purpose                       |
 //! |-------------------|--------------------------|-------------------------------|
-//! | `cache`           | `HashMap<K,Arc<V>>` | O(1) key-value storage        |
-//! | `insertion_order` | `VecDeque<K>`       | Tracks insertion order        |
+//! | `cache`           | `HashMap<K,Arc<V>>`      | O(1) key-value storage        |
+//! | `insertion_order` | `VecDeque<K>`            | Tracks insertion order        |
 //! | `capacity`        | `usize`                  | Maximum entries               |
 //!
 //! ## Core Operations (CoreCache)

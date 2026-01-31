@@ -8,41 +8,41 @@
 //! ## Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────────────────────┐
-//! │                         LazyMinHeap Layout                                  │
-//! │                                                                             │
+//! ┌────────────────────────────────────────────────────────────────────────────┐
+//! │                         LazyMinHeap Layout                                 │
+//! │                                                                            │
 //! │   ┌───────────────────────────────────────────────────────────────────┐    │
 //! │   │  scores: HashMap<K, S>   (authoritative source of truth)          │    │
 //! │   │                                                                   │    │
-//! │   │    ┌─────────┬─────────┐                                         │    │
-//! │   │    │  key    │  score  │                                         │    │
-//! │   │    ├─────────┼─────────┤                                         │    │
-//! │   │    │  "A"    │   10    │                                         │    │
-//! │   │    │  "B"    │    3    │                                         │    │
-//! │   │    │  "C"    │    7    │                                         │    │
-//! │   │    └─────────┴─────────┘                                         │    │
+//! │   │    ┌─────────┬─────────┐                                          │    │
+//! │   │    │  key    │  score  │                                          │    │
+//! │   │    ├─────────┼─────────┤                                          │    │
+//! │   │    │  "A"    │   10    │                                          │    │
+//! │   │    │  "B"    │    3    │                                          │    │
+//! │   │    │  "C"    │    7    │                                          │    │
+//! │   │    └─────────┴─────────┘                                          │    │
 //! │   │                                                                   │    │
-//! │   │    len() = 3 (live entries)                                      │    │
+//! │   │    len() = 3 (live entries)                                       │    │
 //! │   └───────────────────────────────────────────────────────────────────┘    │
-//! │                                                                             │
+//! │                                                                            │
 //! │   ┌───────────────────────────────────────────────────────────────────┐    │
-//! │   │  heap: BinaryHeap<Reverse<HeapEntry>>   (may have stale entries) │    │
+//! │   │  heap: BinaryHeap<Reverse<HeapEntry>>   (may have stale entries)  │    │
 //! │   │                                                                   │    │
-//! │   │    Min-heap order (smallest score first):                        │    │
+//! │   │    Min-heap order (smallest score first):                         │    │
 //! │   │                                                                   │    │
-//! │   │    ┌────────────────────────────────────────────────────────┐   │    │
-//! │   │    │ ("B", 3, seq=5)  ← current min, matches scores["B"]    │   │    │
-//! │   │    │ ("C", 7, seq=4)  ← valid                                │   │    │
-//! │   │    │ ("A", 10, seq=3) ← valid                                │   │    │
-//! │   │    │ ("A", 15, seq=1) ← STALE: scores["A"]=10, not 15       │   │    │
-//! │   │    │ ("B", 8, seq=2)  ← STALE: scores["B"]=3, not 8         │   │    │
-//! │   │    └────────────────────────────────────────────────────────┘   │    │
+//! │   │    ┌────────────────────────────────────────────────────────┐     │    │
+//! │   │    │ ("B", 3, seq=5)  ← current min, matches scores["B"]    │     │    │
+//! │   │    │ ("C", 7, seq=4)  ← valid                               │     │    │
+//! │   │    │ ("A", 10, seq=3) ← valid                               │     │    │
+//! │   │    │ ("A", 15, seq=1) ← STALE: scores["A"]=10, not 15       │     │    │
+//! │   │    │ ("B", 8, seq=2)  ← STALE: scores["B"]=3, not 8         │     │    │
+//! │   │    └────────────────────────────────────────────────────────┘     │    │
 //! │   │                                                                   │    │
-//! │   │    heap_len() = 5 (includes stale entries)                       │    │
+//! │   │    heap_len() = 5 (includes stale entries)                        │    │
 //! │   └───────────────────────────────────────────────────────────────────┘    │
-//! │                                                                             │
+//! │                                                                            │
 //! │   seq: 6  (monotonic counter for tie-breaking)                             │
-//! └─────────────────────────────────────────────────────────────────────────────┘
+//! └────────────────────────────────────────────────────────────────────────────┘
 //!
 //! Update Flow
 //! ───────────
@@ -82,13 +82,13 @@
 //!
 //! ## Operations
 //!
-//! | Operation      | Description                           | Complexity      |
-//! |----------------|---------------------------------------|-----------------|
-//! | `update`       | Set/update score, push heap entry     | O(log n)        |
-//! | `remove`       | Remove from scores map only           | O(1)            |
+//! | Operation      | Description                           | Complexity         |
+//! |----------------|---------------------------------------|--------------------|
+//! | `update`       | Set/update score, push heap entry     | O(log n)           |
+//! | `remove`       | Remove from scores map only           | O(1)               |
 //! | `pop_best`     | Pop min, skipping stale entries       | Amortized O(log n) |
-//! | `score_of`     | Get current score for key             | O(1)            |
-//! | `rebuild`      | Rebuild heap from scores map          | O(n log n)      |
+//! | `score_of`     | Get current score for key             | O(1)               |
+//! | `rebuild`      | Rebuild heap from scores map          | O(n log n)         |
 //! | `maybe_rebuild`| Rebuild if heap too stale             | O(1) or O(n log n) |
 //!
 //! ## Use Cases

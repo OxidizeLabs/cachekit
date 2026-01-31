@@ -17,15 +17,15 @@
 //!   │   │  ┌─────────┬───────────────────────────────────────────────┐       │ │
 //!   │   │  │   Key   │ SlotId (Entry<K> in SlotArena)                │       │ │
 //!   │   │  ├─────────┼───────────────────────────────────────────────┤       │ │
-//!   │   │  │ page_1  │ id_7                                           │       │ │
-//!   │   │  │ page_2  │ id_3                                           │       │ │
+//!   │   │  │ page_1  │ id_7                                          │       │ │
+//!   │   │  │ page_2  │ id_3                                          │       │ │
 //!   │   │  └─────────┴───────────────────────────────────────────────┘       │ │
 //!   │   │                                                                    │ │
-//!   │   │  Buckets (freq -> linked list of SlotId)                            │ │
-//!   │   │  freq=1: head ─► [id_3] ◄──► [id_9] ◄── tail  (LRU within bucket)   │ │
-//!   │   │  freq=2: head ─► [id_7] ◄── tail                                    │ │
+//!   │   │  Buckets (freq -> linked list of SlotId)                           │ │
+//!   │   │  freq=1: head ─► [id_3] ◄──► [id_9] ◄── tail  (LRU within bucket)  │ │
+//!   │   │  freq=2: head ─► [id_7] ◄── tail                                   │ │
 //!   │   │                                                                    │ │
-//!   │   │  min_freq → 1  (eviction pops tail of lowest bucket)                │ │
+//!   │   │  min_freq → 1  (eviction pops tail of lowest bucket)               │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
@@ -151,16 +151,16 @@
 //!
 //! ## Core Operations (CoreCache + MutableCache)
 //!
-//! | Method           | Complexity | Description                              |
-//! |------------------|------------|------------------------------------------|
-//! | `new(capacity)`  | O(1)       | Create cache with given capacity         |
+//! | Method           | Complexity | Description                                |
+//! |------------------|------------|--------------------------------------------|
+//! | `new(capacity)`  | O(1)       | Create cache with given capacity           |
 //! | `insert(k, v)`   | O(1)*      | Insert `Arc<V>`, may trigger O(1) eviction |
-//! | `get(&k)`        | O(1)       | Get value, increments frequency          |
-//! | `contains(&k)`   | O(1)       | Check if key exists                      |
-//! | `remove(&k)`     | O(1)       | Remove entry by key                      |
-//! | `len()`          | O(1)       | Current number of entries                |
-//! | `capacity()`     | O(1)       | Maximum capacity                         |
-//! | `clear()`        | O(n)       | Remove all entries                       |
+//! | `get(&k)`        | O(1)       | Get value, increments frequency            |
+//! | `contains(&k)`   | O(1)       | Check if key exists                        |
+//! | `remove(&k)`     | O(1)       | Remove entry by key                        |
+//! | `len()`          | O(1)       | Current number of entries                  |
+//! | `capacity()`     | O(1)       | Maximum capacity                           |
+//! | `clear()`        | O(n)       | Remove all entries                         |
 //!
 //! ## LFU-Specific Operations (LfuCacheTrait)
 //!
@@ -189,7 +189,7 @@
 //! | Aspect           | Pros                              | Cons                            |
 //! |------------------|-----------------------------------|---------------------------------|
 //! | Hot Item Retain  | Keeps frequently accessed items   | Cold start problem              |
-//! | Eviction Quality | Good for stable access patterns   | O(1) eviction                    |
+//! | Eviction Quality | Good for stable access patterns   | O(1) eviction                   |
 //! | Memory           | Store + buckets, simple structure | No frequency decay/aging        |
 //! | Simplicity       | Easy to understand and debug      | Non-deterministic tie-breaking  |
 //!

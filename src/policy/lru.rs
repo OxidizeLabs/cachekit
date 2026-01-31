@@ -10,7 +10,7 @@
 //!   │                        ConcurrentLruCache<K, V>                          │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │                    Arc<RwLock<LruCore<K, V>>>                       │ │
+//!   │   │                    Arc<RwLock<LruCore<K, V>>>                      │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                  │                                       │
 //!   │                                  ▼                                       │
@@ -18,7 +18,7 @@
 //!   │   │                         LruCore<K, V>                              │ │
 //!   │   │                                                                    │ │
 //!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
-//!   │   │   │  HashMap<K, SlotId> (index into SlotArena)                  │ │ │
+//!   │   │   │  HashMap<K, SlotId> (index into SlotArena)                   │ │ │
 //!   │   │   │                                                              │ │ │
 //!   │   │   │  ┌─────────┬────────────────────────────────────────────┐    │ │ │
 //!   │   │   │  │   Key   │  SlotId                                    │    │ │ │
@@ -55,7 +55,7 @@
 //! | `LruCore<K, V>`        | Single-threaded core with list + index + store     |
 //! | `ConcurrentLruCache`   | Thread-safe wrapper with `parking_lot::RwLock`     |
 //! | `Entry<K>`             | SlotArena entry storing key + list node id         |
-//! | `IntrusiveList`        | Recency list storing SlotId ordering              |
+//! | `IntrusiveList`        | Recency list storing SlotId ordering               |
 //! | `HashMapStore<K, V>`   | Store for key -> `Arc<V>` ownership                |
 //! | `BufferPoolCache<V>`   | Type alias for `ConcurrentLruCache<u32, V>`        |
 //! | `PageCache<K, V>`      | Type alias for generic page caching                |

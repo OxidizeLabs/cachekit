@@ -11,7 +11,7 @@
 //!   │                        HeapLfuCache<K, V>                                │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  HashMapStore<K, V>                                               │ │
+//!   │   │  HashMapStore<K, V>                                                │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────┬────────────────────────────────────────────────────┐  │ │
 //!   │   │  │   Key   │  Arc<V>                                            │  │ │
@@ -122,7 +122,7 @@
 //!
 //! | Component      | Type                              | Purpose                    |
 //! |----------------|-----------------------------------|----------------------------|
-//! | `store`        | `HashMapStore<K, V>`             | Value storage, O(1) lookup |
+//! | `store`        | `HashMapStore<K, V>`              | Value storage, O(1) lookup |
 //! | `frequencies`  | `HashMap<K, u64>`                 | Current frequency tracking |
 //! | `freq_heap`    | `BinaryHeap<Reverse<(u64, K)>>`   | Min-heap for LFU lookup    |
 //! | `capacity`     | `usize`                           | Maximum entries            |

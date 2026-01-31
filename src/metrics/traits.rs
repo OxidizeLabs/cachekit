@@ -8,7 +8,7 @@
 //! ## Architecture
 //!
 //! ```text
-//!                                ┌────────────────────────────┐
+//!                                ┌─────────────────────────────┐
 //!                                │     CoreMetricsRecorder     │
 //!                                │  get_hit/get_miss/insert    │
 //!                                │  evict/clear                │
@@ -19,7 +19,7 @@
 //!                     ▼                         ▼                         ▼
 //!       ┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
 //!       │  FifoMetricsRecorder    │  │  LruMetricsRecorder     │  │  LfuMetricsRecorder     │
-//!       │  pop_oldest/peek/age    │  │  pop_lru/peek/touch      │  │  pop_lfu/peek/frequency │
+//!       │  pop_oldest/peek/age    │  │  pop_lru/peek/touch     │  │  pop_lfu/peek/frequency │
 //!       └─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
 //!                                               │
 //!                                               ▼

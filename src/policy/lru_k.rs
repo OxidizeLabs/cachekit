@@ -17,7 +17,7 @@
 //!   │   │  │   Key   │  Access History + Segment                         │   │ │
 //!   │   │  ├─────────┼───────────────────────────────────────────────────┤   │ │
 //!   │   │  │ page_1  │  [t₁, t₅, t₉], cold/hot                           │   │ │
-//!   │   │  │ page_2  │  [t₃], cold                                      │   │ │
+//!   │   │  │ page_2  │  [t₃], cold                                       │   │ │
 //!   │   │  │ page_3  │  [t₂, t₇], cold/hot                               │   │ │
 //!   │   │  └─────────┴───────────────────────────────────────────────────┘   │ │
 //!   │   │                                                                    │ │
@@ -112,7 +112,7 @@
 //! |------------------|----------------------------------------------------|
 //! | `LrukCache<K,V>` | Main cache struct with store + K value             |
 //! | `index`          | `HashMap<K, usize>` to slot indices                |
-//! | `cold`/`hot`      | Segmented LRU lists (&lt;K and >=K accesses)       |
+//! | `cold`/`hot`     | Segmented LRU lists (&lt;K and >=K accesses)       |
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!

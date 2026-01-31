@@ -14,21 +14,21 @@
 //! │         ▼                                                                   │
 //! │   .build::<K, V>(policy)                                                    │
 //! │         │                                                                   │
-//! │         ├─── CachePolicy::Fifo ────► FifoCache<K, V>                       │
-//! │         ├─── CachePolicy::Lru ─────► LruCore<K, V>                         │
-//! │         ├─── CachePolicy::LruK ────► LrukCache<K, V>                       │
-//! │         ├─── CachePolicy::Lfu ─────► LfuCache<K, V>                        │
-//! │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                    │
-//! │         ├─── CachePolicy::TwoQ ────► TwoQCore<K, V>                        │
-//! │         ├─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                     │
-//! │         ├─── CachePolicy::Lifo ────► LifoCore<K, V>                        │
-//! │         ├─── CachePolicy::Mfu ─────► MfuCore<K, V>                         │
-//! │         ├─── CachePolicy::Mru ─────► MruCore<K, V>                         │
-//! │         ├─── CachePolicy::Random ──► RandomCore<K, V>                      │
-//! │         ├─── CachePolicy::Slru ────► SlruCore<K, V>                        │
-//! │         ├─── CachePolicy::Clock ───► ClockCache<K, V>                      │
-//! │         ├─── CachePolicy::ClockPro ► ClockProCache<K, V>                   │
-//! │         └─── CachePolicy::Nru ─────► NruCache<K, V>                        │
+//! │         ├─── CachePolicy::Fifo ────► FifoCache<K, V>                        │
+//! │         ├─── CachePolicy::Lru ─────► LruCore<K, V>                          │
+//! │         ├─── CachePolicy::LruK ────► LrukCache<K, V>                        │
+//! │         ├─── CachePolicy::Lfu ─────► LfuCache<K, V>                         │
+//! │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                     │
+//! │         ├─── CachePolicy::TwoQ ────► TwoQCore<K, V>                         │
+//! │         ├─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                      │
+//! │         ├─── CachePolicy::Lifo ────► LifoCore<K, V>                         │
+//! │         ├─── CachePolicy::Mfu ─────► MfuCore<K, V>                          │
+//! │         ├─── CachePolicy::Mru ─────► MruCore<K, V>                          │
+//! │         ├─── CachePolicy::Random ──► RandomCore<K, V>                       │
+//! │         ├─── CachePolicy::Slru ────► SlruCore<K, V>                         │
+//! │         ├─── CachePolicy::Clock ───► ClockCache<K, V>                       │
+//! │         ├─── CachePolicy::ClockPro ► ClockProCache<K, V>                    │
+//! │         └─── CachePolicy::Nru ─────► NruCache<K, V>                         │
 //! │                                                                             │
 //! │         ▼                                                                   │
 //! │   Cache<K, V>  (unified wrapper)                                            │
