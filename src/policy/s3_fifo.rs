@@ -1220,6 +1220,96 @@ where
         })
     }
 
+    /// Helper for evicting or reinserting a node from a queue tail.
+    ///
+    /// Returns `true` if an eviction/reinsertion occurred, `false` if no tail exists.
+    #[inline]
+    fn try_evict_from_queue(
+        &mut self,
+        tail: Option<NonNull<Node<K, V>>>,
+        queue: QueueKind,
+    ) -> bool {
+        let tail_ptr = match tail {
+            Some(ptr) => ptr,
+            None => return false,
+        };
+
+        // SAFETY: Read freq before any mutable operations to avoid Stacked Borrows violations.
+        // Detach methods create &mut references to adjacent nodes, which would invalidate
+        // any existing &mut reference to this node. By reading freq first, we avoid this issue.
+        let freq = unsafe { tail_ptr.as_ref().freq };
+
+        if freq > 0 {
+            // Promote/reinsert: detach, adjust freq, attach to Main head
+            match queue {
+                QueueKind::Small => {
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.metrics.promotions += 1;
+                    }
+
+                    // SAFETY: tail_ptr is valid, and we're the sole accessor.
+                    // detach_small removes the node from the list without freeing it.
+                    unsafe {
+                        self.detach_small(tail_ptr);
+                        // Create fresh mutable reference after detach completes
+                        let node = &mut *tail_ptr.as_ptr();
+                        node.freq = 0; // Reset freq when promoting to Main
+                        // Note: prev/next are set by attach_main_head, no need to set here
+                    }
+                    self.attach_main_head(tail_ptr);
+                },
+                QueueKind::Main => {
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.metrics.main_reinserts += 1;
+                    }
+
+                    // SAFETY: tail_ptr is valid, and we're the sole accessor.
+                    // detach_main removes the node from the list without freeing it.
+                    unsafe {
+                        self.detach_main(tail_ptr);
+                        // Create fresh mutable reference after detach completes
+                        let node = &mut *tail_ptr.as_ptr();
+                        node.freq -= 1; // Decrement freq when reinserting
+                        // Note: prev/next are set by attach_main_head, no need to set here
+                    }
+                    self.attach_main_head(tail_ptr);
+                },
+            }
+        } else {
+            // Evict: freq == 0, remove from cache
+            match queue {
+                QueueKind::Small => {
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.metrics.small_evictions += 1;
+                    }
+
+                    // SAFETY: tail_ptr is valid, clone key before pop destroys the node
+                    let key = unsafe { tail_ptr.as_ref().key.clone() };
+                    self.map.remove(&key);
+                    let _ = self.pop_small_tail();
+                    self.ghost.record(key); // Record evicted Small items in Ghost
+                },
+                QueueKind::Main => {
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.metrics.main_evictions += 1;
+                    }
+
+                    // SAFETY: tail_ptr is valid, clone key before pop destroys the node
+                    let key = unsafe { tail_ptr.as_ref().key.clone() };
+                    self.map.remove(&key);
+                    let _ = self.pop_main_tail();
+                    // Don't record Main evictions in Ghost
+                },
+            }
+        }
+
+        true
+    }
+
     /// Evicts entries until there is room for a new entry.
     ///
     /// S3-FIFO eviction strategy:
@@ -1234,69 +1324,13 @@ where
     fn evict_if_needed(&mut self) {
         while self.len() >= self.capacity {
             // Try to evict from Small first
-            if let Some(tail_ptr) = self.small_tail {
-                unsafe {
-                    let node = &mut *tail_ptr.as_ptr();
-
-                    if node.freq > 0 {
-                        // Promote to Main: detach from Small, reset freq, attach to Main
-                        #[cfg(feature = "metrics")]
-                        {
-                            self.metrics.promotions += 1;
-                        }
-
-                        self.detach_small(tail_ptr);
-                        node.freq = 0;
-                        node.prev = None;
-                        node.next = None;
-                        self.attach_main_head(tail_ptr);
-                        continue;
-                    } else {
-                        // Evict: remove from map and ghost record
-                        #[cfg(feature = "metrics")]
-                        {
-                            self.metrics.small_evictions += 1;
-                        }
-
-                        let key = node.key.clone();
-                        self.map.remove(&key);
-                        let _ = self.pop_small_tail();
-                        self.ghost.record(key);
-                        continue;
-                    }
-                }
+            if self.try_evict_from_queue(self.small_tail, QueueKind::Small) {
+                continue;
             }
 
             // Evict from Main if Small is empty
-            if let Some(tail_ptr) = self.main_tail {
-                unsafe {
-                    let node = &mut *tail_ptr.as_ptr();
-
-                    if node.freq > 0 {
-                        // Reinsert to Main: detach, decrement freq, attach to head
-                        #[cfg(feature = "metrics")]
-                        {
-                            self.metrics.main_reinserts += 1;
-                        }
-
-                        self.detach_main(tail_ptr);
-                        node.freq -= 1;
-                        node.prev = None;
-                        node.next = None;
-                        self.attach_main_head(tail_ptr);
-                        continue;
-                    } else {
-                        // Evict: remove from map (don't record in Ghost)
-                        #[cfg(feature = "metrics")]
-                        {
-                            self.metrics.main_evictions += 1;
-                        }
-
-                        self.map.remove(&node.key);
-                        let _ = self.pop_main_tail();
-                        continue;
-                    }
-                }
+            if self.try_evict_from_queue(self.main_tail, QueueKind::Main) {
+                continue;
             }
 
             // No entries to evict
