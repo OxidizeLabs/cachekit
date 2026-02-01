@@ -16,11 +16,13 @@
 //! │         │                                                                   │
 //! │         ├─── CachePolicy::Fifo ────► FifoCache<K, V>                        │
 //! │         ├─── CachePolicy::Lru ─────► LruCore<K, V>                          │
+//! │         ├─── CachePolicy::FastLru ─► FastLru<K, V>                          │
 //! │         ├─── CachePolicy::LruK ────► LrukCache<K, V>                        │
 //! │         ├─── CachePolicy::Lfu ─────► LfuCache<K, V>                         │
 //! │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                     │
 //! │         ├─── CachePolicy::TwoQ ────► TwoQCore<K, V>                         │
 //! │         ├─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                      │
+//! │         ├─── CachePolicy::Arc ─────► ARCCore<K, V>                          │
 //! │         ├─── CachePolicy::Lifo ────► LifoCore<K, V>                         │
 //! │         ├─── CachePolicy::Mfu ─────► MfuCore<K, V>                          │
 //! │         ├─── CachePolicy::Mru ─────► MruCore<K, V>                          │
@@ -49,11 +51,13 @@
 //! |-----------|-----------------------------------|-----------------------|
 //! | FIFO      | Simple, predictable workloads     | Insertion order       |
 //! | LRU       | Temporal locality                 | Recency               |
+//! | FastLRU   | Maximum single-threaded speed     | Recency (no Arc)      |
 //! | LRU-K     | Scan-resistant workloads          | K-th access time      |
 //! | LFU       | Stable access patterns            | Frequency (O(1))      |
 //! | HeapLFU   | Frequent evictions, large caches  | Frequency (O(log n))  |
 //! | 2Q        | Mixed workloads                   | Two-queue promotion   |
 //! | S3-FIFO   | CDN, scan-heavy workloads         | Three-queue FIFO      |
+//! | ARC       | Adaptive recency/frequency        | Self-tuning           |
 //! | LIFO      | Stack-like caching                | Reverse insertion     |
 //! | MFU       | Inverse frequency patterns        | Highest frequency     |
 //! | MRU       | Cyclic access patterns            | Most recent access    |
@@ -101,8 +105,10 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use crate::ds::frequency_buckets::DEFAULT_BUCKET_PREALLOC;
+use crate::policy::arc::ARCCore;
 use crate::policy::clock::ClockCache;
 use crate::policy::clock_pro::ClockProCache;
+use crate::policy::fast_lru::FastLru;
 use crate::policy::fifo::FifoCache;
 use crate::policy::heap_lfu::HeapLfuCache;
 use crate::policy::lfu::LfuCache;
@@ -169,6 +175,12 @@ use crate::traits::{CoreCache, ReadOnlyCache};
 /// let slru = CacheBuilder::new(100).build::<u64, String>(
 ///     CachePolicy::Slru { probationary_frac: 0.25 }
 /// );
+///
+/// // ARC for adaptive recency/frequency balance
+/// let arc = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Arc);
+///
+/// // FastLru for maximum single-threaded performance
+/// let fast_lru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::FastLru);
 /// ```
 #[derive(Debug, Clone)]
 pub enum CachePolicy {
@@ -183,6 +195,13 @@ pub enum CachePolicy {
     /// Evicts the item that hasn't been accessed for the longest time.
     /// Good for: temporal locality, general-purpose caching.
     Lru,
+
+    /// Fast LRU eviction (optimized for single-threaded performance).
+    ///
+    /// Like LRU but stores values directly without Arc wrapping,
+    /// using FxHash for faster operations (~7-10x faster than standard LRU).
+    /// Good for: maximum single-threaded performance, values don't need to outlive eviction.
+    FastLru,
 
     /// LRU-K policy with configurable K value.
     ///
@@ -243,6 +262,15 @@ pub enum CachePolicy {
         /// Fraction of capacity for the Ghost list (tracks evicted keys).
         ghost_ratio: f64,
     },
+
+    /// Adaptive Replacement Cache eviction.
+    ///
+    /// Automatically adapts between recency (LRU-like) and frequency (LFU-like)
+    /// preferences by maintaining four lists (T1, T2, B1, B2) and a dynamic
+    /// target parameter. Provides excellent performance across diverse workloads.
+    ///
+    /// Good for: unknown or changing workloads, self-tuning caches.
+    Arc,
 
     /// Last In, First Out eviction.
     ///
@@ -370,11 +398,13 @@ where
 {
     Fifo(FifoCache<K, V>),
     Lru(LruCore<K, V>),
+    FastLru(FastLru<K, V>),
     LruK(LrukCache<K, V>),
     Lfu(LfuCache<K, V>),
     HeapLfu(HeapLfuCache<K, V>),
     TwoQ(TwoQCore<K, V>),
     S3Fifo(S3FifoCache<K, V>),
+    Arc(ARCCore<K, V>),
     Lifo(LifoCore<K, V>),
     Mfu(MfuCore<K, V>),
     Mru(MruCore<K, V>),
@@ -416,6 +446,7 @@ where
                 lru.insert(key, arc_value)
                     .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
             },
+            CacheInner::FastLru(fast_lru) => fast_lru.insert(key, value),
             CacheInner::LruK(lruk) => CoreCache::insert(lruk, key, value),
             CacheInner::Lfu(lfu) => {
                 let arc_value = Arc::new(value);
@@ -430,6 +461,7 @@ where
             },
             CacheInner::TwoQ(twoq) => CoreCache::insert(twoq, key, value),
             CacheInner::S3Fifo(s3fifo) => CoreCache::insert(s3fifo, key, value),
+            CacheInner::Arc(arc) => CoreCache::insert(arc, key, value),
             CacheInner::Lifo(lifo) => CoreCache::insert(lifo, key, value),
             CacheInner::Mfu(mfu) => CoreCache::insert(mfu, key, value),
             CacheInner::Mru(mru) => CoreCache::insert(mru, key, value),
@@ -460,11 +492,13 @@ where
         match &mut self.inner {
             CacheInner::Fifo(fifo) => fifo.get(key),
             CacheInner::Lru(lru) => lru.get(key).map(|arc| arc.as_ref()),
+            CacheInner::FastLru(fast_lru) => fast_lru.get(key),
             CacheInner::LruK(lruk) => lruk.get(key),
             CacheInner::Lfu(lfu) => lfu.get(key).map(|arc| arc.as_ref()),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.get(key).map(|arc| arc.as_ref()),
             CacheInner::TwoQ(twoq) => twoq.get(key),
             CacheInner::S3Fifo(s3fifo) => s3fifo.get(key),
+            CacheInner::Arc(arc) => arc.get(key),
             CacheInner::Lifo(lifo) => lifo.get(key),
             CacheInner::Mfu(mfu) => mfu.get(key),
             CacheInner::Mru(mru) => mru.get(key),
@@ -495,11 +529,13 @@ where
         match &self.inner {
             CacheInner::Fifo(fifo) => fifo.contains(key),
             CacheInner::Lru(lru) => lru.contains(key),
+            CacheInner::FastLru(fast_lru) => fast_lru.contains(key),
             CacheInner::LruK(lruk) => lruk.contains(key),
             CacheInner::Lfu(lfu) => lfu.contains(key),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.contains(key),
             CacheInner::TwoQ(twoq) => twoq.contains(key),
             CacheInner::S3Fifo(s3fifo) => s3fifo.contains(key),
+            CacheInner::Arc(arc) => arc.contains(key),
             CacheInner::Lifo(lifo) => lifo.contains(key),
             CacheInner::Mfu(mfu) => mfu.contains(key),
             CacheInner::Mru(mru) => mru.contains(key),
@@ -529,11 +565,13 @@ where
         match &self.inner {
             CacheInner::Fifo(fifo) => <dyn CoreCache<K, V>>::len(fifo),
             CacheInner::Lru(lru) => lru.len(),
+            CacheInner::FastLru(fast_lru) => fast_lru.len(),
             CacheInner::LruK(lruk) => <dyn CoreCache<K, V>>::len(lruk),
             CacheInner::Lfu(lfu) => lfu.len(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.len(),
             CacheInner::TwoQ(twoq) => twoq.len(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.len(),
+            CacheInner::Arc(arc) => arc.len(),
             CacheInner::Lifo(lifo) => <dyn CoreCache<K, V>>::len(lifo),
             CacheInner::Mfu(mfu) => mfu.len(),
             CacheInner::Mru(mru) => mru.len(),
@@ -576,11 +614,13 @@ where
         match &self.inner {
             CacheInner::Fifo(fifo) => <dyn CoreCache<K, V>>::capacity(fifo),
             CacheInner::Lru(lru) => lru.capacity(),
+            CacheInner::FastLru(fast_lru) => fast_lru.capacity(),
             CacheInner::LruK(lruk) => <dyn CoreCache<K, V>>::capacity(lruk),
             CacheInner::Lfu(lfu) => lfu.capacity(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.capacity(),
             CacheInner::TwoQ(twoq) => twoq.capacity(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.capacity(),
+            CacheInner::Arc(arc) => arc.capacity(),
             CacheInner::Lifo(lifo) => <dyn CoreCache<K, V>>::capacity(lifo),
             CacheInner::Mfu(mfu) => mfu.capacity(),
             CacheInner::Mru(mru) => mru.capacity(),
@@ -612,11 +652,13 @@ where
         match &mut self.inner {
             CacheInner::Fifo(fifo) => fifo.clear(),
             CacheInner::Lru(lru) => lru.clear(),
+            CacheInner::FastLru(fast_lru) => fast_lru.clear(),
             CacheInner::LruK(lruk) => lruk.clear(),
             CacheInner::Lfu(lfu) => lfu.clear(),
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.clear(),
             CacheInner::TwoQ(twoq) => twoq.clear(),
             CacheInner::S3Fifo(s3fifo) => s3fifo.clear(),
+            CacheInner::Arc(arc) => arc.clear(),
             CacheInner::Lifo(lifo) => lifo.clear(),
             CacheInner::Mfu(mfu) => mfu.clear(),
             CacheInner::Mru(mru) => mru.clear(),
@@ -690,6 +732,7 @@ impl CacheBuilder {
         let inner = match policy {
             CachePolicy::Fifo => CacheInner::Fifo(FifoCache::new(self.capacity)),
             CachePolicy::Lru => CacheInner::Lru(LruCore::new(self.capacity)),
+            CachePolicy::FastLru => CacheInner::FastLru(FastLru::new(self.capacity)),
             CachePolicy::LruK { k } => CacheInner::LruK(LrukCache::with_k(self.capacity, k)),
             CachePolicy::Lfu { bucket_hint } => {
                 let hint = bucket_hint.unwrap_or(DEFAULT_BUCKET_PREALLOC);
@@ -707,6 +750,7 @@ impl CacheBuilder {
                 small_ratio,
                 ghost_ratio,
             )),
+            CachePolicy::Arc => CacheInner::Arc(ARCCore::new(self.capacity)),
             CachePolicy::Lifo => CacheInner::Lifo(LifoCore::new(self.capacity)),
             CachePolicy::Mfu { bucket_hint: _ } => {
                 // MfuCore uses heap internally, bucket_hint is ignored
@@ -735,6 +779,7 @@ mod tests {
         let policies = [
             CachePolicy::Fifo,
             CachePolicy::Lru,
+            CachePolicy::FastLru,
             CachePolicy::LruK { k: 2 },
             CachePolicy::Lfu { bucket_hint: None },
             CachePolicy::HeapLfu,
@@ -745,6 +790,7 @@ mod tests {
                 small_ratio: 0.1,
                 ghost_ratio: 0.9,
             },
+            CachePolicy::Arc,
             CachePolicy::Lifo,
             CachePolicy::Mfu { bucket_hint: None },
             CachePolicy::Mru,
