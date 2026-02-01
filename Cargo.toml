@@ -23,6 +23,15 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu"]
 
+[lib]
+name = "cachekit"
+path = "src/lib.rs"
+test = true
+doctest = true
+bench = true
+doc = true
+crate-type = ["lib"]
+
 [features]
 default = []
 metrics = []
