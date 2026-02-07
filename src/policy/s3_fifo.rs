@@ -69,14 +69,16 @@
 //!
 //!   evict_if_needed():
 //!     while len > capacity:
-//!       1. Try evict from Small:
-//!          - Pop from Small tail
-//!          - If freq > 0: promote to Main head, reset freq to 0
-//!          - If freq == 0: evict, record in Ghost
-//!       2. If Small empty, evict from Main:
-//!          - Pop from Main tail
-//!          - If freq > 0: reinsert to Main head, decrement freq
-//!          - If freq == 0: evict (don't record in Ghost)
+//!       if small_len > small_cap:
+//!         1. Evict from Small:
+//!            - Pop from Small tail
+//!            - If freq > 0: promote to Main head, reset freq to 0
+//!            - If freq == 0: evict, record in Ghost
+//!       else:
+//!         2. Evict from Main (fall back to Small if Main empty):
+//!            - Pop from Main tail
+//!            - If freq > 0: reinsert to Main head, decrement freq
+//!            - If freq == 0: evict (don't record in Ghost)
 //! ```
 //!
 //! ## Key Components
@@ -312,6 +314,16 @@ impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> {
     }
 }
 
+impl<'a, K, V> std::iter::FusedIterator for Iter<'a, K, V> {}
+
+impl<'a, K, V> Debug for Iter<'a, K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Iter")
+            .field("remaining", &self.remaining)
+            .finish()
+    }
+}
+
 /// Iterator over cache keys.
 pub struct Keys<'a, K, V> {
     inner: Iter<'a, K, V>,
@@ -335,6 +347,16 @@ impl<'a, K, V> ExactSizeIterator for Keys<'a, K, V> {
     }
 }
 
+impl<'a, K, V> std::iter::FusedIterator for Keys<'a, K, V> {}
+
+impl<'a, K, V> Debug for Keys<'a, K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Keys")
+            .field("remaining", &self.inner.remaining)
+            .finish()
+    }
+}
+
 /// Iterator over cache values.
 pub struct Values<'a, K, V> {
     inner: Iter<'a, K, V>,
@@ -355,6 +377,16 @@ impl<'a, K, V> Iterator for Values<'a, K, V> {
 impl<'a, K, V> ExactSizeIterator for Values<'a, K, V> {
     fn len(&self) -> usize {
         self.inner.len()
+    }
+}
+
+impl<'a, K, V> std::iter::FusedIterator for Values<'a, K, V> {}
+
+impl<'a, K, V> Debug for Values<'a, K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Values")
+            .field("remaining", &self.inner.remaining)
+            .finish()
     }
 }
 
@@ -398,6 +430,16 @@ impl<K, V> Iterator for IntoIter<K, V> {
 impl<K, V> ExactSizeIterator for IntoIter<K, V> {
     fn len(&self) -> usize {
         self.remaining
+    }
+}
+
+impl<K, V> std::iter::FusedIterator for IntoIter<K, V> {}
+
+impl<K, V> Debug for IntoIter<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntoIter")
+            .field("remaining", &self.remaining)
+            .finish()
     }
 }
 
@@ -462,6 +504,10 @@ pub struct S3FifoCache<K, V> {
     small_head: Option<NonNull<Node<K, V>>>,
     small_tail: Option<NonNull<Node<K, V>>>,
     small_len: usize,
+
+    /// Maximum entries in the Small queue (derived from `small_ratio × capacity`).
+    /// When `small_len > small_cap`, eviction targets Small; otherwise Main.
+    small_cap: usize,
 
     /// Main queue (FIFO): head=newest, tail=oldest.
     main_head: Option<NonNull<Node<K, V>>>,
@@ -552,13 +598,19 @@ where
     /// let cache: S3FifoCache<String, i32> = S3FifoCache::with_ratios(100, 0.2, 1.0);
     /// assert_eq!(cache.capacity(), 100);
     /// ```
-    pub fn with_ratios(capacity: usize, _small_ratio: f64, ghost_ratio: f64) -> Self {
+    pub fn with_ratios(capacity: usize, small_ratio: f64, ghost_ratio: f64) -> Self {
         assert!(capacity > 0, "cache capacity must be greater than zero");
+        debug_assert!(
+            small_ratio.is_finite() && (0.0..=1.0).contains(&small_ratio),
+            "small_ratio must be in [0.0, 1.0], got {}",
+            small_ratio
+        );
         debug_assert!(
             ghost_ratio.is_finite() && ghost_ratio >= 0.0,
             "ghost_ratio must be finite and non-negative, got {}",
             ghost_ratio
         );
+        let small_cap = (capacity as f64 * small_ratio).round() as usize;
         let ghost_cap = (capacity as f64 * ghost_ratio).round() as usize;
 
         Self {
@@ -566,6 +618,7 @@ where
             small_head: None,
             small_tail: None,
             small_len: 0,
+            small_cap,
             main_head: None,
             main_tail: None,
             main_len: 0,
@@ -655,6 +708,15 @@ where
     #[inline]
     pub fn small_len(&self) -> usize {
         self.small_len
+    }
+
+    /// Returns the maximum capacity of the Small queue.
+    ///
+    /// Derived from `small_ratio × capacity`. When `small_len` exceeds this
+    /// threshold, eviction targets the Small queue; otherwise Main is targeted.
+    #[inline]
+    pub fn small_capacity(&self) -> usize {
+        self.small_cap
     }
 
     /// Returns the number of entries in the Main queue.
@@ -1421,29 +1483,32 @@ where
 
     /// Evicts entries until there is room for a new entry.
     ///
-    /// S3-FIFO eviction strategy:
-    /// 1. Prefer evicting from Small queue
-    ///    - If freq > 0: promote to Main (reset freq to 0)
-    ///    - If freq == 0: evict and record in Ghost
-    /// 2. If Small empty, evict from Main
-    ///    - If freq > 0: reinsert to Main head (decrement freq)
-    ///    - If freq == 0: evict
+    /// S3-FIFO eviction strategy (per Yang et al., SOSP 2023):
+    /// - If `small_len > small_cap`: evict from Small
+    ///   - freq > 0 → promote to Main head, reset freq to 0
+    ///   - freq == 0 → evict and record in Ghost
+    /// - Otherwise: evict from Main (fall back to Small if Main is empty)
+    ///   - freq > 0 → reinsert to Main head, decrement freq
+    ///   - freq == 0 → evict
     ///
-    /// Optimized to avoid map removal/reinsertion during promotion.
+    /// The `small_cap` threshold ensures the Small queue stays bounded,
+    /// giving Main the bulk of the cache space for proven-hot items.
     fn evict_if_needed(&mut self) {
         while self.len() >= self.capacity {
-            // Try to evict from Small first
-            if self.try_evict_from_queue(self.small_tail, QueueKind::Small) {
-                continue;
-            }
+            // Paper algorithm: evict from Small when it exceeds its share,
+            // otherwise evict from Main.
+            let acted = if self.small_len > self.small_cap {
+                self.try_evict_from_queue(self.small_tail, QueueKind::Small)
+            } else if self.main_tail.is_some() {
+                self.try_evict_from_queue(self.main_tail, QueueKind::Main)
+            } else {
+                // Main is empty, fall back to Small
+                self.try_evict_from_queue(self.small_tail, QueueKind::Small)
+            };
 
-            // Evict from Main if Small is empty
-            if self.try_evict_from_queue(self.main_tail, QueueKind::Main) {
-                continue;
+            if !acted {
+                break;
             }
-
-            // No entries to evict
-            break;
         }
     }
 }
@@ -1564,20 +1629,59 @@ where
     /// let items: Vec<_> = cache.into_iter().collect();
     /// assert_eq!(items.len(), 2);
     /// ```
-    fn into_iter(self) -> Self::IntoIter {
+    fn into_iter(mut self) -> Self::IntoIter {
         let small_head = self.small_head;
         let main_head = self.main_head;
         let remaining = self.len();
 
-        // Prevent Drop from double-freeing nodes: leak the internals.
-        // The IntoIter now owns all node allocations and will free them.
-        std::mem::forget(self);
+        // Disconnect the queues so Drop sees empty lists and won't
+        // double-free nodes that IntoIter now owns.  The map and ghost
+        // list are cleared / dropped normally, avoiding the heap leak
+        // that `mem::forget(self)` would cause.
+        self.small_head = None;
+        self.small_tail = None;
+        self.small_len = 0;
+        self.main_head = None;
+        self.main_tail = None;
+        self.main_len = 0;
+        self.map.clear();
+        // `self` drops here: Drop walks empty queues (no-op),
+        // map is already cleared, ghost list is properly freed.
 
         IntoIter {
             small_head,
             main_head,
             remaining,
         }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    /// Iterates over all key-value pairs by reference.
+    ///
+    /// Entries from the Small queue are visited first, followed by the Main queue.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// for (key, value) in &cache {
+    ///     println!("{key}: {value}");
+    /// }
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -1597,6 +1701,7 @@ where
             .field("capacity", &self.capacity)
             .field("len", &self.len())
             .field("small_len", &self.small_len)
+            .field("small_cap", &self.small_cap)
             .field("main_len", &self.main_len)
             .field("ghost_len", &self.ghost.len())
             .finish_non_exhaustive()
@@ -1855,6 +1960,30 @@ where
         result.map(f)
     }
 
+    /// Peeks at a cloned value without updating frequency.
+    ///
+    /// Uses a **read lock**. Unlike `get`, this does not increment the
+    /// frequency counter, making it safe for monitoring or debugging
+    /// without influencing eviction order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::ConcurrentS3FifoCache;
+    ///
+    /// let cache = ConcurrentS3FifoCache::new(10);
+    /// cache.insert("key".to_string(), 42);
+    ///
+    /// assert_eq!(cache.peek(&"key".to_string()), Some(42));
+    /// assert_eq!(cache.peek(&"missing".to_string()), None);
+    /// ```
+    pub fn peek(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.inner.read().peek(key).cloned()
+    }
+
     /// Peeks at a value without updating frequency or cloning.
     ///
     /// # Example
@@ -1874,6 +2003,48 @@ where
         F: FnOnce(&V) -> R,
     {
         self.inner.read().peek(key).map(f)
+    }
+
+    /// Removes a key-value pair, returning the value if it existed.
+    ///
+    /// Uses a **write lock**.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::ConcurrentS3FifoCache;
+    ///
+    /// let cache = ConcurrentS3FifoCache::new(10);
+    /// cache.insert("key".to_string(), 42);
+    ///
+    /// assert_eq!(cache.remove(&"key".to_string()), Some(42));
+    /// assert_eq!(cache.remove(&"key".to_string()), None);
+    /// ```
+    pub fn remove(&self, key: &K) -> Option<V> {
+        self.inner.write().remove(key)
+    }
+
+    /// Removes multiple keys, returning the removed values in input order.
+    ///
+    /// Uses a **write lock** for the entire batch.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::ConcurrentS3FifoCache;
+    ///
+    /// let cache = ConcurrentS3FifoCache::new(10);
+    /// cache.insert("a".to_string(), 1);
+    /// cache.insert("b".to_string(), 2);
+    /// cache.insert("c".to_string(), 3);
+    ///
+    /// let removed = cache.remove_batch(&["a".to_string(), "z".to_string(), "c".to_string()]);
+    /// assert_eq!(removed, vec![Some(1), None, Some(3)]);
+    /// assert_eq!(cache.len(), 1);
+    /// ```
+    pub fn remove_batch(&self, keys: &[K]) -> Vec<Option<V>> {
+        let mut inner = self.inner.write();
+        keys.iter().map(|k| inner.remove(k)).collect()
     }
 
     /// Returns `true` if the key exists.
@@ -3336,6 +3507,483 @@ mod tests {
                 count += 1;
             }
             assert_eq!(count, 2);
+        }
+
+        #[test]
+        fn ref_for_loop_syntax() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let mut count = 0;
+            for (_k, _v) in &cache {
+                count += 1;
+            }
+            assert_eq!(count, 2);
+            // Cache is still usable after borrowing iteration
+            assert_eq!(cache.len(), 2);
+        }
+    }
+
+    // ==============================================
+    // Leak Detection
+    // ==============================================
+
+    mod leak_detection {
+        use super::*;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Tracks construction/destruction to detect leaks.
+        struct LifeCycleTracker {
+            _id: usize,
+            counter: Arc<AtomicUsize>,
+        }
+
+        impl LifeCycleTracker {
+            fn new(id: usize, counter: Arc<AtomicUsize>) -> Self {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Self { _id: id, counter }
+            }
+        }
+
+        impl Drop for LifeCycleTracker {
+            fn drop(&mut self) {
+                self.counter.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        #[test]
+        fn no_leak_on_eviction() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(3);
+
+            for i in 0..3 {
+                cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 3);
+
+            // Insert 4th → evicts one
+            cache.insert(99, LifeCycleTracker::new(99, counter.clone()));
+            assert_eq!(counter.load(Ordering::SeqCst), 3); // still 3 alive
+            assert_eq!(cache.len(), 3);
+        }
+
+        #[test]
+        fn no_leak_on_remove() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(10);
+
+            cache.insert(1, LifeCycleTracker::new(1, counter.clone()));
+            cache.insert(2, LifeCycleTracker::new(2, counter.clone()));
+            assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+            let removed = cache.remove(&1);
+            assert!(removed.is_some());
+            drop(removed);
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn no_leak_on_update() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(10);
+
+            cache.insert(1, LifeCycleTracker::new(1, counter.clone()));
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+            // Update replaces value → old value must be dropped
+            let old = cache.insert(1, LifeCycleTracker::new(1, counter.clone()));
+            assert!(old.is_some());
+            drop(old);
+            assert_eq!(counter.load(Ordering::SeqCst), 1); // new one alive, old dropped
+        }
+
+        #[test]
+        fn no_leak_on_clear() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(10);
+
+            for i in 0..5 {
+                cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 5);
+
+            cache.clear();
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn no_leak_on_drop() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            {
+                let mut cache = S3FifoCache::new(10);
+                for i in 0..5 {
+                    cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+                }
+                assert_eq!(counter.load(Ordering::SeqCst), 5);
+                // cache drops here
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn no_leak_on_into_iter_full() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(10);
+
+            for i in 0..5 {
+                cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 5);
+
+            // Fully consume via into_iter
+            let items: Vec<_> = cache.into_iter().collect();
+            assert_eq!(items.len(), 5);
+            assert_eq!(counter.load(Ordering::SeqCst), 5); // still alive in vec
+
+            drop(items);
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn no_leak_on_into_iter_partial() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(10);
+
+            for i in 0..5 {
+                cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 5);
+
+            // Partially consume, then drop the iterator
+            let mut iter = cache.into_iter();
+            let _ = iter.next();
+            let _ = iter.next();
+            drop(iter); // remaining 3 should be freed by IntoIter::drop
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn no_leak_on_into_iter_with_promotions() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(10);
+
+            // Create items that will be promoted to Main
+            for i in 0..3 {
+                cache.insert(
+                    format!("hot_{}", i),
+                    LifeCycleTracker::new(i, counter.clone()),
+                );
+                cache.get(&format!("hot_{}", i));
+            }
+
+            // Fill to trigger promotions
+            for i in 3..15 {
+                cache.insert(
+                    format!("fill_{}", i),
+                    LifeCycleTracker::new(i, counter.clone()),
+                );
+            }
+
+            let alive = counter.load(Ordering::SeqCst);
+            assert_eq!(alive, cache.len());
+
+            // Consume via into_iter
+            let items: Vec<_> = cache.into_iter().collect();
+            assert_eq!(counter.load(Ordering::SeqCst), alive); // still in vec
+            drop(items);
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn no_leak_on_heavy_eviction_churn() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(5);
+
+            // Rapid insert/evict cycle
+            for i in 0..100 {
+                cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+            }
+
+            let alive = counter.load(Ordering::SeqCst);
+            assert_eq!(alive, cache.len());
+            assert!(alive <= 5);
+
+            drop(cache);
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn no_leak_on_mixed_operations() {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let mut cache = S3FifoCache::new(10);
+
+            for i in 0..8 {
+                cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+            }
+
+            // Access some to increase frequency
+            cache.get(&0);
+            cache.get(&1);
+            cache.get(&2);
+
+            // Remove some
+            drop(cache.remove(&3));
+            drop(cache.remove(&4));
+
+            // Update some
+            drop(cache.insert(0, LifeCycleTracker::new(100, counter.clone())));
+
+            // Fill to trigger evictions
+            for i in 20..30 {
+                cache.insert(i, LifeCycleTracker::new(i, counter.clone()));
+            }
+
+            let alive = counter.load(Ordering::SeqCst);
+            assert_eq!(alive, cache.len());
+
+            drop(cache);
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    // ==============================================
+    // Property Tests
+    // ==============================================
+
+    mod property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Encodes a cache operation for property testing.
+        #[derive(Debug, Clone)]
+        enum Op {
+            Insert(u32, u32),
+            Get(u32),
+            GetMut(u32),
+            Remove(u32),
+            Contains(u32),
+        }
+
+        fn op_strategy() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                (0u32..50, any::<u32>()).prop_map(|(k, v)| Op::Insert(k, v)),
+                (0u32..50).prop_map(Op::Get),
+                (0u32..50).prop_map(Op::GetMut),
+                (0u32..50).prop_map(Op::Remove),
+                (0u32..50).prop_map(Op::Contains),
+            ]
+        }
+
+        proptest! {
+            /// Invariants hold after any sequence of operations.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_invariants_always_hold(
+                capacity in 1usize..30,
+                ops in prop::collection::vec(op_strategy(), 0..100)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+
+                for op in ops {
+                    match op {
+                        Op::Insert(k, v) => { cache.insert(k, v); },
+                        Op::Get(k) => { cache.get(&k); },
+                        Op::GetMut(k) => { cache.get_mut(&k); },
+                        Op::Remove(k) => { cache.remove(&k); },
+                        Op::Contains(k) => { cache.contains(&k); },
+                    }
+
+                    #[cfg(debug_assertions)]
+                    cache.check_invariants().unwrap();
+                }
+            }
+
+            /// len() never exceeds capacity.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_len_never_exceeds_capacity(
+                capacity in 1usize..30,
+                keys in prop::collection::vec(0u32..100, 0..200)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+                for k in keys {
+                    cache.insert(k, k);
+                    prop_assert!(cache.len() <= capacity);
+                }
+            }
+
+            /// small_len + main_len == len.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_queue_lengths_sum_to_total(
+                capacity in 1usize..30,
+                ops in prop::collection::vec(op_strategy(), 0..100)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+                for op in ops {
+                    match op {
+                        Op::Insert(k, v) => { cache.insert(k, v); },
+                        Op::Get(k) => { cache.get(&k); },
+                        Op::GetMut(k) => { cache.get_mut(&k); },
+                        Op::Remove(k) => { cache.remove(&k); },
+                        Op::Contains(k) => { cache.contains(&k); },
+                    }
+                    prop_assert_eq!(cache.small_len() + cache.main_len(), cache.len());
+                }
+            }
+
+            /// get always returns the most recently inserted value for a key.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_get_returns_latest_value(
+                capacity in 5usize..30,
+                inserts in prop::collection::vec((0u32..20, any::<u32>()), 1..50)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+                let mut reference = std::collections::HashMap::new();
+
+                for (k, v) in inserts {
+                    cache.insert(k, v);
+                    reference.insert(k, v);
+                }
+
+                for (&k, &expected) in &reference {
+                    if let Some(&actual) = cache.get(&k) {
+                        prop_assert_eq!(actual, expected);
+                    }
+                    // else: key was evicted, which is fine
+                }
+            }
+
+            /// Removed keys are not found.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_remove_then_missing(
+                capacity in 5usize..30,
+                keys in prop::collection::vec(0u32..20, 1..20)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+                for &k in &keys {
+                    cache.insert(k, k);
+                }
+
+                for &k in &keys {
+                    cache.remove(&k);
+                    prop_assert!(!cache.contains(&k));
+                    prop_assert!(cache.get(&k).is_none());
+                }
+                prop_assert!(cache.is_empty());
+            }
+
+            /// clear resets to empty state.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_clear_resets_state(
+                capacity in 1usize..30,
+                keys in prop::collection::vec(0u32..50, 1..50)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+                for k in keys {
+                    cache.insert(k, k);
+                }
+                cache.clear();
+
+                prop_assert!(cache.is_empty());
+                prop_assert_eq!(cache.len(), 0);
+                prop_assert_eq!(cache.small_len(), 0);
+                prop_assert_eq!(cache.main_len(), 0);
+                prop_assert_eq!(cache.capacity(), capacity);
+            }
+
+            /// into_iter yields exactly len() items.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_into_iter_yields_all(
+                capacity in 1usize..30,
+                ops in prop::collection::vec(op_strategy(), 0..80)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+                for op in ops {
+                    match op {
+                        Op::Insert(k, v) => { cache.insert(k, v); },
+                        Op::Get(k) => { cache.get(&k); },
+                        Op::GetMut(k) => { cache.get_mut(&k); },
+                        Op::Remove(k) => { cache.remove(&k); },
+                        Op::Contains(k) => { cache.contains(&k); },
+                    }
+                }
+                let expected_len = cache.len();
+                let items: Vec<_> = cache.into_iter().collect();
+                prop_assert_eq!(items.len(), expected_len);
+            }
+
+            /// iter yields exactly len() items with correct keys.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_iter_consistent_with_contains(
+                capacity in 5usize..30,
+                keys in prop::collection::vec(0u32..40, 1..60)
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+                for &k in &keys {
+                    cache.insert(k, k);
+                }
+
+                let iter_keys: std::collections::HashSet<u32> =
+                    cache.iter().map(|(&k, _)| k).collect();
+
+                prop_assert_eq!(iter_keys.len(), cache.len());
+                for &k in &iter_keys {
+                    prop_assert!(cache.contains(&k));
+                }
+            }
+
+            /// Accessed items survive scans better than unaccessed items.
+            #[cfg_attr(miri, ignore)]
+            #[test]
+            fn prop_accessed_items_survive_better(
+                capacity in 20usize..60,
+                hot_count in 3usize..8,
+                scan_size in 50usize..150
+            ) {
+                let mut cache: S3FifoCache<u32, u32> = S3FifoCache::new(capacity);
+
+                // Insert and access "hot" items
+                for i in 0..hot_count as u32 {
+                    cache.insert(i, i);
+                    cache.get(&i);
+                    cache.get(&i);
+                }
+
+                // Insert "cold" items (one-hit wonders)
+                let cold_start = 1000u32;
+                for i in 0..scan_size as u32 {
+                    cache.insert(cold_start + i, i);
+                }
+
+                // Count surviving hot items
+                let hot_survivors: usize = (0..hot_count as u32)
+                    .filter(|k| cache.contains(k))
+                    .count();
+                let cold_survivors: usize = (0..scan_size as u32)
+                    .filter(|i| cache.contains(&(cold_start + *i)))
+                    .count();
+
+                // Hot items should have a higher survival rate
+                let hot_rate = hot_survivors as f64 / hot_count as f64;
+                let cold_rate = cold_survivors as f64 / scan_size as f64;
+
+                // Allow generous margin — the property is directional, not exact
+                prop_assert!(
+                    hot_rate >= cold_rate || hot_survivors >= hot_count / 2,
+                    "Scan resistance violated: hot_rate={:.2} < cold_rate={:.2} \
+                     (hot={}/{}, cold={}/{})",
+                    hot_rate, cold_rate,
+                    hot_survivors, hot_count, cold_survivors, scan_size
+                );
+            }
         }
     }
 }
