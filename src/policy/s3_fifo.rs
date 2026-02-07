@@ -172,17 +172,20 @@ use std::hash::Hash;
 use std::ptr::NonNull;
 #[cfg(feature = "concurrency")]
 use std::sync::Arc;
+#[cfg(all(feature = "concurrency", feature = "metrics"))]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
 use crate::ds::GhostList;
-use crate::prelude::ReadOnlyCache;
 #[cfg(feature = "concurrency")]
 use crate::traits::ConcurrentCache;
 use crate::traits::CoreCache;
 use crate::traits::MutableCache;
+use crate::traits::ReadOnlyCache;
 
 /// Maximum frequency value (2 bits = 0-3).
 const MAX_FREQ: u8 = 3;
@@ -355,13 +358,66 @@ impl<'a, K, V> ExactSizeIterator for Values<'a, K, V> {
     }
 }
 
+/// Consuming iterator over cache entries.
+pub struct IntoIter<K, V> {
+    small_head: Option<NonNull<Node<K, V>>>,
+    main_head: Option<NonNull<Node<K, V>>>,
+    remaining: usize,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Drain Small first, then Main
+        let node_ptr = if let Some(ptr) = self.small_head {
+            // SAFETY: ptr is valid; read next before Box::from_raw takes ownership.
+            self.small_head = unsafe { (*ptr.as_ptr()).next };
+            ptr
+        } else if let Some(ptr) = self.main_head {
+            self.main_head = unsafe { (*ptr.as_ptr()).next };
+            ptr
+        } else {
+            return None;
+        };
+
+        self.remaining -= 1;
+        // SAFETY: node_ptr is valid and exclusively owned by this iterator.
+        // Unbox and destructure to extract key/value; remaining fields are trivially dropped.
+        unsafe {
+            let Node { key, value, .. } = *Box::from_raw(node_ptr.as_ptr());
+            Some((key, value))
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {
+    fn len(&self) -> usize {
+        self.remaining
+    }
+}
+
+impl<K, V> Drop for IntoIter<K, V> {
+    fn drop(&mut self) {
+        // Deallocate remaining nodes to avoid leaking
+        for _ in self.by_ref() {}
+    }
+}
+
 /// Internal node storing key, value, and metadata.
-#[repr(C)]
+///
+/// `freq` uses `AtomicU8` to allow concurrent readers to bump the frequency
+/// counter through a shared reference (read lock), while exclusive-access
+/// paths (`&mut self`) use `get_mut()` for zero-overhead non-atomic access.
 struct Node<K, V> {
     prev: Option<NonNull<Node<K, V>>>,
     next: Option<NonNull<Node<K, V>>>,
     queue: QueueKind,
-    freq: u8,
+    freq: AtomicU8,
     key: K,
     value: V,
 }
@@ -415,10 +471,6 @@ pub struct S3FifoCache<K, V> {
     /// Ghost list for tracking evicted keys.
     ghost: GhostList<K>,
 
-    /// Maximum entries in Small queue (advisory, not strictly enforced).
-    /// The actual queue sizes are balanced naturally through promotion.
-    small_cap: usize,
-
     /// Total cache capacity.
     capacity: usize,
 
@@ -461,6 +513,10 @@ where
     ///
     /// Uses default ratios: 10% for Small queue, 90% for Ghost list.
     ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero.
+    ///
     /// # Example
     ///
     /// ```
@@ -478,9 +534,14 @@ where
     ///
     /// # Arguments
     ///
-    /// - `capacity`: Total cache capacity
+    /// - `capacity`: Total cache capacity (must be > 0)
     /// - `small_ratio`: Fraction of capacity for Small queue (0.0 to 1.0)
     /// - `ghost_ratio`: Fraction of capacity for Ghost list (0.0+)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero. Debug-asserts that ratios are finite and
+    /// non-negative.
     ///
     /// # Example
     ///
@@ -491,10 +552,13 @@ where
     /// let cache: S3FifoCache<String, i32> = S3FifoCache::with_ratios(100, 0.2, 1.0);
     /// assert_eq!(cache.capacity(), 100);
     /// ```
-    pub fn with_ratios(capacity: usize, small_ratio: f64, ghost_ratio: f64) -> Self {
-        let small_cap = ((capacity as f64 * small_ratio).round() as usize)
-            .max(1)
-            .min(capacity);
+    pub fn with_ratios(capacity: usize, _small_ratio: f64, ghost_ratio: f64) -> Self {
+        assert!(capacity > 0, "cache capacity must be greater than zero");
+        debug_assert!(
+            ghost_ratio.is_finite() && ghost_ratio >= 0.0,
+            "ghost_ratio must be finite and non-negative, got {}",
+            ghost_ratio
+        );
         let ghost_cap = (capacity as f64 * ghost_ratio).round() as usize;
 
         Self {
@@ -506,7 +570,6 @@ where
             main_tail: None,
             main_len: 0,
             ghost: GhostList::new(ghost_cap),
-            small_cap,
             capacity,
             #[cfg(feature = "metrics")]
             metrics: S3FifoMetrics::default(),
@@ -563,6 +626,31 @@ where
         }
     }
 
+    /// Retrieves a value by key using shared access, incrementing frequency atomically.
+    ///
+    /// Unlike [`get`](Self::get), this method takes `&self` instead of `&mut self`,
+    /// enabling concurrent readers under a read lock. The frequency counter is
+    /// bumped via a `Relaxed` atomic store, which is zero-overhead on x86 and
+    /// near-zero on ARM.
+    ///
+    /// Metrics are **not** updated through this path; the concurrent wrapper
+    /// maintains its own atomic hit/miss counters.
+    #[cfg(feature = "concurrency")]
+    #[inline]
+    pub(crate) fn get_shared(&self, key: &K) -> Option<&V> {
+        let &node_ptr = self.map.get(key)?;
+        unsafe {
+            let node = &*node_ptr.as_ptr();
+            // Atomic freq bump: safe under concurrent readers.
+            // Slight imprecision under contention is acceptable for a frequency hint.
+            let f = node.freq.load(Ordering::Relaxed);
+            if f < MAX_FREQ {
+                node.freq.store(f + 1, Ordering::Relaxed);
+            }
+            Some(&node.value)
+        }
+    }
+
     /// Returns the number of entries in the Small queue.
     #[inline]
     pub fn small_len(&self) -> usize {
@@ -610,7 +698,16 @@ where
     /// ```
     #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let node_ptr = *self.map.get(key)?;
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => ptr,
+            None => {
+                #[cfg(feature = "metrics")]
+                {
+                    self.metrics.misses += 1;
+                }
+                return None;
+            },
+        };
 
         #[cfg(feature = "metrics")]
         {
@@ -619,9 +716,10 @@ where
 
         unsafe {
             let node = &mut *node_ptr.as_ptr();
-            // Increment frequency, capped at MAX_FREQ
-            if node.freq < MAX_FREQ {
-                node.freq += 1;
+            // Increment frequency, capped at MAX_FREQ (non-atomic: exclusive access)
+            let freq = node.freq.get_mut();
+            if *freq < MAX_FREQ {
+                *freq += 1;
             }
             Some(&node.value)
         }
@@ -645,7 +743,16 @@ where
     /// ```
     #[inline]
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        let node_ptr = *self.map.get(key)?;
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => ptr,
+            None => {
+                #[cfg(feature = "metrics")]
+                {
+                    self.metrics.misses += 1;
+                }
+                return None;
+            },
+        };
 
         #[cfg(feature = "metrics")]
         {
@@ -654,9 +761,10 @@ where
 
         unsafe {
             let node = &mut *node_ptr.as_ptr();
-            // Increment frequency, capped at MAX_FREQ
-            if node.freq < MAX_FREQ {
-                node.freq += 1;
+            // Increment frequency, capped at MAX_FREQ (non-atomic: exclusive access)
+            let freq = node.freq.get_mut();
+            if *freq < MAX_FREQ {
+                *freq += 1;
             }
             Some(&mut node.value)
         }
@@ -695,9 +803,6 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Zero capacity is a programming error
-        assert!(self.capacity > 0, "cannot insert into zero-capacity cache");
-
         // Update existing key
         if let Some(&node_ptr) = self.map.get(&key) {
             #[cfg(feature = "metrics")]
@@ -708,9 +813,10 @@ where
             unsafe {
                 let node = &mut *node_ptr.as_ptr();
                 let old = std::mem::replace(&mut node.value, value);
-                // Increment frequency on update
-                if node.freq < MAX_FREQ {
-                    node.freq += 1;
+                // Increment frequency on update (non-atomic: exclusive access)
+                let freq = node.freq.get_mut();
+                if *freq < MAX_FREQ {
+                    *freq += 1;
                 }
                 return Some(old);
             }
@@ -743,11 +849,12 @@ where
             prev: None,
             next: None,
             queue,
-            freq: 0,
+            freq: AtomicU8::new(0),
             key: key.clone(),
             value,
         });
-        let node_ptr = NonNull::new(Box::into_raw(node)).unwrap();
+        // SAFETY: Box::into_raw always returns a non-null pointer.
+        let node_ptr = unsafe { NonNull::new_unchecked(Box::into_raw(node)) };
 
         self.map.insert(key, node_ptr);
 
@@ -958,10 +1065,11 @@ where
                 }
 
                 // Check frequency bounds
-                if node.freq > MAX_FREQ {
+                let freq = node.freq.load(Ordering::Relaxed);
+                if freq > MAX_FREQ {
                     return Err(format!(
                         "Node with key {:?} has freq {} > MAX_FREQ {}",
-                        node.key, node.freq, MAX_FREQ
+                        node.key, freq, MAX_FREQ
                     ));
                 }
 
@@ -1044,10 +1152,11 @@ where
                 }
 
                 // Check frequency bounds
-                if node.freq > MAX_FREQ {
+                let freq = node.freq.load(Ordering::Relaxed);
+                if freq > MAX_FREQ {
                     return Err(format!(
                         "Node with key {:?} has freq {} > MAX_FREQ {}",
-                        node.key, node.freq, MAX_FREQ
+                        node.key, freq, MAX_FREQ
                     ));
                 }
 
@@ -1234,10 +1343,10 @@ where
             None => return false,
         };
 
-        // SAFETY: Read freq before any mutable operations to avoid Stacked Borrows violations.
-        // Detach methods create &mut references to adjacent nodes, which would invalidate
-        // any existing &mut reference to this node. By reading freq first, we avoid this issue.
-        let freq = unsafe { tail_ptr.as_ref().freq };
+        // SAFETY: Read freq atomically before any mutable operations to avoid Stacked Borrows
+        // violations. Detach methods create &mut references to adjacent nodes, which would
+        // invalidate any existing &mut reference to this node.
+        let freq = unsafe { tail_ptr.as_ref().freq.load(Ordering::Relaxed) };
 
         if freq > 0 {
             // Promote/reinsert: detach, adjust freq, attach to Main head
@@ -1254,7 +1363,7 @@ where
                         self.detach_small(tail_ptr);
                         // Create fresh mutable reference after detach completes
                         let node = &mut *tail_ptr.as_ptr();
-                        node.freq = 0; // Reset freq when promoting to Main
+                        *node.freq.get_mut() = 0; // Reset freq when promoting to Main
                         // Note: prev/next are set by attach_main_head, no need to set here
                     }
                     self.attach_main_head(tail_ptr);
@@ -1271,7 +1380,7 @@ where
                         self.detach_main(tail_ptr);
                         // Create fresh mutable reference after detach completes
                         let node = &mut *tail_ptr.as_ptr();
-                        node.freq -= 1; // Decrement freq when reinserting
+                        *node.freq.get_mut() -= 1; // Decrement freq when reinserting
                         // Note: prev/next are set by attach_main_head, no need to set here
                     }
                     self.attach_main_head(tail_ptr);
@@ -1432,6 +1541,46 @@ where
     }
 }
 
+impl<K, V> IntoIterator for S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    /// Consumes the cache and returns an iterator over all key-value pairs.
+    ///
+    /// Entries from the Small queue are yielded first, followed by the Main queue.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// let mut cache = S3FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let items: Vec<_> = cache.into_iter().collect();
+    /// assert_eq!(items.len(), 2);
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        let small_head = self.small_head;
+        let main_head = self.main_head;
+        let remaining = self.len();
+
+        // Prevent Drop from double-freeing nodes: leak the internals.
+        // The IntoIter now owns all node allocations and will free them.
+        std::mem::forget(self);
+
+        IntoIter {
+            small_head,
+            main_head,
+            remaining,
+        }
+    }
+}
+
 impl<K, V> Drop for S3FifoCache<K, V> {
     fn drop(&mut self) {
         while self.drop_small_tail() {}
@@ -1446,7 +1595,6 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("S3FifoCache")
             .field("capacity", &self.capacity)
-            .field("small_cap", &self.small_cap)
             .field("len", &self.len())
             .field("small_len", &self.small_len)
             .field("main_len", &self.main_len)
@@ -1546,7 +1694,7 @@ impl ConcurrentS3FifoCacheBuilder {
     /// Builds the concurrent cache with the configured parameters.
     pub fn build<K, V>(self) -> ConcurrentS3FifoCache<K, V>
     where
-        K: Clone + Eq + Hash + Debug,
+        K: Clone + Eq + Hash,
     {
         ConcurrentS3FifoCache::with_ratios(self.capacity, self.small_ratio, self.ghost_ratio)
     }
@@ -1572,23 +1720,51 @@ impl ConcurrentS3FifoCacheBuilder {
 /// }
 /// ```
 #[cfg(feature = "concurrency")]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ConcurrentS3FifoCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
     inner: Arc<RwLock<S3FifoCache<K, V>>>,
+
+    /// Hit counter for read-lock `get`/`get_with` path (not visible to inner cache).
+    #[cfg(feature = "metrics")]
+    read_hits: AtomicU64,
+
+    /// Miss counter for read-lock `get`/`get_with` path (not visible to inner cache).
+    #[cfg(feature = "metrics")]
+    read_misses: AtomicU64,
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V> Clone for ConcurrentS3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            #[cfg(feature = "metrics")]
+            read_hits: AtomicU64::new(self.read_hits.load(Ordering::Relaxed)),
+            #[cfg(feature = "metrics")]
+            read_misses: AtomicU64::new(self.read_misses.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentS3FifoCache<K, V>
 where
-    K: Clone + Eq + Hash + Debug,
+    K: Clone + Eq + Hash,
 {
     /// Creates a new concurrent S3-FIFO cache.
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(RwLock::new(S3FifoCache::new(capacity))),
+            #[cfg(feature = "metrics")]
+            read_hits: AtomicU64::new(0),
+            #[cfg(feature = "metrics")]
+            read_misses: AtomicU64::new(0),
         }
     }
 
@@ -1600,6 +1776,10 @@ where
                 small_ratio,
                 ghost_ratio,
             ))),
+            #[cfg(feature = "metrics")]
+            read_hits: AtomicU64::new(0),
+            #[cfg(feature = "metrics")]
+            read_misses: AtomicU64::new(0),
         }
     }
 
@@ -1615,16 +1795,32 @@ where
 
     /// Gets a cloned value by key, incrementing its frequency.
     ///
+    /// Uses a **read lock** so multiple `get` calls can proceed in parallel.
+    /// The frequency counter is bumped atomically without exclusive access.
+    ///
     /// This requires `V: Clone`. For non-cloneable values, use `get_with()`.
     pub fn get(&self, key: &K) -> Option<V>
     where
         V: Clone,
     {
-        self.inner.write().get(key).cloned()
+        let guard = self.inner.read();
+        let result = guard.get_shared(key);
+
+        #[cfg(feature = "metrics")]
+        {
+            if result.is_some() {
+                self.read_hits.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.read_misses.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        result.cloned()
     }
 
     /// Gets a value by key and applies a function to it.
     ///
+    /// Uses a **read lock** so multiple `get_with` calls can proceed in parallel.
     /// This allows working with non-cloneable values by applying a transformation
     /// inside the lock. The frequency is still incremented.
     ///
@@ -1644,7 +1840,19 @@ where
     where
         F: FnOnce(&V) -> R,
     {
-        self.inner.write().get(key).map(f)
+        let guard = self.inner.read();
+        let result = guard.get_shared(key);
+
+        #[cfg(feature = "metrics")]
+        {
+            if result.is_some() {
+                self.read_hits.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.read_misses.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        result.map(f)
     }
 
     /// Peeks at a value without updating frequency or cloning.
@@ -1708,23 +1916,28 @@ where
         self.inner.read().ghost_len()
     }
 
-    /// Returns performance metrics if the `metrics` feature is enabled.
+    /// Returns merged performance metrics (inner write-path + concurrent read-path).
     #[cfg(feature = "metrics")]
     pub fn metrics(&self) -> S3FifoMetrics {
-        self.inner.read().metrics().clone()
+        let mut m = self.inner.read().metrics().clone();
+        m.hits += self.read_hits.load(Ordering::Relaxed);
+        m.misses += self.read_misses.load(Ordering::Relaxed);
+        m
     }
 
-    /// Resets performance metrics to zero.
+    /// Resets performance metrics to zero (both inner and concurrent counters).
     #[cfg(feature = "metrics")]
     pub fn reset_metrics(&self) {
         self.inner.write().reset_metrics();
+        self.read_hits.store(0, Ordering::Relaxed);
+        self.read_misses.store(0, Ordering::Relaxed);
     }
 }
 
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentCache for ConcurrentS3FifoCache<K, V>
 where
-    K: Clone + Eq + Hash + Debug + Send + Sync,
+    K: Clone + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
 }
@@ -1814,10 +2027,9 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "cannot insert into zero-capacity cache")]
-        fn zero_capacity_rejects_all() {
-            let mut cache = S3FifoCache::new(0);
-            cache.insert("key", "value");
+        #[should_panic(expected = "cache capacity must be greater than zero")]
+        fn zero_capacity_panics_at_construction() {
+            let _cache: S3FifoCache<&str, &str> = S3FifoCache::new(0);
         }
     }
 
@@ -2361,8 +2573,14 @@ mod tests {
             cache.get(&"b");
             cache.get(&"a");
 
+            // Misses (via get and get_mut)
+            cache.get(&"missing");
+            cache.get(&"also_missing");
+            cache.get_mut(&"nope");
+
             let metrics = cache.metrics();
             assert_eq!(metrics.hits, 3);
+            assert_eq!(metrics.misses, 3);
             assert_eq!(metrics.inserts, 2);
             assert_eq!(metrics.updates, 0);
         }
@@ -2981,6 +3199,143 @@ mod tests {
             assert!(!cache.contains(&1));
             assert!(cache.contains(&2));
             assert!(!cache.contains(&3));
+        }
+    }
+
+    // ==============================================
+    // Standard Trait Coverage
+    // ==============================================
+
+    mod standard_traits {
+        use super::*;
+
+        #[test]
+        fn default_creates_nonempty_capacity() {
+            let cache: S3FifoCache<String, i32> = S3FifoCache::default();
+            assert!(cache.is_empty());
+            assert_eq!(cache.capacity(), 128);
+        }
+
+        #[test]
+        fn from_iterator() {
+            let cache: S3FifoCache<&str, i32> =
+                vec![("a", 1), ("b", 2), ("c", 3)].into_iter().collect();
+
+            assert_eq!(cache.len(), 3);
+            assert!(cache.contains(&"a"));
+            assert!(cache.contains(&"b"));
+            assert!(cache.contains(&"c"));
+        }
+
+        #[test]
+        fn from_iterator_respects_capacity() {
+            // Collecting 20 items from a source with known size should create
+            // a cache with capacity >= 20 (size_hint lower bound)
+            let items: Vec<(i32, i32)> = (0..20).map(|i| (i, i * 10)).collect();
+            let cache: S3FifoCache<_, _> = items.into_iter().collect();
+
+            assert_eq!(cache.len(), 20);
+            assert!(cache.capacity() >= 20);
+        }
+
+        #[test]
+        fn extend_adds_entries() {
+            let mut cache = S3FifoCache::new(20);
+            cache.insert("a", 1);
+
+            cache.extend(vec![("b", 2), ("c", 3), ("d", 4)]);
+            assert_eq!(cache.len(), 4);
+            assert!(cache.contains(&"b"));
+            assert!(cache.contains(&"d"));
+        }
+
+        #[test]
+        fn extend_updates_existing() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("key", 1);
+
+            cache.extend(vec![("key", 99)]);
+            assert_eq!(cache.len(), 1);
+            assert_eq!(cache.peek(&"key"), Some(&99));
+        }
+
+        #[test]
+        fn into_iter_empty_cache() {
+            let cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
+            let items: Vec<_> = cache.into_iter().collect();
+            assert!(items.is_empty());
+        }
+
+        #[test]
+        fn into_iter_yields_all_entries() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let mut items: Vec<_> = cache.into_iter().collect();
+            items.sort_by_key(|(k, _)| *k);
+            assert_eq!(items, vec![("a", 1), ("b", 2), ("c", 3)]);
+        }
+
+        #[test]
+        fn into_iter_exact_size() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("x", 10);
+            cache.insert("y", 20);
+
+            let iter = cache.into_iter();
+            assert_eq!(iter.len(), 2);
+            assert_eq!(iter.size_hint(), (2, Some(2)));
+        }
+
+        #[test]
+        fn into_iter_with_promoted_items() {
+            let mut cache = S3FifoCache::new(10);
+
+            // Items in Small
+            cache.insert("s1".to_string(), 1);
+            cache.insert("s2".to_string(), 2);
+
+            // Promote an item to Main
+            cache.insert("m1".to_string(), 3);
+            cache.get(&"m1".to_string());
+
+            // Fill to trigger promotion
+            for i in 0..10 {
+                cache.insert(format!("filler_{}", i), i);
+            }
+
+            let expected_len = cache.len();
+            let items: Vec<_> = cache.into_iter().collect();
+            assert_eq!(items.len(), expected_len);
+        }
+
+        #[test]
+        fn into_iter_drop_partial() {
+            // Ensure partial iteration doesn't leak
+            let mut cache = S3FifoCache::new(10);
+            for i in 0..5 {
+                cache.insert(format!("key_{}", i), format!("val_{}", i));
+            }
+
+            let mut iter = cache.into_iter();
+            let _ = iter.next(); // consume one
+            let _ = iter.next(); // consume another
+            // drop iter with 3 remaining — should not leak
+        }
+
+        #[test]
+        fn for_loop_syntax() {
+            let mut cache = S3FifoCache::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let mut count = 0;
+            for (_k, _v) in cache {
+                count += 1;
+            }
+            assert_eq!(count, 2);
         }
     }
 }
