@@ -525,7 +525,10 @@ pub struct S3FifoCache<K, V> {
     metrics: S3FifoMetrics,
 }
 
-// SAFETY: S3FifoCache can be sent between threads if K and V are Send.
+// SAFETY: `NonNull<Node<K, V>>` is `!Send`, but the pointers exclusively own
+// their heap allocations and are never shared across threads without external
+// synchronisation. Sending the cache moves full ownership of all nodes, which
+// is safe when K and V themselves are `Send`.
 unsafe impl<K, V> Send for S3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Send,
@@ -533,7 +536,13 @@ where
 {
 }
 
-// SAFETY: S3FifoCache can be shared between threads if K and V are Sync.
+// SAFETY: `NonNull<Node<K, V>>` is `!Sync`, but all `&self` methods on
+// `S3FifoCache` only perform read-only access through these pointers
+// (`contains`, `peek`, `len`, iterators). The sole interior-mutation path is
+// `get_shared` (`pub(crate)`), which bumps `Node::freq` via `AtomicU8` —
+// an inherently `Sync` type — so concurrent `&self` access is data-race-free.
+// Structural mutations (insert/remove/evict) require `&mut self`, which the
+// borrow checker or an external `RwLock` ensures is exclusive.
 unsafe impl<K, V> Sync for S3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Sync,
@@ -586,8 +595,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `capacity` is zero. Debug-asserts that ratios are finite and
-    /// non-negative.
+    /// Panics if `capacity` is zero, if `small_ratio` is not in `[0.0, 1.0]`,
+    /// or if `ghost_ratio` is negative or non-finite.
     ///
     /// # Example
     ///
@@ -600,12 +609,12 @@ where
     /// ```
     pub fn with_ratios(capacity: usize, small_ratio: f64, ghost_ratio: f64) -> Self {
         assert!(capacity > 0, "cache capacity must be greater than zero");
-        debug_assert!(
+        assert!(
             small_ratio.is_finite() && (0.0..=1.0).contains(&small_ratio),
             "small_ratio must be in [0.0, 1.0], got {}",
             small_ratio
         );
-        debug_assert!(
+        assert!(
             ghost_ratio.is_finite() && ghost_ratio >= 0.0,
             "ghost_ratio must be finite and non-negative, got {}",
             ghost_ratio
@@ -1449,7 +1458,10 @@ where
                 },
             }
         } else {
-            // Evict: freq == 0, remove from cache
+            // Evict: freq == 0, remove from cache.
+            // Pop first to take ownership of the node, then use its key to
+            // remove from the map and (for Small) record in the ghost list.
+            // This avoids cloning the key on every eviction.
             match queue {
                 QueueKind::Small => {
                     #[cfg(feature = "metrics")]
@@ -1457,11 +1469,13 @@ where
                         self.metrics.small_evictions += 1;
                     }
 
-                    // SAFETY: tail_ptr is valid, clone key before pop destroys the node
-                    let key = unsafe { tail_ptr.as_ref().key.clone() };
-                    self.map.remove(&key);
-                    let _ = self.pop_small_tail();
-                    self.ghost.record(key); // Record evicted Small items in Ghost
+                    // Invariant: tail was Some(tail_ptr), and nothing mutated
+                    // the queue since we checked, so pop always returns Some.
+                    let node = self.pop_small_tail().unwrap();
+                    self.map.remove(&node.key);
+                    // Move key out of the box for ghost recording; drops value.
+                    let Node { key, .. } = *node;
+                    self.ghost.record(key);
                 },
                 QueueKind::Main => {
                     #[cfg(feature = "metrics")]
@@ -1469,11 +1483,9 @@ where
                         self.metrics.main_evictions += 1;
                     }
 
-                    // SAFETY: tail_ptr is valid, clone key before pop destroys the node
-                    let key = unsafe { tail_ptr.as_ref().key.clone() };
-                    self.map.remove(&key);
-                    let _ = self.pop_main_tail();
-                    // Don't record Main evictions in Ghost
+                    let node = self.pop_main_tail().unwrap();
+                    self.map.remove(&node.key);
+                    // Don't record Main evictions in Ghost; node drops here.
                 },
             }
         }
