@@ -24,9 +24,9 @@
 //! │                                     │                │ hand = 1       │   │
 //! │                                     └────────────────┼────────────────┘   │
 //! │                                                      │                    │
-//! │   Entry: { key, value, referenced: bool }            │                    │
-//! │   "A,1" = Entry { key: "key_a", referenced: true }   │                    │
-//! │   "B,0" = Entry { key: "key_b", referenced: false } ◄┘ (next victim)      │
+//! │   Entry: { key, value }  +  referenced: Vec<bool>     │                    │
+//! │   "A,1" = slot 0: Entry { key: "key_a" }, ref[0]=1   │                    │
+//! │   "B,0" = slot 1: Entry { key: "key_b" }, ref[1]=0  ◄┘ (next victim)      │
 //! │                                                                           │
 //! └───────────────────────────────────────────────────────────────────────────┘
 //!
@@ -154,8 +154,11 @@
 //! ## Implementation Notes
 //!
 //! - Fixed-size slot array; no reallocation during operation
-//! - Keys mapped to slot indices via HashMap
+//! - Reference bits stored in a separate `Vec<bool>` for cache-friendly sweeps
+//! - Keys mapped to slot indices via HashMap; key is cloned once per new insertion
 //! - Hand pointer advances after each insert/eviction
+//! - `insert` is O(1) amortized: each access sets at most one ref bit, so the
+//!   total clearing work across N inserts is bounded by N
 //! - `debug_validate_invariants()` available in debug/test builds
 
 use rustc_hash::FxHashMap;
@@ -164,15 +167,13 @@ use std::hash::Hash;
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
-/// Clock entry with cache-line optimized layout.
+/// Clock entry holding key and value.
+///
+/// Reference bits are stored separately in [`ClockRing::referenced`] for
+/// cache-friendly sweep access.
 #[derive(Debug)]
-#[repr(C)]
 struct Entry<K, V> {
-    // Hot field - checked/modified on every clock sweep
-    referenced: bool,
-    // Key needed for index removal during eviction
     key: K,
-    // Value accessed on get
     value: V,
 }
 
@@ -225,9 +226,11 @@ struct Entry<K, V> {
 /// assert_eq!(cache.len(), 3);
 /// assert_eq!(eviction_count, 7);  // 10 inserts - 3 capacity = 7 evictions
 /// ```
+#[must_use]
 #[derive(Debug)]
 pub struct ClockRing<K, V> {
     slots: Vec<Option<Entry<K, V>>>,
+    referenced: Vec<bool>,
     index: FxHashMap<K, usize>,
     hand: usize,
     len: usize,
@@ -282,6 +285,7 @@ pub struct ClockRing<K, V> {
 /// }
 /// ```
 #[cfg(feature = "concurrency")]
+#[must_use]
 #[derive(Debug)]
 pub struct ConcurrentClockRing<K, V> {
     inner: RwLock<ClockRing<K, V>>,
@@ -423,6 +427,25 @@ where
         ring.get(key).map(f)
     }
 
+    /// Accesses value mutably and sets the reference bit (grants second chance).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("key", vec![1, 2, 3]);
+    ///
+    /// cache.get_mut_with(&"key", |v| v.push(4));
+    /// let sum = cache.peek_with(&"key", |v| v.iter().sum::<i32>());
+    /// assert_eq!(sum, Some(10));
+    /// ```
+    pub fn get_mut_with<R>(&self, key: &K, f: impl FnOnce(&mut V) -> R) -> Option<R> {
+        let mut ring = self.inner.write();
+        ring.get_mut(key).map(f)
+    }
+
     /// Sets the reference bit for `key`; returns `false` if missing.
     ///
     /// # Example
@@ -478,6 +501,7 @@ where
     /// let evicted = cache.insert("c", 3);
     /// assert!(evicted.is_some());
     /// ```
+    #[must_use]
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
         let mut ring = self.inner.write();
         ring.insert(key, value)
@@ -496,6 +520,7 @@ where
     /// assert_eq!(cache.remove(&"key"), Some(42));
     /// assert_eq!(cache.remove(&"key"), None);  // Already removed
     /// ```
+    #[must_use]
     pub fn remove(&self, key: &K) -> Option<V> {
         let mut ring = self.inner.write();
         ring.remove(key)
@@ -538,9 +563,41 @@ where
     /// assert!(evicted.is_some());
     /// assert_eq!(cache.len(), 2);
     /// ```
+    #[must_use]
     pub fn pop_victim(&self) -> Option<(K, V)> {
         let mut ring = self.inner.write();
         ring.pop_victim()
+    }
+
+    /// Clears all entries without releasing capacity.
+    pub fn clear(&self) {
+        let mut ring = self.inner.write();
+        ring.clear();
+    }
+
+    /// Clears all entries and shrinks internal storage.
+    pub fn clear_shrink(&self) {
+        let mut ring = self.inner.write();
+        ring.clear_shrink();
+    }
+
+    /// Returns an approximate memory footprint in bytes.
+    #[must_use]
+    pub fn approx_bytes(&self) -> usize {
+        let ring = self.inner.read();
+        ring.approx_bytes()
+    }
+
+    /// Reserves capacity for at least `additional` more index entries.
+    pub fn reserve_index(&self, additional: usize) {
+        let mut ring = self.inner.write();
+        ring.reserve_index(additional);
+    }
+
+    /// Shrinks internal storage to fit current contents.
+    pub fn shrink_to_fit(&self) {
+        let mut ring = self.inner.write();
+        ring.shrink_to_fit();
     }
 
     /// Non-blocking version of [`update`](Self::update).
@@ -577,6 +634,12 @@ where
     pub fn try_get_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<Option<R>> {
         let mut ring = self.inner.try_write()?;
         Some(ring.get(key).map(f))
+    }
+
+    /// Non-blocking version of [`get_mut_with`](Self::get_mut_with).
+    pub fn try_get_mut_with<R>(&self, key: &K, f: impl FnOnce(&mut V) -> R) -> Option<Option<R>> {
+        let mut ring = self.inner.try_write()?;
+        Some(ring.get_mut(key).map(f))
     }
 
     /// Non-blocking version of [`peek_victim_with`](Self::peek_victim_with).
@@ -631,6 +694,7 @@ where
         slots.resize_with(capacity, || None);
         Self {
             slots,
+            referenced: vec![false; capacity],
             index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             hand: 0,
             len: 0,
@@ -679,6 +743,7 @@ where
     pub fn shrink_to_fit(&mut self) {
         self.index.shrink_to_fit();
         self.slots.shrink_to_fit();
+        self.referenced.shrink_to_fit();
     }
 
     /// Clears all entries without releasing capacity.
@@ -701,6 +766,7 @@ where
         for slot in &mut self.slots {
             *slot = None;
         }
+        self.referenced.fill(false);
         self.len = 0;
         self.hand = 0;
     }
@@ -722,6 +788,7 @@ where
         self.clear();
         self.index.shrink_to_fit();
         self.slots.shrink_to_fit();
+        self.referenced.shrink_to_fit();
     }
 
     /// Returns an approximate memory footprint in bytes.
@@ -735,10 +802,12 @@ where
     /// let bytes = ring.approx_bytes();
     /// assert!(bytes > 0);
     /// ```
+    #[must_use]
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.index.capacity() * std::mem::size_of::<(K, usize)>()
             + self.slots.capacity() * std::mem::size_of::<Option<Entry<K, V>>>()
+            + self.referenced.capacity() * std::mem::size_of::<bool>()
     }
 
     /// Returns the number of occupied slots.
@@ -833,11 +902,36 @@ where
     /// assert!(ring.contains(&"a"));
     /// assert!(!ring.contains(&"b"));
     /// ```
+    #[must_use]
     pub fn get(&mut self, key: &K) -> Option<&V> {
         let idx = *self.index.get(key)?;
-        let entry = self.slots.get_mut(idx)?.as_mut()?;
-        entry.referenced = true;
-        Some(&entry.value)
+        self.referenced[idx] = true;
+        self.slots.get(idx)?.as_ref().map(|entry| &entry.value)
+    }
+
+    /// Returns a mutable reference to the value and sets the reference bit.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(10);
+    /// ring.insert("key", vec![1, 2, 3]);
+    ///
+    /// if let Some(v) = ring.get_mut(&"key") {
+    ///     v.push(4);
+    /// }
+    /// assert_eq!(ring.peek(&"key"), Some(&vec![1, 2, 3, 4]));
+    /// ```
+    #[must_use]
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        let idx = *self.index.get(key)?;
+        self.referenced[idx] = true;
+        self.slots
+            .get_mut(idx)?
+            .as_mut()
+            .map(|entry| &mut entry.value)
     }
 
     /// Sets the reference bit for `key`; returns `false` if missing.
@@ -866,11 +960,8 @@ where
             Some(idx) => *idx,
             None => return false,
         };
-        if let Some(entry) = self.slots.get_mut(idx).and_then(|slot| slot.as_mut()) {
-            entry.referenced = true;
-            return true;
-        }
-        false
+        self.referenced[idx] = true;
+        true
     }
 
     /// Updates the value for an existing key, returning the old value.
@@ -894,18 +985,24 @@ where
     /// // Key doesn't exist - returns None
     /// assert_eq!(ring.update(&"missing", 99), None);
     /// ```
+    #[must_use]
     pub fn update(&mut self, key: &K, value: V) -> Option<V> {
         let idx = *self.index.get(key)?;
         let entry = self.slots.get_mut(idx)?.as_mut()?;
         let old = std::mem::replace(&mut entry.value, value);
-        entry.referenced = true;
+        self.referenced[idx] = true;
         Some(old)
     }
 
     /// Inserts or updates `key`, evicting if necessary.
     ///
-    /// If inserting into a full ring, evicts and returns `(evicted_key, evicted_value)`.
-    /// Updating an existing key sets its reference bit but does not evict.
+    /// Returns `Some((evicted_key, evicted_value))` when a full ring evicts an entry.
+    /// Returns `None` in all other cases:
+    /// - Inserted into an empty slot (no eviction needed)
+    /// - Updated an existing key (old value is **dropped**, use [`update`](Self::update) to retrieve it)
+    /// - Zero-capacity ring (entry is silently discarded)
+    ///
+    /// Key is cloned once per new insertion (stored in both the slot and the index).
     ///
     /// # Example
     ///
@@ -918,7 +1015,7 @@ where
     /// assert_eq!(ring.insert("a", 1), None);
     /// assert_eq!(ring.insert("b", 2), None);
     ///
-    /// // Update existing - no eviction
+    /// // Update existing - no eviction, old value dropped
     /// assert_eq!(ring.insert("a", 10), None);
     /// assert_eq!(ring.peek(&"a"), Some(&10));
     ///
@@ -926,6 +1023,7 @@ where
     /// let evicted = ring.insert("c", 3);
     /// assert!(evicted.is_some());
     /// ```
+    #[must_use]
     pub fn insert(&mut self, key: K, value: V) -> Option<(K, V)> {
         if self.capacity() == 0 {
             return None;
@@ -934,16 +1032,16 @@ where
         if let Some(&idx) = self.index.get(&key) {
             if let Some(entry) = self.slots.get_mut(idx).and_then(|slot| slot.as_mut()) {
                 entry.value = value;
-                entry.referenced = true;
+                self.referenced[idx] = true;
             }
             return None;
         }
 
         loop {
             let idx = self.hand;
-            if let Some(entry) = self.slots.get_mut(idx).and_then(|slot| slot.as_mut()) {
-                if entry.referenced {
-                    entry.referenced = false;
+            if self.slots[idx].is_some() {
+                if self.referenced[idx] {
+                    self.referenced[idx] = false;
                     self.advance_hand();
                     continue;
                 }
@@ -955,8 +1053,8 @@ where
                 self.slots[idx] = Some(Entry {
                     key: entry_key,
                     value,
-                    referenced: false,
                 });
+                self.referenced[idx] = false;
                 self.index.insert(key, idx);
                 self.advance_hand();
                 return Some((evicted.key, evicted.value));
@@ -966,8 +1064,8 @@ where
             self.slots[idx] = Some(Entry {
                 key: entry_key,
                 value,
-                referenced: false,
             });
+            self.referenced[idx] = false;
             self.index.insert(key, idx);
             self.len += 1;
             self.advance_hand();
@@ -978,6 +1076,9 @@ where
     /// Peeks the next eviction candidate without modifying state.
     ///
     /// Scans from the hand position to find the first unreferenced entry.
+    /// Returns `None` if the ring is empty **or** every occupied entry has its
+    /// reference bit set (unlike [`pop_victim`](Self::pop_victim), this method
+    /// does not clear reference bits).
     ///
     /// # Example
     ///
@@ -993,6 +1094,7 @@ where
     /// let victim = ring.peek_victim();
     /// assert_eq!(victim, Some((&"b", &2)));
     /// ```
+    #[must_use]
     pub fn peek_victim(&self) -> Option<(&K, &V)> {
         if self.capacity() == 0 || self.len == 0 {
             return None;
@@ -1001,7 +1103,7 @@ where
         for offset in 0..cap {
             let idx = (self.hand + offset) % cap;
             if let Some(entry) = self.slots.get(idx).and_then(|slot| slot.as_ref()) {
-                if !entry.referenced {
+                if !self.referenced[idx] {
                     return Some((&entry.key, &entry.value));
                 }
             }
@@ -1011,7 +1113,12 @@ where
 
     /// Evicts the next candidate (first unreferenced slot) and returns it.
     ///
-    /// Clears reference bits as it scans, giving referenced entries a second chance.
+    /// Clears reference bits as it scans, giving referenced entries a second
+    /// chance. Uses a `2 × capacity` sweep budget so that even when every entry
+    /// is referenced, all bits are cleared in the first pass and a victim is
+    /// found in the second.
+    ///
+    /// Returns `None` only when the ring is empty.
     ///
     /// # Example
     ///
@@ -1028,22 +1135,24 @@ where
     /// assert!(evicted.is_some());
     /// assert_eq!(ring.len(), 2);
     /// ```
+    #[must_use]
     pub fn pop_victim(&mut self) -> Option<(K, V)> {
         if self.capacity() == 0 || self.len == 0 {
             return None;
         }
         let cap = self.capacity();
-        for _ in 0..cap {
+        for _ in 0..(2 * cap) {
             let idx = self.hand;
-            if let Some(entry) = self.slots.get_mut(idx).and_then(|slot| slot.as_mut()) {
-                if entry.referenced {
-                    entry.referenced = false;
+            if self.slots[idx].is_some() {
+                if self.referenced[idx] {
+                    self.referenced[idx] = false;
                     self.advance_hand();
                     continue;
                 }
 
                 let evicted = self.slots[idx].take().expect("occupied slot missing");
                 self.index.remove(&evicted.key);
+                self.referenced[idx] = false;
                 self.len -= 1;
                 self.advance_hand();
                 return Some((evicted.key, evicted.value));
@@ -1058,7 +1167,11 @@ where
     pub fn debug_snapshot_slots(&self) -> Vec<Option<(&K, bool)>> {
         self.slots
             .iter()
-            .map(|slot| slot.as_ref().map(|entry| (&entry.key, entry.referenced)))
+            .enumerate()
+            .map(|(idx, slot)| {
+                slot.as_ref()
+                    .map(|entry| (&entry.key, self.referenced[idx]))
+            })
             .collect()
     }
 
@@ -1076,20 +1189,18 @@ where
     /// assert_eq!(ring.remove(&"key"), None);  // Already removed
     /// assert!(!ring.contains(&"key"));
     /// ```
+    #[must_use]
     pub fn remove(&mut self, key: &K) -> Option<V> {
         let idx = self.index.remove(key)?;
         let entry = self.slots.get_mut(idx)?.take()?;
+        self.referenced[idx] = false;
         self.len -= 1;
         Some(entry.value)
     }
 
+    /// Callers must ensure capacity > 0 before calling.
     fn advance_hand(&mut self) {
-        let cap = self.capacity();
-        if cap == 0 {
-            self.hand = 0;
-        } else {
-            self.hand = (self.hand + 1) % cap;
-        }
+        self.hand = (self.hand + 1) % self.slots.len();
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -1097,6 +1208,7 @@ where
         let slot_count = self.slots.iter().filter(|slot| slot.is_some()).count();
         assert_eq!(self.len, slot_count);
         assert_eq!(self.len, self.index.len());
+        assert_eq!(self.referenced.len(), self.slots.len());
 
         if self.capacity() == 0 {
             assert_eq!(self.hand, 0);
@@ -1111,10 +1223,17 @@ where
                 .expect("index points to empty slot");
             assert!(&entry.key == key);
         }
+
+        for idx in 0..self.slots.len() {
+            if self.slots[idx].is_none() {
+                assert!(!self.referenced[idx], "empty slot has referenced bit set");
+            }
+        }
     }
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
 
@@ -1316,15 +1435,10 @@ mod tests {
         ring.touch(&"a");
         ring.touch(&"b");
 
-        let first = ring.pop_victim();
-        if first.is_none() {
-            let second = ring.pop_victim();
-            assert!(matches!(second, Some(("a", 1)) | Some(("b", 2))));
-            assert_eq!(ring.len(), 1);
-        } else {
-            assert!(matches!(first, Some(("a", 1)) | Some(("b", 2))));
-            assert_eq!(ring.len(), 1);
-        }
+        // 2*cap sweep budget: clears all refs, then evicts
+        let evicted = ring.pop_victim();
+        assert!(matches!(evicted, Some(("a", 1)) | Some(("b", 2))));
+        assert_eq!(ring.len(), 1);
     }
 
     #[test]
@@ -1342,6 +1456,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn clock_ring_pop_victim_all_referenced_evicts_in_one_call() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+        ring.touch(&"a");
+        ring.touch(&"b");
+        ring.touch(&"c");
+
+        // 2*cap sweep budget: clears all refs then evicts in one call
+        let evicted = ring.pop_victim();
+        assert!(evicted.is_some());
+        assert_eq!(ring.len(), 2);
+        ring.debug_validate_invariants();
+    }
+
     #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_clock_ring_try_ops() {
@@ -1356,6 +1487,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
@@ -1776,6 +1908,7 @@ mod property_tests {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod fuzz_tests {
     use super::*;
 
