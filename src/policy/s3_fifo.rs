@@ -183,6 +183,8 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
 use crate::ds::GhostList;
+use crate::error::ConfigError;
+use crate::error::InvariantError;
 #[cfg(feature = "concurrency")]
 use crate::traits::ConcurrentCache;
 use crate::traits::CoreCache;
@@ -539,8 +541,9 @@ where
 // SAFETY: `NonNull<Node<K, V>>` is `!Sync`, but all `&self` methods on
 // `S3FifoCache` only perform read-only access through these pointers
 // (`contains`, `peek`, `len`, iterators). The sole interior-mutation path is
-// `get_shared` (`pub(crate)`), which bumps `Node::freq` via `AtomicU8` —
-// an inherently `Sync` type — so concurrent `&self` access is data-race-free.
+// `get_shared` (`pub(crate)`), which bumps `Node::freq` via `AtomicU8::fetch_update`
+// — a truly atomic read-modify-write on an inherently `Sync` type — so
+// concurrent `&self` access is data-race-free with no lost updates.
 // Structural mutations (insert/remove/evict) require `&mut self`, which the
 // borrow checker or an external `RwLock` ensures is exclusive.
 unsafe impl<K, V> Sync for S3FifoCache<K, V>
@@ -597,6 +600,7 @@ where
     ///
     /// Panics if `capacity` is zero, if `small_ratio` is not in `[0.0, 1.0]`,
     /// or if `ghost_ratio` is negative or non-finite.
+    /// For a non-panicking alternative, use [`try_with_ratios`](Self::try_with_ratios).
     ///
     /// # Example
     ///
@@ -608,21 +612,63 @@ where
     /// assert_eq!(cache.capacity(), 100);
     /// ```
     pub fn with_ratios(capacity: usize, small_ratio: f64, ghost_ratio: f64) -> Self {
-        assert!(capacity > 0, "cache capacity must be greater than zero");
-        assert!(
-            small_ratio.is_finite() && (0.0..=1.0).contains(&small_ratio),
-            "small_ratio must be in [0.0, 1.0], got {}",
-            small_ratio
-        );
-        assert!(
-            ghost_ratio.is_finite() && ghost_ratio >= 0.0,
-            "ghost_ratio must be finite and non-negative, got {}",
-            ghost_ratio
-        );
+        match Self::try_with_ratios(capacity, small_ratio, ghost_ratio) {
+            Ok(cache) => cache,
+            Err(e) => panic!("{}", e),
+        }
+    }
+
+    /// Creates a new S3-FIFO cache with custom queue ratios, returning an error
+    /// on invalid parameters instead of panicking.
+    ///
+    /// # Arguments
+    ///
+    /// - `capacity`: Total cache capacity (must be > 0)
+    /// - `small_ratio`: Fraction of capacity for Small queue (must be in `[0.0, 1.0]`)
+    /// - `ghost_ratio`: Fraction of capacity for Ghost list (must be finite and >= 0.0)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if any parameter is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// // Valid configuration
+    /// let cache = S3FifoCache::<String, i32>::try_with_ratios(100, 0.2, 1.0);
+    /// assert!(cache.is_ok());
+    ///
+    /// // Invalid: small_ratio out of range
+    /// let bad = S3FifoCache::<String, i32>::try_with_ratios(100, 1.5, 0.9);
+    /// assert!(bad.is_err());
+    /// ```
+    pub fn try_with_ratios(
+        capacity: usize,
+        small_ratio: f64,
+        ghost_ratio: f64,
+    ) -> Result<Self, ConfigError> {
+        if capacity == 0 {
+            return Err(ConfigError::new("cache capacity must be greater than zero"));
+        }
+        if !small_ratio.is_finite() || !(0.0..=1.0).contains(&small_ratio) {
+            return Err(ConfigError::new(format!(
+                "small_ratio must be in [0.0, 1.0], got {}",
+                small_ratio
+            )));
+        }
+        if !ghost_ratio.is_finite() || ghost_ratio < 0.0 {
+            return Err(ConfigError::new(format!(
+                "ghost_ratio must be finite and non-negative, got {}",
+                ghost_ratio
+            )));
+        }
+
         let small_cap = (capacity as f64 * small_ratio).round() as usize;
         let ghost_cap = (capacity as f64 * ghost_ratio).round() as usize;
 
-        Self {
+        Ok(Self {
             map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             small_head: None,
             small_tail: None,
@@ -635,7 +681,7 @@ where
             capacity,
             #[cfg(feature = "metrics")]
             metrics: S3FifoMetrics::default(),
-        }
+        })
     }
 
     /// Returns the total number of cached entries.
@@ -692,8 +738,8 @@ where
     ///
     /// Unlike [`get`](Self::get), this method takes `&self` instead of `&mut self`,
     /// enabling concurrent readers under a read lock. The frequency counter is
-    /// bumped via a `Relaxed` atomic store, which is zero-overhead on x86 and
-    /// near-zero on ARM.
+    /// bumped via an atomic compare-and-swap loop (`fetch_update`), which is
+    /// zero-overhead on x86 and near-zero on ARM.
     ///
     /// Metrics are **not** updated through this path; the concurrent wrapper
     /// maintains its own atomic hit/miss counters.
@@ -703,12 +749,13 @@ where
         let &node_ptr = self.map.get(key)?;
         unsafe {
             let node = &*node_ptr.as_ptr();
-            // Atomic freq bump: safe under concurrent readers.
-            // Slight imprecision under contention is acceptable for a frequency hint.
-            let f = node.freq.load(Ordering::Relaxed);
-            if f < MAX_FREQ {
-                node.freq.store(f + 1, Ordering::Relaxed);
-            }
+            // Atomic freq bump via CAS loop: no lost updates under contention.
+            // The closure returns Err to stop once MAX_FREQ is reached.
+            let _ = node
+                .freq
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |f| {
+                    if f < MAX_FREQ { Some(f + 1) } else { None }
+                });
             Some(&node.value)
         }
     }
@@ -1069,7 +1116,7 @@ where
     /// # Returns
     ///
     /// - `Ok(())` if all invariants hold
-    /// - `Err(String)` with a description of the violated invariant
+    /// - `Err(InvariantError)` with a description of the violated invariant
     ///
     /// # Example
     ///
@@ -1084,20 +1131,20 @@ where
     /// cache.check_invariants().expect("Invariants violated");
     /// ```
     #[cfg(debug_assertions)]
-    pub fn check_invariants(&self) -> Result<(), String>
+    pub fn check_invariants(&self) -> Result<(), InvariantError>
     where
         K: Debug,
     {
         // Check that map size matches queue lengths
         let total_len = self.small_len + self.main_len;
         if self.map.len() != total_len {
-            return Err(format!(
+            return Err(InvariantError::new(format!(
                 "Map size {} != small_len {} + main_len {} = {}",
                 self.map.len(),
                 self.small_len,
                 self.main_len,
                 total_len
-            ));
+            )));
         }
 
         // Check Small queue consistency
@@ -1107,18 +1154,18 @@ where
 
         // Check head/tail consistency for Small queue
         if self.small_head.is_none() != self.small_tail.is_none() {
-            return Err(format!(
+            return Err(InvariantError::new(format!(
                 "Small head/tail inconsistent: head={:?}, tail={:?}",
                 self.small_head.is_some(),
                 self.small_tail.is_some()
-            ));
+            )));
         }
 
         if self.small_head.is_none() && self.small_len != 0 {
-            return Err(format!(
+            return Err(InvariantError::new(format!(
                 "Small queue empty but small_len = {}",
                 self.small_len
-            ));
+            )));
         }
 
         while let Some(node_ptr) = current {
@@ -1129,53 +1176,53 @@ where
 
                 // Check queue kind
                 if node.queue != QueueKind::Small {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Node with key {:?} in Small queue has queue = {:?}",
                         node.key, node.queue
-                    ));
+                    )));
                 }
 
                 // Check frequency bounds
                 let freq = node.freq.load(Ordering::Relaxed);
                 if freq > MAX_FREQ {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Node with key {:?} has freq {} > MAX_FREQ {}",
                         node.key, freq, MAX_FREQ
-                    ));
+                    )));
                 }
 
                 // Check prev pointer consistency
                 if node.prev != prev_ptr {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Small queue: node {:?} prev pointer inconsistent",
                         node.key
-                    ));
+                    )));
                 }
 
                 // Check map entry
                 if !self.map.contains_key(&node.key) {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Node with key {:?} in Small queue not in map",
                         node.key
-                    ));
+                    )));
                 }
 
                 // Check that map points to this node
                 if let Some(&map_ptr) = self.map.get(&node.key) {
                     if map_ptr != node_ptr {
-                        return Err(format!(
+                        return Err(InvariantError::new(format!(
                             "Map entry for key {:?} points to different node",
                             node.key
-                        ));
+                        )));
                     }
                 }
 
                 // Check tail pointer
                 if node.next.is_none() && Some(node_ptr) != self.small_tail {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Small queue: last node {:?} doesn't match small_tail",
                         node.key
-                    ));
+                    )));
                 }
 
                 prev_ptr = Some(node_ptr);
@@ -1184,10 +1231,10 @@ where
         }
 
         if small_count != self.small_len {
-            return Err(format!(
+            return Err(InvariantError::new(format!(
                 "Small queue: counted {} nodes but small_len = {}",
                 small_count, self.small_len
-            ));
+            )));
         }
 
         // Check Main queue consistency
@@ -1197,15 +1244,18 @@ where
 
         // Check head/tail consistency for Main queue
         if self.main_head.is_none() != self.main_tail.is_none() {
-            return Err(format!(
+            return Err(InvariantError::new(format!(
                 "Main head/tail inconsistent: head={:?}, tail={:?}",
                 self.main_head.is_some(),
                 self.main_tail.is_some()
-            ));
+            )));
         }
 
         if self.main_head.is_none() && self.main_len != 0 {
-            return Err(format!("Main queue empty but main_len = {}", self.main_len));
+            return Err(InvariantError::new(format!(
+                "Main queue empty but main_len = {}",
+                self.main_len
+            )));
         }
 
         while let Some(node_ptr) = current {
@@ -1216,53 +1266,53 @@ where
 
                 // Check queue kind
                 if node.queue != QueueKind::Main {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Node with key {:?} in Main queue has queue = {:?}",
                         node.key, node.queue
-                    ));
+                    )));
                 }
 
                 // Check frequency bounds
                 let freq = node.freq.load(Ordering::Relaxed);
                 if freq > MAX_FREQ {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Node with key {:?} has freq {} > MAX_FREQ {}",
                         node.key, freq, MAX_FREQ
-                    ));
+                    )));
                 }
 
                 // Check prev pointer consistency
                 if node.prev != prev_ptr {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Main queue: node {:?} prev pointer inconsistent",
                         node.key
-                    ));
+                    )));
                 }
 
                 // Check map entry
                 if !self.map.contains_key(&node.key) {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Node with key {:?} in Main queue not in map",
                         node.key
-                    ));
+                    )));
                 }
 
                 // Check that map points to this node
                 if let Some(&map_ptr) = self.map.get(&node.key) {
                     if map_ptr != node_ptr {
-                        return Err(format!(
+                        return Err(InvariantError::new(format!(
                             "Map entry for key {:?} points to different node",
                             node.key
-                        ));
+                        )));
                     }
                 }
 
                 // Check tail pointer
                 if node.next.is_none() && Some(node_ptr) != self.main_tail {
-                    return Err(format!(
+                    return Err(InvariantError::new(format!(
                         "Main queue: last node {:?} doesn't match main_tail",
                         node.key
-                    ));
+                    )));
                 }
 
                 prev_ptr = Some(node_ptr);
@@ -1271,18 +1321,18 @@ where
         }
 
         if main_count != self.main_len {
-            return Err(format!(
+            return Err(InvariantError::new(format!(
                 "Main queue: counted {} nodes but main_len = {}",
                 main_count, self.main_len
-            ));
+            )));
         }
 
         // Check capacity constraint
         if total_len > self.capacity {
-            return Err(format!(
+            return Err(InvariantError::new(format!(
                 "Total entries {} > capacity {}",
                 total_len, self.capacity
-            ));
+            )));
         }
 
         Ok(())
@@ -1809,11 +1859,45 @@ impl ConcurrentS3FifoCacheBuilder {
     }
 
     /// Builds the concurrent cache with the configured parameters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the configured parameters are invalid (zero capacity,
+    /// out-of-range ratios). For a non-panicking alternative, use
+    /// [`try_build`](Self::try_build).
     pub fn build<K, V>(self) -> ConcurrentS3FifoCache<K, V>
     where
         K: Clone + Eq + Hash,
     {
-        ConcurrentS3FifoCache::with_ratios(self.capacity, self.small_ratio, self.ghost_ratio)
+        match self.try_build() {
+            Ok(cache) => cache,
+            Err(e) => panic!("{}", e),
+        }
+    }
+
+    /// Builds the concurrent cache, returning an error on invalid parameters
+    /// instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if the configured capacity or ratios are invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::ConcurrentS3FifoCache;
+    ///
+    /// let cache = ConcurrentS3FifoCache::<String, i32>::builder(100)
+    ///     .small_ratio(0.2)
+    ///     .ghost_ratio(1.0)
+    ///     .try_build();
+    /// assert!(cache.is_ok());
+    /// ```
+    pub fn try_build<K, V>(self) -> Result<ConcurrentS3FifoCache<K, V>, ConfigError>
+    where
+        K: Clone + Eq + Hash,
+    {
+        ConcurrentS3FifoCache::try_with_ratios(self.capacity, self.small_ratio, self.ghost_ratio)
     }
 }
 
@@ -1886,18 +1970,47 @@ where
     }
 
     /// Creates a new concurrent S3-FIFO cache with custom ratios.
+    ///
+    /// # Panics
+    ///
+    /// Panics on invalid parameters. For a non-panicking alternative, use
+    /// [`try_with_ratios`](Self::try_with_ratios) or the
+    /// [`builder`](Self::builder) with [`try_build`](ConcurrentS3FifoCacheBuilder::try_build).
     pub fn with_ratios(capacity: usize, small_ratio: f64, ghost_ratio: f64) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(S3FifoCache::with_ratios(
-                capacity,
-                small_ratio,
-                ghost_ratio,
-            ))),
+        match Self::try_with_ratios(capacity, small_ratio, ghost_ratio) {
+            Ok(cache) => cache,
+            Err(e) => panic!("{}", e),
+        }
+    }
+
+    /// Creates a new concurrent S3-FIFO cache with custom ratios, returning an
+    /// error on invalid parameters instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if any parameter is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::ConcurrentS3FifoCache;
+    ///
+    /// let cache = ConcurrentS3FifoCache::<String, i32>::try_with_ratios(100, 0.2, 1.0);
+    /// assert!(cache.is_ok());
+    /// ```
+    pub fn try_with_ratios(
+        capacity: usize,
+        small_ratio: f64,
+        ghost_ratio: f64,
+    ) -> Result<Self, ConfigError> {
+        let inner = S3FifoCache::try_with_ratios(capacity, small_ratio, ghost_ratio)?;
+        Ok(Self {
+            inner: Arc::new(RwLock::new(inner)),
             #[cfg(feature = "metrics")]
             read_hits: AtomicU64::new(0),
             #[cfg(feature = "metrics")]
             read_misses: AtomicU64::new(0),
-        }
+        })
     }
 
     /// Returns a builder for configuring cache parameters.
