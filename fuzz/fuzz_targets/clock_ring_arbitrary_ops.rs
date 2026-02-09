@@ -30,7 +30,7 @@ fuzz_target!(|data: &[u8]| {
                 ring.insert(key, value);
             }
             1 => {
-                ring.get(&key);
+                let _ = ring.get(&key);
             }
             2 => {
                 ring.peek(&key);
