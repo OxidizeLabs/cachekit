@@ -55,9 +55,11 @@ jobs:
       - name: Build
         run: cargo build --verbose
       - name: Run doc tests
-        run: cargo test --doc
+        run: cargo test --doc --all-features
+      - name: Run example tests
+        run: cargo test --examples --all-features
       - name: Run tests
-        run: cargo test --all-features --all-targets
+        run: cargo test --tests --all-features
 
   # Run tests using Miri (curated subset)
   miri:
