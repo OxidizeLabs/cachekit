@@ -501,7 +501,6 @@ where
     /// let evicted = cache.insert("c", 3);
     /// assert!(evicted.is_some());
     /// ```
-    #[must_use]
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
         let mut ring = self.inner.write();
         ring.insert(key, value)
@@ -520,7 +519,6 @@ where
     /// assert_eq!(cache.remove(&"key"), Some(42));
     /// assert_eq!(cache.remove(&"key"), None);  // Already removed
     /// ```
-    #[must_use]
     pub fn remove(&self, key: &K) -> Option<V> {
         let mut ring = self.inner.write();
         ring.remove(key)
@@ -563,7 +561,6 @@ where
     /// assert!(evicted.is_some());
     /// assert_eq!(cache.len(), 2);
     /// ```
-    #[must_use]
     pub fn pop_victim(&self) -> Option<(K, V)> {
         let mut ring = self.inner.write();
         ring.pop_victim()
@@ -985,7 +982,6 @@ where
     /// // Key doesn't exist - returns None
     /// assert_eq!(ring.update(&"missing", 99), None);
     /// ```
-    #[must_use]
     pub fn update(&mut self, key: &K, value: V) -> Option<V> {
         let idx = *self.index.get(key)?;
         let entry = self.slots.get_mut(idx)?.as_mut()?;
@@ -1023,7 +1019,6 @@ where
     /// let evicted = ring.insert("c", 3);
     /// assert!(evicted.is_some());
     /// ```
-    #[must_use]
     pub fn insert(&mut self, key: K, value: V) -> Option<(K, V)> {
         if self.capacity() == 0 {
             return None;
@@ -1135,7 +1130,6 @@ where
     /// assert!(evicted.is_some());
     /// assert_eq!(ring.len(), 2);
     /// ```
-    #[must_use]
     pub fn pop_victim(&mut self) -> Option<(K, V)> {
         if self.capacity() == 0 || self.len == 0 {
             return None;
@@ -1189,7 +1183,6 @@ where
     /// assert_eq!(ring.remove(&"key"), None);  // Already removed
     /// assert!(!ring.contains(&"key"));
     /// ```
-    #[must_use]
     pub fn remove(&mut self, key: &K) -> Option<V> {
         let idx = self.index.remove(key)?;
         let entry = self.slots.get_mut(idx)?.take()?;
