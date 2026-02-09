@@ -423,13 +423,9 @@ mod thread_safety {
             assert!(cache.peek_lfu().is_some());
         }
 
-        log::info!(
+        eprintln!(
             "Mixed operations completed - Inserts: {}, Gets: {}, Removes: {}, Freq: {}, LFU: {}",
-            inserts,
-            gets,
-            removes,
-            freq_ops,
-            lfu_ops
+            inserts, gets, removes, freq_ops, lfu_ops
         );
     }
 
@@ -571,12 +567,9 @@ mod thread_safety {
         // Verify cache is still functional
         assert!(cache.peek_lfu().is_some());
 
-        log::info!(
+        eprintln!(
             "Eviction results - High freq preserved: {}, Medium: {}, Low: {}, New items: {}",
-            high_freq_preserved,
-            medium_freq_preserved,
-            low_freq_preserved,
-            new_items_present
+            high_freq_preserved, medium_freq_preserved, low_freq_preserved, new_items_present
         );
     }
 
@@ -711,13 +704,13 @@ mod thread_safety {
         // Verify basic operations still work
         assert!(cache.peek_lfu().is_some() || cache.is_empty());
 
-        log::info!("Fairness test results:");
-        log::info!("  Total operations: {}", total_successes);
-        log::info!("  Average per thread: {:.1}", avg_successes);
-        log::info!("  Min: {}, Max: {}", min_successes, max_successes);
-        log::info!("  Standard deviation: {:.1}", std_dev);
-        log::info!("  Relative std dev: {:.3}", relative_std_dev);
-        log::info!("  Thread success counts: {:?}", *counts);
+        eprintln!("Fairness test results:");
+        eprintln!("  Total operations: {}", total_successes);
+        eprintln!("  Average per thread: {:.1}", avg_successes);
+        eprintln!("  Min: {}, Max: {}", min_successes, max_successes);
+        eprintln!("  Standard deviation: {:.1}", std_dev);
+        eprintln!("  Relative std dev: {:.3}", relative_std_dev);
+        eprintln!("  Thread success counts: {:?}", *counts);
     }
 }
 
@@ -845,15 +838,15 @@ mod stress_testing {
         assert!(total_successes > 0, "Should have successful operations");
         let conflict_rate = total_conflicts as f64 / (total_successes + total_conflicts) as f64;
 
-        log::info!("High contention test completed in {:?}", duration);
-        log::info!("  Successful operations: {}", total_successes);
-        log::info!(
+        eprintln!("High contention test completed in {:?}", duration);
+        eprintln!("  Successful operations: {}", total_successes);
+        eprintln!(
             "  Lock conflicts: {} ({:.1}%)",
             total_conflicts,
             conflict_rate * 100.0
         );
-        log::info!("  Hot keys preserved: {}/{}", hot_keys_present, hot_keys);
-        log::info!(
+        eprintln!("  Hot keys preserved: {}/{}", hot_keys_present, hot_keys);
+        eprintln!(
             "  Average hot key frequency: {:.1}",
             total_hot_frequency as f64 / hot_keys_present.max(1) as f64
         );
@@ -972,15 +965,15 @@ mod stress_testing {
             ops_per_sec
         );
 
-        log::info!("Cache thrashing test completed in {:?}", duration);
-        log::info!("  Total insertions: {}", total_insertions);
-        log::info!("  Total evictions: {}", total_evictions);
-        log::info!(
+        eprintln!("Cache thrashing test completed in {:?}", duration);
+        eprintln!("  Total insertions: {}", total_insertions);
+        eprintln!("  Total evictions: {}", total_evictions);
+        eprintln!(
             "  Eviction rate: {:.1}%",
             total_evictions as f64 / total_insertions as f64 * 100.0
         );
-        log::info!("  Recent items preserved: {}", recent_items);
-        log::info!("  Throughput: {:.0} ops/sec", ops_per_sec);
+        eprintln!("  Recent items preserved: {}", recent_items);
+        eprintln!("  Throughput: {:.0} ops/sec", ops_per_sec);
     }
 
     #[test]
@@ -1154,15 +1147,15 @@ mod stress_testing {
             ops_per_sec
         );
 
-        log::info!(
+        eprintln!(
             "Long running stability test completed in {:?}",
             actual_duration
         );
-        log::info!("  Total operations: {}", total_operations);
-        log::info!("  Operations/sec: {:.0}", ops_per_sec);
-        log::info!("  Errors: {} ({:.3}%)", total_errors, error_rate * 100.0);
-        log::info!("  Baseline items surviving: {}/100", baseline_survivors);
-        log::info!("  Final cache size: {}/200", cache.len());
+        eprintln!("  Total operations: {}", total_operations);
+        eprintln!("  Operations/sec: {:.0}", ops_per_sec);
+        eprintln!("  Errors: {} ({:.3}%)", total_errors, error_rate * 100.0);
+        eprintln!("  Baseline items surviving: {}/100", baseline_survivors);
+        eprintln!("  Final cache size: {}/200", cache.len());
     }
 
     #[test]
@@ -1319,14 +1312,14 @@ mod stress_testing {
             ops_per_sec
         );
 
-        log::info!("Memory pressure test completed in {:?}", duration);
-        log::info!("  Total operations: {}", total_ops);
-        log::info!("  Operations/sec: {:.0}", ops_per_sec);
-        log::info!(
+        eprintln!("Memory pressure test completed in {:?}", duration);
+        eprintln!("  Total operations: {}", total_ops);
+        eprintln!("  Operations/sec: {:.0}", ops_per_sec);
+        eprintln!(
             "  Final memory usage: {:.1} MB",
             final_memory as f64 / 1024.0 / 1024.0
         );
-        log::info!("  Cache utilization: {}/{}", cache.len(), cache.capacity());
+        eprintln!("  Cache utilization: {}/{}", cache.len(), cache.capacity());
     }
 
     #[test]
@@ -1456,12 +1449,12 @@ mod stress_testing {
             persistent_survivors
         );
 
-        log::info!(
+        eprintln!(
             "Rapid thread creation/destruction test completed in {:?}",
             duration
         );
-        log::info!("  Total operations: {}", total_ops);
-        log::info!("  Persistent items surviving: {}/50", persistent_survivors);
+        eprintln!("  Total operations: {}", total_ops);
+        eprintln!("  Persistent items surviving: {}/50", persistent_survivors);
     }
 
     #[test]
@@ -1651,17 +1644,17 @@ mod stress_testing {
             "Some burst items should survive"
         );
 
-        log::info!("Burst load test completed");
-        log::info!("  Burst operations completed: {}", total_burst_ops);
-        log::info!(
+        eprintln!("Burst load test completed");
+        eprintln!("  Burst operations completed: {}", total_burst_ops);
+        eprintln!(
             "  Background operations during burst: {}",
             total_background_ops
         );
-        log::info!(
+        eprintln!(
             "  Baseline items surviving burst: {}/75",
             baseline_survivors
         );
-        log::info!("  Recent burst items surviving: {}", burst_survivors);
+        eprintln!("  Recent burst items surviving: {}", burst_survivors);
     }
 
     #[test]
@@ -1683,7 +1676,7 @@ mod stress_testing {
             }
         }
 
-        log::info!("Starting gradual load increase test...");
+        eprintln!("Starting gradual load increase test...");
 
         // Gradually increase load
         for phase in 1..=max_threads {
@@ -1789,12 +1782,9 @@ mod stress_testing {
             assert_eq!(cache_state.1, 100, "Capacity should remain constant");
             assert!(cache_state.0 <= 100, "Cache should not exceed capacity");
 
-            log::info!(
+            eprintln!(
                 "Phase {} ({} threads): {} ops, {:.0} ops/sec",
-                phase,
-                phase,
-                phase_ops,
-                phase_throughput
+                phase, phase, phase_ops, phase_throughput
             );
         }
 
@@ -1847,14 +1837,14 @@ mod stress_testing {
         }
 
         let total_ops = total_operations.load(Ordering::Relaxed);
-        log::info!("Gradual load increase test completed");
-        log::info!("  Total operations: {}", total_ops);
-        log::info!(
+        eprintln!("Gradual load increase test completed");
+        eprintln!("  Total operations: {}", total_ops);
+        eprintln!(
             "  Throughput degradation: {:.1}%",
             throughput_degradation * 100.0
         );
-        log::info!("  Initial items surviving: {}/50", initial_survivors);
-        log::info!(
+        eprintln!("  Initial items surviving: {}/50", initial_survivors);
+        eprintln!(
             "  Average initial item frequency: {:.1}",
             if initial_survivors > 0 {
                 total_initial_frequency as f64 / initial_survivors as f64
@@ -1883,7 +1873,7 @@ mod stress_testing {
         ];
 
         for (dist_name, dist_type) in distributions {
-            log::info!("Testing {} distribution...", dist_name);
+            eprintln!("Testing {} distribution...", dist_name);
 
             // Clear cache for each distribution test
             {
@@ -2045,11 +2035,9 @@ mod stress_testing {
                         .filter_map(|i| cache.frequency(&format!("base_{}", i)))
                         .sum();
 
-                    log::info!(
+                    eprintln!(
                         "    Light Zipfian debug: hot keys (0-14) surviving: {}/15, their total freq: {}, top 20% ratio: {:.2}",
-                        hot_survivors,
-                        hot_freq,
-                        top_20_ratio
+                        hot_survivors, hot_freq, top_20_ratio
                     );
 
                     assert!(
@@ -2081,11 +2069,9 @@ mod stress_testing {
                         .filter_map(|i| cache.frequency(&format!("base_{}", i)))
                         .sum();
 
-                    log::info!(
+                    eprintln!(
                         "    Heavy Zipfian debug: super-hot keys surviving: {}/5, their total freq: {}, top 10% ratio: {:.2}",
-                        super_hot_survivors,
-                        super_hot_freq,
-                        top_10_ratio
+                        super_hot_survivors, super_hot_freq, top_10_ratio
                     );
 
                     assert!(
@@ -2120,14 +2106,9 @@ mod stress_testing {
 
             total_operations.fetch_add(dist_ops, Ordering::Relaxed);
 
-            log::info!(
+            eprintln!(
                 "  {} distribution: {} ops, {:.0} ops/sec, freq range: {}-{} (avg: {:.1})",
-                dist_name,
-                dist_ops,
-                dist_throughput,
-                min_freq,
-                max_freq,
-                avg_freq
+                dist_name, dist_ops, dist_throughput, min_freq, max_freq, avg_freq
             );
         }
 
@@ -2153,12 +2134,12 @@ mod stress_testing {
             );
         }
 
-        log::info!("Frequency distribution stress test completed");
-        log::info!(
+        eprintln!("Frequency distribution stress test completed");
+        eprintln!(
             "  Total operations across all distributions: {}",
             final_total
         );
-        log::info!("  All distributions handled successfully");
+        eprintln!("  All distributions handled successfully");
     }
 
     #[test]
@@ -2336,12 +2317,12 @@ mod stress_testing {
 
         // Debug: Check cache state immediately after threads complete
         let cache_len = cache.lock().unwrap().len();
-        log::info!(
+        eprintln!(
             "DEBUG: Cache length after all operations: {}/100",
             cache_len
         );
-        log::info!("DEBUG: Total operations completed: {}", total_ops);
-        log::info!("DEBUG: Total evictions recorded: {}", total_evictions);
+        eprintln!("DEBUG: Total operations completed: {}", total_ops);
+        eprintln!("DEBUG: Total evictions recorded: {}", total_evictions);
 
         // Debug frequency distribution
         {
@@ -2360,11 +2341,9 @@ mod stress_testing {
                 sample_filler_freq = freq;
             }
 
-            log::info!(
+            eprintln!(
                 "DEBUG: Sample frequencies - T1: {}, T3: {}, Filler: {}",
-                sample_tier1_freq,
-                sample_tier3_freq,
-                sample_filler_freq
+                sample_tier1_freq, sample_tier3_freq, sample_filler_freq
             );
 
             // Count what types of items are in the cache
@@ -2398,13 +2377,9 @@ mod stress_testing {
             let total_accounted = tier1_count + tier2_count + tier3_count + filler_count;
             let stress_count = cache_guard.len() - total_accounted;
 
-            log::info!(
+            eprintln!(
                 "DEBUG: Cache composition - T1:{}, T2:{}, T3:{}, Filler:{}, Stress:{}",
-                tier1_count,
-                tier2_count,
-                tier3_count,
-                filler_count,
-                stress_count
+                tier1_count, tier2_count, tier3_count, filler_count, stress_count
             );
         }
 
@@ -2508,15 +2483,15 @@ mod stress_testing {
             avg_tier1_freq
         );
 
-        log::info!("LFU eviction stress test completed in {:?}", duration);
-        log::info!("  Total operations: {}", total_ops);
-        log::info!("  Total evictions: {}", total_evictions);
-        log::info!(
+        eprintln!("LFU eviction stress test completed in {:?}", duration);
+        eprintln!("  Total operations: {}", total_ops);
+        eprintln!("  Total evictions: {}", total_evictions);
+        eprintln!(
             "  Frequency violations: {} ({:.2}%)",
             total_violations,
             violation_rate * 100.0
         );
-        log::info!(
+        eprintln!(
             "  Tier survivors: T1={}/10 ({:.1}%), T2={}/20 ({:.1}%), T3={}/15 ({:.1}%)",
             tier1_survivors,
             tier1_survival_rate * 100.0,
@@ -2525,7 +2500,7 @@ mod stress_testing {
             tier3_survivors,
             tier3_survival_rate * 100.0
         );
-        log::info!("  Average tier 1 frequency: {:.1}", avg_tier1_freq);
-        log::info!("  Throughput: {:.0} ops/sec", ops_per_sec);
+        eprintln!("  Average tier 1 frequency: {:.1}", avg_tier1_freq);
+        eprintln!("  Throughput: {:.0} ops/sec", ops_per_sec);
     }
 }
