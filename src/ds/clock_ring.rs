@@ -24,7 +24,7 @@
 //! │                                     │                │ hand = 1       │   │
 //! │                                     └────────────────┼────────────────┘   │
 //! │                                                      │                    │
-//! │   Entry: { key, value }  +  referenced: Vec<bool>     │                    │
+//! │   Entry: { key, value }  +  referenced: Vec<bool>    │                    │
 //! │   "A,1" = slot 0: Entry { key: "key_a" }, ref[0]=1   │                    │
 //! │   "B,0" = slot 1: Entry { key: "key_b" }, ref[1]=0  ◄┘ (next victim)      │
 //! │                                                                           │
