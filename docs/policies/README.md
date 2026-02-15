@@ -56,7 +56,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 
 ### Roadmap Policies (Planned)
 
-See [Policy roadmap](roadmap/README.md) for upcoming policies (LIRS, GDSF, etc.).
+See [Policy roadmap](roadmap/README.md) for upcoming policies (LIRS, GDSF, TinyLFU/W-TinyLFU, etc.).
 
 ### Implemented Policy Summaries (Short)
 
