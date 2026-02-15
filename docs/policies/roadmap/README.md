@@ -9,7 +9,6 @@ If a policy moves into production code, its document should be moved back to
 
 ## Roadmap Policies
 
-- [CAR](car.md)
 - [GDSF](gdsf.md)
 - [LFU Aging](lfu-aging.md)
 - [LIRS](lirs.md)

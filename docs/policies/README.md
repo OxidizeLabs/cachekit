@@ -45,6 +45,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 | LRU-K | Scan-resistant recency | [LRU-K doc](lru-k.md) |
 | 2Q | Probation + protected queues | [2Q doc](2q.md) |
 | ARC | Adaptive recency/frequency balance | [ARC doc](arc.md) |
+| CAR | ARC-like with Clock (lower hit overhead) | [CAR doc](car.md) |
 | FIFO | Simple insertion-order (oldest first) | [FIFO doc](fifo.md) |
 | LIFO | Stack-based (newest first) | [LIFO doc](lifo.md) |
 | Clock | Approximate LRU | [Clock doc](clock.md) |
@@ -55,7 +56,7 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 
 ### Roadmap Policies (Planned)
 
-See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, etc.).
+See [Policy roadmap](roadmap/README.md) for upcoming policies (LIRS, GDSF, etc.).
 
 ### Implemented Policy Summaries (Short)
 
@@ -70,6 +71,7 @@ See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, e
 - **LRU-K**: Good scan resistance; more metadata per entry.
 - **2Q**: Simple scan resistance; requires queue sizing.
 - **ARC**: Adaptive recency/frequency balance; no manual tuning; more metadata overhead.
+- **CAR**: ARC-like adaptivity with Clock; hits set ref bit only; scan-resistant.
 - **FIFO**: Predictable insertion order (oldest first); weak under strong locality.
 - **LIFO**: Stack order (newest first); niche use for undo buffers.
 - **Clock-PRO**: Scan-resistant Clock variant; more complexity.
@@ -80,10 +82,10 @@ For broader policy taxonomy (OPT, ARC, CAR, LIRS, Random, etc.), use the
 
 ## Practical Tradeoffs (What Changes In Real Systems)
 
-- **Scan resistance**: `LRU`/`Clock` are vulnerable; `S3-FIFO`, `Heap-LFU`, `LRU-K`, `2Q`, and `ARC` handle scans better.
-- **Metadata & CPU**: `Random`/`FIFO` < `Clock` < `LRU` < `2Q`/`SLRU` < `LRU-K`/`ARC`/`LIRS`.
+- **Scan resistance**: `LRU`/`Clock` are vulnerable; `S3-FIFO`, `Heap-LFU`, `LRU-K`, `2Q`, `ARC`, and `CAR` handle scans better.
+- **Metadata & CPU**: `Random`/`FIFO` < `Clock` < `LRU` < `2Q`/`SLRU` < `LRU-K`/`ARC`/`CAR`/`LIRS`.
 - **Concurrency**: strict global `LRU` lists can contend; `Clock` and sharded designs often scale better.
-- **Adaptivity**: `LFU` needs decay to adapt; `ARC`-family adapts via history; static partitions (`2Q`/`SLRU`) need tuning.
+- **Adaptivity**: `LFU` needs decay to adapt; `ARC`/`CAR` adapt via history; static partitions (`2Q`/`SLRU`) need tuning.
 - **Predictability**: simpler policies are easier to reason about under tail-latency constraints; complex policies can have more edge cases.
 
 ## When To Use / Not Use (Rules Of Thumb)
