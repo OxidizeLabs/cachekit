@@ -1,5 +1,7 @@
 # FIFO (First-In, First-Out)
 
+**Feature:** `policy-fifo`
+
 ## Goal
 Evict the oldest inserted resident entry when the cache is full.
 

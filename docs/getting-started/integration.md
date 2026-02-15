@@ -63,15 +63,18 @@ The `Cache<K, V>` wrapper requires:
 
 ### Policy Selection
 
-| Policy | Use Case | Trade-offs |
-|--------|----------|------------|
-| `Fifo` | Simple, predictable eviction | No recency/frequency tracking |
-| `Lru` | Temporal locality | Vulnerable to scans |
-| `LruK { k }` | Scan resistance | Extra memory for history |
-| `Lfu { bucket_hint }` | Stable hot spots | Slow to adapt to changes |
-| `HeapLfu` | Large caches, frequent evictions | O(log n) eviction |
-| `TwoQ { probation_frac }` | Mixed workloads | Two-queue overhead |
-| `S3Fifo { small_ratio, ghost_ratio }` | Scan-heavy workloads | Small + ghost queues |
+Each policy requires its feature flag (e.g. `policy-lru` for `CachePolicy::Lru`). See [Compatibility and Features](../guides/compatibility-and-features.md).
+
+| Policy | Feature | Use Case | Trade-offs |
+|--------|---------|----------|------------|
+| `Fifo` | `policy-fifo` | Simple, predictable eviction | No recency/frequency tracking |
+| `Lru` | `policy-lru` | Temporal locality | Vulnerable to scans |
+| `FastLru` | `policy-fast-lru` | Maximum single-threaded speed | No Arc wrapping, no concurrent wrapper |
+| `LruK { k }` | `policy-lru-k` | Scan resistance | Extra memory for history |
+| `Lfu { bucket_hint }` | `policy-lfu` | Stable hot spots | Slow to adapt to changes |
+| `HeapLfu` | `policy-heap-lfu` | Large caches, frequent evictions | O(log n) eviction |
+| `TwoQ { probation_frac }` | `policy-two-q` | Mixed workloads | Two-queue overhead |
+| `S3Fifo { small_ratio, ghost_ratio }` | `policy-s3-fifo` | Scan-heavy workloads | Small + ghost queues |
 
 ## Direct Policy Access
 

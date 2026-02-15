@@ -1,5 +1,7 @@
 # NRU (Not Recently Used)
 
+**Feature:** `policy-nru`
+
 ## Goal
 Cheap eviction using a coarse "recently used" signal rather than a full ordering. Approximate LRU with minimal overhead and simpler implementation than Clock.
 

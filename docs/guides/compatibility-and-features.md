@@ -11,15 +11,15 @@ CacheKit targets the Rust MSRV listed in `Cargo.toml` and reflected in the READM
 - `metrics` — Enables hit/miss metrics and snapshots.
 - `concurrency` — Enables concurrent wrappers (requires `parking_lot`).
 
-### Eviction Policies
+### Eviction Policies (Per-Policy Feature Flags)
 
-Each eviction policy can be enabled or disabled via feature flags. This allows smaller builds when only specific policies are needed.
+Each eviction policy can be enabled or disabled via its own feature flag. This keeps builds smaller when you only need specific policies.
 
 | Feature | Policy | Description |
 |---------|--------|-------------|
 | `policy-fifo` | FIFO | First In, First Out |
-| `policy-lru` | LRU | Least Recently Used |
-| `policy-fast-lru` | Fast LRU | Optimized single-threaded LRU |
+| `policy-lru` | LRU | Least Recently Used (Arc-wrapped, `ConcurrentLruCache` available) |
+| `policy-fast-lru` | Fast LRU | Optimized single-threaded LRU (~7–10× faster than LRU) |
 | `policy-lru-k` | LRU-K | Scan-resistant with K-th access |
 | `policy-lfu` | LFU | Least Frequently Used (bucket-based) |
 | `policy-heap-lfu` | Heap LFU | LFU with heap-based eviction |
@@ -35,7 +35,9 @@ Each eviction policy can be enabled or disabled via feature flags. This allows s
 | `policy-clock-pro` | Clock-PRO | Scan-resistant clock |
 | `policy-nru` | NRU | Not Recently Used |
 
-**Convenience feature:** `policy-all` enables all policies above. It is included in the default features.
+**Default features** include `policy-s3-fifo`, `policy-lru`, `policy-fast-lru`, `policy-lru-k`, and `policy-clock`.
+
+**Convenience feature:** `policy-all` enables every policy above.
 
 **Minimal builds:** Use `default-features = false` and select only the policies you need:
 

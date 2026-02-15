@@ -1,5 +1,7 @@
 # ARC (Adaptive Replacement Cache)
 
+**Feature:** `policy-arc`
+
 ## Status
 
 **Implemented** in `src/policy/arc.rs`

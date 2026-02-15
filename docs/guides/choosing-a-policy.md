@@ -3,6 +3,8 @@
 This guide summarizes practical trade-offs and mirrors the benchmark-driven guidance
 in the [latest benchmark guide](../benchmarks/latest/index.md).
 
+**Feature flags:** Each policy is gated behind a feature flag (e.g. `policy-lru`, `policy-s3-fifo`). Enable only the policies you need for smaller builds. See [Compatibility and Features](compatibility-and-features.md).
+
 ## Quick Picks
 
 - **General purpose, skewed workloads**: `LRU` or `S3-FIFO`
