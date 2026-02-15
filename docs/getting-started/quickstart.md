@@ -8,8 +8,17 @@ Add CacheKit to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachekit = "0.2.0-alpha"
+cachekit = "0.3"
 ```
+
+Each eviction policy is gated behind a feature flag. The default features include `policy-s3-fifo`, `policy-lru`, `policy-fast-lru`, `policy-lru-k`, and `policy-clock`. For minimal builds, use `default-features = false` and enable only the policies you need:
+
+```toml
+[dependencies]
+cachekit = { version = "0.3", default-features = false, features = ["policy-lru"] }
+```
+
+See [Compatibility and Features](../guides/compatibility-and-features.md) for the full list of per-policy feature flags.
 
 ## Build Your First Cache
 

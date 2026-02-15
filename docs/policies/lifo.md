@@ -1,5 +1,7 @@
 # LIFO (Last In, First Out)
 
+**Feature:** `policy-lifo`
+
 ## Goal
 Evict the most recently inserted entry.
 

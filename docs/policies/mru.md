@@ -1,5 +1,7 @@
 # MRU (Most Recently Used)
 
+**Feature:** `policy-mru`
+
 ## Goal
 Evict the **most** recently accessed entry.
 

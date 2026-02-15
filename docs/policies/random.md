@@ -1,5 +1,7 @@
 # Random Eviction
 
+**Feature:** `policy-random`
+
 ## Goal
 Evict a uniformly random resident entry when capacity is reached.
 

@@ -17,6 +17,10 @@ This page maps the major modules and how they fit together.
 3. Use the unified `Cache<K, V>` API for standard operations.
 4. Drop into `policy::*` or `ds::*` for advanced or policy-specific operations.
 
+## Feature Flags
+
+Policies are gated behind feature flags (e.g. `policy-lru`, `policy-s3-fifo`). Use `default-features = false` and enable only the policies you need. See [Compatibility and Features](compatibility-and-features.md).
+
 ## Where to Start
 
 - [Builder overview](../getting-started/integration.md)

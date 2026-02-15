@@ -1,5 +1,7 @@
 # S3-FIFO
 
+**Feature:** `policy-s3-fifo`
+
 ## Goal
 Achieve scan resistance with O(1) operations using simple FIFO queues and minimal metadata.
 

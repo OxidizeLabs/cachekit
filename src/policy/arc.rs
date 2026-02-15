@@ -25,7 +25,7 @@
 //! │   ┌─────────────────────────────────────────────────────────────────────┐   │
 //! │   │                        List Organization                            │   │
 //! │   │                                                                     │   │
-//! │   │   T1 (Recency - Recent Once)          T2 (Frequency - Repeated)    │   │
+//! │   │   T1 (Recency - Recent Once)          T2 (Frequency - Repeated)     │   │
 //! │   │   ┌─────────────────────────┐          ┌─────────────────────────┐  │   │
 //! │   │   │ MRU               LRU   │          │ MRU               LRU   │  │   │
 //! │   │   │  ▼                  ▼   │          │  ▼                  ▼   │  │   │
@@ -33,7 +33,7 @@
 //! │   │   │  new      older   evict │          │ hot          cold evict │  │   │
 //! │   │   └─────────────────────────┘          └─────────────────────────┘  │   │
 //! │   │                                                                     │   │
-//! │   │   B1 (Ghost - evicted from T1)       B2 (Ghost - evicted from T2) │   │
+//! │   │   B1 (Ghost - evicted from T1)       B2 (Ghost - evicted from T2)   │   │
 //! │   │   ┌─────────────────────────┐          ┌─────────────────────────┐  │   │
 //! │   │   │ Keys only (no values)   │          │ Keys only (no values)   │  │   │
 //! │   │   └─────────────────────────┘          └─────────────────────────┘  │   │

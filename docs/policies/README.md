@@ -34,24 +34,27 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 
 ### Implemented Policies (CacheKit)
 
-| Policy | Summary | Doc |
-|--------|---------|-----|
-| LRU | Strong default for temporal locality | [LRU doc](lru.md) |
-| MRU | Evicts most recent (niche: cyclic patterns) | [MRU doc](mru.md) |
-| SLRU | Segmented LRU with probation/protected | [SLRU doc](slru.md) |
-| LFU | Frequency-driven, stable hot sets | [LFU doc](lfu.md) |
-| Heap-LFU | LFU with heap eviction | [Heap-LFU doc](heap-lfu.md) |
-| MFU | Evicts highest frequency (niche/baseline) | [MFU doc](mfu.md) |
-| LRU-K | Scan-resistant recency | [LRU-K doc](lru-k.md) |
-| 2Q | Probation + protected queues | [2Q doc](2q.md) |
-| ARC | Adaptive recency/frequency balance | [ARC doc](arc.md) |
-| FIFO | Simple insertion-order (oldest first) | [FIFO doc](fifo.md) |
-| LIFO | Stack-based (newest first) | [LIFO doc](lifo.md) |
-| Clock | Approximate LRU | [Clock doc](clock.md) |
-| Clock-PRO | Scan-resistant Clock variant | [Clock-PRO doc](clock-pro.md) |
-| NRU | Coarse recency tracking | [NRU doc](nru.md) |
-| S3-FIFO | Scan-resistant FIFO | [S3-FIFO doc](s3-fifo.md) |
-| Random | Baseline: uniform random eviction | [Random doc](random.md) |
+Enable the corresponding feature flag for each policy. See [Compatibility and Features](../guides/compatibility-and-features.md).
+
+| Policy | Feature | Summary | Doc |
+|--------|---------|---------|-----|
+| LRU | `policy-lru` | Strong default for temporal locality | [LRU doc](lru.md) |
+| Fast LRU | `policy-fast-lru` | Optimized single-threaded LRU | — |
+| MRU | `policy-mru` | Evicts most recent (niche: cyclic patterns) | [MRU doc](mru.md) |
+| SLRU | `policy-slru` | Segmented LRU with probation/protected | [SLRU doc](slru.md) |
+| LFU | `policy-lfu` | Frequency-driven, stable hot sets | [LFU doc](lfu.md) |
+| Heap-LFU | `policy-heap-lfu` | LFU with heap eviction | [Heap-LFU doc](heap-lfu.md) |
+| MFU | `policy-mfu` | Evicts highest frequency (niche/baseline) | [MFU doc](mfu.md) |
+| LRU-K | `policy-lru-k` | Scan-resistant recency | [LRU-K doc](lru-k.md) |
+| 2Q | `policy-two-q` | Probation + protected queues | [2Q doc](2q.md) |
+| ARC | `policy-arc` | Adaptive recency/frequency balance | [ARC doc](arc.md) |
+| FIFO | `policy-fifo` | Simple insertion-order (oldest first) | [FIFO doc](fifo.md) |
+| LIFO | `policy-lifo` | Stack-based (newest first) | [LIFO doc](lifo.md) |
+| Clock | `policy-clock` | Approximate LRU | [Clock doc](clock.md) |
+| Clock-PRO | `policy-clock-pro` | Scan-resistant Clock variant | [Clock-PRO doc](clock-pro.md) |
+| NRU | `policy-nru` | Coarse recency tracking | [NRU doc](nru.md) |
+| S3-FIFO | `policy-s3-fifo` | Scan-resistant FIFO | [S3-FIFO doc](s3-fifo.md) |
+| Random | `policy-random` | Baseline: uniform random eviction | [Random doc](random.md) |
 
 ### Roadmap Policies (Planned)
 

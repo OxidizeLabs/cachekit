@@ -1,5 +1,7 @@
 # LRU-K
 
+**Feature:** `policy-lru-k`
+
 ## Goal
 Improve scan resistance by evicting based on the K-th most recent access time, rather than last access time.
 

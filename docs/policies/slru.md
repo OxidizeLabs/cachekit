@@ -1,5 +1,7 @@
 # SLRU (Segmented LRU)
 
+**Feature:** `policy-slru`
+
 ## Goal
 Reduce scan pollution by separating "probationary" entries from "protected" entries.
 

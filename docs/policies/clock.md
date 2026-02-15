@@ -1,5 +1,7 @@
 # Second-Chance / Clock
 
+**Feature:** `policy-clock`
+
 ## Goal
 Approximate LRU with lower overhead by avoiding strict recency ordering and linked list manipulation.
 

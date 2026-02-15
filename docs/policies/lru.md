@@ -1,5 +1,7 @@
 # LRU (Least Recently Used)
 
+**Feature:** `policy-lru`
+
 ## Goal
 Evict the entry that has not been accessed for the longest time.
 
