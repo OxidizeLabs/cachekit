@@ -49,6 +49,7 @@ policy-all = [
     "policy-two-q",
     "policy-s3-fifo",
     "policy-arc",
+    "policy-car",
     "policy-lifo",
     "policy-mfu",
     "policy-mru",
@@ -67,6 +68,7 @@ policy-heap-lfu = []
 policy-two-q = []
 policy-s3-fifo = []
 policy-arc = []
+policy-car = []
 policy-lifo = []
 policy-mfu = []
 policy-mru = []
