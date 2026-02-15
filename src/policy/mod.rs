@@ -1,6 +1,6 @@
 #[cfg(feature = "policy-arc")]
 pub mod arc;
-#[cfg(feature = "policy-card")]
+#[cfg(feature = "policy-car")]
 pub mod car;
 #[cfg(feature = "policy-clock")]
 pub mod clock;
