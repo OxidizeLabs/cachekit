@@ -58,7 +58,7 @@ Enable the corresponding feature flag for each policy. See [Compatibility and Fe
 
 ### Roadmap Policies (Planned)
 
-See [Policy roadmap](roadmap/README.md) for upcoming policies (ARC, CAR, LIRS, etc.).
+See [Policy roadmap](roadmap/README.md) for upcoming policies (LIRS, GDSF, TinyLFU/W-TinyLFU, etc.).
 
 ### Implemented Policy Summaries (Short)
 

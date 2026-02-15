@@ -14,4 +14,5 @@ If a policy moves into production code, its document should be moved back to
 - [LFU Aging](lfu-aging.md)
 - [LIRS](lirs.md)
 - [OPT](opt.md)
+- [TinyLFU / W-TinyLFU](tinylfu.md)
 - [TTL](ttl.md)
