@@ -9,10 +9,13 @@ If a policy moves into production code, its document should be moved back to
 
 ## Roadmap Policies
 
-- [CAR](car.md)
+- [AdaptSize](adaptsize.md)
 - [GDSF](gdsf.md)
 - [LFU Aging](lfu-aging.md)
 - [LIRS](lirs.md)
+- [LRFU / LFRU](lrfu.md)
 - [OPT](opt.md)
+- [RRIP / DRRIP](rrip.md)
+- [SIEVE](sieve.md)
 - [TinyLFU / W-TinyLFU](tinylfu.md)
 - [TTL](ttl.md)
