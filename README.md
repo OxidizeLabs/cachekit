@@ -15,20 +15,77 @@
 - Unified builder API plus direct access for policy-specific operations.
 - Optional metrics and benchmarks to validate trade-offs.
 
+## Table of Contents
+- [Overview](#overview)
+- [Main Features](#features)
+- [Feature Flags](#feature-flags)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Available Policies](#available-policies)
+- [Policy Selection Guide](#policy-selection-guide)
+- [Direct Policy Access](#direct-policy-access)
+- [Documentation](https://oxidizelabs.github.io/cachekit/)
+- [Next Steps](#next-steps)
+
+## Overview
+
+CacheKit is a Rust library that provides:
+
+- High-performance cache replacement policies (e.g., **FIFO**, **LRU**, **LRU-K**, **Clock**, **NRU**, **S3-FIFO**, **SLRU**, **2Q**, and more).
+- Supporting data structures and policy primitives for building caches.
+- Optional metrics and benchmark harnesses.
+- A modular API suitable for embedding in systems where control over caching behavior is critical.
+
+This crate is designed for systems programming, microservices, and performance-critical applications.
+
+## Features
+
+- Policy implementations optimized for performance and predictability.
+- Optional integration with metrics collectors (e.g., Prometheus/metrics crates).
+- Benchmarks to compare policy performance under real-world workloads.
+
 ## Installation
 
 Add `cachekit` as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachekit = "0.2.0"
+cachekit = "0.3.0"
 ```
 
-From git (bleeding edge):
+From source:
 
 ```toml
 [dependencies]
 cachekit = { git = "https://github.com/OxidizeLabs/cachekit" }
+```
+
+## Quick Start
+
+### Using the Builder (Recommended)
+
+The `CacheBuilder` provides a unified API for creating caches with any eviction policy:
+
+```rust
+use cachekit::builder::{CacheBuilder, CachePolicy};
+
+fn main() {
+    // Create an LRU cache with a capacity of 100 entries
+    let mut cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
+
+    // Insert items
+    cache.insert(1, "value1".to_string());
+    cache.insert(2, "value2".to_string());
+
+    // Retrieve an item
+    if let Some(value) = cache.get(&1) {
+        println!("Got from cache: {}", value);
+    }
+
+    // Check existence and size
+    assert!(cache.contains(&1));
+    assert_eq!(cache.len(), 2);
+}
 ```
 
 ## Feature Flags
@@ -69,51 +126,6 @@ Each eviction policy is gated behind a feature flag. Use `default-features = fal
 ```toml
 # Minimal build: only LRU and S3-FIFO
 cachekit = { version = "0.3", default-features = false, features = ["policy-lru", "policy-s3-fifo"] }
-```
-
-## Overview
-
-CacheKit is a Rust library that provides:
-
-- High-performance cache replacement policies (e.g., **FIFO**, **LRU**, **LRU-K**, **Clock**, **NRU**, **S3-FIFO**, **SLRU**, **2Q**, and more).
-- Supporting data structures and policy primitives for building caches.
-- Optional metrics and benchmark harnesses.
-- A modular API suitable for embedding in systems where control over caching behavior is critical.
-
-This crate is designed for systems programming, microservices, and performance-critical applications.
-
-## Features
-
-- Policy implementations optimized for performance and predictability.
-- Optional integration with metrics collectors (e.g., Prometheus/metrics crates).
-- Benchmarks to compare policy performance under real-world workloads.
-
-## Quick Start
-
-### Using the Builder (Recommended)
-
-The `CacheBuilder` provides a unified API for creating caches with any eviction policy:
-
-```rust
-use cachekit::builder::{CacheBuilder, CachePolicy};
-
-fn main() {
-    // Create an LRU cache with a capacity of 100 entries
-    let mut cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
-
-    // Insert items
-    cache.insert(1, "value1".to_string());
-    cache.insert(2, "value2".to_string());
-
-    // Retrieve an item
-    if let Some(value) = cache.get(&1) {
-        println!("Got from cache: {}", value);
-    }
-
-    // Check existence and size
-    assert!(cache.contains(&1));
-    assert_eq!(cache.len(), 2);
-}
 ```
 
 ### Available Policies
@@ -227,4 +239,6 @@ fn main() {
 - [Quickstart](docs/getting-started/quickstart.md)
 - [Integration guide](docs/getting-started/integration.md)
 - [Policy overview](docs/policies/README.md)
+- [Roadmap](docs/policies/roadmap/README.md)
+- [Testing](docs/testing/testing.md)
 - [Benchmarks](docs/benchmarks/overview.md)
