@@ -33,7 +33,7 @@ doc = true
 crate-type = ["lib"]
 
 [features]
-default = ["policy-all"]
+default = ["policy-s3-fifo", "policy_lru", "policy-fast-lru", "policy_lru_k", "policy-clock"]
 metrics = []
 concurrency = ["parking_lot"]
 
