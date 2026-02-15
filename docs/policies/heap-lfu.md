@@ -1,5 +1,7 @@
 # Heap LFU (Priority Queue LFU)
 
+**Feature:** `policy-heap-lfu`
+
 ## Goal
 Implement LFU using a heap to choose the minimum frequency victim, trading O(1) for simpler structure and O(log n) operations.
 

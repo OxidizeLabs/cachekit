@@ -1,5 +1,7 @@
 # MFU (Most Frequently Used)
 
+**Feature:** `policy-mfu`
+
 ## Goal
 Evict the entry with the highest access frequency, opposite of LFU.
 

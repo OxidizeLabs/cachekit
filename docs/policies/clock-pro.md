@@ -1,5 +1,7 @@
 # CLOCK-Pro
 
+**Feature:** `policy-clock-pro`
+
 ## Goal
 Improve Clock's scan behavior by tracking hot/cold classification and ghost entries using Clock-style hands.
 

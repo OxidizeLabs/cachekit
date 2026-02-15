@@ -10,6 +10,7 @@ pub use crate::ds::{
 };
 #[cfg(feature = "metrics")]
 pub use crate::metrics::snapshot::CacheMetricsSnapshot;
+#[cfg(feature = "policy-fifo")]
 pub use crate::policy::fifo::FifoCache;
 pub use crate::traits::{
     AsyncCacheFuture, CacheConfig, CacheFactory, CacheTier, CacheTierManager, ConcurrentCache,

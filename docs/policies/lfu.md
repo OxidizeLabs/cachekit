@@ -1,5 +1,7 @@
 # LFU (Least Frequently Used)
 
+**Feature:** `policy-lfu`
+
 ## Goal
 Evict the entry with the lowest access frequency; break ties by recency (common) or arbitrarily.
 

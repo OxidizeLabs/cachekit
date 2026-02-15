@@ -33,9 +33,48 @@ doc = true
 crate-type = ["lib"]
 
 [features]
-default = []
+default = ["policy-s3-fifo", "policy-lru", "policy-fast-lru", "policy-lru-k", "policy-clock"]
 metrics = []
 concurrency = ["parking_lot"]
+
+# Eviction policy feature flags. Enable only the policies you need for smaller builds.
+# Use `default-features = false` and select specific policies, or use `policy-all` for every policy.
+policy-all = [
+    "policy-fifo",
+    "policy-lru",
+    "policy-fast-lru",
+    "policy-lru-k",
+    "policy-lfu",
+    "policy-heap-lfu",
+    "policy-two-q",
+    "policy-s3-fifo",
+    "policy-arc",
+    "policy-lifo",
+    "policy-mfu",
+    "policy-mru",
+    "policy-random",
+    "policy-slru",
+    "policy-clock",
+    "policy-clock-pro",
+    "policy-nru",
+]
+policy-fifo = []
+policy-lru = []
+policy-fast-lru = []
+policy-lru-k = []
+policy-lfu = []
+policy-heap-lfu = []
+policy-two-q = []
+policy-s3-fifo = []
+policy-arc = []
+policy-lifo = []
+policy-mfu = []
+policy-mru = []
+policy-random = []
+policy-slru = []
+policy-clock = []
+policy-clock-pro = []
+policy-nru = []
 
 [dependencies]
 parking_lot = { version = "0.12", optional = true }

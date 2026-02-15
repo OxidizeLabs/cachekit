@@ -104,23 +104,41 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
 
+#[cfg(feature = "policy-lfu")]
 use crate::ds::frequency_buckets::DEFAULT_BUCKET_PREALLOC;
+#[cfg(feature = "policy-arc")]
 use crate::policy::arc::ARCCore;
+#[cfg(feature = "policy-clock")]
 use crate::policy::clock::ClockCache;
+#[cfg(feature = "policy-clock-pro")]
 use crate::policy::clock_pro::ClockProCache;
+#[cfg(feature = "policy-fast-lru")]
 use crate::policy::fast_lru::FastLru;
+#[cfg(feature = "policy-fifo")]
 use crate::policy::fifo::FifoCache;
+#[cfg(feature = "policy-heap-lfu")]
 use crate::policy::heap_lfu::HeapLfuCache;
+#[cfg(feature = "policy-lfu")]
 use crate::policy::lfu::LfuCache;
+#[cfg(feature = "policy-lifo")]
 use crate::policy::lifo::LifoCore;
+#[cfg(feature = "policy-lru")]
 use crate::policy::lru::LruCore;
+#[cfg(feature = "policy-lru-k")]
 use crate::policy::lru_k::LrukCache;
+#[cfg(feature = "policy-mfu")]
 use crate::policy::mfu::MfuCore;
+#[cfg(feature = "policy-mru")]
 use crate::policy::mru::MruCore;
+#[cfg(feature = "policy-nru")]
 use crate::policy::nru::NruCache;
+#[cfg(feature = "policy-random")]
 use crate::policy::random::RandomCore;
+#[cfg(feature = "policy-s3-fifo")]
 use crate::policy::s3_fifo::S3FifoCache;
+#[cfg(feature = "policy-slru")]
 use crate::policy::slru::SlruCore;
+#[cfg(feature = "policy-two-q")]
 use crate::policy::two_q::TwoQCore;
 use crate::traits::{CoreCache, ReadOnlyCache};
 
@@ -188,12 +206,14 @@ pub enum CachePolicy {
     ///
     /// Evicts the oldest inserted item. Simple and predictable.
     /// Good for: streaming data, simple caching needs.
+    #[cfg(feature = "policy-fifo")]
     Fifo,
 
     /// Least Recently Used eviction.
     ///
     /// Evicts the item that hasn't been accessed for the longest time.
     /// Good for: temporal locality, general-purpose caching.
+    #[cfg(feature = "policy-lru")]
     Lru,
 
     /// Fast LRU eviction (optimized for single-threaded performance).
@@ -201,6 +221,7 @@ pub enum CachePolicy {
     /// Like LRU but stores values directly without Arc wrapping,
     /// using FxHash for faster operations (~7-10x faster than standard LRU).
     /// Good for: maximum single-threaded performance, values don't need to outlive eviction.
+    #[cfg(feature = "policy-fast-lru")]
     FastLru,
 
     /// LRU-K policy with configurable K value.
@@ -211,6 +232,7 @@ pub enum CachePolicy {
     /// - `k: usize` - Number of accesses to track (K=2 is common)
     ///
     /// Good for: database buffer pools, scan-heavy workloads.
+    #[cfg(feature = "policy-lru-k")]
     LruK { k: usize },
 
     /// Least Frequently Used eviction (bucket-based, O(1)).
@@ -221,6 +243,7 @@ pub enum CachePolicy {
     /// - `bucket_hint: Option<usize>` - Pre-allocated frequency buckets (default: 32)
     ///
     /// Good for: stable access patterns, reference data.
+    #[cfg(feature = "policy-lfu")]
     Lfu {
         /// Pre-allocated frequency buckets. Most items cluster at low frequencies,
         /// so the default (32) covers typical workloads. Increase for long-running
@@ -234,6 +257,7 @@ pub enum CachePolicy {
     /// Better for large caches with frequent evictions.
     ///
     /// Good for: high-throughput systems, large caches.
+    #[cfg(feature = "policy-heap-lfu")]
     HeapLfu,
 
     /// Two-Queue policy with configurable probation fraction.
@@ -244,6 +268,7 @@ pub enum CachePolicy {
     /// - `probation_frac: f64` - Fraction of capacity for probation queue (0.0-1.0)
     ///
     /// Good for: mixed workloads, scan resistance.
+    #[cfg(feature = "policy-two-q")]
     TwoQ { probation_frac: f64 },
 
     /// S3-FIFO (Simple, Scalable, Scan-resistant FIFO) policy.
@@ -256,6 +281,7 @@ pub enum CachePolicy {
     /// - `ghost_ratio: f64` - Fraction of capacity for Ghost list (default 0.9)
     ///
     /// Good for: CDN caches, scan-heavy workloads, database buffer pools.
+    #[cfg(feature = "policy-s3-fifo")]
     S3Fifo {
         /// Fraction of capacity for the Small queue (filters one-hit wonders).
         small_ratio: f64,
@@ -270,12 +296,14 @@ pub enum CachePolicy {
     /// target parameter. Provides excellent performance across diverse workloads.
     ///
     /// Good for: unknown or changing workloads, self-tuning caches.
+    #[cfg(feature = "policy-arc")]
     Arc,
 
     /// Last In, First Out eviction.
     ///
     /// Evicts the most recently inserted item (stack-like behavior).
     /// Good for: Undo buffers, temporary scratch space.
+    #[cfg(feature = "policy-lifo")]
     Lifo,
 
     /// Most Frequently Used eviction (bucket-based, O(1)).
@@ -286,6 +314,7 @@ pub enum CachePolicy {
     /// - `bucket_hint: Option<usize>` - Pre-allocated frequency buckets (default: 32)
     ///
     /// Good for: Niche cases where most frequent = least needed next.
+    #[cfg(feature = "policy-mfu")]
     Mfu {
         /// Pre-allocated frequency buckets for high-frequency items.
         bucket_hint: Option<usize>,
@@ -295,12 +324,14 @@ pub enum CachePolicy {
     ///
     /// Evicts the most recently accessed item (opposite of LRU).
     /// Good for: Cyclic access patterns, sequential scans.
+    #[cfg(feature = "policy-mru")]
     Mru,
 
     /// Random eviction.
     ///
     /// Evicts a uniformly random item when capacity is reached.
     /// Good for: Baseline comparisons, truly random workloads.
+    #[cfg(feature = "policy-random")]
     Random,
 
     /// Segmented LRU with probationary and protected segments.
@@ -311,6 +342,7 @@ pub enum CachePolicy {
     /// - `probationary_frac: f64` - Fraction of capacity for probationary queue (0.0-1.0)
     ///
     /// Good for: Database buffer pools, scan-resistant workloads.
+    #[cfg(feature = "policy-slru")]
     Slru {
         /// Fraction of capacity for the probationary segment.
         probationary_frac: f64,
@@ -322,6 +354,7 @@ pub enum CachePolicy {
     /// Lower overhead than full LRU (no list manipulation on access).
     ///
     /// Good for: Low-latency caching, LRU approximation with lower overhead.
+    #[cfg(feature = "policy-clock")]
     Clock,
 
     /// Clock-PRO eviction.
@@ -330,6 +363,7 @@ pub enum CachePolicy {
     /// Combines Clock mechanics with ghost history tracking.
     ///
     /// Good for: Scan-heavy workloads, adaptive caching needs.
+    #[cfg(feature = "policy-clock-pro")]
     ClockPro,
 
     /// NRU (Not Recently Used) eviction.
@@ -338,6 +372,7 @@ pub enum CachePolicy {
     /// Coarser granularity than Clock, simpler implementation.
     ///
     /// Good for: Small-to-medium caches, simple coarse recency tracking.
+    #[cfg(feature = "policy-nru")]
     Nru,
 }
 
@@ -396,22 +431,39 @@ where
     K: Copy + Eq + Hash + Ord,
     V: Clone + Debug,
 {
+    #[cfg(feature = "policy-fifo")]
     Fifo(FifoCache<K, V>),
+    #[cfg(feature = "policy-lru")]
     Lru(LruCore<K, V>),
+    #[cfg(feature = "policy-fast-lru")]
     FastLru(FastLru<K, V>),
+    #[cfg(feature = "policy-lru-k")]
     LruK(LrukCache<K, V>),
+    #[cfg(feature = "policy-lfu")]
     Lfu(LfuCache<K, V>),
+    #[cfg(feature = "policy-heap-lfu")]
     HeapLfu(HeapLfuCache<K, V>),
+    #[cfg(feature = "policy-two-q")]
     TwoQ(TwoQCore<K, V>),
+    #[cfg(feature = "policy-s3-fifo")]
     S3Fifo(S3FifoCache<K, V>),
+    #[cfg(feature = "policy-arc")]
     Arc(ARCCore<K, V>),
+    #[cfg(feature = "policy-lifo")]
     Lifo(LifoCore<K, V>),
+    #[cfg(feature = "policy-mfu")]
     Mfu(MfuCore<K, V>),
+    #[cfg(feature = "policy-mru")]
     Mru(MruCore<K, V>),
+    #[cfg(feature = "policy-random")]
     Random(RandomCore<K, V>),
+    #[cfg(feature = "policy-slru")]
     Slru(SlruCore<K, V>),
+    #[cfg(feature = "policy-clock")]
     Clock(ClockCache<K, V>),
+    #[cfg(feature = "policy-clock-pro")]
     ClockPro(ClockProCache<K, V>),
+    #[cfg(feature = "policy-nru")]
     Nru(NruCache<K, V>),
 }
 
@@ -440,35 +492,52 @@ where
     /// ```
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         match &mut self.inner {
+            #[cfg(feature = "policy-fifo")]
             CacheInner::Fifo(fifo) => CoreCache::insert(fifo, key, value),
+            #[cfg(feature = "policy-lru")]
             CacheInner::Lru(lru) => {
                 let arc_value = Arc::new(value);
                 lru.insert(key, arc_value)
                     .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
             },
+            #[cfg(feature = "policy-fast-lru")]
             CacheInner::FastLru(fast_lru) => fast_lru.insert(key, value),
+            #[cfg(feature = "policy-lru-k")]
             CacheInner::LruK(lruk) => CoreCache::insert(lruk, key, value),
+            #[cfg(feature = "policy-lfu")]
             CacheInner::Lfu(lfu) => {
                 let arc_value = Arc::new(value);
                 lfu.insert(key, arc_value)
                     .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
             },
+            #[cfg(feature = "policy-heap-lfu")]
             CacheInner::HeapLfu(heap_lfu) => {
                 let arc_value = Arc::new(value);
                 heap_lfu
                     .insert(key, arc_value)
                     .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
             },
+            #[cfg(feature = "policy-two-q")]
             CacheInner::TwoQ(twoq) => CoreCache::insert(twoq, key, value),
+            #[cfg(feature = "policy-s3-fifo")]
             CacheInner::S3Fifo(s3fifo) => CoreCache::insert(s3fifo, key, value),
+            #[cfg(feature = "policy-arc")]
             CacheInner::Arc(arc) => CoreCache::insert(arc, key, value),
+            #[cfg(feature = "policy-lifo")]
             CacheInner::Lifo(lifo) => CoreCache::insert(lifo, key, value),
+            #[cfg(feature = "policy-mfu")]
             CacheInner::Mfu(mfu) => CoreCache::insert(mfu, key, value),
+            #[cfg(feature = "policy-mru")]
             CacheInner::Mru(mru) => CoreCache::insert(mru, key, value),
+            #[cfg(feature = "policy-random")]
             CacheInner::Random(random) => CoreCache::insert(random, key, value),
+            #[cfg(feature = "policy-slru")]
             CacheInner::Slru(slru) => CoreCache::insert(slru, key, value),
+            #[cfg(feature = "policy-clock")]
             CacheInner::Clock(clock) => CoreCache::insert(clock, key, value),
+            #[cfg(feature = "policy-clock-pro")]
             CacheInner::ClockPro(clock_pro) => CoreCache::insert(clock_pro, key, value),
+            #[cfg(feature = "policy-nru")]
             CacheInner::Nru(nru) => CoreCache::insert(nru, key, value),
         }
     }
@@ -490,22 +559,39 @@ where
     /// ```
     pub fn get(&mut self, key: &K) -> Option<&V> {
         match &mut self.inner {
+            #[cfg(feature = "policy-fifo")]
             CacheInner::Fifo(fifo) => fifo.get(key),
+            #[cfg(feature = "policy-lru")]
             CacheInner::Lru(lru) => lru.get(key).map(|arc| arc.as_ref()),
+            #[cfg(feature = "policy-fast-lru")]
             CacheInner::FastLru(fast_lru) => fast_lru.get(key),
+            #[cfg(feature = "policy-lru-k")]
             CacheInner::LruK(lruk) => lruk.get(key),
+            #[cfg(feature = "policy-lfu")]
             CacheInner::Lfu(lfu) => lfu.get(key).map(|arc| arc.as_ref()),
+            #[cfg(feature = "policy-heap-lfu")]
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.get(key).map(|arc| arc.as_ref()),
+            #[cfg(feature = "policy-two-q")]
             CacheInner::TwoQ(twoq) => twoq.get(key),
+            #[cfg(feature = "policy-s3-fifo")]
             CacheInner::S3Fifo(s3fifo) => s3fifo.get(key),
+            #[cfg(feature = "policy-arc")]
             CacheInner::Arc(arc) => arc.get(key),
+            #[cfg(feature = "policy-lifo")]
             CacheInner::Lifo(lifo) => lifo.get(key),
+            #[cfg(feature = "policy-mfu")]
             CacheInner::Mfu(mfu) => mfu.get(key),
+            #[cfg(feature = "policy-mru")]
             CacheInner::Mru(mru) => mru.get(key),
+            #[cfg(feature = "policy-random")]
             CacheInner::Random(random) => random.get(key),
+            #[cfg(feature = "policy-slru")]
             CacheInner::Slru(slru) => slru.get(key),
+            #[cfg(feature = "policy-clock")]
             CacheInner::Clock(clock) => clock.get(key),
+            #[cfg(feature = "policy-clock-pro")]
             CacheInner::ClockPro(clock_pro) => clock_pro.get(key),
+            #[cfg(feature = "policy-nru")]
             CacheInner::Nru(nru) => nru.get(key),
         }
     }
@@ -527,22 +613,39 @@ where
     /// ```
     pub fn contains(&self, key: &K) -> bool {
         match &self.inner {
+            #[cfg(feature = "policy-fifo")]
             CacheInner::Fifo(fifo) => fifo.contains(key),
+            #[cfg(feature = "policy-lru")]
             CacheInner::Lru(lru) => lru.contains(key),
+            #[cfg(feature = "policy-fast-lru")]
             CacheInner::FastLru(fast_lru) => fast_lru.contains(key),
+            #[cfg(feature = "policy-lru-k")]
             CacheInner::LruK(lruk) => lruk.contains(key),
+            #[cfg(feature = "policy-lfu")]
             CacheInner::Lfu(lfu) => lfu.contains(key),
+            #[cfg(feature = "policy-heap-lfu")]
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.contains(key),
+            #[cfg(feature = "policy-two-q")]
             CacheInner::TwoQ(twoq) => twoq.contains(key),
+            #[cfg(feature = "policy-s3-fifo")]
             CacheInner::S3Fifo(s3fifo) => s3fifo.contains(key),
+            #[cfg(feature = "policy-arc")]
             CacheInner::Arc(arc) => arc.contains(key),
+            #[cfg(feature = "policy-lifo")]
             CacheInner::Lifo(lifo) => lifo.contains(key),
+            #[cfg(feature = "policy-mfu")]
             CacheInner::Mfu(mfu) => mfu.contains(key),
+            #[cfg(feature = "policy-mru")]
             CacheInner::Mru(mru) => mru.contains(key),
+            #[cfg(feature = "policy-random")]
             CacheInner::Random(random) => random.contains(key),
+            #[cfg(feature = "policy-slru")]
             CacheInner::Slru(slru) => slru.contains(key),
+            #[cfg(feature = "policy-clock")]
             CacheInner::Clock(clock) => clock.contains(key),
+            #[cfg(feature = "policy-clock-pro")]
             CacheInner::ClockPro(clock_pro) => clock_pro.contains(key),
+            #[cfg(feature = "policy-nru")]
             CacheInner::Nru(nru) => nru.contains(key),
         }
     }
@@ -563,22 +666,39 @@ where
     /// ```
     pub fn len(&self) -> usize {
         match &self.inner {
+            #[cfg(feature = "policy-fifo")]
             CacheInner::Fifo(fifo) => <dyn CoreCache<K, V>>::len(fifo),
+            #[cfg(feature = "policy-lru")]
             CacheInner::Lru(lru) => lru.len(),
+            #[cfg(feature = "policy-fast-lru")]
             CacheInner::FastLru(fast_lru) => fast_lru.len(),
+            #[cfg(feature = "policy-lru-k")]
             CacheInner::LruK(lruk) => <dyn CoreCache<K, V>>::len(lruk),
+            #[cfg(feature = "policy-lfu")]
             CacheInner::Lfu(lfu) => lfu.len(),
+            #[cfg(feature = "policy-heap-lfu")]
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.len(),
+            #[cfg(feature = "policy-two-q")]
             CacheInner::TwoQ(twoq) => twoq.len(),
+            #[cfg(feature = "policy-s3-fifo")]
             CacheInner::S3Fifo(s3fifo) => s3fifo.len(),
+            #[cfg(feature = "policy-arc")]
             CacheInner::Arc(arc) => arc.len(),
+            #[cfg(feature = "policy-lifo")]
             CacheInner::Lifo(lifo) => <dyn CoreCache<K, V>>::len(lifo),
+            #[cfg(feature = "policy-mfu")]
             CacheInner::Mfu(mfu) => mfu.len(),
+            #[cfg(feature = "policy-mru")]
             CacheInner::Mru(mru) => mru.len(),
+            #[cfg(feature = "policy-random")]
             CacheInner::Random(random) => <dyn CoreCache<K, V>>::len(random),
+            #[cfg(feature = "policy-slru")]
             CacheInner::Slru(slru) => slru.len(),
+            #[cfg(feature = "policy-clock")]
             CacheInner::Clock(clock) => <dyn CoreCache<K, V>>::len(clock),
+            #[cfg(feature = "policy-clock-pro")]
             CacheInner::ClockPro(clock_pro) => <dyn CoreCache<K, V>>::len(clock_pro),
+            #[cfg(feature = "policy-nru")]
             CacheInner::Nru(nru) => <dyn CoreCache<K, V>>::len(nru),
         }
     }
@@ -612,22 +732,39 @@ where
     /// ```
     pub fn capacity(&self) -> usize {
         match &self.inner {
+            #[cfg(feature = "policy-fifo")]
             CacheInner::Fifo(fifo) => <dyn CoreCache<K, V>>::capacity(fifo),
+            #[cfg(feature = "policy-lru")]
             CacheInner::Lru(lru) => lru.capacity(),
+            #[cfg(feature = "policy-fast-lru")]
             CacheInner::FastLru(fast_lru) => fast_lru.capacity(),
+            #[cfg(feature = "policy-lru-k")]
             CacheInner::LruK(lruk) => <dyn CoreCache<K, V>>::capacity(lruk),
+            #[cfg(feature = "policy-lfu")]
             CacheInner::Lfu(lfu) => lfu.capacity(),
+            #[cfg(feature = "policy-heap-lfu")]
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.capacity(),
+            #[cfg(feature = "policy-two-q")]
             CacheInner::TwoQ(twoq) => twoq.capacity(),
+            #[cfg(feature = "policy-s3-fifo")]
             CacheInner::S3Fifo(s3fifo) => s3fifo.capacity(),
+            #[cfg(feature = "policy-arc")]
             CacheInner::Arc(arc) => arc.capacity(),
+            #[cfg(feature = "policy-lifo")]
             CacheInner::Lifo(lifo) => <dyn CoreCache<K, V>>::capacity(lifo),
+            #[cfg(feature = "policy-mfu")]
             CacheInner::Mfu(mfu) => mfu.capacity(),
+            #[cfg(feature = "policy-mru")]
             CacheInner::Mru(mru) => mru.capacity(),
+            #[cfg(feature = "policy-random")]
             CacheInner::Random(random) => <dyn CoreCache<K, V>>::capacity(random),
+            #[cfg(feature = "policy-slru")]
             CacheInner::Slru(slru) => slru.capacity(),
+            #[cfg(feature = "policy-clock")]
             CacheInner::Clock(clock) => <dyn CoreCache<K, V>>::capacity(clock),
+            #[cfg(feature = "policy-clock-pro")]
             CacheInner::ClockPro(clock_pro) => <dyn CoreCache<K, V>>::capacity(clock_pro),
+            #[cfg(feature = "policy-nru")]
             CacheInner::Nru(nru) => <dyn CoreCache<K, V>>::capacity(nru),
         }
     }
@@ -650,22 +787,39 @@ where
     /// ```
     pub fn clear(&mut self) {
         match &mut self.inner {
+            #[cfg(feature = "policy-fifo")]
             CacheInner::Fifo(fifo) => fifo.clear(),
+            #[cfg(feature = "policy-lru")]
             CacheInner::Lru(lru) => lru.clear(),
+            #[cfg(feature = "policy-fast-lru")]
             CacheInner::FastLru(fast_lru) => fast_lru.clear(),
+            #[cfg(feature = "policy-lru-k")]
             CacheInner::LruK(lruk) => lruk.clear(),
+            #[cfg(feature = "policy-lfu")]
             CacheInner::Lfu(lfu) => lfu.clear(),
+            #[cfg(feature = "policy-heap-lfu")]
             CacheInner::HeapLfu(heap_lfu) => heap_lfu.clear(),
+            #[cfg(feature = "policy-two-q")]
             CacheInner::TwoQ(twoq) => twoq.clear(),
+            #[cfg(feature = "policy-s3-fifo")]
             CacheInner::S3Fifo(s3fifo) => s3fifo.clear(),
+            #[cfg(feature = "policy-arc")]
             CacheInner::Arc(arc) => arc.clear(),
+            #[cfg(feature = "policy-lifo")]
             CacheInner::Lifo(lifo) => lifo.clear(),
+            #[cfg(feature = "policy-mfu")]
             CacheInner::Mfu(mfu) => mfu.clear(),
+            #[cfg(feature = "policy-mru")]
             CacheInner::Mru(mru) => mru.clear(),
+            #[cfg(feature = "policy-random")]
             CacheInner::Random(random) => random.clear(),
+            #[cfg(feature = "policy-slru")]
             CacheInner::Slru(slru) => slru.clear(),
+            #[cfg(feature = "policy-clock")]
             CacheInner::Clock(clock) => clock.clear(),
+            #[cfg(feature = "policy-clock-pro")]
             CacheInner::ClockPro(clock_pro) => clock_pro.clear(),
+            #[cfg(feature = "policy-nru")]
             CacheInner::Nru(nru) => nru.clear(),
         }
     }
@@ -730,18 +884,26 @@ impl CacheBuilder {
         V: Clone + Debug,
     {
         let inner = match policy {
+            #[cfg(feature = "policy-fifo")]
             CachePolicy::Fifo => CacheInner::Fifo(FifoCache::new(self.capacity)),
+            #[cfg(feature = "policy-lru")]
             CachePolicy::Lru => CacheInner::Lru(LruCore::new(self.capacity)),
+            #[cfg(feature = "policy-fast-lru")]
             CachePolicy::FastLru => CacheInner::FastLru(FastLru::new(self.capacity)),
+            #[cfg(feature = "policy-lru-k")]
             CachePolicy::LruK { k } => CacheInner::LruK(LrukCache::with_k(self.capacity, k)),
+            #[cfg(feature = "policy-lfu")]
             CachePolicy::Lfu { bucket_hint } => {
                 let hint = bucket_hint.unwrap_or(DEFAULT_BUCKET_PREALLOC);
                 CacheInner::Lfu(LfuCache::with_bucket_hint(self.capacity, hint))
             },
+            #[cfg(feature = "policy-heap-lfu")]
             CachePolicy::HeapLfu => CacheInner::HeapLfu(HeapLfuCache::new(self.capacity)),
+            #[cfg(feature = "policy-two-q")]
             CachePolicy::TwoQ { probation_frac } => {
                 CacheInner::TwoQ(TwoQCore::new(self.capacity, probation_frac))
             },
+            #[cfg(feature = "policy-s3-fifo")]
             CachePolicy::S3Fifo {
                 small_ratio,
                 ghost_ratio,
@@ -750,19 +912,28 @@ impl CacheBuilder {
                 small_ratio,
                 ghost_ratio,
             )),
+            #[cfg(feature = "policy-arc")]
             CachePolicy::Arc => CacheInner::Arc(ARCCore::new(self.capacity)),
+            #[cfg(feature = "policy-lifo")]
             CachePolicy::Lifo => CacheInner::Lifo(LifoCore::new(self.capacity)),
+            #[cfg(feature = "policy-mfu")]
             CachePolicy::Mfu { bucket_hint: _ } => {
                 // MfuCore uses heap internally, bucket_hint is ignored
                 CacheInner::Mfu(MfuCore::new(self.capacity))
             },
+            #[cfg(feature = "policy-mru")]
             CachePolicy::Mru => CacheInner::Mru(MruCore::new(self.capacity)),
+            #[cfg(feature = "policy-random")]
             CachePolicy::Random => CacheInner::Random(RandomCore::new(self.capacity)),
+            #[cfg(feature = "policy-slru")]
             CachePolicy::Slru { probationary_frac } => {
                 CacheInner::Slru(SlruCore::new(self.capacity, probationary_frac))
             },
+            #[cfg(feature = "policy-clock")]
             CachePolicy::Clock => CacheInner::Clock(ClockCache::new(self.capacity)),
+            #[cfg(feature = "policy-clock-pro")]
             CachePolicy::ClockPro => CacheInner::ClockPro(ClockProCache::new(self.capacity)),
+            #[cfg(feature = "policy-nru")]
             CachePolicy::Nru => CacheInner::Nru(NruCache::new(self.capacity)),
         };
 
@@ -774,37 +945,62 @@ impl CacheBuilder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_all_policies_basic_ops() {
-        let policies = [
+    fn all_enabled_policies() -> Vec<CachePolicy> {
+        vec![
+            #[cfg(feature = "policy-fifo")]
             CachePolicy::Fifo,
+            #[cfg(feature = "policy-lru")]
             CachePolicy::Lru,
+            #[cfg(feature = "policy-fast-lru")]
             CachePolicy::FastLru,
+            #[cfg(feature = "policy-lru-k")]
             CachePolicy::LruK { k: 2 },
+            #[cfg(feature = "policy-lfu")]
             CachePolicy::Lfu { bucket_hint: None },
+            #[cfg(feature = "policy-heap-lfu")]
             CachePolicy::HeapLfu,
+            #[cfg(feature = "policy-two-q")]
             CachePolicy::TwoQ {
                 probation_frac: 0.25,
             },
+            #[cfg(feature = "policy-s3-fifo")]
             CachePolicy::S3Fifo {
                 small_ratio: 0.1,
                 ghost_ratio: 0.9,
             },
+            #[cfg(feature = "policy-arc")]
             CachePolicy::Arc,
+            #[cfg(feature = "policy-lifo")]
             CachePolicy::Lifo,
+            #[cfg(feature = "policy-mfu")]
             CachePolicy::Mfu { bucket_hint: None },
+            #[cfg(feature = "policy-mru")]
             CachePolicy::Mru,
+            #[cfg(feature = "policy-random")]
             CachePolicy::Random,
+            #[cfg(feature = "policy-slru")]
             CachePolicy::Slru {
                 probationary_frac: 0.25,
             },
+            #[cfg(feature = "policy-clock")]
             CachePolicy::Clock,
+            #[cfg(feature = "policy-clock-pro")]
             CachePolicy::ClockPro,
+            #[cfg(feature = "policy-nru")]
             CachePolicy::Nru,
-        ];
+        ]
+    }
+
+    #[test]
+    fn test_all_policies_basic_ops() {
+        let policies = all_enabled_policies();
+        assert!(
+            !policies.is_empty(),
+            "At least one policy feature must be enabled"
+        );
 
         for policy in policies {
-            let mut cache = CacheBuilder::new(10).build::<u64, String>(policy.clone());
+            let mut cache = CacheBuilder::new(10).build::<u64, String>(policy);
 
             // Insert
             assert_eq!(cache.insert(1, "one".to_string()), None);
@@ -834,6 +1030,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "policy-lru")]
     fn test_capacity_enforcement() {
         let mut cache = CacheBuilder::new(2).build::<u64, String>(CachePolicy::Lru);
 
