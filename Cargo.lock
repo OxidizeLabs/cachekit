@@ -147,7 +147,7 @@ checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "cachekit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arbitrary",
  "bench-support",

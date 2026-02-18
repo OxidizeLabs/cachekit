@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-18
+
+### Added
+- CAR (Clock with Adaptive Replacement) cache policy (`CarCache`) combining ARC-like adaptivity with Clock mechanics for enhanced concurrency and reduced overhead.
+- Policy feature flags for modular builds:
+  - `policy-fifo`, `policy-lru`, `policy-fast-lru`, `policy-lru-k`, `policy-lfu`, `policy-heap-lfu`
+  - `policy-two-q`, `policy-s3-fifo`, `policy-arc`, `policy-car`, `policy-lifo`, `policy-mfu`
+  - `policy-mru`, `policy-random`, `policy-slru`, `policy-clock`, `policy-clock-pro`, `policy-nru`
+  - `policy-all` feature for enabling all policies at once
+- Default features now include: `policy-s3-fifo`, `policy-lru`, `policy-fast-lru`, `policy-lru-k`, `policy-clock`
+- CAR policy integration in `CacheBuilder` for convenient cache creation
+- TinyLFU/W-TinyLFU added to roadmap for future implementation
+
+### Documentation
+- Complete CAR policy documentation (`docs/policies/car.md`) with architecture, operations, and performance trade-offs
+- Enhanced README with comprehensive Table of Contents and Quick Start section
+- Updated policy documentation to include feature flag requirements for each policy
+- Improved integration guide with feature flag usage examples
+- Added TinyLFU/W-TinyLFU to policy roadmap
+- New compatibility and features guide (`docs/guides/compatibility-and-features.md`)
+
+### Changed
+- Default feature set now includes specific policies instead of all policies, enabling smaller builds
+- Benchmark support now uses `policy-all` feature for comprehensive testing
+- Policy module organization updated to support conditional compilation
+- Documentation consistently references feature flags for policy enablement
+
+### Benefits
+- **Modular Builds**: Enable only the policies you need for smaller binary sizes
+- **Adaptive Eviction**: CAR policy provides ARC-like adaptivity with better concurrency
+- **Flexible Configuration**: Choose between comprehensive defaults or minimal custom builds
+
 ## [0.3.0] - 2026-02-11
 
 ### Added
