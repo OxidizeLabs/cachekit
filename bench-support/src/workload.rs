@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use cachekit::traits::CoreCache;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_distr::{Distribution, Exp, Pareto as ParetoDistr, Zipf};
 
 use crate::operation::{ReadThrough, run_operations};

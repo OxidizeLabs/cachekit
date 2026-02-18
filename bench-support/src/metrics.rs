@@ -395,7 +395,7 @@ where
     let recovery_ops = capacity * 2;
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
-    use rand::Rng;
+    use rand::RngExt;
 
     // Phase 1: Warmup with Zipfian
     let zipf = rand_distr::Zipf::new(universe as f64, 1.0).unwrap();
@@ -505,10 +505,10 @@ where
     let window_size = capacity / 4;
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+    use rand::RngExt;
 
     // Phase 1: Warmup and stable with region A (first half of universe)
     let region_a_max = universe / 2;
-    use rand::Rng;
 
     for _ in 0..(warmup_ops + stable_ops) {
         let key = rng.random::<u64>() % region_a_max;

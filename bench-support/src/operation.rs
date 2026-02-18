@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use cachekit::traits::CoreCache;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use crate::workload::WorkloadGenerator;
 
