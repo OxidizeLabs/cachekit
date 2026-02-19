@@ -8,9 +8,9 @@ pub mod lazy_heap;
 pub mod shard;
 pub mod slot_arena;
 
-pub use clock_ring::ClockRing;
 #[cfg(feature = "concurrency")]
 pub use clock_ring::ConcurrentClockRing;
+pub use clock_ring::{ClockRing, IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
 pub use fixed_history::FixedHistory;
 pub use frequency_buckets::{
     DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,

@@ -162,7 +162,7 @@ where
     #[inline]
     pub fn new(capacity: usize) -> Self {
         Self {
-            ring: ClockRing::new(capacity.max(1)),
+            ring: ClockRing::new(capacity),
         }
     }
 
@@ -230,12 +230,12 @@ where
     /// ```
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Check if key exists first (without consuming value)
+        if self.ring.capacity() == 0 {
+            return None;
+        }
         if self.ring.contains(&key) {
-            // Key exists - update returns old value
             return self.ring.update(&key, value);
         }
-        // New key - insert (may evict, but we discard evicted entry)
         let _ = self.ring.insert(key, value);
         None
     }
@@ -482,7 +482,7 @@ mod tests {
         #[test]
         fn test_zero_capacity_clamped() {
             let cache: ClockCache<i32, i32> = ClockCache::new(0);
-            assert_eq!(cache.capacity(), 1); // Clamped to 1
+            assert_eq!(cache.capacity(), 0);
         }
 
         #[test]

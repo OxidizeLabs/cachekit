@@ -766,7 +766,13 @@ where
     /// Returns [`StoreFull`] if entry count or weight limit would be exceeded.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut store = self.inner.write();
-        store.try_insert(key, value)
+        let result = store.try_insert(key, value);
+        match &result {
+            Ok(Some(_)) => self.metrics.inc_update(),
+            Ok(None) => self.metrics.inc_insert(),
+            Err(_) => {},
+        }
+        result
     }
 
     /// Removes and returns the value for the given key.
@@ -774,7 +780,11 @@ where
     /// Acquires write lock. Adjusts total weight.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
         let mut store = self.inner.write();
-        store.remove(key)
+        let result = store.remove(key);
+        if result.is_some() {
+            self.metrics.inc_remove();
+        }
+        result
     }
 
     /// Removes all entries and resets total weight.
@@ -849,5 +859,64 @@ mod tests {
         assert_eq!(store.total_weight(), 2);
         assert_eq!(store.remove(&"k1"), Some(value));
         assert_eq!(store.total_weight(), 0);
+    }
+
+    // ==============================================
+    // Regression Tests
+    // ==============================================
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_metrics_track_inserts() {
+        let store: ConcurrentWeightStore<&str, String, _> =
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+
+        store.try_insert("k1", Arc::new("v1".into())).unwrap();
+        store.try_insert("k2", Arc::new("v2".into())).unwrap();
+        store.try_insert("k3", Arc::new("v3".into())).unwrap();
+
+        let metrics = store.metrics();
+        assert_eq!(metrics.inserts, 3, "metrics should track inserts");
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_metrics_track_updates() {
+        let store: ConcurrentWeightStore<&str, String, _> =
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+
+        store.try_insert("k1", Arc::new("v1".into())).unwrap();
+        store.try_insert("k1", Arc::new("updated".into())).unwrap();
+
+        let metrics = store.metrics();
+        assert_eq!(metrics.updates, 1, "metrics should track updates");
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_metrics_track_removes() {
+        let store: ConcurrentWeightStore<&str, String, _> =
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+
+        store.try_insert("k1", Arc::new("v1".into())).unwrap();
+        store.remove(&"k1");
+
+        let metrics = store.metrics();
+        assert_eq!(metrics.removes, 1, "metrics should track removes");
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_metrics_track_hits_misses() {
+        let store: ConcurrentWeightStore<&str, String, _> =
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+
+        store.try_insert("k1", Arc::new("v1".into())).unwrap();
+        let _ = store.get(&"k1");
+        let _ = store.get(&"missing");
+
+        let metrics = store.metrics();
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.misses, 1);
     }
 }

@@ -214,9 +214,6 @@ where
     /// periodic re-access patterns.
     #[inline]
     pub fn with_ghost_capacity(capacity: usize, ghost_capacity: usize) -> Self {
-        let capacity = capacity.max(1);
-        let ghost_capacity = ghost_capacity.max(1);
-
         let mut entries = Vec::with_capacity(capacity);
         entries.resize_with(capacity, || None);
 

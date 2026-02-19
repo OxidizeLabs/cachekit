@@ -505,6 +505,13 @@ where
         true
     }
 
+    /// Removes and returns the LRU (least recently used) key.
+    pub fn evict_lru(&mut self) -> Option<K> {
+        let key = self.list.pop_back()?;
+        self.index.remove(&key);
+        Some(key)
+    }
+
     /// Removes a batch of keys; returns number of keys actually removed.
     ///
     /// # Example

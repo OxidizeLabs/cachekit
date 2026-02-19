@@ -743,12 +743,30 @@ where
 /// ```
 #[cfg(feature = "concurrency")]
 #[derive(Debug)]
+struct SlabInner<K, V> {
+    entries: Vec<Option<Entry<K, Arc<V>>>>,
+    free_list: Vec<usize>,
+    index: FxHashMap<K, EntryId>,
+    capacity: usize,
+}
+
+#[cfg(feature = "concurrency")]
+impl<K: Eq + Hash, V> SlabInner<K, V> {
+    fn allocate_slot(&mut self) -> usize {
+        if let Some(idx) = self.free_list.pop() {
+            idx
+        } else {
+            self.entries.push(None);
+            self.entries.len() - 1
+        }
+    }
+}
+
+#[cfg(feature = "concurrency")]
+#[derive(Debug)]
 #[allow(clippy::type_complexity)]
 pub struct ConcurrentSlabStore<K, V> {
-    entries: RwLock<Vec<Option<Entry<K, Arc<V>>>>>,
-    free_list: RwLock<Vec<usize>>,
-    index: RwLock<FxHashMap<K, EntryId>>,
-    capacity: usize,
+    inner: RwLock<SlabInner<K, V>>,
     metrics: StoreCounters,
 }
 
@@ -771,13 +789,12 @@ where
     /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
-            entries: RwLock::new(Vec::with_capacity(capacity)),
-            free_list: RwLock::new(Vec::new()),
-            index: RwLock::new(FxHashMap::with_capacity_and_hasher(
+            inner: RwLock::new(SlabInner {
+                entries: Vec::with_capacity(capacity),
+                free_list: Vec::new(),
+                index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
                 capacity,
-                Default::default(),
-            )),
-            capacity,
+            }),
             metrics: StoreCounters::default(),
         }
     }
@@ -800,13 +817,13 @@ where
     /// assert!(store.get_by_id(id).is_some());
     /// ```
     pub fn entry_id(&self, key: &K) -> Option<EntryId> {
-        self.index.read().get(key).copied()
+        self.inner.read().index.get(key).copied()
     }
 
     /// Returns a clone of the value at the given `EntryId`.
     ///
-    /// Acquires read lock on entries. Returns `Arc<V>` that can be held
-    /// after the lock is released.
+    /// Acquires read lock. Returns `Arc<V>` that can be held after the
+    /// lock is released.
     ///
     /// # Example
     ///
@@ -823,15 +840,16 @@ where
     /// assert_eq!(*value, 42);
     /// ```
     pub fn get_by_id(&self, id: EntryId) -> Option<Arc<V>> {
-        self.entries
-            .read()
+        let inner = self.inner.read();
+        inner
+            .entries
             .get(id.0)
             .and_then(|slot| slot.as_ref().map(|entry| Arc::clone(&entry.value)))
     }
 
     /// Returns a clone of the key at the given `EntryId`.
     ///
-    /// Acquires read lock on entries.
+    /// Acquires read lock.
     ///
     /// # Example
     ///
@@ -850,8 +868,9 @@ where
     where
         K: Clone,
     {
-        self.entries
-            .read()
+        let inner = self.inner.read();
+        inner
+            .entries
             .get(id.0)
             .and_then(|slot| slot.as_ref().map(|entry| entry.key.clone()))
     }
@@ -862,37 +881,21 @@ where
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
-
-    /// Allocates a slot, reusing from free list when possible.
-    fn allocate_slot(&self) -> usize {
-        let mut free_list = self.free_list.write();
-        if let Some(idx) = free_list.pop() {
-            idx
-        } else {
-            let mut entries = self.entries.write();
-            entries.push(None);
-            entries.len() - 1
-        }
-    }
 }
 
 /// Read operations for [`ConcurrentSlabStore`].
 ///
-/// Acquires read locks on internal structures as needed.
+/// Acquires read lock on internal state.
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentStoreRead<K, V> for ConcurrentSlabStore<K, V>
 where
     K: Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
-    /// Returns a clone of the value for the given key.
-    ///
-    /// Acquires read locks on index and entries sequentially.
     fn get(&self, key: &K) -> Option<Arc<V>> {
-        let index = self.index.read();
-        let id = index.get(key)?;
-        let entries = self.entries.read();
-        match entries.get(id.0).and_then(|slot| slot.as_ref()) {
+        let inner = self.inner.read();
+        let id = inner.index.get(key)?;
+        match inner.entries.get(id.0).and_then(|slot| slot.as_ref()) {
             Some(entry) => {
                 self.metrics.inc_hit();
                 Some(Arc::clone(&entry.value))
@@ -904,24 +907,18 @@ where
         }
     }
 
-    /// Returns `true` if the key exists. Acquires read lock on index.
     fn contains(&self, key: &K) -> bool {
-        self.index.read().contains_key(key)
+        self.inner.read().index.contains_key(key)
     }
 
-    /// Returns the current number of entries.
-    ///
-    /// Acquires read lock on index. Value may be stale under concurrency.
     fn len(&self) -> usize {
-        self.index.read().len()
+        self.inner.read().index.len()
     }
 
-    /// Returns the logical capacity limit.
     fn capacity(&self) -> usize {
-        self.capacity
+        self.inner.read().capacity
     }
 
-    /// Returns a snapshot of the store's metrics.
     fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
@@ -929,8 +926,8 @@ where
 
 /// Write operations for [`ConcurrentSlabStore`].
 ///
-/// Uses fine-grained locking—different internal structures are locked
-/// independently to minimize contention.
+/// All mutations acquire a single write lock on `inner`, ensuring
+/// atomicity across index, entries, and free list.
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentStore<K, V> for ConcurrentSlabStore<K, V>
 where
@@ -939,82 +936,50 @@ where
 {
     /// Inserts or updates a value.
     ///
-    /// Acquires locks in stages to minimize hold time:
-    /// 1. Read lock on index to check for existing key
-    /// 2. Write lock on entries for update (if key exists)
-    /// 3. Write locks on free_list, entries, index for new insert
-    ///
     /// # Errors
     ///
     /// Returns [`StoreFull`] if at capacity and the key is new.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
-        // Check for update case first
-        {
-            let index = self.index.read();
-            if let Some(id) = index.get(&key).copied() {
-                drop(index);
-                let mut entries = self.entries.write();
-                if let Some(slot) = entries.get_mut(id.0) {
-                    if let Some(entry) = slot.as_mut() {
-                        let previous = std::mem::replace(&mut entry.value, value);
-                        self.metrics.inc_update();
-                        return Ok(Some(previous));
-                    }
+        let mut inner = self.inner.write();
+
+        if let Some(&id) = inner.index.get(&key) {
+            if let Some(slot) = inner.entries.get_mut(id.0) {
+                if let Some(entry) = slot.as_mut() {
+                    let previous = std::mem::replace(&mut entry.value, value);
+                    self.metrics.inc_update();
+                    return Ok(Some(previous));
                 }
             }
         }
 
-        // Insert case - check capacity
-        {
-            let index = self.index.read();
-            if index.len() >= self.capacity {
-                return Err(StoreFull);
-            }
+        if inner.index.len() >= inner.capacity {
+            return Err(StoreFull);
         }
 
-        let idx = self.allocate_slot();
-        {
-            let mut entries = self.entries.write();
-            entries[idx] = Some(Entry {
-                key: key.clone(),
-                value,
-            });
-        }
-        {
-            let mut index = self.index.write();
-            index.insert(key, EntryId(idx));
-        }
+        let idx = inner.allocate_slot();
+        inner.entries[idx] = Some(Entry {
+            key: key.clone(),
+            value,
+        });
+        inner.index.insert(key, EntryId(idx));
         self.metrics.inc_insert();
         Ok(None)
     }
 
-    /// Removes and returns the value for the given key.
-    ///
-    /// Acquires write locks on index, entries, and free_list in sequence.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
-        let id = {
-            let mut index = self.index.write();
-            index.remove(key)?
-        };
-        let entry = {
-            let mut entries = self.entries.write();
-            entries.get_mut(id.0)?.take()?
-        };
-        {
-            let mut free_list = self.free_list.write();
-            free_list.push(id.0);
-        }
+        let mut inner = self.inner.write();
+        let id = inner.index.remove(key)?;
+        let entry = inner.entries.get_mut(id.0)?.take()?;
+        inner.free_list.push(id.0);
         self.metrics.inc_remove();
         Some(entry.value)
     }
 
-    /// Removes all entries.
-    ///
-    /// Acquires write locks on all internal structures.
     fn clear(&self) {
-        self.entries.write().clear();
-        self.free_list.write().clear();
-        self.index.write().clear();
+        let mut inner = self.inner.write();
+        inner.entries.clear();
+        inner.free_list.clear();
+        inner.index.clear();
     }
 }
 

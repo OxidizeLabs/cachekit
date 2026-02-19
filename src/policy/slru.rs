@@ -463,13 +463,15 @@ where
     /// assert_eq!(cache.len(), 1);  // Still 1 entry
     /// ```
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.protected_cap == 0 {
+            return None;
+        }
+
         // Check for existing key - update in place
         if let Some(&node_ptr) = self.map.get(&key) {
-            unsafe {
-                (*node_ptr.as_ptr()).value = value;
-            }
-            return;
+            let old = unsafe { std::mem::replace(&mut (*node_ptr.as_ptr()).value, value) };
+            return Some(old);
         }
 
         // Evict BEFORE inserting to ensure space is available
@@ -490,6 +492,7 @@ where
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
+        None
     }
 
     /// Evicts entries until there is room for a new entry.
@@ -774,18 +777,7 @@ where
 {
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Check if key exists - update in place
-        if let Some(&node_ptr) = self.map.get(&key) {
-            let old = unsafe {
-                let node = &mut *node_ptr.as_ptr();
-                std::mem::replace(&mut node.value, value)
-            };
-            return Some(old);
-        }
-
-        // New insert
-        SlruCore::insert(self, key, value);
-        None
+        SlruCore::insert(self, key, value)
     }
 
     #[inline]
@@ -1571,5 +1563,48 @@ mod tests {
         cache.validate_invariants();
 
         assert_eq!(cache.len(), 5);
+    }
+
+    // ==============================================
+    // Regression Tests
+    // ==============================================
+
+    #[test]
+    fn zero_capacity_rejects_inserts() {
+        let mut cache: SlruCore<&str, i32> = SlruCore::new(0, 0.25);
+        assert_eq!(cache.capacity(), 0);
+
+        cache.insert("key", 42);
+
+        assert_eq!(
+            cache.len(),
+            0,
+            "SlruCore with capacity=0 should reject inserts"
+        );
+    }
+
+    #[test]
+    fn trait_insert_returns_old_value() {
+        let mut cache: SlruCore<&str, i32> = SlruCore::new(10, 0.25);
+
+        let first = CoreCache::insert(&mut cache, "key", 1);
+        assert_eq!(first, None);
+
+        let second = CoreCache::insert(&mut cache, "key", 2);
+        assert_eq!(
+            second,
+            Some(1),
+            "Second insert via trait should return old value"
+        );
+    }
+
+    #[test]
+    fn inherent_insert_updates_value() {
+        let mut cache: SlruCore<&str, i32> = SlruCore::new(10, 0.25);
+
+        cache.insert("key", 1);
+        cache.insert("key", 2);
+
+        assert_eq!(cache.get(&"key"), Some(&2));
     }
 }

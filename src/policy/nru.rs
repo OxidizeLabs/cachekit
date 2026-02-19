@@ -248,7 +248,6 @@ where
     /// ```
     #[inline]
     pub fn new(capacity: usize) -> Self {
-        let capacity = capacity.max(1);
         Self {
             map: FxHashMap::default(),
             keys: Vec::with_capacity(capacity),
@@ -371,6 +370,9 @@ where
     /// ```
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.capacity == 0 {
+            return None;
+        }
         // Check if key already exists
         if let Some(entry) = self.map.get_mut(&key) {
             // Update existing entry
@@ -625,10 +627,9 @@ mod tests {
     #[test]
     fn test_zero_capacity() {
         let mut cache = NruCache::new(0);
-        // Should default to capacity of 1
-        assert!(cache.capacity() >= 1);
+        assert_eq!(cache.capacity(), 0);
 
         cache.insert(1, 100);
-        assert!(cache.contains(&1));
+        assert!(!cache.contains(&1));
     }
 }

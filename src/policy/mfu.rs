@@ -217,7 +217,7 @@ where
     /// Inserts a key-value pair, evicting the most frequently used entry if at capacity.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.capacity == 0 {
-            return Some(value);
+            return None;
         }
 
         // Update or insert
@@ -431,7 +431,7 @@ where
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.capacity == 0 {
-            return Some(value);
+            return None;
         }
 
         // Update or insert
@@ -825,5 +825,21 @@ mod tests {
         // Should trigger heap rebuild
         assert_eq!(cache.len(), 3);
         assert_eq!(cache.frequencies.len(), 3);
+    }
+
+    // ==============================================
+    // Regression Tests
+    // ==============================================
+
+    #[test]
+    fn zero_capacity_insert_returns_none() {
+        let mut cache: MfuCore<&str, i32> = MfuCore::new(0);
+
+        let result = cache.insert("new_key", 42);
+
+        assert_eq!(
+            result, None,
+            "MfuCore::insert at capacity=0 should return None for a new key"
+        );
     }
 }

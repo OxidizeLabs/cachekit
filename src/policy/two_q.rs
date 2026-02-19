@@ -712,13 +712,15 @@ where
     /// assert_eq!(cache.len(), 1);  // Still 1 entry
     /// ```
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.protected_cap == 0 {
+            return None;
+        }
+
         // Check for existing key - update in place
         if let Some(&node_ptr) = self.map.get(&key) {
-            unsafe {
-                (*node_ptr.as_ptr()).value = value;
-            }
-            return;
+            let old = unsafe { std::mem::replace(&mut (*node_ptr.as_ptr()).value, value) };
+            return Some(old);
         }
 
         // Evict BEFORE inserting to ensure space is available
@@ -736,6 +738,7 @@ where
 
         self.map.insert(key, node_ptr);
         self.attach_probation_head(node_ptr);
+        None
     }
 
     /// Evicts entries until there is room for a new entry.
@@ -929,18 +932,7 @@ where
 {
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Check if key exists - update in place
-        if let Some(&node_ptr) = self.map.get(&key) {
-            let old = unsafe {
-                let node = &mut *node_ptr.as_ptr();
-                std::mem::replace(&mut node.value, value)
-            };
-            return Some(old);
-        }
-
-        // New insert
-        TwoQCore::insert(self, key, value);
-        None
+        TwoQCore::insert(self, key, value)
     }
 
     #[inline]
@@ -1777,5 +1769,44 @@ mod tests {
                 working_set_hits
             );
         }
+    }
+
+    // ==============================================
+    // Regression Tests
+    // ==============================================
+
+    #[test]
+    fn zero_capacity_rejects_inserts() {
+        let mut cache: TwoQCore<&str, i32> = TwoQCore::new(0, 0.25);
+        assert_eq!(cache.capacity(), 0);
+
+        cache.insert("key", 42);
+
+        assert_eq!(
+            cache.len(),
+            0,
+            "TwoQCore with capacity=0 should reject inserts"
+        );
+    }
+
+    #[test]
+    fn trait_insert_returns_old_value() {
+        let mut cache: TwoQCore<&str, i32> = TwoQCore::new(10, 0.25);
+
+        let first = CoreCache::insert(&mut cache, "key", 1);
+        assert_eq!(first, None, "First insert of new key should return None");
+
+        let second = CoreCache::insert(&mut cache, "key", 2);
+        assert_eq!(second, Some(1), "Second insert should return old value");
+    }
+
+    #[test]
+    fn inherent_insert_updates_value() {
+        let mut cache: TwoQCore<&str, i32> = TwoQCore::new(10, 0.25);
+
+        cache.insert("key", 1);
+        cache.insert("key", 2);
+
+        assert_eq!(cache.get(&"key"), Some(&2), "Value should be updated to 2");
     }
 }

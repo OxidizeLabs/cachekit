@@ -17,6 +17,11 @@ This directory contains all integration and regression tests for cachekit.
 - **`lfu_concurrency.rs`** - LFU concurrent access tests
 - **`lru_concurrency.rs`** - LRU concurrent access tests
 - **`lru_k_concurrency.rs`** - LRU-K concurrent access tests
+- **`slab_concurrency.rs`** - ConcurrentSlabStore race condition and atomicity tests
+
+### Invariant Tests
+
+- **`policy_invariants.rs`** - Cross-policy behavioral consistency (e.g. capacity-0 semantics)
 
 ### Integration Tests
 

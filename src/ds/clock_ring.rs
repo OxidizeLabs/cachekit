@@ -11,7 +11,7 @@
 //! │                           ClockRing<K, V>                                 │
 //! │                                                                           │
 //! │   ┌─────────────────────────────┐   ┌─────────────────────────────────┐   │
-//! │   │  index: HashMap<K, usize>   │   │  slots: Vec<Option<Entry>>      │   │
+//! │   │  index: FxHashMap<K, usize> │   │  slots: Vec<Option<Entry>>      │   │
 //! │   │                             │   │                                 │   │
 //! │   │  ┌───────────┬──────────┐   │   │   ┌─────┬─────┬─────┬─────┐     │   │
 //! │   │  │    Key    │  Index   │   │   │   │  0  │  1  │  2  │  3  │     │   │
@@ -71,18 +71,34 @@
 //!
 //! - [`ClockRing`]: Single-threaded CLOCK cache
 //! - [`ConcurrentClockRing`]: Thread-safe wrapper with `RwLock`
+//! - [`Iter`], [`IterMut`], [`IntoIter`]: Iterators over entries
+//! - [`Keys`], [`Values`], [`ValuesMut`]: Iterators over keys or values
 //!
 //! ## Operations
 //!
-//! | Operation     | Time        | Notes                                  |
-//! |---------------|-------------|----------------------------------------|
-//! | `insert`      | O(1) amort. | Bounded scan with reference clearing   |
-//! | `get`         | O(1)        | Returns value, sets reference bit      |
-//! | `peek`        | O(1)        | Returns value, does NOT set ref bit    |
-//! | `touch`       | O(1)        | Sets reference bit only                |
-//! | `remove`      | O(1)        | Clears slot + index entry              |
-//! | `pop_victim`  | O(1) amort. | Evicts next unreferenced entry         |
-//! | `peek_victim` | O(n) worst  | Finds next victim without modifying    |
+//! | Operation       | Time        | Notes                                  |
+//! |-----------------|-------------|----------------------------------------|
+//! | [`insert`]      | O(1) amort. | Bounded scan with reference clearing   |
+//! | [`get`]         | O(1)        | Returns value, sets reference bit      |
+//! | [`peek`]        | O(1)        | Returns value, does NOT set ref bit    |
+//! | [`touch`]       | O(1)        | Sets reference bit only                |
+//! | [`remove`]      | O(1)        | Clears slot + index entry              |
+//! | [`pop_victim`]  | O(1) amort. | Evicts next unreferenced entry         |
+//! | [`peek_victim`] | O(n) worst  | Finds next victim without modifying    |
+//! | [`iter`] / [`keys`] / [`values`] | O(n) | Borrowed iteration over entries |
+//! | [`into_iter`]   | O(n)        | Consuming iteration over entries       |
+//!
+//! [`insert`]: ClockRing::insert
+//! [`get`]: ClockRing::get
+//! [`peek`]: ClockRing::peek
+//! [`touch`]: ClockRing::touch
+//! [`remove`]: ClockRing::remove
+//! [`pop_victim`]: ClockRing::pop_victim
+//! [`peek_victim`]: ClockRing::peek_victim
+//! [`iter`]: ClockRing::iter
+//! [`keys`]: ClockRing::keys
+//! [`values`]: ClockRing::values
+//! [`into_iter`]: ClockRing#impl-IntoIterator
 //!
 //! ## Use Cases
 //!
@@ -155,13 +171,16 @@
 //!
 //! - Fixed-size slot array; no reallocation during operation
 //! - Reference bits stored in a separate `Vec<bool>` for cache-friendly sweeps
-//! - Keys mapped to slot indices via HashMap; key is cloned once per new insertion
+//! - Keys mapped to slot indices via [`FxHashMap`]; key is cloned once per new insertion
 //! - Hand pointer advances after each insert/eviction
-//! - `insert` is O(1) amortized: each access sets at most one ref bit, so the
+//! - [`insert`] is O(1) amortized: each access sets at most one ref bit, so the
 //!   total clearing work across N inserts is bounded by N
 //! - `debug_validate_invariants()` available in debug/test builds
+//!
+//! [`FxHashMap`]: rustc_hash::FxHashMap
 
 use rustc_hash::FxHashMap;
+use std::borrow::Borrow;
 use std::hash::Hash;
 
 #[cfg(feature = "concurrency")]
@@ -171,7 +190,7 @@ use parking_lot::RwLock;
 ///
 /// Reference bits are stored separately in [`ClockRing::referenced`] for
 /// cache-friendly sweep access.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Entry<K, V> {
     key: K,
     value: V,
@@ -181,6 +200,15 @@ struct Entry<K, V> {
 ///
 /// Provides O(1) amortized insertion with automatic eviction of unreferenced
 /// entries. Accessed entries receive a "second chance" via a reference bit.
+///
+/// Lookup methods ([`get`](Self::get), [`peek`](Self::peek),
+/// [`contains`](Self::contains), etc.) accept any borrowed form of the key
+/// via [`Borrow`], so a `ClockRing<String, V>` can be
+/// queried with `&str`.
+///
+/// Implements [`Clone`], [`Debug`], [`Extend`]`<(K, V)>`, and
+/// [`IntoIterator`]. See [`iter`](Self::iter), [`keys`](Self::keys),
+/// [`values`](Self::values) for borrowed iteration.
 ///
 /// # Type Parameters
 ///
@@ -227,7 +255,7 @@ struct Entry<K, V> {
 /// assert_eq!(eviction_count, 7);  // 10 inserts - 3 capacity = 7 evictions
 /// ```
 #[must_use]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClockRing<K, V> {
     slots: Vec<Option<Entry<K, V>>>,
     referenced: Vec<bool>,
@@ -240,7 +268,8 @@ pub struct ClockRing<K, V> {
 ///
 /// Provides the same functionality as [`ClockRing`] but safe for concurrent
 /// access. Uses closure-based value access since references cannot outlive
-/// lock guards.
+/// lock guards. Lookup methods accept any borrowed form of the key via
+/// [`Borrow`].
 ///
 /// # Example
 ///
@@ -267,6 +296,13 @@ pub struct ClockRing<K, V> {
 ///
 /// assert!(cache.len() <= 100);
 /// ```
+///
+/// # Iteration
+///
+/// `ConcurrentClockRing` does not directly expose iterators (holding
+/// a lock for the duration of iteration would hurt concurrency). Call
+/// [`into_inner`](Self::into_inner) to unwrap the inner [`ClockRing`]
+/// and iterate it.
 ///
 /// # Non-blocking Operations
 ///
@@ -378,7 +414,11 @@ where
     /// assert!(cache.contains(&"key"));
     /// assert!(!cache.contains(&"missing"));
     /// ```
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let ring = self.inner.read();
         ring.contains(key)
     }
@@ -398,7 +438,11 @@ where
     /// let sum = cache.peek_with(&"key", |v| v.iter().sum::<i32>());
     /// assert_eq!(sum, Some(6));
     /// ```
-    pub fn peek_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<R> {
+    pub fn peek_with<Q, R>(&self, key: &Q, f: impl FnOnce(&V) -> R) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let ring = self.inner.read();
         ring.peek(key).map(f)
     }
@@ -422,7 +466,11 @@ where
     /// assert!(cache.contains(&"a"));
     /// assert!(!cache.contains(&"b"));
     /// ```
-    pub fn get_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<R> {
+    pub fn get_with<Q, R>(&self, key: &Q, f: impl FnOnce(&V) -> R) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.write();
         ring.get(key).map(f)
     }
@@ -441,7 +489,11 @@ where
     /// let sum = cache.peek_with(&"key", |v| v.iter().sum::<i32>());
     /// assert_eq!(sum, Some(10));
     /// ```
-    pub fn get_mut_with<R>(&self, key: &K, f: impl FnOnce(&mut V) -> R) -> Option<R> {
+    pub fn get_mut_with<Q, R>(&self, key: &Q, f: impl FnOnce(&mut V) -> R) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.write();
         ring.get_mut(key).map(f)
     }
@@ -459,7 +511,11 @@ where
     /// assert!(cache.touch(&"key"));       // Sets reference bit
     /// assert!(!cache.touch(&"missing"));  // Key not found
     /// ```
-    pub fn touch(&self, key: &K) -> bool {
+    pub fn touch<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.write();
         ring.touch(key)
     }
@@ -479,7 +535,11 @@ where
     /// assert_eq!(cache.update(&"a", 10), Some(1));
     /// assert_eq!(cache.update(&"missing", 99), None);
     /// ```
-    pub fn update(&self, key: &K, value: V) -> Option<V> {
+    pub fn update<Q>(&self, key: &Q, value: V) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.write();
         ring.update(key, value)
     }
@@ -519,7 +579,11 @@ where
     /// assert_eq!(cache.remove(&"key"), Some(42));
     /// assert_eq!(cache.remove(&"key"), None);  // Already removed
     /// ```
-    pub fn remove(&self, key: &K) -> Option<V> {
+    pub fn remove<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.write();
         ring.remove(key)
     }
@@ -567,18 +631,52 @@ where
     }
 
     /// Clears all entries without releasing capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn clear(&self) {
         let mut ring = self.inner.write();
         ring.clear();
     }
 
     /// Clears all entries and shrinks internal storage.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(100);
+    /// cache.insert("a", 1);
+    ///
+    /// cache.clear_shrink();
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn clear_shrink(&self) {
         let mut ring = self.inner.write();
         ring.clear_shrink();
     }
 
     /// Returns an approximate memory footprint in bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache: ConcurrentClockRing<u64, u64> = ConcurrentClockRing::new(100);
+    /// assert!(cache.approx_bytes() > 0);
+    /// ```
     #[must_use]
     pub fn approx_bytes(&self) -> usize {
         let ring = self.inner.read();
@@ -586,72 +684,257 @@ where
     }
 
     /// Reserves capacity for at least `additional` more index entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache: ConcurrentClockRing<String, i32> = ConcurrentClockRing::new(10);
+    /// cache.reserve_index(100);
+    /// ```
     pub fn reserve_index(&self, additional: usize) {
         let mut ring = self.inner.write();
         ring.reserve_index(additional);
     }
 
     /// Shrinks internal storage to fit current contents.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache: ConcurrentClockRing<&str, i32> = ConcurrentClockRing::new(100);
+    /// cache.insert("a", 1);
+    /// cache.shrink_to_fit();
+    /// ```
     pub fn shrink_to_fit(&self) {
         let mut ring = self.inner.write();
         ring.shrink_to_fit();
     }
 
     /// Non-blocking version of [`update`](Self::update).
-    pub fn try_update(&self, key: &K, value: V) -> Option<Option<V>> {
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// assert_eq!(cache.try_update(&"a", 10), Some(Some(1)));
+    /// assert_eq!(cache.try_update(&"missing", 99), Some(None));
+    /// ```
+    pub fn try_update<Q>(&self, key: &Q, value: V) -> Option<Option<V>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.try_write()?;
         Some(ring.update(key, value))
     }
 
     /// Non-blocking version of [`insert`](Self::insert).
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(2);
+    ///
+    /// assert_eq!(cache.try_insert("a", 1), Some(None));
+    /// assert_eq!(cache.try_insert("b", 2), Some(None));
+    /// ```
     pub fn try_insert(&self, key: K, value: V) -> Option<Option<(K, V)>> {
         let mut ring = self.inner.try_write()?;
         Some(ring.insert(key, value))
     }
 
     /// Non-blocking version of [`remove`](Self::remove).
-    pub fn try_remove(&self, key: &K) -> Option<Option<V>> {
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// assert_eq!(cache.try_remove(&"a"), Some(Some(1)));
+    /// assert_eq!(cache.try_remove(&"a"), Some(None));
+    /// ```
+    pub fn try_remove<Q>(&self, key: &Q) -> Option<Option<V>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.try_write()?;
         Some(ring.remove(key))
     }
 
     /// Non-blocking version of [`touch`](Self::touch).
-    pub fn try_touch(&self, key: &K) -> Option<bool> {
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// assert_eq!(cache.try_touch(&"a"), Some(true));
+    /// assert_eq!(cache.try_touch(&"missing"), Some(false));
+    /// ```
+    pub fn try_touch<Q>(&self, key: &Q) -> Option<bool>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.try_write()?;
         Some(ring.touch(key))
     }
 
     /// Non-blocking version of [`peek_with`](Self::peek_with).
-    pub fn try_peek_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<Option<R>> {
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 42);
+    ///
+    /// assert_eq!(cache.try_peek_with(&"a", |v| *v), Some(Some(42)));
+    /// assert_eq!(cache.try_peek_with(&"missing", |v| *v), Some(None));
+    /// ```
+    pub fn try_peek_with<Q, R>(&self, key: &Q, f: impl FnOnce(&V) -> R) -> Option<Option<R>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let ring = self.inner.try_read()?;
         Some(ring.peek(key).map(f))
     }
 
     /// Non-blocking version of [`get_with`](Self::get_with).
-    pub fn try_get_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Option<Option<R>> {
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 42);
+    ///
+    /// assert_eq!(cache.try_get_with(&"a", |v| *v), Some(Some(42)));
+    /// assert_eq!(cache.try_get_with(&"missing", |v| *v), Some(None));
+    /// ```
+    pub fn try_get_with<Q, R>(&self, key: &Q, f: impl FnOnce(&V) -> R) -> Option<Option<R>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.try_write()?;
         Some(ring.get(key).map(f))
     }
 
     /// Non-blocking version of [`get_mut_with`](Self::get_mut_with).
-    pub fn try_get_mut_with<R>(&self, key: &K, f: impl FnOnce(&mut V) -> R) -> Option<Option<R>> {
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", vec![1, 2]);
+    ///
+    /// cache.try_get_mut_with(&"a", |v| v.push(3));
+    /// let sum = cache.peek_with(&"a", |v| v.iter().sum::<i32>());
+    /// assert_eq!(sum, Some(6));
+    /// ```
+    pub fn try_get_mut_with<Q, R>(&self, key: &Q, f: impl FnOnce(&mut V) -> R) -> Option<Option<R>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut ring = self.inner.try_write()?;
         Some(ring.get_mut(key).map(f))
     }
 
     /// Non-blocking version of [`peek_victim_with`](Self::peek_victim_with).
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(2);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// if let Some(Some(key)) = cache.try_peek_victim_with(|k, _v| *k) {
+    ///     assert!(key == "a" || key == "b");
+    /// }
+    /// ```
     pub fn try_peek_victim_with<R>(&self, f: impl FnOnce(&K, &V) -> R) -> Option<Option<R>> {
         let ring = self.inner.try_read()?;
         Some(ring.peek_victim().map(|(key, value)| f(key, value)))
     }
 
     /// Non-blocking version of [`pop_victim`](Self::pop_victim).
+    ///
+    /// Returns `None` if the lock could not be acquired.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(3);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// if let Some(evicted) = cache.try_pop_victim() {
+    ///     assert!(evicted.is_some());
+    /// }
+    /// ```
     pub fn try_pop_victim(&self) -> Option<Option<(K, V)>> {
         let mut ring = self.inner.try_write()?;
         Some(ring.pop_victim())
     }
 
     /// Non-blocking clear. Returns `true` if successful.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// assert!(cache.try_clear());
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn try_clear(&self) -> bool {
         if let Some(mut ring) = self.inner.try_write() {
             ring.clear();
@@ -662,6 +945,18 @@ where
     }
 
     /// Non-blocking clear and shrink. Returns `true` if successful.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(100);
+    /// cache.insert("a", 1);
+    ///
+    /// assert!(cache.try_clear_shrink());
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn try_clear_shrink(&self) -> bool {
         if let Some(mut ring) = self.inner.try_write() {
             ring.clear_shrink();
@@ -671,6 +966,118 @@ where
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Iteration methods — no trait bounds needed on K
+// ---------------------------------------------------------------------------
+
+impl<K, V> ClockRing<K, V> {
+    /// Returns an iterator over `(&K, &V)` pairs in slot order.
+    ///
+    /// Does **not** set reference bits (like [`peek`](Self::peek)).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(3);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// let pairs: Vec<_> = ring.iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            inner: self.slots.iter(),
+        }
+    }
+
+    /// Returns an iterator over `(&K, &mut V)` pairs in slot order.
+    ///
+    /// Does **not** set reference bits.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(3);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// for (_key, value) in ring.iter_mut() {
+    ///     *value += 10;
+    /// }
+    /// assert_eq!(ring.peek(&"a"), Some(&11));
+    /// ```
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            inner: self.slots.iter_mut(),
+        }
+    }
+
+    /// Returns an iterator over keys in slot order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(3);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// let keys: Vec<_> = ring.keys().collect();
+    /// assert_eq!(keys.len(), 2);
+    /// ```
+    pub fn keys(&self) -> Keys<'_, K, V> {
+        Keys { inner: self.iter() }
+    }
+
+    /// Returns an iterator over values in slot order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(3);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// let sum: i32 = ring.values().sum();
+    /// assert_eq!(sum, 3);
+    /// ```
+    pub fn values(&self) -> Values<'_, K, V> {
+        Values { inner: self.iter() }
+    }
+
+    /// Returns an iterator over mutable values in slot order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(3);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// for value in ring.values_mut() {
+    ///     *value *= 2;
+    /// }
+    /// assert_eq!(ring.peek(&"a"), Some(&2));
+    /// assert_eq!(ring.peek(&"b"), Some(&4));
+    /// ```
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+        ValuesMut {
+            inner: self.iter_mut(),
+        }
+    }
+}
+
 impl<K, V> ClockRing<K, V>
 where
     K: Eq + Hash + Clone,
@@ -855,7 +1262,11 @@ where
     /// assert!(ring.contains(&"key"));
     /// assert!(!ring.contains(&"missing"));
     /// ```
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.index.contains_key(key)
     }
 
@@ -875,7 +1286,11 @@ where
     /// assert_eq!(ring.peek(&"key"), Some(&42));
     /// assert_eq!(ring.peek(&"missing"), None);
     /// ```
-    pub fn peek(&self, key: &K) -> Option<&V> {
+    pub fn peek<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let idx = *self.index.get(key)?;
         self.slots.get(idx)?.as_ref().map(|entry| &entry.value)
     }
@@ -900,7 +1315,11 @@ where
     /// assert!(!ring.contains(&"b"));
     /// ```
     #[must_use]
-    pub fn get(&mut self, key: &K) -> Option<&V> {
+    pub fn get<Q>(&mut self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let idx = *self.index.get(key)?;
         self.referenced[idx] = true;
         self.slots.get(idx)?.as_ref().map(|entry| &entry.value)
@@ -922,7 +1341,11 @@ where
     /// assert_eq!(ring.peek(&"key"), Some(&vec![1, 2, 3, 4]));
     /// ```
     #[must_use]
-    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let idx = *self.index.get(key)?;
         self.referenced[idx] = true;
         self.slots
@@ -952,7 +1375,11 @@ where
     /// let evicted = ring.insert("c", 3);
     /// assert_eq!(evicted, Some(("b", 2)));
     /// ```
-    pub fn touch(&mut self, key: &K) -> bool {
+    pub fn touch<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let idx = match self.index.get(key) {
             Some(idx) => *idx,
             None => return false,
@@ -982,7 +1409,11 @@ where
     /// // Key doesn't exist - returns None
     /// assert_eq!(ring.update(&"missing", 99), None);
     /// ```
-    pub fn update(&mut self, key: &K, value: V) -> Option<V> {
+    pub fn update<Q>(&mut self, key: &Q, value: V) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let idx = *self.index.get(key)?;
         let entry = self.slots.get_mut(idx)?.as_mut()?;
         let old = std::mem::replace(&mut entry.value, value);
@@ -1183,7 +1614,11 @@ where
     /// assert_eq!(ring.remove(&"key"), None);  // Already removed
     /// assert!(!ring.contains(&"key"));
     /// ```
-    pub fn remove(&mut self, key: &K) -> Option<V> {
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let idx = self.index.remove(key)?;
         let entry = self.slots.get_mut(idx)?.take()?;
         self.referenced[idx] = false;
@@ -1222,6 +1657,236 @@ where
                 assert!(!self.referenced[idx], "empty slot has referenced bit set");
             }
         }
+    }
+}
+
+impl<K, V> Extend<(K, V)> for ClockRing<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        for (key, value) in iter {
+            self.insert(key, value);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterator types (C-ITER-TY: names match the methods that produce them)
+// ---------------------------------------------------------------------------
+
+/// Iterator over `(&K, &V)` pairs of a [`ClockRing`].
+///
+/// Created by [`ClockRing::iter`].
+#[derive(Debug)]
+pub struct Iter<'a, K, V> {
+    inner: std::slice::Iter<'a, Option<Entry<K, V>>>,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next() {
+                Some(Some(entry)) => return Some((&entry.key, &entry.value)),
+                Some(None) => continue,
+                None => return None,
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.inner.size_hint().1)
+    }
+}
+
+/// Mutable iterator over `(&K, &mut V)` pairs of a [`ClockRing`].
+///
+/// Created by [`ClockRing::iter_mut`].
+#[derive(Debug)]
+pub struct IterMut<'a, K, V> {
+    inner: std::slice::IterMut<'a, Option<Entry<K, V>>>,
+}
+
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next() {
+                Some(Some(entry)) => return Some((&entry.key, &mut entry.value)),
+                Some(None) => continue,
+                None => return None,
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.inner.size_hint().1)
+    }
+}
+
+/// Owning iterator over `(K, V)` pairs of a [`ClockRing`].
+///
+/// Created by calling [`IntoIterator::into_iter`] on a `ClockRing`
+/// (or equivalently, `for (k, v) in ring { ... }`).
+#[derive(Debug)]
+pub struct IntoIter<K, V> {
+    inner: std::vec::IntoIter<Option<Entry<K, V>>>,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next() {
+                Some(Some(entry)) => return Some((entry.key, entry.value)),
+                Some(None) => continue,
+                None => return None,
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.inner.size_hint().1)
+    }
+}
+
+/// Iterator over keys of a [`ClockRing`].
+///
+/// Created by [`ClockRing::keys`].
+#[derive(Debug)]
+pub struct Keys<'a, K, V> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator for Keys<'a, K, V> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+/// Iterator over values of a [`ClockRing`].
+///
+/// Created by [`ClockRing::values`].
+#[derive(Debug)]
+pub struct Values<'a, K, V> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator for Values<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+/// Mutable iterator over values of a [`ClockRing`].
+///
+/// Created by [`ClockRing::values_mut`].
+#[derive(Debug)]
+pub struct ValuesMut<'a, K, V> {
+    inner: IterMut<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IntoIterator impls (C-ITER: iter, iter_mut, into_iter)
+// ---------------------------------------------------------------------------
+
+impl<K, V> IntoIterator for ClockRing<K, V> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    /// Consumes the ring, returning an iterator over all `(K, V)` pairs.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(3);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// let pairs: Vec<_> = ring.into_iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            inner: self.slots.into_iter(),
+        }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a ClockRing<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut ClockRing<K, V> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConcurrentClockRing::into_inner (C-CONV: into_ for owned → owned)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "concurrency")]
+impl<K, V> ConcurrentClockRing<K, V> {
+    /// Consumes the concurrent wrapper, returning the inner [`ClockRing`].
+    ///
+    /// This is useful when you need to iterate or inspect a concurrent ring
+    /// after all shared references have been dropped.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentClockRing;
+    ///
+    /// let cache = ConcurrentClockRing::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let ring = cache.into_inner();
+    /// let pairs: Vec<_> = ring.iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    pub fn into_inner(self) -> ClockRing<K, V> {
+        self.inner.into_inner()
     }
 }
 
@@ -1476,6 +2141,232 @@ mod tests {
         assert_eq!(ring.try_touch(&"a"), Some(true));
         assert!(ring.try_clear());
         assert!(ring.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Iterator tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn iter_yields_all_occupied_entries() {
+        let mut ring = ClockRing::new(5);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+
+        let mut pairs: Vec<_> = ring.iter().collect();
+        pairs.sort_by_key(|&(k, _)| *k);
+        assert_eq!(pairs, vec![(&"a", &1), (&"b", &2), (&"c", &3)]);
+    }
+
+    #[test]
+    fn iter_skips_empty_slots_after_removal() {
+        let mut ring = ClockRing::new(5);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+        ring.remove(&"b");
+
+        let mut pairs: Vec<_> = ring.iter().collect();
+        pairs.sort_by_key(|&(k, _)| *k);
+        assert_eq!(pairs, vec![(&"a", &1), (&"c", &3)]);
+    }
+
+    #[test]
+    fn iter_on_empty_ring() {
+        let ring = ClockRing::<&str, i32>::new(5);
+        assert_eq!(ring.iter().count(), 0);
+    }
+
+    #[test]
+    fn iter_on_zero_capacity() {
+        let ring = ClockRing::<&str, i32>::new(0);
+        assert_eq!(ring.iter().count(), 0);
+    }
+
+    #[test]
+    fn iter_mut_modifies_values() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        for (_, v) in ring.iter_mut() {
+            *v += 100;
+        }
+
+        assert_eq!(ring.peek(&"a"), Some(&101));
+        assert_eq!(ring.peek(&"b"), Some(&102));
+    }
+
+    #[test]
+    fn iter_mut_does_not_affect_reference_bits() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        // Reference bits are cleared after insert (only insert sets them)
+        // Iterate mutably — reference bits should remain unchanged.
+        for (_, v) in ring.iter_mut() {
+            *v += 1;
+        }
+        ring.debug_validate_invariants();
+    }
+
+    #[test]
+    fn keys_yields_all_keys() {
+        let mut ring = ClockRing::new(4);
+        ring.insert("x", 10);
+        ring.insert("y", 20);
+        ring.insert("z", 30);
+
+        let mut keys: Vec<_> = ring.keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec![&"x", &"y", &"z"]);
+    }
+
+    #[test]
+    fn values_yields_all_values() {
+        let mut ring = ClockRing::new(4);
+        ring.insert("x", 10);
+        ring.insert("y", 20);
+        ring.insert("z", 30);
+
+        let mut vals: Vec<_> = ring.values().collect();
+        vals.sort();
+        assert_eq!(vals, vec![&10, &20, &30]);
+    }
+
+    #[test]
+    fn values_mut_modifies_all_values() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        for v in ring.values_mut() {
+            *v *= 10;
+        }
+
+        let mut vals: Vec<_> = ring.values().copied().collect();
+        vals.sort();
+        assert_eq!(vals, vec![10, 20]);
+    }
+
+    #[test]
+    fn into_iter_consumes_ring() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        let mut pairs: Vec<_> = ring.into_iter().collect();
+        pairs.sort_by_key(|(k, _)| *k);
+        assert_eq!(pairs, vec![("a", 1), ("b", 2)]);
+    }
+
+    #[test]
+    fn into_iter_empty() {
+        let ring = ClockRing::<&str, i32>::new(5);
+        assert_eq!(ring.into_iter().count(), 0);
+    }
+
+    #[test]
+    fn into_iter_after_evictions() {
+        let mut ring = ClockRing::new(2);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3); // evicts one
+
+        let pairs: Vec<_> = ring.into_iter().collect();
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn into_iter_for_loop() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        let mut sum = 0;
+        for (_, v) in ring {
+            sum += v;
+        }
+        assert_eq!(sum, 3);
+    }
+
+    #[test]
+    fn ref_into_iter_for_loop() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        let mut sum = 0;
+        for (_, v) in &ring {
+            sum += v;
+        }
+        assert_eq!(sum, 3);
+        assert_eq!(ring.len(), 2); // ring not consumed
+    }
+
+    #[test]
+    fn mut_ref_into_iter_for_loop() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        for (_, v) in &mut ring {
+            *v += 10;
+        }
+        assert_eq!(ring.peek(&"a"), Some(&11));
+        assert_eq!(ring.peek(&"b"), Some(&12));
+    }
+
+    #[test]
+    fn iter_count_matches_len() {
+        let mut ring = ClockRing::new(10);
+        for i in 0..7 {
+            ring.insert(i, i * 10);
+        }
+        ring.remove(&3);
+        ring.remove(&5);
+
+        assert_eq!(ring.iter().count(), ring.len());
+        assert_eq!(ring.keys().count(), ring.len());
+        assert_eq!(ring.values().count(), ring.len());
+    }
+
+    #[test]
+    fn iter_after_clear() {
+        let mut ring = ClockRing::new(5);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.clear();
+
+        assert_eq!(ring.iter().count(), 0);
+        assert_eq!(ring.keys().count(), 0);
+        assert_eq!(ring.values().count(), 0);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_into_inner_allows_iteration() {
+        let cache = ConcurrentClockRing::new(5);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.insert("c", 3);
+
+        let ring = cache.into_inner();
+        let mut pairs: Vec<_> = ring.iter().collect();
+        pairs.sort_by_key(|&(k, _)| *k);
+        assert_eq!(pairs, vec![(&"a", &1), (&"b", &2), (&"c", &3)]);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_into_inner_into_iter() {
+        let cache = ConcurrentClockRing::new(3);
+        cache.insert("x", 10);
+        cache.insert("y", 20);
+
+        let pairs: Vec<_> = cache.into_inner().into_iter().collect();
+        assert_eq!(pairs.len(), 2);
     }
 }
 
