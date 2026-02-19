@@ -826,4 +826,20 @@ mod tests {
         assert_eq!(cache.len(), 3);
         assert_eq!(cache.frequencies.len(), 3);
     }
+
+    // ==============================================
+    // Regression Tests
+    // ==============================================
+
+    #[test]
+    fn zero_capacity_insert_returns_none() {
+        let mut cache: MfuCore<&str, i32> = MfuCore::new(0);
+
+        let result = cache.insert("new_key", 42);
+
+        assert_eq!(
+            result, None,
+            "MfuCore::insert at capacity=0 should return None for a new key"
+        );
+    }
 }

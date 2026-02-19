@@ -1189,4 +1189,74 @@ mod tests {
         assert_eq!(cache.len(), 0);
         assert!(!cache.contains(&"key"));
     }
+
+    // ==============================================
+    // Regression Tests
+    // ==============================================
+
+    #[test]
+    fn ghost_directory_size_within_two_times_capacity() {
+        let c = 5usize;
+        let mut cache: ARCCore<u64, u64> = ARCCore::new(c);
+
+        for i in 0..c as u64 {
+            cache.insert(i, i);
+        }
+        for i in 0..c as u64 {
+            cache.get(&i);
+        }
+        for i in c as u64..2 * c as u64 {
+            cache.insert(i, i);
+        }
+        for i in 2 * c as u64..3 * c as u64 {
+            cache.insert(i, i);
+        }
+        for i in 2 * c as u64..3 * c as u64 {
+            cache.get(&i);
+        }
+        for i in 3 * c as u64..8 * c as u64 {
+            cache.insert(i, i);
+        }
+
+        let t = cache.t1_len() + cache.t2_len();
+        let b = cache.b1_len() + cache.b2_len();
+        let total = t + b;
+
+        assert!(
+            total <= 2 * c,
+            "ARC directory size ({}) exceeds 2*capacity ({}). \
+             B1={}, B2={}, T1={}, T2={}",
+            total,
+            2 * c,
+            cache.b1_len(),
+            cache.b2_len(),
+            cache.t1_len(),
+            cache.t2_len(),
+        );
+    }
+
+    #[test]
+    fn ghost_lists_bounded_when_cache_full() {
+        let c = 10usize;
+        let mut cache: ARCCore<u64, u64> = ARCCore::new(c);
+
+        for i in 0..500u64 {
+            cache.insert(i, i);
+        }
+
+        let t = cache.t1_len() + cache.t2_len();
+        let b1 = cache.b1_len();
+        let b2 = cache.b2_len();
+
+        assert!(
+            b1 + b2 <= c,
+            "Ghost lists hold {} entries (B1={}, B2={}) while cache holds {} (T1+T2). \
+             Paper requires B1+B2 <= {}",
+            b1 + b2,
+            b1,
+            b2,
+            t,
+            c,
+        );
+    }
 }
