@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **ConcurrentSlabStore TOCTOU race conditions** — Separate `RwLock`s for index, entries, and free list allowed data corruption on concurrent update-after-remove, capacity overshoot under parallel inserts, and inconsistent reads during `clear()`. Consolidated into a single `SlabInner` behind one `RwLock` for full mutation atomicity.
+- **ARC ghost-list directory leak** — Case 4 (complete miss) did not prune ghost lists B1/B2, violating the paper's invariant that T1+T2+B1+B2 ≤ 2×capacity. Fixed to match the original ARC eviction logic.
+- **Capacity-0 coercion in Clock, ClockPro, NRU** — Constructors silently coerced `capacity=0` to 1 via `.max(1)`, inconsistent with other policies. Now honors zero capacity and rejects inserts gracefully.
+- **MFU insert return value at capacity 0** — `MfuCore::insert` returned `Some(value)` for rejected inserts instead of `None`.
+- **MRU / SLRU / TwoQ `CoreCache::insert` inconsistency** — Trait impl duplicated update logic that diverged from the inherent method. Unified by delegating the trait impl to the inherent `insert`, which now returns `Option<V>`.
+- **ConcurrentWeightStore missing metrics** — `try_insert` and `remove` did not update insert/update/remove counters.
+
+### Added
+- `GhostList::evict_lru()` for popping the least-recently-used ghost entry.
+- `ClockRing` iterators: `Iter`, `IterMut`, `IntoIter`, `Keys`, `Values`, `ValuesMut`.
+- Integration test suite `tests/slab_concurrency.rs` for ConcurrentSlabStore race conditions and atomicity.
+- Integration test suite `tests/policy_invariants.rs` for cross-policy capacity-0 semantics.
+- Per-policy regression tests for capacity-0 behavior, insert return values, ARC ghost-list bounds, and ConcurrentWeightStore metrics.
+
+### Changed
+- `ClockRing` module documentation updated with rustdoc intra-doc links and expanded operations table.
+
 ## [0.4.0] - 2026-02-18
 
 ### Added
