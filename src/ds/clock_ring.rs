@@ -11,7 +11,7 @@
 //! │                           ClockRing<K, V>                                 │
 //! │                                                                           │
 //! │   ┌─────────────────────────────┐   ┌─────────────────────────────────┐   │
-//! │   │  index: HashMap<K, usize>   │   │  slots: Vec<Option<Entry>>      │   │
+//! │   │  index: FxHashMap<K, usize> │   │  slots: Vec<Option<Entry>>      │   │
 //! │   │                             │   │                                 │   │
 //! │   │  ┌───────────┬──────────┐   │   │   ┌─────┬─────┬─────┬─────┐     │   │
 //! │   │  │    Key    │  Index   │   │   │   │  0  │  1  │  2  │  3  │     │   │
@@ -193,6 +193,13 @@ struct Entry<K, V> {
 /// Provides O(1) amortized insertion with automatic eviction of unreferenced
 /// entries. Accessed entries receive a "second chance" via a reference bit.
 ///
+/// Lookup methods ([`get`](Self::get), [`peek`](Self::peek),
+/// [`contains`](Self::contains), etc.) accept any borrowed form of the key
+/// via [`Borrow`], so a `ClockRing<String, V>` can be
+/// queried with `&str`.
+///
+/// Implements [`Clone`], [`Debug`], and [`Extend`]`<(K, V)>`.
+///
 /// # Type Parameters
 ///
 /// - `K`: Key type, must be `Eq + Hash + Clone`
@@ -251,7 +258,8 @@ pub struct ClockRing<K, V> {
 ///
 /// Provides the same functionality as [`ClockRing`] but safe for concurrent
 /// access. Uses closure-based value access since references cannot outlive
-/// lock guards.
+/// lock guards. Lookup methods accept any borrowed form of the key via
+/// [`Borrow`].
 ///
 /// # Example
 ///
