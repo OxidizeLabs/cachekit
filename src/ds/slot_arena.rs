@@ -554,11 +554,11 @@ impl<T> SlotArena<T> {
     /// let values: Vec<_> = arena.iter().map(|(_, v)| *v).collect();
     /// assert_eq!(values, vec!["a", "b"]);
     /// ```
-    pub fn iter(&self) -> impl Iterator<Item = (SlotId, &T)> {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, slot)| slot.as_ref().map(|value| (SlotId(idx), value)))
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter {
+            slots: &self.slots,
+            index: 0,
+        }
     }
 
     /// Iterates over live [`SlotId`]s only.
@@ -633,6 +633,32 @@ impl<T> SlotArena<T> {
         }
 
         assert_eq!(self.slots.len(), self.free_list.len() + self.len);
+    }
+}
+
+/// Iterator over live `(SlotId, &T)` pairs in a [`SlotArena`].
+///
+/// Created by [`SlotArena::iter`]. Visits occupied slots in index order.
+#[derive(Debug, Clone)]
+pub struct Iter<'a, T> {
+    slots: &'a [Option<T>],
+    index: usize,
+}
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = (SlotId, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.index >= self.slots.len() {
+                return None;
+            }
+            let idx = self.index;
+            self.index += 1;
+            if let Some(value) = &self.slots[idx] {
+                return Some((SlotId(idx), value));
+            }
+        }
     }
 }
 
