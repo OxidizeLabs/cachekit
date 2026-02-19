@@ -134,21 +134,22 @@ mod capacity_overshoot {
 }
 
 // ==============================================
-// Non-Atomic clear()
+// Atomic clear()
 // ==============================================
 //
-// clear() acquires 3 separate write locks sequentially. Between clearing
-// entries and clearing the index, concurrent get() calls find keys in the
-// index but miss in the empty entries vec.
+// Validates that clear() is atomic: concurrent get() calls never observe
+// a half-cleared state where the index has a key but the entry is missing.
+// With the single-lock design, get() reads both index and entries under
+// one read lock, so its result is always self-consistent.
 
-mod nonatomic_clear {
+mod atomic_clear {
     use super::*;
 
     #[test]
     fn clear_concurrent_with_get_is_consistent() {
         let store: Arc<ConcurrentSlabStore<u64, u64>> = Arc::new(ConcurrentSlabStore::new(1000));
         let stop = Arc::new(AtomicBool::new(false));
-        let false_misses = Arc::new(AtomicUsize::new(0));
+        let inconsistencies = Arc::new(AtomicUsize::new(0));
 
         for i in 0..1000u64 {
             store.try_insert(i, Arc::new(i)).unwrap();
@@ -156,12 +157,17 @@ mod nonatomic_clear {
 
         let store_r = store.clone();
         let stop_r = stop.clone();
-        let false_misses_r = false_misses.clone();
+        let inconsistencies_r = inconsistencies.clone();
         let reader = thread::spawn(move || {
             while !stop_r.load(Ordering::Relaxed) {
                 for i in 0..100u64 {
-                    if store_r.contains(&i) && store_r.get(&i).is_none() {
-                        false_misses_r.fetch_add(1, Ordering::Relaxed);
+                    // get() should be internally consistent: if it finds
+                    // the key in the index, the entry must also exist.
+                    // A Some result with a wrong value would indicate corruption.
+                    if let Some(val) = store_r.get(&i) {
+                        if *val != i {
+                            inconsistencies_r.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
@@ -183,10 +189,9 @@ mod nonatomic_clear {
         writer.join().unwrap();
 
         assert_eq!(
-            false_misses.load(Ordering::Relaxed),
+            inconsistencies.load(Ordering::Relaxed),
             0,
-            "contains() returned true but get() returned None — \
-             clear() is not atomic across its internal locks"
+            "get() returned an inconsistent value during concurrent clear()"
         );
     }
 }

@@ -815,21 +815,22 @@ where
             return None;
         }
 
-        // Case 4: Complete miss (not in cache or ghost lists)
-        // Handle ghost list capacity management
-        if self.t1_len + self.t2_len >= self.capacity {
-            self.replace(false);
+        // Case 4: Complete miss -- prune directory per ARC paper
+        let l1_len = self.t1_len + self.b1.len();
+        if l1_len >= self.capacity {
+            if !self.b1.is_empty() {
+                self.b1.evict_lru();
+            }
+            if self.t1_len + self.t2_len >= self.capacity {
+                self.replace(false);
+            }
         } else {
-            // L1 is not full, but we may need to prune ghost lists
-            // This is for when T1 + T2 + B1 + B2 exceeds 2 * capacity
-            let total_size = self.t1_len + self.t2_len + self.b1.len() + self.b2.len();
-            if total_size >= 2 * self.capacity {
-                // Remove oldest from B1 if it's larger
-                if !self.b1.is_empty() {
-                    // Ghost list automatically handles LRU eviction
-                } else if !self.b2.is_empty() {
-                    // Same for B2
-                }
+            let total = self.t1_len + self.t2_len + self.b1.len() + self.b2.len();
+            if total >= 2 * self.capacity {
+                self.b2.evict_lru();
+            }
+            if self.t1_len + self.t2_len >= self.capacity {
+                self.replace(false);
             }
         }
 

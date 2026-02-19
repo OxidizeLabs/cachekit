@@ -766,7 +766,13 @@ where
     /// Returns [`StoreFull`] if entry count or weight limit would be exceeded.
     fn try_insert(&self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let mut store = self.inner.write();
-        store.try_insert(key, value)
+        let result = store.try_insert(key, value);
+        match &result {
+            Ok(Some(_)) => self.metrics.inc_update(),
+            Ok(None) => self.metrics.inc_insert(),
+            Err(_) => {},
+        }
+        result
     }
 
     /// Removes and returns the value for the given key.
@@ -774,7 +780,11 @@ where
     /// Acquires write lock. Adjusts total weight.
     fn remove(&self, key: &K) -> Option<Arc<V>> {
         let mut store = self.inner.write();
-        store.remove(key)
+        let result = store.remove(key);
+        if result.is_some() {
+            self.metrics.inc_remove();
+        }
+        result
     }
 
     /// Removes all entries and resets total weight.

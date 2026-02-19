@@ -217,7 +217,7 @@ where
     /// Inserts a key-value pair, evicting the most frequently used entry if at capacity.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.capacity == 0 {
-            return Some(value);
+            return None;
         }
 
         // Update or insert
@@ -431,7 +431,7 @@ where
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.capacity == 0 {
-            return Some(value);
+            return None;
         }
 
         // Update or insert

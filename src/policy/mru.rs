@@ -370,13 +370,15 @@ where
     /// assert_eq!(cache.len(), 1);  // Still 1 entry
     /// ```
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.capacity == 0 {
+            return None;
+        }
+
         // Check for existing key - update in place
         if let Some(&node_ptr) = self.map.get(&key) {
-            unsafe {
-                (*node_ptr.as_ptr()).value = value;
-            }
-            return;
+            let old = unsafe { std::mem::replace(&mut (*node_ptr.as_ptr()).value, value) };
+            return Some(old);
         }
 
         // Evict BEFORE inserting to ensure space is available
@@ -396,6 +398,7 @@ where
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
+        None
     }
 
     /// Evicts entries until there is room for a new entry.
@@ -616,18 +619,7 @@ where
 {
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Check if key exists - update in place
-        if let Some(&node_ptr) = self.map.get(&key) {
-            let old = unsafe {
-                let node = &mut *node_ptr.as_ptr();
-                std::mem::replace(&mut node.value, value)
-            };
-            return Some(old);
-        }
-
-        // New insert
-        MruCore::insert(self, key, value);
-        None
+        MruCore::insert(self, key, value)
     }
 
     #[inline]
