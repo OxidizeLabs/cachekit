@@ -81,12 +81,22 @@
 //!
 //! | Operation     | Description                              | Complexity |
 //! |---------------|------------------------------------------|------------|
-//! | `insert`      | Add value, reuse free slot if available  | O(1)       |
-//! | `remove`      | Remove and return value, free the slot   | O(1)       |
-//! | `get`         | Get reference by SlotId                  | O(1)       |
-//! | `get_mut`     | Get mutable reference by SlotId          | O(1)       |
-//! | `contains`    | Check if SlotId is valid                 | O(1)       |
-//! | `iter`        | Iterate over live entries                | O(n)       |
+//! | [`insert`]    | Add value, reuse free slot if available  | O(1)       |
+//! | [`remove`]    | Remove and return value, free the slot   | O(1)       |
+//! | [`get`]       | Get reference by SlotId                  | O(1)       |
+//! | [`get_mut`]   | Get mutable reference by SlotId          | O(1)       |
+//! | [`contains`]  | Check if SlotId is valid                 | O(1)       |
+//! | [`iter`] / [`iter_mut`] | Iterate over live entries      | O(n)       |
+//! | [`into_iter`] | Consuming iteration over entries         | O(n)       |
+//!
+//! [`insert`]: SlotArena::insert
+//! [`remove`]: SlotArena::remove
+//! [`get`]: SlotArena::get
+//! [`get_mut`]: SlotArena::get_mut
+//! [`contains`]: SlotArena::contains
+//! [`iter`]: SlotArena::iter
+//! [`iter_mut`]: SlotArena::iter_mut
+//! [`into_iter`]: SlotArena#impl-IntoIterator
 //!
 //! ## Performance Characteristics
 //!
@@ -136,6 +146,7 @@
 //! - Accessing a stale `SlotId` returns `None` (not undefined behavior)
 //! - `len()` tracks live entries, not `slots.len()`
 //! - `debug_validate_invariants()` available in debug/test builds
+
 /// Stable handle into a [`SlotArena`].
 ///
 /// A lightweight identifier (wrapping a `usize` index) that provides O(1)
@@ -167,7 +178,7 @@
 /// let new_id = arena.insert(100);
 /// assert_eq!(id.index(), new_id.index());
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SlotId(pub(crate) usize);
 
 impl SlotId {
@@ -241,7 +252,7 @@ impl SlotId {
 ///     current = node.next;
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SlotArena<T> {
     slots: Vec<Option<T>>,
     free_list: Vec<usize>,
@@ -540,7 +551,7 @@ impl<T> SlotArena<T> {
         self.len = 0;
     }
 
-    /// Iterates over live `(SlotId, &T)` pairs.
+    /// Returns an iterator over live `(SlotId, &T)` pairs in slot order.
     ///
     /// # Example
     ///
@@ -556,12 +567,35 @@ impl<T> SlotArena<T> {
     /// ```
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
-            slots: &self.slots,
-            index: 0,
+            inner: self.slots.iter().enumerate(),
         }
     }
 
-    /// Iterates over live [`SlotId`]s only.
+    /// Returns an iterator over live `(SlotId, &mut T)` pairs in slot order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::SlotArena;
+    ///
+    /// let mut arena = SlotArena::new();
+    /// arena.insert(1);
+    /// arena.insert(2);
+    ///
+    /// for (_, v) in arena.iter_mut() {
+    ///     *v += 10;
+    /// }
+    ///
+    /// let vals: Vec<_> = arena.iter().map(|(_, v)| *v).collect();
+    /// assert_eq!(vals, vec![11, 12]);
+    /// ```
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
+        IterMut {
+            inner: self.slots.iter_mut().enumerate(),
+        }
+    }
+
+    /// Returns an iterator over live [`SlotId`]s only.
     ///
     /// # Example
     ///
@@ -577,11 +611,8 @@ impl<T> SlotArena<T> {
     /// assert_eq!(ids.len(), 1);
     /// assert!(ids.contains(&b));
     /// ```
-    pub fn iter_ids(&self) -> impl Iterator<Item = SlotId> + '_ {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, slot)| slot.as_ref().map(|_| SlotId(idx)))
+    pub fn iter_ids(&self) -> IterIds<'_, T> {
+        IterIds { inner: self.iter() }
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -636,32 +667,6 @@ impl<T> SlotArena<T> {
     }
 }
 
-/// Iterator over live `(SlotId, &T)` pairs in a [`SlotArena`].
-///
-/// Created by [`SlotArena::iter`]. Visits occupied slots in index order.
-#[derive(Debug, Clone)]
-pub struct Iter<'a, T> {
-    slots: &'a [Option<T>],
-    index: usize,
-}
-
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = (SlotId, &'a T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if self.index >= self.slots.len() {
-                return None;
-            }
-            let idx = self.index;
-            self.index += 1;
-            if let Some(value) = &self.slots[idx] {
-                return Some((SlotId(idx), value));
-            }
-        }
-    }
-}
-
 #[cfg(any(test, debug_assertions))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotArenaSnapshot {
@@ -690,7 +695,7 @@ pub struct SlotArenaSnapshot {
 /// // Access value
 /// assert_eq!(arena.get_with(id, |v| *v), Some(42));
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg(feature = "concurrency")]
 pub struct ShardedSlotId {
     shard: usize,
@@ -1100,6 +1105,155 @@ impl<T> Default for SlotArena<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Iterator types (C-ITER-TY: names match the methods that produce them)
+// ---------------------------------------------------------------------------
+
+/// Iterator over `(SlotId, &T)` pairs of a [`SlotArena`].
+///
+/// Created by [`SlotArena::iter`].
+#[derive(Debug)]
+pub struct Iter<'a, T> {
+    inner: std::iter::Enumerate<std::slice::Iter<'a, Option<T>>>,
+}
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = (SlotId, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next() {
+                Some((idx, Some(value))) => return Some((SlotId(idx), value)),
+                Some((_, None)) => continue,
+                None => return None,
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.inner.size_hint().1)
+    }
+}
+
+/// Mutable iterator over `(SlotId, &mut T)` pairs of a [`SlotArena`].
+///
+/// Created by [`SlotArena::iter_mut`].
+#[derive(Debug)]
+pub struct IterMut<'a, T> {
+    inner: std::iter::Enumerate<std::slice::IterMut<'a, Option<T>>>,
+}
+
+impl<'a, T> Iterator for IterMut<'a, T> {
+    type Item = (SlotId, &'a mut T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next() {
+                Some((idx, Some(value))) => return Some((SlotId(idx), value)),
+                Some((_, None)) => continue,
+                None => return None,
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.inner.size_hint().1)
+    }
+}
+
+/// Owning iterator over `(SlotId, T)` pairs of a [`SlotArena`].
+///
+/// Created by calling [`IntoIterator::into_iter`] on a `SlotArena`.
+#[derive(Debug)]
+pub struct IntoIter<T> {
+    inner: std::iter::Enumerate<std::vec::IntoIter<Option<T>>>,
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = (SlotId, T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next() {
+                Some((idx, Some(value))) => return Some((SlotId(idx), value)),
+                Some((_, None)) => continue,
+                None => return None,
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.inner.size_hint().1)
+    }
+}
+
+/// Iterator over live [`SlotId`]s of a [`SlotArena`].
+///
+/// Created by [`SlotArena::iter_ids`].
+#[derive(Debug)]
+pub struct IterIds<'a, T> {
+    inner: Iter<'a, T>,
+}
+
+impl<'a, T> Iterator for IterIds<'a, T> {
+    type Item = SlotId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(id, _)| id)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IntoIterator impls (C-ITER: iter, iter_mut, into_iter)
+// ---------------------------------------------------------------------------
+
+impl<T> IntoIterator for SlotArena<T> {
+    type Item = (SlotId, T);
+    type IntoIter = IntoIter<T>;
+
+    /// Consumes the arena, returning an iterator over all `(SlotId, T)` pairs.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::SlotArena;
+    ///
+    /// let mut arena = SlotArena::new();
+    /// arena.insert("a");
+    /// arena.insert("b");
+    ///
+    /// let pairs: Vec<_> = arena.into_iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            inner: self.slots.into_iter().enumerate(),
+        }
+    }
+}
+
+impl<'a, T> IntoIterator for &'a SlotArena<T> {
+    type Item = (SlotId, &'a T);
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut SlotArena<T> {
+    type Item = (SlotId, &'a mut T);
+    type IntoIter = IterMut<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
 /// Thread-safe [`SlotArena`] wrapper using `parking_lot::RwLock`.
 ///
 /// Provides the same functionality as [`SlotArena`] but safe for concurrent
@@ -1466,6 +1620,62 @@ impl<T> Default for ConcurrentSlotArena<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// into_inner (C-CONV: into_ for owned → owned)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "concurrency")]
+impl<T> ConcurrentSlotArena<T> {
+    /// Consumes the concurrent wrapper, returning the inner [`SlotArena`].
+    ///
+    /// Useful when iteration or bulk inspection is needed after all shared
+    /// references have been dropped.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ConcurrentSlotArena;
+    ///
+    /// let arena = ConcurrentSlotArena::new();
+    /// arena.insert("a");
+    /// arena.insert("b");
+    ///
+    /// let inner = arena.into_inner();
+    /// let values: Vec<_> = inner.iter().map(|(_, v)| *v).collect();
+    /// assert_eq!(values.len(), 2);
+    /// ```
+    pub fn into_inner(self) -> SlotArena<T> {
+        self.inner.into_inner()
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl<T> ShardedSlotArena<T> {
+    /// Consumes the sharded arena, returning the inner [`SlotArena`]s.
+    ///
+    /// Returns one `SlotArena` per shard in shard order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardedSlotArena;
+    ///
+    /// let arena = ShardedSlotArena::new(2);
+    /// arena.insert("a");
+    /// arena.insert("b");
+    ///
+    /// let shards = arena.into_inner();
+    /// let total: usize = shards.iter().map(|s| s.len()).sum();
+    /// assert_eq!(total, 2);
+    /// ```
+    pub fn into_inner(self) -> Vec<SlotArena<T>> {
+        self.shards
+            .into_iter()
+            .map(|lock| lock.into_inner())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1670,6 +1880,312 @@ mod tests {
         let _ = arena.insert(3);
         assert!(arena.contains(b));
         arena.debug_validate_invariants();
+    }
+
+    // -----------------------------------------------------------------------
+    // Named iterator type tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn iter_yields_all_live_entries() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(10);
+        let b = arena.insert(20);
+        let c = arena.insert(30);
+
+        let mut pairs: Vec<_> = arena.iter().collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        assert_eq!(pairs, vec![(a, &10), (b, &20), (c, &30)]);
+    }
+
+    #[test]
+    fn iter_skips_removed_slots() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(10);
+        let b = arena.insert(20);
+        let c = arena.insert(30);
+        arena.remove(b);
+
+        let mut pairs: Vec<_> = arena.iter().collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        assert_eq!(pairs, vec![(a, &10), (c, &30)]);
+    }
+
+    #[test]
+    fn iter_on_empty_arena() {
+        let arena = SlotArena::<i32>::new();
+        assert_eq!(arena.iter().count(), 0);
+    }
+
+    #[test]
+    fn iter_mut_modifies_values() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+
+        for (_, v) in arena.iter_mut() {
+            *v += 100;
+        }
+
+        assert_eq!(arena.get(a), Some(&101));
+        assert_eq!(arena.get(b), Some(&102));
+    }
+
+    #[test]
+    fn iter_mut_skips_removed_slots() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+        let c = arena.insert(3);
+        arena.remove(b);
+
+        let ids: Vec<_> = arena.iter_mut().map(|(id, _)| id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&a));
+        assert!(ids.contains(&c));
+    }
+
+    #[test]
+    fn iter_ids_matches_iter_keys() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert("x");
+        let b = arena.insert("y");
+        arena.remove(a);
+        let c = arena.insert("z");
+
+        let ids_from_iter: Vec<_> = arena.iter().map(|(id, _)| id).collect();
+        let ids_from_iter_ids: Vec<_> = arena.iter_ids().collect();
+        assert_eq!(ids_from_iter, ids_from_iter_ids);
+        assert!(ids_from_iter_ids.contains(&b));
+        assert!(ids_from_iter_ids.contains(&c));
+    }
+
+    #[test]
+    fn into_iter_consumes_arena() {
+        let mut arena = SlotArena::new();
+        arena.insert("a");
+        arena.insert("b");
+        arena.insert("c");
+
+        let pairs: Vec<_> = arena.into_iter().collect();
+        assert_eq!(pairs.len(), 3);
+    }
+
+    #[test]
+    fn into_iter_skips_removed_slots() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(10);
+        arena.insert(20);
+        arena.insert(30);
+        arena.remove(a);
+
+        let pairs: Vec<_> = arena.into_iter().collect();
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn into_iter_empty() {
+        let arena = SlotArena::<i32>::new();
+        assert_eq!(arena.into_iter().count(), 0);
+    }
+
+    #[test]
+    fn into_iter_preserves_slot_ids() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert("first");
+        let b = arena.insert("second");
+
+        let mut pairs: Vec<_> = arena.into_iter().collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        assert_eq!(pairs, vec![(a, "first"), (b, "second")]);
+    }
+
+    #[test]
+    fn for_loop_ref_borrow() {
+        let mut arena = SlotArena::new();
+        arena.insert(1);
+        arena.insert(2);
+
+        let mut sum = 0;
+        for (_, v) in &arena {
+            sum += v;
+        }
+        assert_eq!(sum, 3);
+        assert_eq!(arena.len(), 2); // not consumed
+    }
+
+    #[test]
+    fn for_loop_mut_borrow() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+
+        for (_, v) in &mut arena {
+            *v += 10;
+        }
+        assert_eq!(arena.get(a), Some(&11));
+        assert_eq!(arena.get(b), Some(&12));
+    }
+
+    #[test]
+    fn for_loop_owned() {
+        let mut arena = SlotArena::new();
+        arena.insert(10);
+        arena.insert(20);
+
+        let mut sum = 0;
+        for (_, v) in arena {
+            sum += v;
+        }
+        assert_eq!(sum, 30);
+    }
+
+    #[test]
+    fn iter_count_matches_len() {
+        let mut arena = SlotArena::new();
+        for i in 0..10 {
+            arena.insert(i);
+        }
+        arena.remove(SlotId(3));
+        arena.remove(SlotId(7));
+
+        assert_eq!(arena.iter().count(), arena.len());
+        assert_eq!(arena.iter_mut().count(), arena.len());
+        assert_eq!(arena.iter_ids().count(), arena.len());
+    }
+
+    #[test]
+    fn iter_after_clear() {
+        let mut arena = SlotArena::new();
+        arena.insert("a");
+        arena.insert("b");
+        arena.clear();
+
+        assert_eq!(arena.iter().count(), 0);
+        assert_eq!(arena.iter_mut().count(), 0);
+        assert_eq!(arena.iter_ids().count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Clone tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clone_produces_independent_copy() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+
+        let mut cloned = arena.clone();
+
+        assert_eq!(cloned.get(a), Some(&1));
+        assert_eq!(cloned.get(b), Some(&2));
+        assert_eq!(cloned.len(), 2);
+
+        // Mutating clone doesn't affect original
+        cloned.remove(a);
+        assert_eq!(arena.get(a), Some(&1));
+        assert!(!cloned.contains(a));
+    }
+
+    #[test]
+    fn clone_empty_arena() {
+        let arena = SlotArena::<i32>::new();
+        let cloned = arena.clone();
+        assert!(cloned.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Ord tests on SlotId / ShardedSlotId
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn slot_id_ordering() {
+        let mut arena = SlotArena::new();
+        let a = arena.insert("a");
+        let b = arena.insert("b");
+        let c = arena.insert("c");
+
+        assert!(a < b);
+        assert!(b < c);
+
+        let mut ids = [c, a, b];
+        ids.sort();
+        assert_eq!(ids, [a, b, c]);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn sharded_slot_id_ordering() {
+        let arena = ShardedSlotArena::new(4);
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+        let c = arena.insert(3);
+
+        // Just verify Ord is usable — exact order depends on shard assignment
+        let mut ids = [c, a, b];
+        ids.sort();
+        assert_eq!(ids.len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // into_inner tests
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_into_inner_allows_iteration() {
+        let arena = ConcurrentSlotArena::new();
+        let a = arena.insert(10);
+        let b = arena.insert(20);
+
+        let inner = arena.into_inner();
+        assert_eq!(inner.get(a), Some(&10));
+        assert_eq!(inner.get(b), Some(&20));
+
+        let pairs: Vec<_> = inner.iter().collect();
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_into_inner_into_iter() {
+        let arena = ConcurrentSlotArena::new();
+        arena.insert("x");
+        arena.insert("y");
+
+        let pairs: Vec<_> = arena.into_inner().into_iter().collect();
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn sharded_into_inner_returns_all_shards() {
+        let arena = ShardedSlotArena::new(4);
+        for i in 0..8 {
+            arena.insert(i);
+        }
+
+        let shards = arena.into_inner();
+        assert_eq!(shards.len(), 4);
+        let total: usize = shards.iter().map(|s| s.len()).sum();
+        assert_eq!(total, 8);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn sharded_into_inner_allows_iteration() {
+        let arena = ShardedSlotArena::new(2);
+        arena.insert(1);
+        arena.insert(2);
+        arena.insert(3);
+
+        let shards = arena.into_inner();
+        let all_values: Vec<_> = shards
+            .into_iter()
+            .flat_map(|s| s.into_iter().map(|(_, v)| v))
+            .collect();
+        assert_eq!(all_values.len(), 3);
     }
 }
 
