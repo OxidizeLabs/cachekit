@@ -45,16 +45,20 @@
 //! ## Key Components
 //!
 //! - [`GhostList`]: Bounded recency tracker for evicted keys
+//! - [`Iter`]: Iterator over keys in MRU to LRU order; created by [`GhostList::iter`]
+//! - [`IntoIter`]: Consuming iterator over keys; created by `.into_iter()`
 //!
 //! ## Operations
 //!
 //! | Operation      | Description                           | Complexity |
 //! |----------------|---------------------------------------|------------|
-//! | `record`       | Add/promote key to MRU, evict if full | O(1) avg   |
-//! | `remove`       | Remove key from ghost list            | O(1) avg   |
-//! | `contains`     | Check if key is tracked               | O(1) avg   |
-//! | `record_batch` | Record multiple keys                  | O(n)       |
-//! | `remove_batch` | Remove multiple keys                  | O(n)       |
+//! | [`record`](GhostList::record) | Add/promote key to MRU, evict if full | O(1) avg |
+//! | [`remove`](GhostList::remove) | Remove key from ghost list | O(1) avg |
+//! | [`contains`](GhostList::contains) | Check if key is tracked | O(1) avg |
+//! | [`evict_lru`](GhostList::evict_lru) | Pop the least recently used key | O(1) avg |
+//! | [`record_batch`](GhostList::record_batch) | Record multiple keys | O(n) |
+//! | [`remove_batch`](GhostList::remove_batch) | Remove multiple keys | O(n) |
+//! | [`iter`](GhostList::iter) | Iterate keys in MRU to LRU order | O(n) |
 //!
 //! ## Use Cases
 //!
@@ -134,6 +138,7 @@
 //! - Keys are stored in both the list and index (requires `Clone`)
 //! - Zero-capacity ghost lists are no-ops (record does nothing)
 //! - `debug_validate_invariants()` available in debug/test builds
+//!
 
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
@@ -201,6 +206,11 @@ use crate::ds::slot_arena::SlotId;
 ///
 /// assert_eq!(ghost_hits, 2);  // key_1 and key_2 were ghost hits
 /// ```
+///
+/// # Traits
+///
+/// Implements [`Clone`], [`PartialEq`], [`Eq`], [`Default`], [`Extend<K>`](Extend),
+/// [`IntoIterator`] (consuming and borrowed).
 #[derive(Debug)]
 pub struct GhostList<K> {
     list: IntrusiveList<K>,
@@ -242,6 +252,12 @@ type MapToKey<'a, K> = std::iter::Map<
     fn((SlotId, &'a K)) -> &'a K,
 >;
 
+impl<'a, K: std::fmt::Debug> std::fmt::Debug for Iter<'a, K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Iter").finish_non_exhaustive()
+    }
+}
+
 impl<'a, K> Iterator for Iter<'a, K> {
     type Item = &'a K;
 
@@ -257,6 +273,82 @@ impl<'a, K> Iterator for Iter<'a, K> {
 impl<'a, K> ExactSizeIterator for Iter<'a, K> {}
 
 impl<'a, K> std::iter::FusedIterator for Iter<'a, K> {}
+
+/// Consuming iterator over keys in a [`GhostList`], yielding owned keys in MRU to LRU order.
+///
+/// Created by calling `.into_iter()` on a `GhostList`.
+#[derive(Debug)]
+pub struct IntoIter<K> {
+    inner: std::vec::IntoIter<K>,
+}
+
+impl<K> Iterator for IntoIter<K> {
+    type Item = K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K> ExactSizeIterator for IntoIter<K> {}
+
+impl<K> std::iter::FusedIterator for IntoIter<K> {}
+
+impl<K> IntoIterator for GhostList<K>
+where
+    K: Eq + Hash + Clone,
+{
+    type Item = K;
+    type IntoIter = IntoIter<K>;
+
+    /// Consumes the ghost list and yields keys in MRU to LRU order.
+    fn into_iter(self) -> Self::IntoIter {
+        let keys: Vec<K> = self.list.iter_entries().map(|(_, k)| k.clone()).collect();
+        IntoIter {
+            inner: keys.into_iter(),
+        }
+    }
+}
+
+impl<'a, K> IntoIterator for &'a GhostList<K>
+where
+    K: Eq + Hash + Clone,
+{
+    type Item = &'a K;
+    type IntoIter = Iter<'a, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<K> PartialEq for GhostList<K>
+where
+    K: Eq + Hash + Clone,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.capacity == other.capacity
+            && self.len() == other.len()
+            && self.iter().zip(other.iter()).all(|(a, b)| a == b)
+    }
+}
+
+impl<K> Eq for GhostList<K> where K: Eq + Hash + Clone {}
+
+impl<K> Extend<K> for GhostList<K>
+where
+    K: Eq + Hash + Clone,
+{
+    fn extend<I: IntoIterator<Item = K>>(&mut self, iter: I) {
+        for key in iter {
+            self.record(key);
+        }
+    }
+}
 
 impl<K> Default for GhostList<K>
 where
@@ -506,6 +598,28 @@ where
     }
 
     /// Removes and returns the LRU (least recently used) key.
+    ///
+    /// Returns `None` if the ghost list is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let mut ghost = GhostList::new(3);
+    /// ghost.record("a");
+    /// ghost.record("b");
+    /// ghost.record("c");
+    ///
+    /// // "a" is LRU (inserted first, never promoted)
+    /// assert_eq!(ghost.evict_lru(), Some("a"));
+    /// assert!(!ghost.contains(&"a"));
+    /// assert_eq!(ghost.len(), 2);
+    ///
+    /// assert_eq!(ghost.evict_lru(), Some("b"));
+    /// assert_eq!(ghost.evict_lru(), Some("c"));
+    /// assert_eq!(ghost.evict_lru(), None);  // Empty
+    /// ```
     pub fn evict_lru(&mut self) -> Option<K> {
         let key = self.list.pop_back()?;
         self.index.remove(&key);
@@ -970,6 +1084,274 @@ mod tests {
         ghost.record("d");
         assert!(ghost.contains(&"d"));
         assert!(!cloned.contains(&"d"));
+    }
+
+    // -------------------------------------------------------------------------
+    // IntoIterator (consuming)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ghost_list_into_iter_yields_mru_to_lru() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        let keys: Vec<_> = ghost.into_iter().collect();
+        assert_eq!(keys, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn ghost_list_into_iter_empty() {
+        let ghost: GhostList<&str> = GhostList::new(5);
+        let keys: Vec<_> = ghost.into_iter().collect();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn ghost_list_into_iter_size_hint() {
+        let mut ghost = GhostList::new(4);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        let iter = ghost.into_iter();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+    }
+
+    #[test]
+    fn ghost_list_into_iter_exact_size() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("x");
+        ghost.record("y");
+
+        let mut iter = ghost.into_iter();
+        assert_eq!(iter.len(), 2);
+        iter.next();
+        assert_eq!(iter.len(), 1);
+        iter.next();
+        assert_eq!(iter.len(), 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // IntoIterator (borrowed, &GhostList)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ghost_list_ref_into_iter_yields_mru_to_lru() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        let keys: Vec<_> = (&ghost).into_iter().cloned().collect();
+        assert_eq!(keys, vec!["c", "b", "a"]);
+        // Ghost list is still usable after borrowed iteration
+        assert_eq!(ghost.len(), 3);
+    }
+
+    #[test]
+    fn ghost_list_ref_into_iter_via_for_loop() {
+        let mut ghost = GhostList::new(3);
+        ghost.record(1u32);
+        ghost.record(2u32);
+        ghost.record(3u32);
+
+        let mut seen = Vec::new();
+        for key in &ghost {
+            seen.push(*key);
+        }
+        assert_eq!(seen, vec![3u32, 2, 1]); // MRU to LRU
+    }
+
+    // -------------------------------------------------------------------------
+    // PartialEq / Eq
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ghost_list_equal_same_content_and_capacity() {
+        let mut a = GhostList::new(3);
+        a.record("x");
+        a.record("y");
+
+        let mut b = GhostList::new(3);
+        b.record("x");
+        b.record("y");
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ghost_list_not_equal_different_order() {
+        let mut a = GhostList::new(3);
+        a.record("x");
+        a.record("y");
+
+        let mut b = GhostList::new(3);
+        b.record("y");
+        b.record("x");
+
+        // Both contain the same keys but in different MRU order
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ghost_list_not_equal_different_capacity() {
+        let mut a = GhostList::new(3);
+        a.record("x");
+
+        let mut b = GhostList::new(5);
+        b.record("x");
+
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ghost_list_not_equal_different_content() {
+        let mut a = GhostList::new(3);
+        a.record("x");
+        a.record("y");
+
+        let mut b = GhostList::new(3);
+        b.record("x");
+        b.record("z");
+
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ghost_list_equal_empty_lists_same_capacity() {
+        let a: GhostList<&str> = GhostList::new(10);
+        let b: GhostList<&str> = GhostList::new(10);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ghost_list_partial_eq_is_reflexive() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        assert_eq!(ghost, ghost.clone());
+    }
+
+    // -------------------------------------------------------------------------
+    // Extend
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ghost_list_extend_records_all_keys() {
+        let mut ghost = GhostList::new(5);
+        ghost.extend(["a", "b", "c"]);
+
+        assert_eq!(ghost.len(), 3);
+        assert!(ghost.contains(&"a"));
+        assert!(ghost.contains(&"b"));
+        assert!(ghost.contains(&"c"));
+    }
+
+    #[test]
+    fn ghost_list_extend_respects_capacity() {
+        let mut ghost = GhostList::new(2);
+        ghost.extend(["a", "b", "c", "d"]);
+
+        // Capacity is 2; oldest keys evicted
+        assert_eq!(ghost.len(), 2);
+        assert!(ghost.contains(&"c"));
+        assert!(ghost.contains(&"d"));
+        assert!(!ghost.contains(&"a"));
+        assert!(!ghost.contains(&"b"));
+    }
+
+    #[test]
+    fn ghost_list_extend_promotes_existing_keys() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        // Extending with existing key "a" promotes it to MRU
+        ghost.extend(["a"]);
+        let keys: Vec<_> = ghost.iter().cloned().collect();
+        assert_eq!(keys[0], "a"); // "a" is now MRU
+        assert_eq!(ghost.len(), 3);
+    }
+
+    #[test]
+    fn ghost_list_extend_from_iterator() {
+        let mut ghost = GhostList::new(10);
+        let keys = vec!["p", "q", "r", "s"];
+        ghost.extend(keys);
+
+        assert_eq!(ghost.len(), 4);
+        assert!(ghost.contains(&"p"));
+        assert!(ghost.contains(&"s"));
+    }
+
+    // -------------------------------------------------------------------------
+    // evict_lru
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ghost_list_evict_lru_removes_oldest() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        // LRU is "a" (inserted first, never promoted)
+        assert_eq!(ghost.evict_lru(), Some("a"));
+        assert!(!ghost.contains(&"a"));
+        assert_eq!(ghost.len(), 2);
+
+        assert_eq!(ghost.evict_lru(), Some("b"));
+        assert_eq!(ghost.evict_lru(), Some("c"));
+        assert_eq!(ghost.evict_lru(), None); // Empty
+        assert!(ghost.is_empty());
+    }
+
+    #[test]
+    fn ghost_list_evict_lru_empty_returns_none() {
+        let mut ghost: GhostList<&str> = GhostList::new(5);
+        assert_eq!(ghost.evict_lru(), None);
+    }
+
+    #[test]
+    fn ghost_list_evict_lru_after_promotion() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+        ghost.record("c");
+
+        // Promote "a" to MRU — now "b" is LRU
+        ghost.record("a");
+        assert_eq!(ghost.evict_lru(), Some("b"));
+        assert!(ghost.contains(&"a"));
+        assert!(ghost.contains(&"c"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Debug impls
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ghost_list_iter_debug() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+        ghost.record("b");
+
+        let iter = ghost.iter();
+        let debug_str = format!("{:?}", iter);
+        assert!(debug_str.contains("Iter"));
+    }
+
+    #[test]
+    fn ghost_list_into_iter_debug() {
+        let mut ghost = GhostList::new(3);
+        ghost.record("a");
+
+        let iter = ghost.into_iter();
+        let debug_str = format!("{:?}", iter);
+        assert!(debug_str.contains("IntoIter"));
     }
 }
 
