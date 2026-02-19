@@ -50,15 +50,25 @@
 //! ## Key Components
 //!
 //! - [`FixedHistory`]: Fixed-size ring buffer for timestamp history
+//! - [`Iter`]: Borrowed iterator over timestamps in MRU order
+//! - [`IntoIter`]: Owning iterator over timestamps in MRU order
 //!
 //! ## Operations
 //!
-//! | Operation         | Description                      | Complexity |
-//! |-------------------|----------------------------------|------------|
-//! | `record`          | Add timestamp (overwrites oldest)| O(1)       |
-//! | `most_recent`     | Get most recent timestamp        | O(1)       |
-//! | `kth_most_recent` | Get k-th most recent timestamp   | O(1)       |
-//! | `to_vec_mru`      | Get all in MRU order             | O(K)       |
+//! | Operation             | Description                      | Complexity |
+//! |-----------------------|----------------------------------|------------|
+//! | [`record`]            | Add timestamp (overwrites oldest)| O(1)       |
+//! | [`most_recent`]       | Get most recent timestamp        | O(1)       |
+//! | [`kth_most_recent`]   | Get k-th most recent timestamp   | O(1)       |
+//! | [`iter`] / [`into_iter`] | Iterate in MRU order          | O(K)       |
+//! | [`to_vec_mru`]        | Collect all into a Vec (MRU)     | O(K)       |
+//!
+//! [`record`]: FixedHistory::record
+//! [`most_recent`]: FixedHistory::most_recent
+//! [`kth_most_recent`]: FixedHistory::kth_most_recent
+//! [`iter`]: FixedHistory::iter
+//! [`into_iter`]: FixedHistory#impl-IntoIterator
+//! [`to_vec_mru`]: FixedHistory::to_vec_mru
 //!
 //! ## Use Cases
 //!
@@ -151,6 +161,9 @@
 /// Stores timestamps in a circular buffer, automatically overwriting the oldest
 /// entry when full. Provides O(1) access to any of the last K timestamps.
 ///
+/// Implements [`Clone`], [`Copy`], [`Debug`], [`PartialEq`], [`Eq`], [`Hash`],
+/// and [`IntoIterator`]. See [`iter`](Self::iter) for borrowed iteration in MRU order.
+///
 /// # Type Parameters
 ///
 /// - `K`: Maximum number of timestamps to retain (const generic)
@@ -195,7 +208,7 @@
 ///
 /// assert_eq!(window_duration, 160);  // 5 accesses over 160 time units
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FixedHistory<const K: usize> {
     data: [u64; K],
     len: usize,
@@ -380,6 +393,30 @@ impl<const K: usize> FixedHistory<K> {
             .collect()
     }
 
+    /// Returns an iterator over recorded timestamps in MRU order (most recent first).
+    ///
+    /// Does **not** consume or modify the history.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FixedHistory;
+    ///
+    /// let mut history = FixedHistory::<4>::new();
+    /// history.record(10);
+    /// history.record(20);
+    /// history.record(30);
+    ///
+    /// let timestamps: Vec<_> = history.iter().collect();
+    /// assert_eq!(timestamps, vec![30, 20, 10]);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K> {
+        Iter {
+            history: self,
+            pos: 1,
+        }
+    }
+
     /// Clears the history and resets cursor/length.
     ///
     /// # Example
@@ -464,6 +501,131 @@ impl<const K: usize> Default for FixedHistory<K> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PartialEq, Eq, Hash — compare logical content, not the raw backing array
+// (raw derive would flag stale slots as differences)
+// ---------------------------------------------------------------------------
+
+impl<const K: usize> PartialEq for FixedHistory<K> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.len != other.len {
+            return false;
+        }
+        for k in 1..=self.len {
+            if self.kth_most_recent(k) != other.kth_most_recent(k) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl<const K: usize> Eq for FixedHistory<K> {}
+
+impl<const K: usize> std::hash::Hash for FixedHistory<K> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.len.hash(state);
+        for k in 1..=self.len {
+            self.kth_most_recent(k).hash(state);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterator types (C-ITER-TY: names match the methods that produce them)
+// ---------------------------------------------------------------------------
+
+/// Borrowed iterator over timestamps in a [`FixedHistory`], from most recent to oldest.
+///
+/// Created by [`FixedHistory::iter`].
+#[derive(Debug, Clone)]
+pub struct Iter<'a, const K: usize> {
+    history: &'a FixedHistory<K>,
+    pos: usize, // 1-indexed: 1 = most recent, history.len() = oldest
+}
+
+impl<'a, const K: usize> Iterator for Iter<'a, K> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let val = self.history.kth_most_recent(self.pos)?;
+        self.pos += 1;
+        Some(val)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.history.len().saturating_sub(self.pos - 1);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<const K: usize> ExactSizeIterator for Iter<'_, K> {}
+
+/// Owning iterator over timestamps in a [`FixedHistory`], from most recent to oldest.
+///
+/// Created by calling [`IntoIterator::into_iter`] on a `FixedHistory`.
+#[derive(Debug, Clone)]
+pub struct IntoIter<const K: usize> {
+    history: FixedHistory<K>,
+    pos: usize,
+}
+
+impl<const K: usize> Iterator for IntoIter<K> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let val = self.history.kth_most_recent(self.pos)?;
+        self.pos += 1;
+        Some(val)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.history.len().saturating_sub(self.pos - 1);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<const K: usize> ExactSizeIterator for IntoIter<K> {}
+
+// ---------------------------------------------------------------------------
+// IntoIterator impls (C-ITER: iter, into_iter)
+// ---------------------------------------------------------------------------
+
+impl<const K: usize> IntoIterator for FixedHistory<K> {
+    type Item = u64;
+    type IntoIter = IntoIter<K>;
+
+    /// Consumes the history, returning an iterator over timestamps in MRU order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FixedHistory;
+    ///
+    /// let mut history = FixedHistory::<3>::new();
+    /// history.record(10);
+    /// history.record(20);
+    ///
+    /// let timestamps: Vec<_> = history.into_iter().collect();
+    /// assert_eq!(timestamps, vec![20, 10]);
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            history: self,
+            pos: 1,
+        }
+    }
+}
+
+impl<'a, const K: usize> IntoIterator for &'a FixedHistory<K> {
+    type Item = u64;
+    type IntoIter = Iter<'a, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +706,311 @@ mod tests {
         history.record(20);
         history.record(30);
         assert_eq!(history.debug_snapshot_mru(), vec![30, 20, 10]);
+    }
+
+    // -----------------------------------------------------------------------
+    // iter() / IntoIterator tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn iter_yields_mru_order() {
+        let mut h = FixedHistory::<4>::new();
+        h.record(10);
+        h.record(20);
+        h.record(30);
+
+        let v: Vec<_> = h.iter().collect();
+        assert_eq!(v, vec![30, 20, 10]);
+    }
+
+    #[test]
+    fn iter_on_empty() {
+        let h = FixedHistory::<4>::new();
+        assert_eq!(h.iter().count(), 0);
+    }
+
+    #[test]
+    fn iter_on_zero_capacity() {
+        let h = FixedHistory::<0>::new();
+        assert_eq!(h.iter().count(), 0);
+    }
+
+    #[test]
+    fn iter_after_wrap() {
+        let mut h = FixedHistory::<3>::new();
+        for t in 1..=6 {
+            h.record(t);
+        }
+        // Only last 3: 6, 5, 4
+        let v: Vec<_> = h.iter().collect();
+        assert_eq!(v, vec![6, 5, 4]);
+    }
+
+    #[test]
+    fn iter_partially_filled() {
+        let mut h = FixedHistory::<5>::new();
+        h.record(100);
+        h.record(200);
+
+        let v: Vec<_> = h.iter().collect();
+        assert_eq!(v, vec![200, 100]);
+    }
+
+    #[test]
+    fn iter_count_matches_len() {
+        let mut h = FixedHistory::<4>::new();
+        for t in [10, 20, 30, 40, 50] {
+            h.record(t);
+            assert_eq!(h.iter().count(), h.len());
+        }
+    }
+
+    #[test]
+    fn iter_exact_size() {
+        let mut h = FixedHistory::<3>::new();
+        h.record(1);
+        h.record(2);
+
+        let mut it = h.iter();
+        assert_eq!(it.len(), 2);
+        it.next();
+        assert_eq!(it.len(), 1);
+        it.next();
+        assert_eq!(it.len(), 0);
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn iter_matches_to_vec_mru() {
+        let mut h = FixedHistory::<5>::new();
+        for t in [10, 20, 30, 40, 50, 60] {
+            h.record(t);
+        }
+        let from_iter: Vec<_> = h.iter().collect();
+        assert_eq!(from_iter, h.to_vec_mru());
+    }
+
+    #[test]
+    fn ref_into_iter_for_loop() {
+        let mut h = FixedHistory::<3>::new();
+        h.record(10);
+        h.record(20);
+
+        let mut sum = 0u64;
+        for t in &h {
+            sum += t;
+        }
+        assert_eq!(sum, 30);
+        assert_eq!(h.len(), 2); // not consumed
+    }
+
+    #[test]
+    fn owned_into_iter_for_loop() {
+        let mut h = FixedHistory::<3>::new();
+        h.record(10);
+        h.record(20);
+        h.record(30);
+
+        let mut sum = 0u64;
+        for t in h {
+            sum += t;
+        }
+        assert_eq!(sum, 60);
+    }
+
+    #[test]
+    fn into_iter_exact_size() {
+        let mut h = FixedHistory::<4>::new();
+        h.record(1);
+        h.record(2);
+        h.record(3);
+
+        let mut it = h.into_iter();
+        assert_eq!(it.len(), 3);
+        it.next();
+        assert_eq!(it.len(), 2);
+    }
+
+    #[test]
+    fn into_iter_yields_mru_order() {
+        let mut h = FixedHistory::<3>::new();
+        h.record(7);
+        h.record(8);
+        h.record(9);
+
+        let v: Vec<_> = h.into_iter().collect();
+        assert_eq!(v, vec![9, 8, 7]);
+    }
+
+    #[test]
+    fn iter_after_clear() {
+        let mut h = FixedHistory::<3>::new();
+        h.record(1);
+        h.record(2);
+        h.clear();
+
+        assert_eq!(h.iter().count(), 0);
+        assert_eq!(h.into_iter().count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // PartialEq / Eq tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eq_same_entries_same_order() {
+        let mut a = FixedHistory::<3>::new();
+        let mut b = FixedHistory::<3>::new();
+        a.record(10);
+        a.record(20);
+        a.record(30);
+        b.record(10);
+        b.record(20);
+        b.record(30);
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn eq_different_cursor_same_logical_content() {
+        // Same logical timestamps but different cursor positions due to wrapping
+        let mut a = FixedHistory::<3>::new();
+        a.record(1);
+        a.record(2);
+        a.record(3);
+
+        let mut b = FixedHistory::<3>::new();
+        // Insert extra entries to advance cursor, but overwrite with same logical content
+        b.record(99);
+        b.record(1);
+        b.record(2);
+        b.record(3);
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ne_different_len() {
+        let mut a = FixedHistory::<3>::new();
+        a.record(10);
+        let mut b = FixedHistory::<3>::new();
+        b.record(10);
+        b.record(20);
+
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ne_different_values() {
+        let mut a = FixedHistory::<3>::new();
+        a.record(10);
+        a.record(20);
+        let mut b = FixedHistory::<3>::new();
+        b.record(10);
+        b.record(99);
+
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn eq_empty_histories() {
+        let a = FixedHistory::<4>::new();
+        let b = FixedHistory::<4>::new();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn eq_after_clear() {
+        let mut a = FixedHistory::<3>::new();
+        a.record(1);
+        a.record(2);
+        a.record(3);
+        a.clear();
+
+        let b = FixedHistory::<3>::new();
+        assert_eq!(a, b);
+    }
+
+    // -----------------------------------------------------------------------
+    // Hash tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hash_equal_histories_same_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut a = FixedHistory::<3>::new();
+        a.record(10);
+        a.record(20);
+        a.record(30);
+
+        let mut b = FixedHistory::<3>::new();
+        // Different cursor position, same logical content
+        b.record(99);
+        b.record(10);
+        b.record(20);
+        b.record(30);
+
+        let hash_of = |h: &FixedHistory<3>| {
+            let mut s = DefaultHasher::new();
+            h.hash(&mut s);
+            s.finish()
+        };
+
+        assert_eq!(hash_of(&a), hash_of(&b));
+    }
+
+    #[test]
+    fn hash_usable_in_hashmap() {
+        use std::collections::HashMap;
+
+        let mut a = FixedHistory::<2>::new();
+        a.record(1);
+        a.record(2);
+
+        let mut b = FixedHistory::<2>::new();
+        b.record(1);
+        b.record(2);
+
+        let mut map = HashMap::new();
+        map.insert(a, "entry");
+        assert_eq!(map.get(&b), Some(&"entry"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Copy tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn copy_produces_independent_value() {
+        let mut original = FixedHistory::<3>::new();
+        original.record(10);
+        original.record(20);
+
+        // Copy (implicit via binding)
+        let copy = original;
+
+        // Mutating original after copy doesn't affect copy
+        original.record(99);
+        assert_eq!(copy.most_recent(), Some(20));
+        assert_eq!(original.most_recent(), Some(99));
+    }
+
+    #[test]
+    fn copy_can_be_passed_by_value() {
+        fn sum_history(h: FixedHistory<3>) -> u64 {
+            h.iter().sum()
+        }
+
+        let mut h = FixedHistory::<3>::new();
+        h.record(10);
+        h.record(20);
+        h.record(30);
+
+        // Call twice — possible only because FixedHistory is Copy
+        assert_eq!(sum_history(h), 60);
+        assert_eq!(sum_history(h), 60);
     }
 }
 

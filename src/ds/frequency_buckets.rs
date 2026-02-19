@@ -66,18 +66,23 @@
 //! - [`FrequencyBuckets`]: Single-threaded O(1) LFU tracker
 //! - [`ShardedFrequencyBuckets`]: Concurrent sharded variant
 //! - [`FrequencyBucketsHandle`]: Handle-based variant for interned keys
+//! - [`EntryIter`]: Iterator over all entries; produced by [`FrequencyBuckets::iter_entries`]
+//! - [`FrequencyBucketIdIter`]: Iterator over [`SlotId`]s in a bucket; produced by [`FrequencyBuckets::iter_bucket_ids`]
+//! - [`FrequencyBucketEntryIter`]: Iterator over `(SlotId, meta)` pairs in a bucket; produced by [`FrequencyBuckets::iter_bucket_entries`]
 //!
 //! ## Operations
 //!
 //! | Operation      | Time        | Notes                                  |
 //! |----------------|-------------|----------------------------------------|
-//! | `insert`       | O(1)        | New key starts at freq=1               |
-//! | `touch`        | O(1)        | Increment frequency, move to MRU       |
-//! | `remove`       | O(1)        | Remove from tracking                   |
-//! | `pop_min`      | O(1)        | Evict LFU (FIFO tie-break)             |
-//! | `frequency`    | O(1)        | Query current frequency                |
-//! | `decay_halve`  | O(n)        | Halve all frequencies                  |
-//! | `rebase_min_freq` | O(n)     | Rebase so min becomes 1                |
+//! | [`insert`](FrequencyBuckets::insert) | O(1) | New key starts at freq=1 |
+//! | [`touch`](FrequencyBuckets::touch) | O(1) | Increment frequency, move to MRU |
+//! | [`remove`](FrequencyBuckets::remove) | O(1) | Remove from tracking |
+//! | [`pop_min`](FrequencyBuckets::pop_min) | O(1) | Evict LFU (FIFO tie-break) |
+//! | [`frequency`](FrequencyBuckets::frequency) | O(1) | Query current frequency |
+//! | [`decay_halve`](FrequencyBuckets::decay_halve) | O(n) | Halve all frequencies |
+//! | [`rebase_min_freq`](FrequencyBuckets::rebase_min_freq) | O(n) | Rebase so min becomes 1 |
+//! | [`iter_entries`](FrequencyBuckets::iter_entries) | O(n) | Iterate all entries |
+//! | [`iter_bucket_ids`](FrequencyBuckets::iter_bucket_ids) | O(k) | Iterate bucket by frequency |
 //!
 //! ## Use Cases
 //!
@@ -170,6 +175,7 @@
 //! - FIFO within bucket: head=MRU, tail=LRU (evict from tail)
 //! - `min_freq` pointer enables O(1) eviction
 //! - `debug_validate_invariants()` available in debug/test builds
+//!
 
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
@@ -718,6 +724,8 @@ where
 
     /// Returns an iterator over all `(SlotId, meta)` entries.
     ///
+    /// Yields every tracked entry in unspecified (arena) order.
+    ///
     /// # Example
     ///
     /// ```
@@ -736,17 +744,10 @@ where
     /// assert!(keys.contains(&"a"));
     /// assert!(keys.contains(&"b"));
     /// ```
-    pub fn iter_entries(&self) -> impl Iterator<Item = (SlotId, FrequencyBucketEntryMeta<'_, K>)> {
-        self.entries.iter().map(|(id, entry)| {
-            (
-                id,
-                FrequencyBucketEntryMeta {
-                    key: &entry.key,
-                    freq: entry.freq,
-                    last_epoch: entry.last_epoch,
-                },
-            )
-        })
+    pub fn iter_entries(&self) -> EntryIter<'_, K> {
+        EntryIter {
+            inner: self.entries.iter(),
+        }
     }
 
     /// Inserts a new key with frequency 1.
@@ -2423,7 +2424,7 @@ where
     /// let entries: Vec<_> = freq.iter_entries().collect();
     /// assert_eq!(entries.len(), 2);
     /// ```
-    pub fn iter_entries(&self) -> impl Iterator<Item = (SlotId, FrequencyBucketEntryMeta<'_, H>)> {
+    pub fn iter_entries(&self) -> EntryIter<'_, H> {
         self.inner.iter_entries()
     }
 
@@ -2593,6 +2594,24 @@ where
         self.inner.clear_shrink();
     }
 
+    /// Consumes the wrapper and returns the inner [`FrequencyBuckets`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::{FrequencyBuckets, FrequencyBucketsHandle};
+    ///
+    /// let mut freq = FrequencyBucketsHandle::new();
+    /// freq.insert(1u64);
+    /// freq.insert(2u64);
+    ///
+    /// let inner: FrequencyBuckets<u64> = freq.into_inner();
+    /// assert_eq!(inner.len(), 2);
+    /// ```
+    pub fn into_inner(self) -> FrequencyBuckets<H> {
+        self.inner
+    }
+
     /// Returns an approximate memory footprint in bytes.
     ///
     /// # Example
@@ -2634,6 +2653,7 @@ where
 ///
 /// Created by [`FrequencyBuckets::iter_bucket_ids`]. Yields entries from
 /// head (MRU) to tail (LRU) within a single frequency bucket.
+#[derive(Debug)]
 pub struct FrequencyBucketIdIter<'a, K> {
     buckets: &'a FrequencyBuckets<K>,
     current: Option<SlotId>,
@@ -2655,6 +2675,7 @@ impl<'a, K> Iterator for FrequencyBucketIdIter<'a, K> {
 /// Created by [`FrequencyBuckets::iter_bucket_entries`]. Yields entries from
 /// head (MRU) to tail (LRU) within a single frequency bucket, including
 /// metadata like key, frequency, and last_epoch.
+#[derive(Debug)]
 pub struct FrequencyBucketEntryIter<'a, K> {
     buckets: &'a FrequencyBuckets<K>,
     current: Option<SlotId>,
@@ -2667,6 +2688,31 @@ impl<'a, K> Iterator for FrequencyBucketEntryIter<'a, K> {
         let id = self.current?;
         let entry = self.buckets.entries.get(id)?;
         self.current = entry.next;
+        Some((
+            id,
+            FrequencyBucketEntryMeta {
+                key: &entry.key,
+                freq: entry.freq,
+                last_epoch: entry.last_epoch,
+            },
+        ))
+    }
+}
+
+/// Iterator over all `(SlotId, meta)` entries in a [`FrequencyBuckets`].
+///
+/// Created by [`FrequencyBuckets::iter_entries`]. Yields every tracked entry
+/// in unspecified (arena) order.
+#[derive(Debug)]
+pub struct EntryIter<'a, K> {
+    inner: crate::ds::slot_arena::Iter<'a, Entry<K>>,
+}
+
+impl<'a, K: 'a> Iterator for EntryIter<'a, K> {
+    type Item = (SlotId, FrequencyBucketEntryMeta<'a, K>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (id, entry) = self.inner.next()?;
         Some((
             id,
             FrequencyBucketEntryMeta {
