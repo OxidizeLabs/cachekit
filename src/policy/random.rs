@@ -154,6 +154,12 @@
 //!
 //! - Wikipedia: Cache replacement policies
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::CoreOnlyMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::CoreOnlyMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
@@ -209,6 +215,8 @@ where
     capacity: usize,
     /// Internal PRNG state for random eviction (XorShift)
     rng_state: u64,
+    #[cfg(feature = "metrics")]
+    metrics: CoreOnlyMetrics,
 }
 
 impl<K, V> RandomCore<K, V>
@@ -236,8 +244,9 @@ where
             map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             keys: Vec::with_capacity(capacity),
             capacity,
-            // Initialize with non-zero seed for XorShift (capacity + 1 ensures non-zero)
             rng_state: capacity as u64 + 0x9e3779b97f4a7c15,
+            #[cfg(feature = "metrics")]
+            metrics: CoreOnlyMetrics::default(),
         }
     }
 
@@ -258,7 +267,13 @@ where
     /// assert_eq!(cache.get(&"missing"), None);
     /// ```
     #[inline]
-    pub fn get(&self, key: &K) -> Option<&V> {
+    pub fn get(&mut self, key: &K) -> Option<&V> {
+        #[cfg(feature = "metrics")]
+        if self.map.contains_key(key) {
+            self.metrics.record_get_hit();
+        } else {
+            self.metrics.record_get_miss();
+        }
         self.map.get(key).map(|(_, v)| v)
     }
 
@@ -286,21 +301,25 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) {
-        // Handle zero capacity - reject all insertions
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return;
         }
 
-        // Check for existing key - update in place
         if let Some((_, v)) = self.map.get_mut(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
             *v = value;
             return;
         }
 
-        // Evict random entry if at capacity
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         self.evict_if_needed();
 
-        // Insert new entry
         let idx = self.keys.len();
         self.keys.push(key.clone());
         self.map.insert(key, (idx, value));
@@ -311,8 +330,15 @@ where
     /// Uses simple random for O(1) selection with swap-remove technique.
     #[inline]
     fn evict_if_needed(&mut self) {
+        #[cfg(feature = "metrics")]
+        if self.len() >= self.capacity && self.capacity > 0 && !self.keys.is_empty() {
+            self.metrics.record_evict_call();
+        }
+
         while self.len() >= self.capacity && self.capacity > 0 && !self.keys.is_empty() {
             self.evict_random();
+            #[cfg(feature = "metrics")]
+            self.metrics.record_evicted_entry();
         }
 
         #[cfg(debug_assertions)]
@@ -450,6 +476,9 @@ where
     /// assert!(!cache.contains(&"a"));
     /// ```
     pub fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.map.clear();
         self.keys.clear();
 
@@ -558,12 +587,15 @@ where
 {
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Check if key exists - update in place
         if let Some((_, v)) = self.map.get_mut(&key) {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.record_insert_call();
+                self.metrics.record_insert_update();
+            }
             return Some(std::mem::replace(v, value));
         }
 
-        // New insert
         RandomCore::insert(self, key, value);
         None
     }
@@ -575,6 +607,38 @@ where
 
     fn clear(&mut self) {
         RandomCore::clear(self);
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> CoreOnlyMetricsSnapshot {
+        CoreOnlyMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            cache_len: self.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<CoreOnlyMetricsSnapshot> for RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> CoreOnlyMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 
@@ -621,7 +685,7 @@ mod tests {
 
         #[test]
         fn get_missing_key_returns_none() {
-            let cache: RandomCore<&str, i32> = RandomCore::new(100);
+            let mut cache: RandomCore<&str, i32> = RandomCore::new(100);
 
             assert_eq!(cache.get(&"missing"), None);
         }
@@ -837,7 +901,7 @@ mod tests {
 
         #[test]
         fn empty_cache_operations() {
-            let cache: RandomCore<i32, i32> = RandomCore::new(100);
+            let mut cache: RandomCore<i32, i32> = RandomCore::new(100);
 
             assert!(cache.is_empty());
             assert_eq!(cache.get(&1), None);

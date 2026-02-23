@@ -28,6 +28,15 @@ use std::hash::Hash;
 use std::mem;
 use std::ptr::NonNull;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::LruMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::LruMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    CoreMetricsRecorder, LruMetricsReadRecorder, LruMetricsRecorder, MetricsSnapshotProvider,
+};
+
 /// A fast, single-threaded LRU cache.
 ///
 /// Values are stored directly without `Arc` wrapping for maximum performance.
@@ -55,6 +64,8 @@ pub struct FastLru<K, V> {
     head: Option<NonNull<Node<K, V>>>,
     tail: Option<NonNull<Node<K, V>>>,
     capacity: usize,
+    #[cfg(feature = "metrics")]
+    metrics: LruMetrics,
 }
 
 /// Node in the LRU linked list.
@@ -96,6 +107,8 @@ where
             head: None,
             tail: None,
             capacity,
+            #[cfg(feature = "metrics")]
+            metrics: LruMetrics::default(),
         }
     }
 
@@ -142,7 +155,17 @@ where
     /// ```
     #[inline(always)]
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let node_ptr = *self.map.get(key)?;
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => ptr,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
 
         // Move to front (MRU position)
         self.detach(node_ptr);
@@ -192,8 +215,14 @@ where
     /// ```
     #[inline(always)]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         // Check for existing key
         if let Some(&node_ptr) = self.map.get(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             // Update existing value
             let old_value = unsafe {
                 let node = node_ptr.as_ptr();
@@ -209,13 +238,22 @@ where
 
         // Evict if at capacity
         if self.capacity > 0 && self.map.len() >= self.capacity {
-            self.pop_lru();
+            #[cfg(feature = "metrics")]
+            self.metrics.record_evict_call();
+
+            if self.pop_lru().is_some() {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
+            }
         }
 
         // Don't insert if capacity is 0
         if self.capacity == 0 {
             return None;
         }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
 
         // Create new node with optimized field order
         let node = Box::new(Node {
@@ -274,6 +312,9 @@ where
     /// assert_eq!(cache.pop_lru(), Some((2, "two")));
     /// ```
     pub fn pop_lru(&mut self) -> Option<(K, V)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lru_call();
+
         let tail_ptr = self.tail?;
 
         // SAFETY: tail is valid if Some
@@ -283,19 +324,34 @@ where
         self.detach(tail_ptr);
 
         let node = unsafe { Box::from_raw(tail_ptr.as_ptr()) };
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lru_found();
+
         Some((node.key, node.value))
     }
 
     /// Peeks at the least recently used item without removing it.
     pub fn peek_lru(&self) -> Option<(&K, &V)> {
-        self.tail.map(|node_ptr| unsafe {
-            let node = node_ptr.as_ptr();
-            (&(*node).key, &(*node).value)
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lru_call();
+
+        self.tail.map(|node_ptr| {
+            #[cfg(feature = "metrics")]
+            (&self.metrics).record_peek_lru_found();
+
+            unsafe {
+                let node = node_ptr.as_ptr();
+                (&(*node).key, &(*node).value)
+            }
         })
     }
 
     /// Clears all entries from the cache.
     pub fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         while self.pop_lru().is_some() {}
     }
 
@@ -304,9 +360,16 @@ where
     /// Returns `true` if the key existed and was touched.
     #[inline(always)]
     pub fn touch(&mut self, key: &K) -> bool {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_touch_call();
+
         if let Some(&node_ptr) = self.map.get(key) {
             self.detach(node_ptr);
             self.attach_front(node_ptr);
+
+            #[cfg(feature = "metrics")]
+            self.metrics.record_touch_found();
+
             true
         } else {
             false
@@ -355,6 +418,46 @@ where
 
             self.head = Some(node_ptr);
         }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> FastLru<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    pub fn metrics_snapshot(&self) -> LruMetricsSnapshot {
+        LruMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            pop_lru_calls: self.metrics.pop_lru_calls,
+            pop_lru_found: self.metrics.pop_lru_found,
+            peek_lru_calls: self.metrics.peek_lru_calls.get(),
+            peek_lru_found: self.metrics.peek_lru_found.get(),
+            touch_calls: self.metrics.touch_calls,
+            touch_found: self.metrics.touch_found,
+            recency_rank_calls: self.metrics.recency_rank_calls.get(),
+            recency_rank_found: self.metrics.recency_rank_found.get(),
+            recency_rank_scan_steps: self.metrics.recency_rank_scan_steps.get(),
+            cache_len: self.map.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<LruMetricsSnapshot> for FastLru<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    fn snapshot(&self) -> LruMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

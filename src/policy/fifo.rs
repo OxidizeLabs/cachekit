@@ -286,6 +286,15 @@ use crate::traits::{CoreCache, FifoCacheTrait};
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::CacheMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::CacheMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    CoreMetricsRecorder, FifoMetricsReadRecorder, FifoMetricsRecorder, MetricsSnapshotProvider,
+};
+
 /// FIFO (First In, First Out) Cache.
 ///
 /// Evicts the oldest (first inserted) item when capacity is reached.
@@ -304,7 +313,9 @@ where
     K: Eq + Hash + Clone,
 {
     store: HashMapStore<K, V>,
-    insertion_order: VecDeque<K>, // Tracks the order of insertion
+    insertion_order: VecDeque<K>,
+    #[cfg(feature = "metrics")]
+    metrics: CacheMetrics,
 }
 
 impl<K, V> FifoCacheInner<K, V>
@@ -315,6 +326,8 @@ where
         Self {
             store: HashMapStore::new(capacity),
             insertion_order: VecDeque::with_capacity(capacity),
+            #[cfg(feature = "metrics")]
+            metrics: CacheMetrics::default(),
         }
     }
 }
@@ -378,15 +391,20 @@ where
     /// Evicts the oldest valid entry from the cache.
     /// Skips over any stale entries (keys that were lazily deleted).
     fn evict_oldest(&mut self) {
-        // Keep popping from the front until we find a valid key or the queue is empty
         while let Some(oldest_key) = self.inner.insertion_order.pop_front() {
+            #[cfg(feature = "metrics")]
+            self.inner.metrics.record_evict_scan_step();
+
             if self.inner.store.contains(&oldest_key) {
-                // Found a valid key, remove it and stop
                 self.inner.store.remove(&oldest_key);
                 self.inner.store.record_eviction();
+                #[cfg(feature = "metrics")]
+                self.inner.metrics.record_evicted_entry();
                 break;
             }
-            // Skip stale entries (keys that were already removed from the cache)
+
+            #[cfg(feature = "metrics")]
+            self.inner.metrics.record_stale_skip();
         }
     }
 }
@@ -508,23 +526,33 @@ where
     V: Debug,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // If capacity is 0, cannot store anything
+        #[cfg(feature = "metrics")]
+        self.inner.metrics.record_insert_call();
+
         if self.inner.store.capacity() == 0 {
             return None;
         }
 
         if self.inner.store.contains(&key) {
+            #[cfg(feature = "metrics")]
+            self.inner.metrics.record_insert_update();
+
             if let Ok(previous) = self.inner.store.try_insert(key, value) {
                 return previous;
             }
             return None;
         }
-        // If the cache is at capacity, remove the oldest valid item (FIFO)
+
+        #[cfg(feature = "metrics")]
+        self.inner.metrics.record_insert_new();
+
         if self.inner.store.len() >= self.inner.store.capacity() {
+            #[cfg(feature = "metrics")]
+            self.inner.metrics.record_evict_call();
+
             self.evict_oldest();
         }
 
-        // Add the new key to the insertion order and cache
         let key_for_queue = key.clone();
         if self.inner.store.try_insert(key, value).is_ok() {
             self.inner.insertion_order.push_back(key_for_queue);
@@ -533,11 +561,24 @@ where
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        // In FIFO, getting an item doesn't change its position
-        self.inner.store.get(key)
+        match self.inner.store.get(key) {
+            Some(value) => {
+                #[cfg(feature = "metrics")]
+                self.inner.metrics.record_get_hit();
+                Some(value)
+            },
+            None => {
+                #[cfg(feature = "metrics")]
+                self.inner.metrics.record_get_miss();
+                None
+            },
+        }
     }
 
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.inner.metrics.record_clear();
+
         self.inner.store.clear();
         self.inner.insertion_order.clear();
     }
@@ -549,21 +590,31 @@ where
     V: Debug,
 {
     fn pop_oldest(&mut self) -> Option<(K, V)> {
-        // Use the existing evict_oldest logic but return the key-value pair
+        #[cfg(feature = "metrics")]
+        self.inner.metrics.record_pop_oldest_call();
+
         while let Some(oldest_key) = self.inner.insertion_order.pop_front() {
             if let Some(value) = self.inner.store.remove(&oldest_key) {
                 self.inner.store.record_eviction();
+                #[cfg(feature = "metrics")]
+                self.inner.metrics.record_pop_oldest_found();
                 return Some((oldest_key, value));
             }
-            // Skip stale entries (keys that were already removed from the cache)
         }
+
+        #[cfg(feature = "metrics")]
+        self.inner.metrics.record_pop_oldest_empty_or_stale();
         None
     }
 
     fn peek_oldest(&self) -> Option<(&K, &V)> {
-        // Find the first valid entry in the insertion order
+        #[cfg(feature = "metrics")]
+        (&self.inner.metrics).record_peek_oldest_call();
+
         for key in &self.inner.insertion_order {
             if let Some(value) = self.inner.store.peek(key) {
+                #[cfg(feature = "metrics")]
+                (&self.inner.metrics).record_peek_oldest_found();
                 return Some((key, value));
             }
         }
@@ -583,17 +634,91 @@ where
     }
 
     fn age_rank(&self, key: &K) -> Option<usize> {
-        // Find position in insertion order, accounting for stale entries
+        #[cfg(feature = "metrics")]
+        (&self.inner.metrics).record_age_rank_call();
+
         let mut rank = 0;
         for insertion_key in &self.inner.insertion_order {
+            #[cfg(feature = "metrics")]
+            (&self.inner.metrics).record_age_rank_scan_step();
+
             if self.inner.store.contains(insertion_key) {
                 if insertion_key == key {
+                    #[cfg(feature = "metrics")]
+                    (&self.inner.metrics).record_age_rank_found();
                     return Some(rank);
                 }
                 rank += 1;
             }
         }
         None
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> FifoCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Debug,
+{
+    pub fn metrics_snapshot(&self) -> CacheMetricsSnapshot {
+        CacheMetricsSnapshot {
+            get_calls: self.inner.metrics.get_calls,
+            get_hits: self.inner.metrics.get_hits,
+            get_misses: self.inner.metrics.get_misses,
+            insert_calls: self.inner.metrics.insert_calls,
+            insert_updates: self.inner.metrics.insert_updates,
+            insert_new: self.inner.metrics.insert_new,
+            evict_calls: self.inner.metrics.evict_calls,
+            evicted_entries: self.inner.metrics.evicted_entries,
+            stale_skips: self.inner.metrics.stale_skips,
+            evict_scan_steps: self.inner.metrics.evict_scan_steps,
+            pop_oldest_calls: self.inner.metrics.pop_oldest_calls,
+            pop_oldest_found: self.inner.metrics.pop_oldest_found,
+            pop_oldest_empty_or_stale: self.inner.metrics.pop_oldest_empty_or_stale,
+            peek_oldest_calls: self.inner.metrics.peek_oldest_calls.get(),
+            peek_oldest_found: self.inner.metrics.peek_oldest_found.get(),
+            age_rank_calls: self.inner.metrics.age_rank_calls.get(),
+            age_rank_found: self.inner.metrics.age_rank_found.get(),
+            age_rank_scan_steps: self.inner.metrics.age_rank_scan_steps.get(),
+            cache_len: self.inner.store.len(),
+            insertion_order_len: self.inner.insertion_order.len(),
+            capacity: self.inner.store.capacity(),
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FifoCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Debug,
+{
+    fn snapshot(&self) -> CacheMetricsSnapshot {
+        self.metrics_snapshot()
+    }
+}
+
+#[cfg(all(feature = "metrics", feature = "concurrency"))]
+impl<K, V> ConcurrentFifoCache<K, V>
+where
+    K: Eq + Hash + Clone + Debug + Send + Sync,
+    V: Debug + Send + Sync,
+{
+    pub fn metrics_snapshot(&self) -> CacheMetricsSnapshot {
+        let cache = self.inner.read();
+        cache.metrics_snapshot()
+    }
+}
+
+#[cfg(all(feature = "metrics", feature = "concurrency"))]
+impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFifoCache<K, V>
+where
+    K: Eq + Hash + Clone + Debug + Send + Sync,
+    V: Debug + Send + Sync,
+{
+    fn snapshot(&self) -> CacheMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

@@ -161,6 +161,14 @@
 //! **⚠️ Warning**: MFU performs poorly for typical workloads with temporal locality.
 //! Use LFU, LRU, or S3-FIFO for general-purpose caching.
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::MfuMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::MfuMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    CoreMetricsRecorder, MetricsSnapshotProvider, MfuMetricsReadRecorder, MfuMetricsRecorder,
+};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
@@ -177,6 +185,8 @@ pub struct MfuCore<K, V> {
     frequencies: FxHashMap<K, u64>,
     freq_heap: BinaryHeap<(u64, K)>, // Max-heap (no Reverse wrapper)
     capacity: usize,
+    #[cfg(feature = "metrics")]
+    metrics: MfuMetrics,
 }
 
 impl<K, V> MfuCore<K, V>
@@ -190,51 +200,67 @@ where
             frequencies: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             freq_heap: BinaryHeap::with_capacity(capacity),
             capacity,
+            #[cfg(feature = "metrics")]
+            metrics: MfuMetrics::default(),
         }
     }
 
     /// Gets a value by key, incrementing its frequency.
     pub fn get(&mut self, key: &K) -> Option<&V> {
         if self.map.contains_key(key) {
-            // Increment frequency
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
+
             let freq = self.frequencies.entry(key.clone()).or_insert(0);
             *freq += 1;
 
-            // Push new (freq, key) entry to heap (old entries become stale)
             self.freq_heap.push((*freq, key.clone()));
 
-            // Rebuild heap if too many stale entries accumulated
             if self.freq_heap.len() > self.map.len() * HEAP_REBUILD_FACTOR {
                 self.rebuild_heap();
             }
 
             self.map.get(key)
         } else {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
             None
         }
     }
 
     /// Inserts a key-value pair, evicting the most frequently used entry if at capacity.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return None;
         }
 
-        // Update or insert
         let result = if self.map.contains_key(&key) {
-            // Update existing entry
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             let old_value = self.map.insert(key.clone(), value);
             let freq = self.frequencies.entry(key.clone()).or_insert(0);
             *freq += 1;
             self.freq_heap.push((*freq, key));
             old_value
         } else {
-            // Need to evict if at capacity
-            while self.map.len() >= self.capacity {
-                self.evict_mfu();
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_new();
+
+            #[cfg(feature = "metrics")]
+            if self.map.len() >= self.capacity {
+                self.metrics.record_evict_call();
             }
 
-            // Insert new entry
+            while self.map.len() >= self.capacity {
+                self.evict_mfu();
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
+            }
+
             self.map.insert(key.clone(), value);
             self.frequencies.insert(key.clone(), 1);
             self.freq_heap.push((1, key));
@@ -309,6 +335,9 @@ where
 
     /// Removes all entries from the cache.
     pub fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.map.clear();
         self.frequencies.clear();
         self.freq_heap.clear();
@@ -319,17 +348,32 @@ where
 
     /// Gets the current frequency count for a key.
     pub fn frequency(&self, key: &K) -> Option<u64> {
-        self.frequencies.get(key).copied()
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_frequency_call();
+
+        let result = self.frequencies.get(key).copied();
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_frequency_found();
+        }
+
+        result
     }
 
     /// Removes and returns the entry with the highest frequency.
     pub fn pop_mfu(&mut self) -> Option<(K, V)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_mfu_call();
+
         while let Some((heap_freq, key)) = self.freq_heap.pop() {
             if let Some(&current_freq) = self.frequencies.get(&key) {
                 if current_freq == heap_freq {
-                    // Valid entry
                     if let Some(value) = self.map.remove(&key) {
                         self.frequencies.remove(&key);
+
+                        #[cfg(feature = "metrics")]
+                        self.metrics.record_pop_mfu_found();
 
                         #[cfg(debug_assertions)]
                         self.validate_invariants();
@@ -344,7 +388,9 @@ where
 
     /// Peeks at the entry with highest frequency without removing it.
     pub fn peek_mfu(&self) -> Option<(&K, &V)> {
-        // Find max frequency
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_mfu_call();
+
         let mut max_freq = 0u64;
         let mut max_key: Option<&K> = None;
 
@@ -355,7 +401,14 @@ where
             }
         }
 
-        max_key.and_then(|k| self.map.get(k).map(|v| (k, v)))
+        let result = max_key.and_then(|k| self.map.get(k).map(|v| (k, v)));
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_peek_mfu_found();
+        }
+
+        result
     }
 
     /// Validates internal data structure invariants.
@@ -430,25 +483,37 @@ where
     K: Clone + Eq + Hash + Ord,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return None;
         }
 
-        // Update or insert
         if self.map.contains_key(&key) {
-            // Update existing entry
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             let old_value = self.map.insert(key.clone(), value);
             let freq = self.frequencies.entry(key.clone()).or_insert(0);
             *freq += 1;
             self.freq_heap.push((*freq, key));
             old_value
         } else {
-            // Need to evict if at capacity
-            while self.map.len() >= self.capacity {
-                self.evict_mfu();
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_new();
+
+            #[cfg(feature = "metrics")]
+            if self.map.len() >= self.capacity {
+                self.metrics.record_evict_call();
             }
 
-            // Insert new entry
+            while self.map.len() >= self.capacity {
+                self.evict_mfu();
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
+            }
+
             self.map.insert(key.clone(), value);
             self.frequencies.insert(key.clone(), 1);
             self.freq_heap.push((1, key));
@@ -458,25 +523,30 @@ where
 
     fn get(&mut self, key: &K) -> Option<&V> {
         if self.map.contains_key(key) {
-            // Increment frequency
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
+
             let freq = self.frequencies.entry(key.clone()).or_insert(0);
             *freq += 1;
 
-            // Push new (freq, key) entry to heap (old entries become stale)
             self.freq_heap.push((*freq, key.clone()));
 
-            // Rebuild heap if too many stale entries accumulated
             if self.freq_heap.len() > self.map.len() * HEAP_REBUILD_FACTOR {
                 self.rebuild_heap();
             }
 
             self.map.get(key)
         } else {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
             None
         }
     }
 
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.map.clear();
         self.frequencies.clear();
         self.freq_heap.clear();
@@ -493,6 +563,44 @@ where
             .field("capacity", &self.capacity)
             .field("frequencies", &self.frequencies)
             .finish()
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MfuCore<K, V>
+where
+    K: Clone + Eq + Hash + Ord,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> MfuMetricsSnapshot {
+        MfuMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            pop_mfu_calls: self.metrics.pop_mfu_calls,
+            pop_mfu_found: self.metrics.pop_mfu_found,
+            peek_mfu_calls: self.metrics.peek_mfu_calls.get(),
+            peek_mfu_found: self.metrics.peek_mfu_found.get(),
+            frequency_calls: self.metrics.frequency_calls.get(),
+            frequency_found: self.metrics.frequency_found.get(),
+            cache_len: self.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<MfuMetricsSnapshot> for MfuCore<K, V>
+where
+    K: Clone + Eq + Hash + Ord,
+{
+    fn snapshot(&self) -> MfuMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

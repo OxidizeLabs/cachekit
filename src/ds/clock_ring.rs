@@ -262,6 +262,10 @@ pub struct ClockRing<K, V> {
     index: FxHashMap<K, usize>,
     hand: usize,
     len: usize,
+    #[cfg(feature = "metrics")]
+    sweep_hand_advances: u64,
+    #[cfg(feature = "metrics")]
+    sweep_ref_bit_resets: u64,
 }
 
 /// Thread-safe wrapper around [`ClockRing`] using `parking_lot::RwLock`.
@@ -1102,6 +1106,10 @@ where
             index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             hand: 0,
             len: 0,
+            #[cfg(feature = "metrics")]
+            sweep_hand_advances: 0,
+            #[cfg(feature = "metrics")]
+            sweep_ref_bit_resets: 0,
         }
     }
 
@@ -1173,6 +1181,11 @@ where
         self.referenced.fill(false);
         self.len = 0;
         self.hand = 0;
+        #[cfg(feature = "metrics")]
+        {
+            self.sweep_hand_advances = 0;
+            self.sweep_ref_bit_resets = 0;
+        }
     }
 
     /// Clears all entries and shrinks internal storage.
@@ -1193,6 +1206,20 @@ where
         self.index.shrink_to_fit();
         self.slots.shrink_to_fit();
         self.referenced.shrink_to_fit();
+    }
+
+    /// Cumulative hand advances during sweep operations.
+    #[cfg(feature = "metrics")]
+    #[inline]
+    pub fn sweep_hand_advances(&self) -> u64 {
+        self.sweep_hand_advances
+    }
+
+    /// Cumulative reference-bit resets during sweep operations.
+    #[cfg(feature = "metrics")]
+    #[inline]
+    pub fn sweep_ref_bit_resets(&self) -> u64 {
+        self.sweep_ref_bit_resets
     }
 
     /// Returns an approximate memory footprint in bytes.
@@ -1491,7 +1518,15 @@ where
             let idx = self.hand;
             if self.referenced[idx] {
                 self.referenced[idx] = false;
+                #[cfg(feature = "metrics")]
+                {
+                    self.sweep_ref_bit_resets += 1;
+                }
                 self.advance_hand();
+                #[cfg(feature = "metrics")]
+                {
+                    self.sweep_hand_advances += 1;
+                }
                 continue;
             }
 
@@ -1506,6 +1541,10 @@ where
             self.referenced[idx] = false;
             self.index.insert(key, idx);
             self.advance_hand();
+            #[cfg(feature = "metrics")]
+            {
+                self.sweep_hand_advances += 1;
+            }
             return Some((evicted.key, evicted.value));
         }
         debug_assert!(
@@ -1587,7 +1626,15 @@ where
             if self.slots[idx].is_some() {
                 if self.referenced[idx] {
                     self.referenced[idx] = false;
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.sweep_ref_bit_resets += 1;
+                    }
                     self.advance_hand();
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.sweep_hand_advances += 1;
+                    }
                     continue;
                 }
 
@@ -1596,9 +1643,17 @@ where
                 self.referenced[idx] = false;
                 self.len -= 1;
                 self.advance_hand();
+                #[cfg(feature = "metrics")]
+                {
+                    self.sweep_hand_advances += 1;
+                }
                 return Some((evicted.key, evicted.value));
             }
             self.advance_hand();
+            #[cfg(feature = "metrics")]
+            {
+                self.sweep_hand_advances += 1;
+            }
         }
         None
     }

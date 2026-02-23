@@ -148,6 +148,12 @@
 //!
 //! - Wikipedia: Cache replacement policies
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::CoreOnlyMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::CoreOnlyMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
@@ -217,6 +223,9 @@ where
 
     /// Maximum cache capacity
     capacity: usize,
+
+    #[cfg(feature = "metrics")]
+    metrics: CoreOnlyMetrics,
 }
 
 // SAFETY: MruCore can be sent between threads if K and V are Send.
@@ -261,6 +270,8 @@ where
             head: None,
             tail: None,
             capacity,
+            #[cfg(feature = "metrics")]
+            metrics: CoreOnlyMetrics::default(),
         }
     }
 
@@ -338,9 +349,19 @@ where
     /// ```
     #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let node_ptr = *self.map.get(key)?;
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_hit();
+                ptr
+            },
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
 
-        // Move to head (MRU position)
         self.detach(node_ptr);
         self.attach_head(node_ptr);
 
@@ -371,20 +392,25 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return None;
         }
 
-        // Check for existing key - update in place
         if let Some(&node_ptr) = self.map.get(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
             let old = unsafe { std::mem::replace(&mut (*node_ptr.as_ptr()).value, value) };
             return Some(old);
         }
 
-        // Evict BEFORE inserting to ensure space is available
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         self.evict_if_needed();
 
-        // Create new node
         let node = Box::new(Node {
             prev: None,
             next: None,
@@ -406,10 +432,16 @@ where
     /// MRU evicts from the head (MRU position) - the most recently used item!
     #[inline]
     fn evict_if_needed(&mut self) {
+        #[cfg(feature = "metrics")]
+        if self.len() >= self.capacity && self.head.is_some() {
+            self.metrics.record_evict_call();
+        }
+
         while self.len() >= self.capacity {
-            // Evict from head (MRU - most recently used!)
             if let Some(node) = self.pop_head() {
                 self.map.remove(&node.key);
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
             } else {
                 break;
             }
@@ -504,7 +536,9 @@ where
     /// assert!(!cache.contains(&"a"));
     /// ```
     pub fn clear(&mut self) {
-        // Free all nodes
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         while self.pop_head().is_some() {}
         self.map.clear();
 
@@ -629,6 +663,38 @@ where
 
     fn clear(&mut self) {
         MruCore::clear(self);
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> CoreOnlyMetricsSnapshot {
+        CoreOnlyMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            cache_len: self.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<CoreOnlyMetricsSnapshot> for MruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> CoreOnlyMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 
