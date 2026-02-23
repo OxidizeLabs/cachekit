@@ -793,7 +793,11 @@ impl<T> IntrusiveList<T> {
     /// assert!(bytes > 0);
     /// ```
     pub fn approx_bytes(&self) -> usize {
+        // arena.approx_bytes() includes size_of::<SlotArena<Node<T>>>() which
+        // is already part of size_of::<Self>(), so subtract it to avoid
+        // double-counting the arena's inline footprint.
         std::mem::size_of::<Self>() + self.arena.approx_bytes()
+            - std::mem::size_of::<SlotArena<Node<T>>>()
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -1769,6 +1773,41 @@ mod tests {
         list.remove(a);
         list.remove(c);
         list.debug_validate_invariants();
+    }
+
+    /// Regression: approx_bytes used to double-count the SlotArena inline size.
+    ///
+    /// Both `IntrusiveList::approx_bytes` and `SlotArena::approx_bytes` included
+    /// `size_of::<Self>()`.  Because the arena is an inline field of the list,
+    /// its inline size was counted twice — once inside `size_of::<IntrusiveList>()`
+    /// and again inside `SlotArena::approx_bytes()`.
+    #[test]
+    fn approx_bytes_no_double_count() {
+        let empty: IntrusiveList<u64> = IntrusiveList::new();
+        let struct_size = std::mem::size_of::<IntrusiveList<u64>>();
+        let reported = empty.approx_bytes();
+
+        assert_eq!(
+            reported,
+            struct_size,
+            "empty list: approx_bytes ({reported}) != size_of ({struct_size}), \
+             delta = {} — inline arena size is double-counted",
+            reported as isize - struct_size as isize
+        );
+
+        let mut list: IntrusiveList<u64> = IntrusiveList::new();
+        for i in 0..10 {
+            list.push_back(i);
+        }
+        let reported_full = list.approx_bytes();
+        assert!(
+            reported_full >= struct_size,
+            "non-empty list: approx_bytes ({reported_full}) < struct size ({struct_size})"
+        );
+        assert!(
+            reported_full > struct_size,
+            "non-empty list should have non-zero heap allocation"
+        );
     }
 }
 
