@@ -117,6 +117,14 @@
 //! let _ = cache.contains(&"page1".to_string());
 //! ```
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::ClockProMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::ClockProMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    ClockProMetricsRecorder, CoreMetricsRecorder, MetricsSnapshotProvider,
+};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
@@ -181,6 +189,8 @@ where
     ghost_capacity: usize,
     /// Target ratio of hot pages (adaptive).
     target_hot_ratio: f64,
+    #[cfg(feature = "metrics")]
+    metrics: ClockProMetrics,
 }
 
 // Safety: ClockProCache uses no interior mutability or non-Send types
@@ -234,6 +244,8 @@ where
             capacity,
             ghost_capacity,
             target_hot_ratio: 0.5, // Start with 50% hot target
+            #[cfg(feature = "metrics")]
+            metrics: ClockProMetrics::default(),
         }
     }
 
@@ -321,6 +333,9 @@ where
     /// Returns the index of the evicted slot.
     #[inline]
     fn evict(&mut self) -> usize {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_evict_call();
+
         let max_iterations = self.capacity * 2;
         let max_hot = ((self.capacity as f64) * self.target_hot_ratio).ceil() as usize;
         let max_hot = max_hot.max(1).min(self.capacity.saturating_sub(1));
@@ -334,6 +349,8 @@ where
                             entry.status = PageStatus::Hot;
                             entry.referenced = false;
                             self.hot_count += 1;
+                            #[cfg(feature = "metrics")]
+                            self.metrics.record_cold_to_hot_promotion();
                         } else {
                             // Cold and unreferenced → evict immediately
                             let slot = self.hand_cold;
@@ -342,6 +359,11 @@ where
                             self.entries[slot] = None;
                             self.len -= 1;
                             self.add_ghost(key);
+                            #[cfg(feature = "metrics")]
+                            {
+                                self.metrics.record_evicted_entry();
+                                self.metrics.record_test_insertion();
+                            }
                             self.hand_cold = (self.hand_cold + 1) % self.capacity;
                             return slot;
                         }
@@ -354,6 +376,8 @@ where
                             } else {
                                 entry.status = PageStatus::Cold;
                                 self.hot_count -= 1;
+                                #[cfg(feature = "metrics")]
+                                self.metrics.record_hot_to_cold_demotion();
                             }
                         } else if entry.referenced {
                             // Just clear the reference bit
@@ -375,6 +399,11 @@ where
                 self.hot_count -= 1;
             }
             self.add_ghost(key);
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.record_evicted_entry();
+                self.metrics.record_test_insertion();
+            }
         }
         self.entries[slot] = None;
         self.len -= 1;
@@ -433,6 +462,9 @@ where
     /// ```
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return None;
         }
@@ -442,6 +474,8 @@ where
             let entry = self.entries[slot].as_mut().unwrap();
             let old = std::mem::replace(&mut entry.value, value);
             entry.referenced = true;
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
             return Some(old);
         }
 
@@ -474,7 +508,9 @@ where
         self.index.insert(key, slot);
         self.len += 1;
 
-        // Hot balancing happens during eviction sweeps, not here
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         None
     }
 
@@ -497,14 +533,29 @@ where
     /// ```
     #[inline]
     fn get(&mut self, key: &K) -> Option<&V> {
-        let slot = *self.index.get(key)?;
-        let entry = self.entries[slot].as_mut()?;
-        entry.referenced = true;
-        Some(&entry.value)
+        if let Some(&slot) = self.index.get(key) {
+            let entry = self.entries[slot].as_mut()?;
+            entry.referenced = true;
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
+            Some(&entry.value)
+        } else {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.record_get_miss();
+                if self.ghost_index.contains_key(key) {
+                    self.metrics.record_test_hit();
+                }
+            }
+            None
+        }
     }
 
     /// Clears all entries from the cache.
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.index.clear();
         self.ghost_index.clear();
         for entry in &mut self.entries {
@@ -567,6 +618,42 @@ where
             .field("ghost_len", &self.ghost_len)
             .field("target_hot_ratio", &self.target_hot_ratio)
             .finish()
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> ClockProCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> ClockProMetricsSnapshot {
+        ClockProMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            cold_to_hot_promotions: self.metrics.cold_to_hot_promotions,
+            hot_to_cold_demotions: self.metrics.hot_to_cold_demotions,
+            test_insertions: self.metrics.test_insertions,
+            test_hits: self.metrics.test_hits,
+            cache_len: self.len,
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<ClockProMetricsSnapshot> for ClockProCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> ClockProMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

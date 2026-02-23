@@ -80,58 +80,14 @@ use crate::ds::{GhostList, SlotArena, SlotId};
 use crate::error::ConfigError;
 #[cfg(feature = "concurrency")]
 use crate::traits::ConcurrentCache;
-/// Performance metrics for S3-FIFO cache operations.
-#[cfg(feature = "metrics")]
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct S3FifoMetrics {
-    /// Number of cache hits.
-    pub hits: u64,
-    /// Number of cache misses.
-    pub misses: u64,
-    /// Number of insertions.
-    pub inserts: u64,
-    /// Number of updates (key already existed).
-    pub updates: u64,
-    /// Number of promotions from Small to Main.
-    pub promotions: u64,
-    /// Number of Main reinsertions (freq > 0).
-    pub main_reinserts: u64,
-    /// Number of evictions from Small.
-    pub small_evictions: u64,
-    /// Number of evictions from Main.
-    pub main_evictions: u64,
-    /// Number of ghost hits (ghost-guided admission).
-    pub ghost_hits: u64,
-}
 
 #[cfg(feature = "metrics")]
-impl std::fmt::Display for S3FifoMetrics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let total_accesses = self.hits + self.misses;
-        let hit_rate = if total_accesses > 0 {
-            (self.hits as f64 / total_accesses as f64) * 100.0
-        } else {
-            0.0
-        };
+use crate::metrics::metrics_impl::S3FifoMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::S3FifoMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider, S3FifoMetricsRecorder};
 
-        write!(
-            f,
-            "S3FifoMetrics {{ hits: {}, misses: {}, hit_rate: {:.2}%, inserts: {}, updates: {}, \
-             promotions: {}, main_reinserts: {}, small_evictions: {}, main_evictions: {}, ghost_hits: {} }}",
-            self.hits,
-            self.misses,
-            hit_rate,
-            self.inserts,
-            self.updates,
-            self.promotions,
-            self.main_reinserts,
-            self.small_evictions,
-            self.main_evictions,
-            self.ghost_hits
-        )
-    }
-}
 use crate::traits::CoreCache;
 use crate::traits::MutableCache;
 use crate::traits::ReadOnlyCache;
@@ -572,7 +528,7 @@ where
             None => {
                 #[cfg(feature = "metrics")]
                 {
-                    self.metrics.misses += 1;
+                    self.metrics.record_get_miss();
                 }
                 return None;
             },
@@ -580,7 +536,7 @@ where
 
         #[cfg(feature = "metrics")]
         {
-            self.metrics.hits += 1;
+            self.metrics.record_get_hit();
         }
 
         let node = self.arena.get(id).expect("map/arena out of sync");
@@ -599,7 +555,7 @@ where
             None => {
                 #[cfg(feature = "metrics")]
                 {
-                    self.metrics.misses += 1;
+                    self.metrics.record_get_miss();
                 }
                 return None;
             },
@@ -607,7 +563,7 @@ where
 
         #[cfg(feature = "metrics")]
         {
-            self.metrics.hits += 1;
+            self.metrics.record_get_hit();
         }
 
         let node = self.arena.get_mut(id).expect("map/arena out of sync");
@@ -649,7 +605,8 @@ where
         if let Some(&id) = self.map.get(&key) {
             #[cfg(feature = "metrics")]
             {
-                self.metrics.updates += 1;
+                self.metrics.record_insert_call();
+                self.metrics.record_insert_update();
             }
             let node = self.arena.get_mut(id).expect("map/arena out of sync");
             let old = std::mem::replace(&mut node.value, value);
@@ -662,7 +619,8 @@ where
 
         #[cfg(feature = "metrics")]
         {
-            self.metrics.inserts += 1;
+            self.metrics.record_insert_call();
+            self.metrics.record_insert_new();
         }
 
         // Ghost-guided admission
@@ -670,7 +628,7 @@ where
 
         #[cfg(feature = "metrics")]
         if insert_to_main {
-            self.metrics.ghost_hits += 1;
+            self.metrics.record_ghost_hit();
         }
 
         // Evict before inserting
@@ -886,7 +844,7 @@ where
                 QueueKind::Small => {
                     #[cfg(feature = "metrics")]
                     {
-                        self.metrics.promotions += 1;
+                        self.metrics.record_promotion();
                     }
                     *self.arena.get_mut(id).unwrap().freq.get_mut() = 0;
                     self.attach_main_head(id);
@@ -894,7 +852,7 @@ where
                 QueueKind::Main => {
                     #[cfg(feature = "metrics")]
                     {
-                        self.metrics.main_reinserts += 1;
+                        self.metrics.record_main_reinsert();
                     }
                     *self.arena.get_mut(id).unwrap().freq.get_mut() = freq - 1;
                     self.attach_main_head(id);
@@ -906,7 +864,8 @@ where
                 QueueKind::Small => {
                     #[cfg(feature = "metrics")]
                     {
-                        self.metrics.small_evictions += 1;
+                        self.metrics.record_small_eviction();
+                        self.metrics.record_evicted_entry();
                     }
                     let node = self.arena.remove(id).unwrap();
                     self.map.remove(&node.key);
@@ -915,7 +874,8 @@ where
                 QueueKind::Main => {
                     #[cfg(feature = "metrics")]
                     {
-                        self.metrics.main_evictions += 1;
+                        self.metrics.record_main_eviction();
+                        self.metrics.record_evicted_entry();
                     }
                     let node = self.arena.remove(id).unwrap();
                     self.map.remove(&node.key);
@@ -929,6 +889,11 @@ where
 
     /// Evicts entries until there is room for a new entry.
     fn evict_if_needed(&mut self) {
+        #[cfg(feature = "metrics")]
+        if self.len() >= self.capacity {
+            self.metrics.record_evict_call();
+        }
+
         while self.len() >= self.capacity {
             let acted = if self.small_len > self.small_cap {
                 self.try_evict_from_queue(QueueKind::Small)
@@ -1035,6 +1000,47 @@ where
         }
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metrics snapshot
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "metrics")]
+impl<K, V> S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Captures a point-in-time snapshot of all metrics counters plus gauges.
+    pub fn metrics_snapshot(&self) -> S3FifoMetricsSnapshot {
+        S3FifoMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            promotions: self.metrics.promotions,
+            main_reinserts: self.metrics.main_reinserts,
+            small_evictions: self.metrics.small_evictions,
+            main_evictions: self.metrics.main_evictions,
+            ghost_hits: self.metrics.ghost_hits,
+            cache_len: self.map.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<S3FifoMetricsSnapshot> for S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> S3FifoMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 
@@ -1523,8 +1529,11 @@ where
     #[cfg(feature = "metrics")]
     pub fn metrics(&self) -> S3FifoMetrics {
         let mut m = self.inner.read().metrics().clone();
-        m.hits += self.read_hits.load(Ordering::Relaxed);
-        m.misses += self.read_misses.load(Ordering::Relaxed);
+        let rh = self.read_hits.load(Ordering::Relaxed);
+        let rm = self.read_misses.load(Ordering::Relaxed);
+        m.get_hits += rh;
+        m.get_misses += rm;
+        m.get_calls += rh + rm;
         m
     }
 
@@ -1543,6 +1552,34 @@ where
     K: Clone + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
+}
+
+#[cfg(all(feature = "metrics", feature = "concurrency"))]
+impl<K, V> ConcurrentS3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Captures a point-in-time snapshot including concurrent read-path counters.
+    pub fn metrics_snapshot(&self) -> S3FifoMetricsSnapshot {
+        let inner = self.inner.read();
+        let mut snap = inner.metrics_snapshot();
+        let rh = self.read_hits.load(Ordering::Relaxed);
+        let rm = self.read_misses.load(Ordering::Relaxed);
+        snap.get_hits += rh;
+        snap.get_misses += rm;
+        snap.get_calls += rh + rm;
+        snap
+    }
+}
+
+#[cfg(all(feature = "metrics", feature = "concurrency"))]
+impl<K, V> MetricsSnapshotProvider<S3FifoMetricsSnapshot> for ConcurrentS3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> S3FifoMetricsSnapshot {
+        self.metrics_snapshot()
+    }
 }
 
 // ---------------------------------------------------------------------------

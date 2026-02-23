@@ -1,8 +1,10 @@
 use crate::metrics::cell::MetricsCell;
 use crate::metrics::traits::{
+    ArcMetricsRecorder, CarMetricsRecorder, ClockMetricsRecorder, ClockProMetricsRecorder,
     CoreMetricsRecorder, FifoMetricsReadRecorder, FifoMetricsRecorder, LfuMetricsReadRecorder,
     LfuMetricsRecorder, LruKMetricsReadRecorder, LruKMetricsRecorder, LruMetricsReadRecorder,
-    LruMetricsRecorder,
+    LruMetricsRecorder, MfuMetricsReadRecorder, MfuMetricsRecorder, NruMetricsRecorder,
+    S3FifoMetricsRecorder, SlruMetricsRecorder, TwoQMetricsRecorder,
 };
 
 #[derive(Debug, Default)]
@@ -530,5 +532,621 @@ impl LruKMetricsReadRecorder for &LruKMetrics {
 
     fn record_k_distance_rank_scan_step(&self) {
         self.k_distance_rank_scan_steps.incr();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CoreOnlyMetrics (LIFO, Random)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct CoreOnlyMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+}
+
+impl CoreMetricsRecorder for CoreOnlyMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+// ---------------------------------------------------------------------------
+// ArcMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct ArcMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub t1_to_t2_promotions: u64,
+    pub b1_ghost_hits: u64,
+    pub b2_ghost_hits: u64,
+    pub p_increases: u64,
+    pub p_decreases: u64,
+    pub t1_evictions: u64,
+    pub t2_evictions: u64,
+}
+
+impl CoreMetricsRecorder for ArcMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl ArcMetricsRecorder for ArcMetrics {
+    fn record_t1_to_t2_promotion(&mut self) {
+        self.t1_to_t2_promotions += 1;
+    }
+    fn record_b1_ghost_hit(&mut self) {
+        self.b1_ghost_hits += 1;
+    }
+    fn record_b2_ghost_hit(&mut self) {
+        self.b2_ghost_hits += 1;
+    }
+    fn record_p_increase(&mut self) {
+        self.p_increases += 1;
+    }
+    fn record_p_decrease(&mut self) {
+        self.p_decreases += 1;
+    }
+    fn record_t1_eviction(&mut self) {
+        self.t1_evictions += 1;
+    }
+    fn record_t2_eviction(&mut self) {
+        self.t2_evictions += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CarMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct CarMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub recent_to_frequent_promotions: u64,
+    pub ghost_recent_hits: u64,
+    pub ghost_frequent_hits: u64,
+    pub target_increases: u64,
+    pub target_decreases: u64,
+    pub hand_sweeps: u64,
+}
+
+impl CoreMetricsRecorder for CarMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl CarMetricsRecorder for CarMetrics {
+    fn record_recent_to_frequent_promotion(&mut self) {
+        self.recent_to_frequent_promotions += 1;
+    }
+    fn record_ghost_recent_hit(&mut self) {
+        self.ghost_recent_hits += 1;
+    }
+    fn record_ghost_frequent_hit(&mut self) {
+        self.ghost_frequent_hits += 1;
+    }
+    fn record_target_increase(&mut self) {
+        self.target_increases += 1;
+    }
+    fn record_target_decrease(&mut self) {
+        self.target_decreases += 1;
+    }
+    fn record_hand_sweep(&mut self) {
+        self.hand_sweeps += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ClockMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct ClockMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub hand_advances: u64,
+    pub ref_bit_resets: u64,
+}
+
+impl CoreMetricsRecorder for ClockMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl ClockMetricsRecorder for ClockMetrics {
+    fn record_hand_advance(&mut self) {
+        self.hand_advances += 1;
+    }
+    fn record_ref_bit_reset(&mut self) {
+        self.ref_bit_resets += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ClockProMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct ClockProMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub cold_to_hot_promotions: u64,
+    pub hot_to_cold_demotions: u64,
+    pub test_insertions: u64,
+    pub test_hits: u64,
+}
+
+impl CoreMetricsRecorder for ClockProMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl ClockProMetricsRecorder for ClockProMetrics {
+    fn record_cold_to_hot_promotion(&mut self) {
+        self.cold_to_hot_promotions += 1;
+    }
+    fn record_hot_to_cold_demotion(&mut self) {
+        self.hot_to_cold_demotions += 1;
+    }
+    fn record_test_insertion(&mut self) {
+        self.test_insertions += 1;
+    }
+    fn record_test_hit(&mut self) {
+        self.test_hits += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MfuMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct MfuMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub pop_mfu_calls: u64,
+    pub pop_mfu_found: u64,
+    pub peek_mfu_calls: MetricsCell,
+    pub peek_mfu_found: MetricsCell,
+    pub frequency_calls: MetricsCell,
+    pub frequency_found: MetricsCell,
+}
+
+impl CoreMetricsRecorder for MfuMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl MfuMetricsRecorder for MfuMetrics {
+    fn record_pop_mfu_call(&mut self) {
+        self.pop_mfu_calls += 1;
+    }
+    fn record_pop_mfu_found(&mut self) {
+        self.pop_mfu_found += 1;
+    }
+    fn record_peek_mfu_call(&mut self) {
+        self.peek_mfu_calls.incr();
+    }
+    fn record_peek_mfu_found(&mut self) {
+        self.peek_mfu_found.incr();
+    }
+    fn record_frequency_call(&mut self) {
+        self.frequency_calls.incr();
+    }
+    fn record_frequency_found(&mut self) {
+        self.frequency_found.incr();
+    }
+}
+
+impl MfuMetricsReadRecorder for &MfuMetrics {
+    fn record_peek_mfu_call(&self) {
+        self.peek_mfu_calls.incr();
+    }
+    fn record_peek_mfu_found(&self) {
+        self.peek_mfu_found.incr();
+    }
+    fn record_frequency_call(&self) {
+        self.frequency_calls.incr();
+    }
+    fn record_frequency_found(&self) {
+        self.frequency_found.incr();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NruMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct NruMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub sweep_steps: u64,
+    pub ref_bit_resets: u64,
+}
+
+impl CoreMetricsRecorder for NruMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl NruMetricsRecorder for NruMetrics {
+    fn record_sweep_step(&mut self) {
+        self.sweep_steps += 1;
+    }
+    fn record_ref_bit_reset(&mut self) {
+        self.ref_bit_resets += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SlruMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct SlruMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub probationary_to_protected: u64,
+    pub protected_evictions: u64,
+}
+
+impl CoreMetricsRecorder for SlruMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl SlruMetricsRecorder for SlruMetrics {
+    fn record_probationary_to_protected(&mut self) {
+        self.probationary_to_protected += 1;
+    }
+    fn record_protected_eviction(&mut self) {
+        self.protected_evictions += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TwoQMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct TwoQMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub a1in_to_am_promotions: u64,
+    pub a1out_ghost_hits: u64,
+}
+
+impl CoreMetricsRecorder for TwoQMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl TwoQMetricsRecorder for TwoQMetrics {
+    fn record_a1in_to_am_promotion(&mut self) {
+        self.a1in_to_am_promotions += 1;
+    }
+    fn record_a1out_ghost_hit(&mut self) {
+        self.a1out_ghost_hits += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S3FifoMetrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Clone)]
+pub struct S3FifoMetrics {
+    pub get_calls: u64,
+    pub get_hits: u64,
+    pub get_misses: u64,
+    pub insert_calls: u64,
+    pub insert_updates: u64,
+    pub insert_new: u64,
+    pub evict_calls: u64,
+    pub evicted_entries: u64,
+    pub promotions: u64,
+    pub main_reinserts: u64,
+    pub small_evictions: u64,
+    pub main_evictions: u64,
+    pub ghost_hits: u64,
+}
+
+impl CoreMetricsRecorder for S3FifoMetrics {
+    fn record_get_hit(&mut self) {
+        self.get_calls += 1;
+        self.get_hits += 1;
+    }
+    fn record_get_miss(&mut self) {
+        self.get_calls += 1;
+        self.get_misses += 1;
+    }
+    fn record_insert_call(&mut self) {
+        self.insert_calls += 1;
+    }
+    fn record_insert_new(&mut self) {
+        self.insert_new += 1;
+    }
+    fn record_insert_update(&mut self) {
+        self.insert_updates += 1;
+    }
+    fn record_evict_call(&mut self) {
+        self.evict_calls += 1;
+    }
+    fn record_evicted_entry(&mut self) {
+        self.evicted_entries += 1;
+    }
+    fn record_clear(&mut self) {}
+}
+
+impl S3FifoMetricsRecorder for S3FifoMetrics {
+    fn record_promotion(&mut self) {
+        self.promotions += 1;
+    }
+    fn record_main_reinsert(&mut self) {
+        self.main_reinserts += 1;
+    }
+    fn record_small_eviction(&mut self) {
+        self.small_evictions += 1;
+    }
+    fn record_main_eviction(&mut self) {
+        self.main_evictions += 1;
+    }
+    fn record_ghost_hit(&mut self) {
+        self.ghost_hits += 1;
     }
 }

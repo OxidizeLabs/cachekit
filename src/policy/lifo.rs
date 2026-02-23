@@ -147,6 +147,12 @@
 //!
 //! - Wikipedia: Cache replacement policies
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::CoreOnlyMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::CoreOnlyMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
@@ -198,6 +204,8 @@ where
     stack: Vec<K>,
     /// Maximum cache capacity
     capacity: usize,
+    #[cfg(feature = "metrics")]
+    metrics: CoreOnlyMetrics,
 }
 
 impl<K, V> LifoCore<K, V>
@@ -225,6 +233,8 @@ where
             map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             stack: Vec::with_capacity(capacity),
             capacity,
+            #[cfg(feature = "metrics")]
+            metrics: CoreOnlyMetrics::default(),
         }
     }
 
@@ -245,7 +255,13 @@ where
     /// assert_eq!(cache.get(&"missing"), None);
     /// ```
     #[inline]
-    pub fn get(&self, key: &K) -> Option<&V> {
+    pub fn get(&mut self, key: &K) -> Option<&V> {
+        #[cfg(feature = "metrics")]
+        if self.map.contains_key(key) {
+            self.metrics.record_get_hit();
+        } else {
+            self.metrics.record_get_miss();
+        }
         self.map.get(key)
     }
 
@@ -273,21 +289,25 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) {
-        // Handle zero capacity - reject all insertions
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return;
         }
 
-        // Check for existing key - update in place (no stack change)
         if let Some(v) = self.map.get_mut(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
             *v = value;
             return;
         }
 
-        // Evict from top of stack if at capacity
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         self.evict_if_needed();
 
-        // Push new entry to top of stack
         self.stack.push(key.clone());
         self.map.insert(key, value);
     }
@@ -297,10 +317,16 @@ where
     /// LIFO evicts from the top (most recently inserted).
     #[inline]
     fn evict_if_needed(&mut self) {
+        #[cfg(feature = "metrics")]
+        if self.len() >= self.capacity && !self.stack.is_empty() {
+            self.metrics.record_evict_call();
+        }
+
         while self.len() >= self.capacity && !self.stack.is_empty() {
-            // Pop from top of stack (most recent)
             if let Some(key) = self.stack.pop() {
                 self.map.remove(&key);
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
             } else {
                 break;
             }
@@ -396,6 +422,9 @@ where
     /// assert!(!cache.contains(&"a"));
     /// ```
     pub fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.map.clear();
         self.stack.clear();
 
@@ -498,12 +527,15 @@ where
 {
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Check if key exists - update in place
         if let Some(v) = self.map.get_mut(&key) {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.record_insert_call();
+                self.metrics.record_insert_update();
+            }
             return Some(std::mem::replace(v, value));
         }
 
-        // New insert
         LifoCore::insert(self, key, value);
         None
     }
@@ -515,6 +547,38 @@ where
 
     fn clear(&mut self) {
         LifoCore::clear(self);
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> CoreOnlyMetricsSnapshot {
+        CoreOnlyMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            cache_len: self.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<CoreOnlyMetricsSnapshot> for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> CoreOnlyMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 
@@ -561,7 +625,7 @@ mod tests {
 
         #[test]
         fn get_missing_key_returns_none() {
-            let cache: LifoCore<&str, i32> = LifoCore::new(100);
+            let mut cache: LifoCore<&str, i32> = LifoCore::new(100);
 
             assert_eq!(cache.get(&"missing"), None);
         }
@@ -847,7 +911,7 @@ mod tests {
 
         #[test]
         fn empty_cache_operations() {
-            let cache: LifoCore<i32, i32> = LifoCore::new(100);
+            let mut cache: LifoCore<i32, i32> = LifoCore::new(100);
 
             assert!(cache.is_empty());
             assert_eq!(cache.get(&1), None);

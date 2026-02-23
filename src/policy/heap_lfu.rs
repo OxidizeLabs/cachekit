@@ -249,6 +249,15 @@ use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 use std::sync::Arc;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::LfuMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::LfuMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{
+    CoreMetricsRecorder, LfuMetricsReadRecorder, LfuMetricsRecorder, MetricsSnapshotProvider,
+};
+
 /// Heap-based LFU Cache with O(log n) eviction.
 ///
 /// Uses a binary min-heap for efficient LFU item identification.
@@ -300,6 +309,8 @@ where
     // Min-heap: smallest frequency first
     // Reverse wrapper converts max-heap to min-heap
     freq_heap: BinaryHeap<Reverse<(u64, K)>>,
+    #[cfg(feature = "metrics")]
+    metrics: LfuMetrics,
 }
 
 impl<K, V> HeapLfuCache<K, V>
@@ -326,6 +337,8 @@ where
             store: HashMapStore::new(capacity),
             frequencies: HashMap::with_capacity(capacity),
             freq_heap: BinaryHeap::with_capacity(capacity),
+            #[cfg(feature = "metrics")]
+            metrics: LfuMetrics::default(),
         }
     }
 
@@ -421,7 +434,17 @@ where
     /// assert_eq!(cache.frequency(&"missing"), None);
     /// ```
     pub fn frequency(&self, key: &K) -> Option<u64> {
-        self.frequencies.get(key).copied()
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_frequency_call();
+
+        let result = self.frequencies.get(key).copied();
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_frequency_found();
+        }
+
+        result
     }
 
     /// Clears all items from the cache.
@@ -441,6 +464,9 @@ where
     /// assert!(cache.is_empty());
     /// ```
     pub fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.store.clear();
         self.frequencies.clear();
         self.freq_heap.clear();
@@ -571,13 +597,32 @@ where
     K: Eq + Hash + Clone + Ord,
 {
     fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         // If key already exists, just update the value (don't change frequency)
         if self.store.contains(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             return self.store.try_insert(key, value).ok().flatten();
         }
 
-        // Ensure we have capacity (may evict LFU item)
-        self.ensure_capacity();
+        // Evict if at capacity
+        #[cfg(feature = "metrics")]
+        if self.store.len() >= self.store.capacity() {
+            self.metrics.record_evict_call();
+        }
+
+        let _evicted = self.ensure_capacity();
+
+        #[cfg(feature = "metrics")]
+        if _evicted.is_some() {
+            self.metrics.record_evicted_entry();
+        }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
 
         // Insert new item with frequency 1
         if self.store.try_insert(key.clone(), value).is_err() {
@@ -591,6 +636,9 @@ where
 
     fn get(&mut self, key: &K) -> Option<&Arc<V>> {
         if self.store.contains(key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
+
             // Increment frequency
             let new_freq = self.frequencies.get_mut(key).map(|f| {
                 *f += 1;
@@ -602,11 +650,17 @@ where
 
             self.store.get(key)
         } else {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
+
             None
         }
     }
 
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.store.clear();
         self.frequencies.clear();
         self.freq_heap.clear();
@@ -687,6 +741,9 @@ where
     K: Eq + Hash + Clone + Ord,
 {
     fn pop_lfu(&mut self) -> Option<(K, Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lfu_call();
+
         // Find the key with minimum frequency (handling stale entries)
         let (lfu_key, _freq) = self.pop_lfu_internal()?;
 
@@ -695,26 +752,32 @@ where
         self.frequencies.remove(&lfu_key);
         self.store.record_eviction();
 
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lfu_found();
+
         Some((lfu_key, value))
     }
 
     fn peek_lfu(&self) -> Option<(&K, &Arc<V>)> {
-        // This is more expensive for heap-based approach since we need to
-        // scan through potential stale entries. For better performance,
-        // consider avoiding this operation if possible.
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_call();
 
-        // Find the key with minimum frequency by scanning the frequencies map
-        // This is O(n) but avoids the borrowing issues with heap cloning
         if self.frequencies.is_empty() {
             return None;
         }
 
         let min_freq = *self.frequencies.values().min()?;
 
-        // Find a key with the minimum frequency
         for (key, &freq) in &self.frequencies {
             if freq == min_freq {
-                return self.store.peek(key).map(|value| (key, value));
+                let result = self.store.peek(key).map(|value| (key, value));
+
+                #[cfg(feature = "metrics")]
+                if result.is_some() {
+                    (&self.metrics).record_peek_lfu_found();
+                }
+
+                return result;
             }
         }
 
@@ -722,7 +785,17 @@ where
     }
 
     fn frequency(&self, key: &K) -> Option<u64> {
-        self.frequencies.get(key).copied()
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_frequency_call();
+
+        let result = self.frequencies.get(key).copied();
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_frequency_found();
+        }
+
+        result
     }
 
     fn increment_frequency(&mut self, key: &K) -> Option<u64> {
@@ -745,6 +818,47 @@ where
         } else {
             None
         }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> HeapLfuCache<K, V>
+where
+    K: Eq + Hash + Clone + Ord,
+{
+    pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
+        LfuMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            pop_lfu_calls: self.metrics.pop_lfu_calls,
+            pop_lfu_found: self.metrics.pop_lfu_found,
+            peek_lfu_calls: self.metrics.peek_lfu_calls.get(),
+            peek_lfu_found: self.metrics.peek_lfu_found.get(),
+            frequency_calls: self.metrics.frequency_calls.get(),
+            frequency_found: self.metrics.frequency_found.get(),
+            reset_frequency_calls: self.metrics.reset_frequency_calls,
+            reset_frequency_found: self.metrics.reset_frequency_found,
+            increment_frequency_calls: self.metrics.increment_frequency_calls,
+            increment_frequency_found: self.metrics.increment_frequency_found,
+            cache_len: self.store.len(),
+            capacity: self.store.capacity(),
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for HeapLfuCache<K, V>
+where
+    K: Eq + Hash + Clone + Ord,
+{
+    fn snapshot(&self) -> LfuMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

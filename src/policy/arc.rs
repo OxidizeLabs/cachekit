@@ -167,6 +167,12 @@
 //! - **vs 2Q/SLRU**: More adaptive, no manual tuning needed
 
 use crate::ds::GhostList;
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::ArcMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::ArcMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{ArcMetricsRecorder, CoreMetricsRecorder, MetricsSnapshotProvider};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
@@ -270,6 +276,9 @@ where
 
     /// Maximum total cache capacity
     capacity: usize,
+
+    #[cfg(feature = "metrics")]
+    metrics: ArcMetrics,
 }
 
 // SAFETY: ARCCore can be sent between threads if K and V are Send.
@@ -326,6 +335,8 @@ where
             b2: GhostList::new(capacity),
             p: capacity / 2,
             capacity,
+            #[cfg(feature = "metrics")]
+            metrics: ArcMetrics::default(),
         }
     }
 
@@ -399,6 +410,9 @@ where
     ///
     /// This is the core ARC replacement algorithm.
     fn replace(&mut self, in_b2: bool) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_evict_call();
+
         // Decide whether to evict from T1 or T2
         let evict_from_t1 =
             if self.t1_len > 0 && (self.t1_len > self.p || (self.t1_len == self.p && in_b2)) {
@@ -406,12 +420,10 @@ where
             } else if self.t2_len > 0 {
                 false
             } else {
-                // Both conditions failed, default to T1 if it has entries
                 self.t1_len > 0
             };
 
         if evict_from_t1 {
-            // Evict from T1 LRU
             if let Some(victim_ptr) = self.t1_tail {
                 unsafe {
                     let victim = victim_ptr.as_ref();
@@ -419,29 +431,30 @@ where
 
                     self.detach(victim_ptr);
                     self.map.remove(&key);
-
-                    // Move key to B1 ghost list
                     self.b1.record(key.clone());
-
-                    // Deallocate the node
                     let _ = Box::from_raw(victim_ptr.as_ptr());
+
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.metrics.record_evicted_entry();
+                        self.metrics.record_t1_eviction();
+                    }
                 }
             }
-        } else {
-            // Evict from T2 LRU
-            if let Some(victim_ptr) = self.t2_tail {
-                unsafe {
-                    let victim = victim_ptr.as_ref();
-                    let key = victim.key.clone();
+        } else if let Some(victim_ptr) = self.t2_tail {
+            unsafe {
+                let victim = victim_ptr.as_ref();
+                let key = victim.key.clone();
 
-                    self.detach(victim_ptr);
-                    self.map.remove(&key);
+                self.detach(victim_ptr);
+                self.map.remove(&key);
+                self.b2.record(key.clone());
+                let _ = Box::from_raw(victim_ptr.as_ptr());
 
-                    // Move key to B2 ghost list
-                    self.b2.record(key.clone());
-
-                    // Deallocate the node
-                    let _ = Box::from_raw(victim_ptr.as_ptr());
+                #[cfg(feature = "metrics")]
+                {
+                    self.metrics.record_evicted_entry();
+                    self.metrics.record_t2_eviction();
                 }
             }
         }
@@ -450,7 +463,6 @@ where
     /// Adapt parameter p based on ghost hit location.
     fn adapt(&mut self, in_b1: bool, in_b2: bool) {
         if in_b1 {
-            // Hit in B1: increase p (favor recency/T1)
             let delta = if self.b2.len() >= self.b1.len() {
                 1
             } else if !self.b1.is_empty() {
@@ -459,8 +471,10 @@ where
                 1
             };
             self.p = (self.p + delta).min(self.capacity);
+
+            #[cfg(feature = "metrics")]
+            self.metrics.record_p_increase();
         } else if in_b2 {
-            // Hit in B2: decrease p (favor frequency/T2)
             let delta = if self.b1.len() >= self.b2.len() {
                 1
             } else if !self.b2.is_empty() {
@@ -469,6 +483,9 @@ where
                 1
             };
             self.p = self.p.saturating_sub(delta);
+
+            #[cfg(feature = "metrics")]
+            self.metrics.record_p_decrease();
         }
     }
 
@@ -708,19 +725,30 @@ where
     K: Clone + Eq + Hash,
 {
     fn get(&mut self, key: &K) -> Option<&V> {
-        let node_ptr = *self.map.get(key)?;
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => ptr,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
 
         unsafe {
             let node = node_ptr.as_ref();
 
             match node.list {
                 ListKind::T1 => {
-                    // Promote from T1 to T2
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_t1_to_t2_promotion();
+
                     self.detach(node_ptr);
                     self.attach_t2_head(node_ptr);
                 },
                 ListKind::T2 => {
-                    // Move to T2 MRU
                     self.detach(node_ptr);
                     self.attach_t2_head(node_ptr);
                 },
@@ -731,27 +759,29 @@ where
     }
 
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Handle zero capacity edge case
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return None;
         }
 
         // Case 1: Key already in cache (T1 or T2)
         if let Some(&node_ptr) = self.map.get(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             unsafe {
-                let mut node_ptr = node_ptr; // Make mutable copy
+                let mut node_ptr = node_ptr;
                 let node = node_ptr.as_mut();
                 let old_value = std::mem::replace(&mut node.value, value);
 
-                // Update position based on current list
                 match node.list {
                     ListKind::T1 => {
-                        // Promote to T2
                         self.detach(node_ptr);
                         self.attach_t2_head(node_ptr);
                     },
                     ListKind::T2 => {
-                        // Move to T2 MRU
                         self.detach(node_ptr);
                         self.attach_t2_head(node_ptr);
                     },
@@ -761,21 +791,24 @@ where
             }
         }
 
-        // Check for ghost hits
         let in_b1 = self.b1.contains(&key);
         let in_b2 = self.b2.contains(&key);
 
         // Case 2: Ghost hit in B1
         if in_b1 {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.record_b1_ghost_hit();
+                self.metrics.record_insert_new();
+            }
+
             self.adapt(true, false);
             self.b1.remove(&key);
 
-            // Make space if needed
             if self.t1_len + self.t2_len >= self.capacity {
                 self.replace(false);
             }
 
-            // Insert into T2 (proven reuse)
             let node = Box::new(Node {
                 prev: None,
                 next: None,
@@ -792,15 +825,19 @@ where
 
         // Case 3: Ghost hit in B2
         if in_b2 {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.record_b2_ghost_hit();
+                self.metrics.record_insert_new();
+            }
+
             self.adapt(false, true);
             self.b2.remove(&key);
 
-            // Make space if needed
             if self.t1_len + self.t2_len >= self.capacity {
                 self.replace(true);
             }
 
-            // Insert into T2 (proven reuse)
             let node = Box::new(Node {
                 prev: None,
                 next: None,
@@ -815,7 +852,10 @@ where
             return None;
         }
 
-        // Case 4: Complete miss -- prune directory per ARC paper
+        // Case 4: Complete miss
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         let l1_len = self.t1_len + self.b1.len();
         if l1_len >= self.capacity {
             if !self.b1.is_empty() {
@@ -834,7 +874,6 @@ where
             }
         }
 
-        // Insert into T1
         let node = Box::new(Node {
             prev: None,
             next: None,
@@ -850,7 +889,9 @@ where
     }
 
     fn clear(&mut self) {
-        // Deallocate all nodes in T1
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         let mut current = self.t1_head;
         while let Some(node_ptr) = current {
             unsafe {
@@ -860,7 +901,6 @@ where
             }
         }
 
-        // Deallocate all nodes in T2
         let mut current = self.t2_head;
         while let Some(node_ptr) = current {
             unsafe {
@@ -905,6 +945,45 @@ where
 {
     fn drop(&mut self) {
         self.clear();
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> ARCCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> ArcMetricsSnapshot {
+        ArcMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            t1_to_t2_promotions: self.metrics.t1_to_t2_promotions,
+            b1_ghost_hits: self.metrics.b1_ghost_hits,
+            b2_ghost_hits: self.metrics.b2_ghost_hits,
+            p_increases: self.metrics.p_increases,
+            p_decreases: self.metrics.p_decreases,
+            t1_evictions: self.metrics.t1_evictions,
+            t2_evictions: self.metrics.t2_evictions,
+            cache_len: self.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<ArcMetricsSnapshot> for ARCCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> ArcMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

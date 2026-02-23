@@ -112,6 +112,13 @@ use std::hash::Hash;
 use crate::ds::ClockRing;
 use crate::traits::{CoreCache, MutableCache, ReadOnlyCache};
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::ClockMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::ClockMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::MetricsSnapshotProvider;
+
 /// High-performance Clock cache with O(1) access operations.
 ///
 /// Uses the [`ClockRing`] data structure with a sweeping clock hand for eviction.
@@ -141,6 +148,8 @@ where
     K: Clone + Eq + Hash,
 {
     ring: ClockRing<K, V>,
+    #[cfg(feature = "metrics")]
+    metrics: ClockMetrics,
 }
 
 impl<K, V> ClockCache<K, V>
@@ -163,6 +172,8 @@ where
     pub fn new(capacity: usize) -> Self {
         Self {
             ring: ClockRing::new(capacity),
+            #[cfg(feature = "metrics")]
+            metrics: ClockMetrics::default(),
         }
     }
 
@@ -230,13 +241,48 @@ where
     /// ```
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.insert_calls += 1;
+        }
+
         if self.ring.capacity() == 0 {
             return None;
         }
         if self.ring.contains(&key) {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.insert_updates += 1;
+            }
             return self.ring.update(&key, value);
         }
-        let _ = self.ring.insert(key, value);
+
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.insert_new += 1;
+        }
+
+        #[cfg(feature = "metrics")]
+        let need_evict = self.ring.len() >= self.ring.capacity();
+        #[cfg(feature = "metrics")]
+        let ha_before = self.ring.sweep_hand_advances();
+        #[cfg(feature = "metrics")]
+        let rb_before = self.ring.sweep_ref_bit_resets();
+
+        let evicted = self.ring.insert(key, value);
+
+        #[cfg(feature = "metrics")]
+        if need_evict {
+            self.metrics.evict_calls += 1;
+            if evicted.is_some() {
+                self.metrics.evicted_entries += 1;
+            }
+            self.metrics.hand_advances += self.ring.sweep_hand_advances() - ha_before;
+            self.metrics.ref_bit_resets += self.ring.sweep_ref_bit_resets() - rb_before;
+        }
+
+        #[allow(unused_variables)]
+        let _ = evicted;
         None
     }
 
@@ -258,12 +304,26 @@ where
     /// ```
     #[inline]
     fn get(&mut self, key: &K) -> Option<&V> {
-        self.ring.get(key)
+        let result = self.ring.get(key);
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            self.metrics.get_calls += 1;
+            self.metrics.get_hits += 1;
+        } else {
+            self.metrics.get_calls += 1;
+            self.metrics.get_misses += 1;
+        }
+        result
     }
 
     /// Clears all entries from the cache.
     fn clear(&mut self) {
         self.ring.clear();
+        #[cfg(feature = "metrics")]
+        {
+            use crate::metrics::traits::CoreMetricsRecorder;
+            self.metrics.record_clear();
+        }
     }
 }
 
@@ -289,6 +349,40 @@ where
     #[inline]
     fn remove(&mut self, key: &K) -> Option<V> {
         self.ring.remove(key)
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> ClockCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> ClockMetricsSnapshot {
+        ClockMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            hand_advances: self.metrics.hand_advances,
+            ref_bit_resets: self.metrics.ref_bit_resets,
+            cache_len: self.ring.len(),
+            capacity: self.ring.capacity(),
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<ClockMetricsSnapshot> for ClockCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> ClockMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

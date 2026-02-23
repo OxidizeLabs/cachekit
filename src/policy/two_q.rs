@@ -139,6 +139,12 @@
 //!   Replacement Algorithm", VLDB 1994
 
 use crate::ds::{IntrusiveList, SlotId};
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::TwoQMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::TwoQMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider, TwoQMetricsRecorder};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
@@ -299,6 +305,9 @@ where
     probation_cap: usize,
     /// Maximum total cache capacity.
     protected_cap: usize,
+
+    #[cfg(feature = "metrics")]
+    metrics: TwoQMetrics,
 }
 
 // SAFETY: TwoQCore can be sent between threads if K and V are Send.
@@ -533,6 +542,8 @@ where
             protected_len: 0,
             probation_cap,
             protected_cap,
+            #[cfg(feature = "metrics")]
+            metrics: TwoQMetrics::default(),
         }
     }
 
@@ -669,18 +680,29 @@ where
     /// ```
     #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let node_ptr = *self.map.get(key)?;
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => ptr,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
 
         let queue = unsafe { node_ptr.as_ref().queue };
 
         match queue {
             QueueKind::Probation => {
-                // Promote from probation to protected
+                #[cfg(feature = "metrics")]
+                self.metrics.record_a1in_to_am_promotion();
+
                 self.detach(node_ptr);
                 self.attach_protected_head(node_ptr);
             },
             QueueKind::Protected => {
-                // Move to MRU position
                 self.detach(node_ptr);
                 self.attach_protected_head(node_ptr);
             },
@@ -713,20 +735,26 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.protected_cap == 0 {
             return None;
         }
 
-        // Check for existing key - update in place
         if let Some(&node_ptr) = self.map.get(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             let old = unsafe { std::mem::replace(&mut (*node_ptr.as_ptr()).value, value) };
             return Some(old);
         }
 
-        // Evict BEFORE inserting to ensure space is available
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         self.evict_if_needed();
 
-        // Create new node in probation
         let node = Box::new(Node {
             prev: None,
             next: None,
@@ -744,25 +772,32 @@ where
     /// Evicts entries until there is room for a new entry.
     #[inline]
     fn evict_if_needed(&mut self) {
+        if self.len() >= self.protected_cap {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_evict_call();
+        }
+
         while self.len() >= self.protected_cap {
             if self.probation_len > self.probation_cap {
-                // Evict from probation tail (oldest)
                 if let Some(node) = self.pop_probation_tail() {
                     self.map.remove(&node.key);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_evicted_entry();
                     continue;
                 }
             }
-            // Evict from protected tail (LRU)
             if let Some(node) = self.pop_protected_tail() {
                 self.map.remove(&node.key);
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
                 continue;
             }
-            // Fallback: evict from probation even if under cap
             if let Some(node) = self.pop_probation_tail() {
                 self.map.remove(&node.key);
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
                 continue;
             }
-            // No entries to evict
             break;
         }
     }
@@ -855,7 +890,9 @@ where
     /// assert!(!cache.contains(&"a"));
     /// ```
     pub fn clear(&mut self) {
-        // Free all nodes
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         while self.pop_probation_tail().is_some() {}
         while self.pop_protected_tail().is_some() {}
         self.map.clear();
@@ -942,6 +979,40 @@ where
 
     fn clear(&mut self) {
         TwoQCore::clear(self);
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> TwoQCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> TwoQMetricsSnapshot {
+        TwoQMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            a1in_to_am_promotions: self.metrics.a1in_to_am_promotions,
+            a1out_ghost_hits: self.metrics.a1out_ghost_hits,
+            cache_len: self.len(),
+            capacity: self.protected_cap,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<TwoQMetricsSnapshot> for TwoQCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> TwoQMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

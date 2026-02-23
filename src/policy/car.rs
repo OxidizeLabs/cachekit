@@ -96,6 +96,12 @@
 //! - Wikipedia: Cache replacement policies
 
 use crate::ds::GhostList;
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::CarMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::CarMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{CarMetricsRecorder, CoreMetricsRecorder, MetricsSnapshotProvider};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
@@ -202,6 +208,9 @@ where
 
     /// Maximum total cache capacity.
     capacity: usize,
+
+    #[cfg(feature = "metrics")]
+    metrics: CarMetrics,
 }
 
 impl<K, V> CARCore<K, V>
@@ -249,6 +258,8 @@ where
             recent_len: 0,
             frequent_len: 0,
             capacity,
+            #[cfg(feature = "metrics")]
+            metrics: CarMetrics::default(),
         }
     }
 
@@ -333,7 +344,12 @@ where
     /// Sweep budget: `2 * capacity` steps — enough to clear all ref bits
     /// in the first pass and find a victim in the second.
     fn replace(&mut self, ghost_frequent_hit: bool) -> bool {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_evict_call();
+
         for _ in 0..(2 * self.capacity + 1) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_hand_sweep();
             let evict_from_recent = if self.recent_len > 0
                 && (self.recent_len > self.target_recent_size
                     || (self.recent_len == self.target_recent_size && ghost_frequent_hit))
@@ -357,6 +373,8 @@ where
                     self.recent_len -= 1;
                     self.link_before_hand(h, Ring::Frequent);
                     self.frequent_len += 1;
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_recent_to_frequent_promotion();
                 } else {
                     // Evict from recent ring to ghost_recent.
                     let key = self.slots[h].as_ref().unwrap().key.clone();
@@ -365,6 +383,8 @@ where
                     self.recent_len -= 1;
                     self.free_slot(h);
                     self.ghost_recent.record(key);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_evicted_entry();
                     return true;
                 }
             } else {
@@ -384,6 +404,8 @@ where
                     self.frequent_len -= 1;
                     self.free_slot(h);
                     self.ghost_frequent.record(key);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_evicted_entry();
                     return true;
                 }
             }
@@ -406,6 +428,8 @@ where
                 1
             };
             self.target_recent_size = (self.target_recent_size + delta).min(self.capacity);
+            #[cfg(feature = "metrics")]
+            self.metrics.record_target_increase();
         } else if ghost_frequent_hit {
             let delta = if !self.ghost_frequent.is_empty() {
                 (self.ghost_recent.len() / self.ghost_frequent.len()).max(1)
@@ -413,6 +437,8 @@ where
                 1
             };
             self.target_recent_size = self.target_recent_size.saturating_sub(delta);
+            #[cfg(feature = "metrics")]
+            self.metrics.record_target_decrease();
         }
     }
 
@@ -693,12 +719,26 @@ where
     K: Clone + Eq + Hash,
 {
     fn get(&mut self, key: &K) -> Option<&V> {
-        let &idx = self.index.get(key)?;
+        let &idx = match self.index.get(key) {
+            Some(idx) => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_hit();
+                idx
+            },
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
         self.referenced[idx] = true;
         self.slots[idx].as_ref().map(|s| &s.value)
     }
 
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.capacity == 0 {
             return None;
         }
@@ -708,6 +748,8 @@ where
             if let Some(slot) = self.slots[idx].as_mut() {
                 let old = std::mem::replace(&mut slot.value, value);
                 self.referenced[idx] = true;
+                #[cfg(feature = "metrics")]
+                self.metrics.record_insert_update();
                 return Some(old);
             }
         }
@@ -717,23 +759,31 @@ where
 
         // Case 2: Ghost hit in ghost_recent (key was recently evicted from recent ring).
         if ghost_recent_hit {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_ghost_recent_hit();
             self.adapt(true, false);
             self.ghost_recent.remove(&key);
             if self.recent_len + self.frequent_len >= self.capacity {
                 self.replace(false);
             }
             self.insert_into_ring(key, value, Ring::Frequent);
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_new();
             return None;
         }
 
         // Case 3: Ghost hit in ghost_frequent (key was evicted from frequent ring).
         if ghost_frequent_hit {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_ghost_frequent_hit();
             self.adapt(false, true);
             self.ghost_frequent.remove(&key);
             if self.recent_len + self.frequent_len >= self.capacity {
                 self.replace(true);
             }
             self.insert_into_ring(key, value, Ring::Frequent);
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_new();
             return None;
         }
 
@@ -742,10 +792,15 @@ where
             return None;
         }
         self.insert_into_ring(key, value, Ring::Recent);
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
         None
     }
 
     fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         self.index.clear();
         for slot in &mut self.slots {
             *slot = None;
@@ -781,6 +836,44 @@ where
         self.referenced[idx] = false;
         self.free.push(idx);
         Some(slot.value)
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> CARCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> CarMetricsSnapshot {
+        CarMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            recent_to_frequent_promotions: self.metrics.recent_to_frequent_promotions,
+            ghost_recent_hits: self.metrics.ghost_recent_hits,
+            ghost_frequent_hits: self.metrics.ghost_frequent_hits,
+            target_increases: self.metrics.target_increases,
+            target_decreases: self.metrics.target_decreases,
+            hand_sweeps: self.metrics.hand_sweeps,
+            cache_len: self.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<CarMetricsSnapshot> for CARCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> CarMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

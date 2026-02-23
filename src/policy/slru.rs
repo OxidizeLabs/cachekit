@@ -136,6 +136,12 @@
 //! - Karedla et al., "Caching Strategies to Improve Disk System Performance", 1994
 //! - Wikipedia: Cache replacement policies
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::SlruMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::SlruMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider, SlruMetricsRecorder};
 use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
@@ -228,6 +234,9 @@ where
     probationary_cap: usize,
     /// Maximum total cache capacity.
     protected_cap: usize,
+
+    #[cfg(feature = "metrics")]
+    metrics: SlruMetrics,
 }
 
 // SAFETY: SlruCore can be sent between threads if K and V are Send.
@@ -284,6 +293,8 @@ where
             protected_len: 0,
             probationary_cap,
             protected_cap,
+            #[cfg(feature = "metrics")]
+            metrics: SlruMetrics::default(),
         }
     }
 
@@ -420,18 +431,29 @@ where
     /// ```
     #[inline]
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let node_ptr = *self.map.get(key)?;
+        let node_ptr = match self.map.get(key) {
+            Some(&ptr) => ptr,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
 
         let segment = unsafe { node_ptr.as_ref().segment };
 
         match segment {
             Segment::Probationary => {
-                // Promote from probationary to protected
                 self.detach(node_ptr);
                 self.attach_protected_head(node_ptr);
+
+                #[cfg(feature = "metrics")]
+                self.metrics.record_probationary_to_protected();
             },
             Segment::Protected => {
-                // Move to MRU position
                 self.detach(node_ptr);
                 self.attach_protected_head(node_ptr);
             },
@@ -464,20 +486,26 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
         if self.protected_cap == 0 {
             return None;
         }
 
-        // Check for existing key - update in place
         if let Some(&node_ptr) = self.map.get(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
             let old = unsafe { std::mem::replace(&mut (*node_ptr.as_ptr()).value, value) };
             return Some(old);
         }
 
-        // Evict BEFORE inserting to ensure space is available
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
         self.evict_if_needed();
 
-        // Create new node in probationary
         let node = Box::new(Node {
             prev: None,
             next: None,
@@ -499,24 +527,32 @@ where
     #[inline]
     fn evict_if_needed(&mut self) {
         while self.len() >= self.protected_cap {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_evict_call();
+
             if self.probationary_len > self.probationary_cap {
-                // Evict from probationary tail (LRU)
                 if let Some(node) = self.pop_probationary_tail() {
                     self.map.remove(&node.key);
+                    #[cfg(feature = "metrics")]
+                    self.metrics.record_evicted_entry();
                     continue;
                 }
             }
-            // Evict from protected tail (LRU)
             if let Some(node) = self.pop_protected_tail() {
                 self.map.remove(&node.key);
+                #[cfg(feature = "metrics")]
+                {
+                    self.metrics.record_evicted_entry();
+                    self.metrics.record_protected_eviction();
+                }
                 continue;
             }
-            // Fallback: evict from probationary even if under cap
             if let Some(node) = self.pop_probationary_tail() {
                 self.map.remove(&node.key);
+                #[cfg(feature = "metrics")]
+                self.metrics.record_evicted_entry();
                 continue;
             }
-            // No entries to evict
             break;
         }
     }
@@ -609,7 +645,9 @@ where
     /// assert!(!cache.contains(&"a"));
     /// ```
     pub fn clear(&mut self) {
-        // Free all nodes
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
         while self.pop_probationary_tail().is_some() {}
         while self.pop_protected_tail().is_some() {}
         self.map.clear();
@@ -704,6 +742,39 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    pub fn metrics_snapshot(&self) -> SlruMetricsSnapshot {
+        SlruMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            probationary_to_protected: self.metrics.probationary_to_protected,
+            protected_evictions: self.metrics.protected_evictions,
+            cache_len: self.len(),
+            capacity: self.capacity(),
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<SlruMetricsSnapshot> for SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> SlruMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 

@@ -8,25 +8,25 @@
 //! ## Architecture
 //!
 //! ```text
-//!                                ┌─────────────────────────────┐
-//!                                │     CoreMetricsRecorder     │
-//!                                │  get_hit/get_miss/insert    │
-//!                                │  evict/clear                │
-//!                                └──────────────┬──────────────┘
-//!                                               │
-//!                     ┌─────────────────────────┼─────────────────────────┐
-//!                     │                         │                         │
-//!                     ▼                         ▼                         ▼
-//!       ┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
-//!       │  FifoMetricsRecorder    │  │  LruMetricsRecorder     │  │  LfuMetricsRecorder     │
-//!       │  pop_oldest/peek/age    │  │  pop_lru/peek/touch     │  │  pop_lfu/peek/frequency │
-//!       └─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
-//!                                               │
-//!                                               ▼
-//!                                   ┌─────────────────────────┐
-//!                                   │  LruKMetricsRecorder    │
-//!                                   │  pop_lru_k/k_distance   │
-//!                                   └─────────────────────────┘
+//!                                     ┌─────────────────────────────┐
+//!                                     │     CoreMetricsRecorder     │
+//!                                     │  get_hit/get_miss/insert    │
+//!                                     │  evict/clear                │
+//!                                     └──────────────┬──────────────┘
+//!                                                    │
+//!     ┌──────────────┬───────────────┬───────────────┼───────────────┬───────────────┐
+//!     │              │               │               │               │               │
+//!     ▼              ▼               ▼               ▼               ▼               ▼
+//!  ┌────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐
+//!  │  Fifo  │  │   Lru    │  │   Lfu    │  │   Arc    │  │  Clock   │  │  S3Fifo/     │
+//!  │Recorder│  │ Recorder │  │ Recorder │  │ Recorder │  │ Recorder │  │  Car/Slru/   │
+//!  └────────┘  └────┬─────┘  └──────────┘  └──────────┘  └──────────┘  │  TwoQ/Mfu/   │
+//!                    │                                                   │  NRU/ClkPro  │
+//!                    ▼                                                   └──────────────┘
+//!              ┌──────────┐
+//!              │  LruK    │
+//!              │ Recorder │
+//!              └──────────┘
 //!
 //!   Consumption (decoupled from recording):
 //!   ┌──────────────────────────────┐    ┌──────────────────────────────┐
@@ -143,6 +143,86 @@ pub trait LruKMetricsReadRecorder {
     fn record_k_distance_rank_call(&self);
     fn record_k_distance_rank_found(&self);
     fn record_k_distance_rank_scan_step(&self);
+}
+
+/// Metrics for ARC behavior (adaptive replacement with ghost lists).
+pub trait ArcMetricsRecorder: CoreMetricsRecorder {
+    fn record_t1_to_t2_promotion(&mut self);
+    fn record_b1_ghost_hit(&mut self);
+    fn record_b2_ghost_hit(&mut self);
+    fn record_p_increase(&mut self);
+    fn record_p_decrease(&mut self);
+    fn record_t1_eviction(&mut self);
+    fn record_t2_eviction(&mut self);
+}
+
+/// Metrics for CAR behavior (clock with adaptive replacement).
+pub trait CarMetricsRecorder: CoreMetricsRecorder {
+    fn record_recent_to_frequent_promotion(&mut self);
+    fn record_ghost_recent_hit(&mut self);
+    fn record_ghost_frequent_hit(&mut self);
+    fn record_target_increase(&mut self);
+    fn record_target_decrease(&mut self);
+    fn record_hand_sweep(&mut self);
+}
+
+/// Metrics for Clock behavior (clock hand sweep).
+pub trait ClockMetricsRecorder: CoreMetricsRecorder {
+    fn record_hand_advance(&mut self);
+    fn record_ref_bit_reset(&mut self);
+}
+
+/// Metrics for Clock-PRO behavior (hot/cold/test states).
+pub trait ClockProMetricsRecorder: CoreMetricsRecorder {
+    fn record_cold_to_hot_promotion(&mut self);
+    fn record_hot_to_cold_demotion(&mut self);
+    fn record_test_insertion(&mut self);
+    fn record_test_hit(&mut self);
+}
+
+/// Metrics for MFU behavior (most frequently used eviction).
+pub trait MfuMetricsRecorder: CoreMetricsRecorder {
+    fn record_pop_mfu_call(&mut self);
+    fn record_pop_mfu_found(&mut self);
+    fn record_peek_mfu_call(&mut self);
+    fn record_peek_mfu_found(&mut self);
+    fn record_frequency_call(&mut self);
+    fn record_frequency_found(&mut self);
+}
+
+/// Read-only MFU metrics for &self methods (uses interior mutability).
+pub trait MfuMetricsReadRecorder {
+    fn record_peek_mfu_call(&self);
+    fn record_peek_mfu_found(&self);
+    fn record_frequency_call(&self);
+    fn record_frequency_found(&self);
+}
+
+/// Metrics for NRU behavior (not recently used, clock sweep).
+pub trait NruMetricsRecorder: CoreMetricsRecorder {
+    fn record_sweep_step(&mut self);
+    fn record_ref_bit_reset(&mut self);
+}
+
+/// Metrics for SLRU behavior (segmented LRU).
+pub trait SlruMetricsRecorder: CoreMetricsRecorder {
+    fn record_probationary_to_protected(&mut self);
+    fn record_protected_eviction(&mut self);
+}
+
+/// Metrics for Two-Q behavior (A1in/A1out/Am queues).
+pub trait TwoQMetricsRecorder: CoreMetricsRecorder {
+    fn record_a1in_to_am_promotion(&mut self);
+    fn record_a1out_ghost_hit(&mut self);
+}
+
+/// Metrics for S3-FIFO behavior (small/main/ghost queues).
+pub trait S3FifoMetricsRecorder: CoreMetricsRecorder {
+    fn record_promotion(&mut self);
+    fn record_main_reinsert(&mut self);
+    fn record_small_eviction(&mut self);
+    fn record_main_eviction(&mut self);
+    fn record_ghost_hit(&mut self);
 }
 
 /// Snapshot provider for bench/testing.

@@ -166,6 +166,13 @@ use rustc_hash::FxHashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::Hash;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::metrics_impl::NruMetrics;
+#[cfg(feature = "metrics")]
+use crate::metrics::snapshot::NruMetricsSnapshot;
+#[cfg(feature = "metrics")]
+use crate::metrics::traits::MetricsSnapshotProvider;
+
 /// Entry in the NRU cache containing value, index, and reference bit.
 #[derive(Debug, Clone)]
 struct Entry<V> {
@@ -228,6 +235,8 @@ where
     keys: Vec<K>,
     /// Maximum capacity
     capacity: usize,
+    #[cfg(feature = "metrics")]
+    metrics: NruMetrics,
 }
 
 impl<K, V> NruCache<K, V>
@@ -252,6 +261,8 @@ where
             map: FxHashMap::default(),
             keys: Vec::with_capacity(capacity),
             capacity,
+            #[cfg(feature = "metrics")]
+            metrics: NruMetrics::default(),
         }
     }
 
@@ -274,12 +285,14 @@ where
 
         // Phase 1: Try to find an unreferenced entry
         for (idx, key) in self.keys.iter().enumerate() {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.sweep_steps += 1;
+            }
             if let Some(entry) = self.map.get(key) {
                 if !entry.referenced {
-                    // Found unreferenced entry - evict it
                     let victim_key = self.keys.swap_remove(idx);
 
-                    // Update index of swapped key if we didn't remove the last element
                     if idx < self.keys.len() {
                         let swapped_key = &self.keys[idx];
                         if let Some(swapped_entry) = self.map.get_mut(swapped_key) {
@@ -296,15 +309,19 @@ where
         // Phase 2: All entries are referenced - clear all bits and evict first
         for key in &self.keys {
             if let Some(entry) = self.map.get_mut(key) {
-                entry.referenced = false;
+                if entry.referenced {
+                    entry.referenced = false;
+                    #[cfg(feature = "metrics")]
+                    {
+                        self.metrics.ref_bit_resets += 1;
+                    }
+                }
             }
         }
 
-        // Now evict the first entry (index 0)
         if !self.keys.is_empty() {
             let victim_key = self.keys.swap_remove(0);
 
-            // Update index of swapped key if we didn't remove the last element
             if !self.keys.is_empty() {
                 let swapped_key = &self.keys[0];
                 if let Some(swapped_entry) = self.map.get_mut(swapped_key) {
@@ -370,24 +387,42 @@ where
     /// ```
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.insert_calls += 1;
+        }
+
         if self.capacity == 0 {
             return None;
         }
-        // Check if key already exists
         if let Some(entry) = self.map.get_mut(&key) {
-            // Update existing entry
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.insert_updates += 1;
+            }
             let old_value = std::mem::replace(&mut entry.value, value);
             entry.referenced = true;
             return Some(old_value);
         }
 
-        // New key - check capacity
-        if self.map.len() >= self.capacity {
-            // Evict using NRU policy
-            let _ = self.evict_one();
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.insert_new += 1;
         }
 
-        // Insert new entry
+        if self.map.len() >= self.capacity {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.evict_calls += 1;
+            }
+            if self.evict_one().is_some() {
+                #[cfg(feature = "metrics")]
+                {
+                    self.metrics.evicted_entries += 1;
+                }
+            }
+        }
+
         let index = self.keys.len();
         self.keys.push(key.clone());
         self.map.insert(
@@ -395,7 +430,7 @@ where
             Entry {
                 index,
                 value,
-                referenced: false, // New inserts start unreferenced (cold start)
+                referenced: false,
             },
         );
 
@@ -422,8 +457,18 @@ where
     fn get(&mut self, key: &K) -> Option<&V> {
         if let Some(entry) = self.map.get_mut(key) {
             entry.referenced = true;
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.get_calls += 1;
+                self.metrics.get_hits += 1;
+            }
             Some(&entry.value)
         } else {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.get_calls += 1;
+                self.metrics.get_misses += 1;
+            }
             None
         }
     }
@@ -432,6 +477,11 @@ where
     fn clear(&mut self) {
         self.map.clear();
         self.keys.clear();
+        #[cfg(feature = "metrics")]
+        {
+            use crate::metrics::traits::CoreMetricsRecorder;
+            self.metrics.record_clear();
+        }
     }
 }
 
@@ -471,6 +521,40 @@ where
         }
 
         Some(entry.value)
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a snapshot of cache metrics.
+    pub fn metrics_snapshot(&self) -> NruMetricsSnapshot {
+        NruMetricsSnapshot {
+            get_calls: self.metrics.get_calls,
+            get_hits: self.metrics.get_hits,
+            get_misses: self.metrics.get_misses,
+            insert_calls: self.metrics.insert_calls,
+            insert_updates: self.metrics.insert_updates,
+            insert_new: self.metrics.insert_new,
+            evict_calls: self.metrics.evict_calls,
+            evicted_entries: self.metrics.evicted_entries,
+            sweep_steps: self.metrics.sweep_steps,
+            ref_bit_resets: self.metrics.ref_bit_resets,
+            cache_len: self.map.len(),
+            capacity: self.capacity,
+        }
+    }
+}
+
+#[cfg(feature = "metrics")]
+impl<K, V> MetricsSnapshotProvider<NruMetricsSnapshot> for NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn snapshot(&self) -> NruMetricsSnapshot {
+        self.metrics_snapshot()
     }
 }
 
