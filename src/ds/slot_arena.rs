@@ -142,22 +142,18 @@
 //!
 //! ## Implementation Notes
 //!
-//! - `SlotId` indices may be reused after removal
-//! - Accessing a stale `SlotId` returns `None` (not undefined behavior)
+//! - `SlotId` carries a generation counter; stale handles return `None`
+//! - Physical slot indices may be reused after removal, but the
+//!   generation counter prevents ABA hazards
 //! - `len()` tracks live entries, not `slots.len()`
 //! - `debug_validate_invariants()` available in debug/test builds
 
-/// Stable handle into a [`SlotArena`].
+/// Stable, generation-checked handle into a [`SlotArena`].
 ///
-/// A lightweight identifier (wrapping a `usize` index) that provides O(1)
-/// access to arena slots. Handles remain valid until the slot is removed;
-/// after removal, the index may be reused by a later `insert`.
-///
-/// # Stability
-///
-/// Unlike raw indices or pointers, `SlotId` values are semantically tied to
-/// the slot they reference. Accessing a removed slot returns `None` rather
-/// than causing undefined behavior.
+/// Wraps a `usize` slot index together with a `u32` generation counter.
+/// The generation is bumped every time a slot is freed, so a stale handle
+/// whose slot has been reused will fail the generation check and return
+/// `None` instead of silently accessing the wrong value.
 ///
 /// # Example
 ///
@@ -173,13 +169,18 @@
 /// // Inspect raw index for debugging
 /// println!("Value stored at index {}", id.index());
 ///
-/// // After removal, same index may be reused
+/// // After removal, same index may be reused but stale handle is invalid
 /// arena.remove(id);
 /// let new_id = arena.insert(100);
 /// assert_eq!(id.index(), new_id.index());
+/// assert_eq!(arena.get(id), None);       // stale handle → None
+/// assert_eq!(arena.get(new_id), Some(&100));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SlotId(pub(crate) usize);
+pub struct SlotId {
+    pub(crate) index: usize,
+    pub(crate) generation: u32,
+}
 
 impl SlotId {
     /// Returns the underlying slot index.
@@ -187,7 +188,16 @@ impl SlotId {
     /// Useful for debugging, logging, or custom data structures that need
     /// to work with raw indices.
     pub fn index(self) -> usize {
-        self.0
+        self.index
+    }
+
+    /// Returns the generation counter.
+    ///
+    /// A higher generation means the physical slot has been reused more
+    /// times. Two `SlotId`s with the same index but different generations
+    /// refer to different logical entries.
+    pub fn generation(self) -> u32 {
+        self.generation
     }
 }
 
@@ -255,6 +265,7 @@ impl SlotId {
 #[derive(Debug, Clone)]
 pub struct SlotArena<T> {
     slots: Vec<Option<T>>,
+    generations: Vec<u32>,
     free_list: Vec<usize>,
     len: usize,
 }
@@ -273,6 +284,7 @@ impl<T> SlotArena<T> {
     pub fn new() -> Self {
         Self {
             slots: Vec::new(),
+            generations: Vec::new(),
             free_list: Vec::new(),
             len: 0,
         }
@@ -292,6 +304,7 @@ impl<T> SlotArena<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
+            generations: Vec::with_capacity(capacity),
             free_list: Vec::new(),
             len: 0,
         }
@@ -317,10 +330,14 @@ impl<T> SlotArena<T> {
             idx
         } else {
             self.slots.push(Some(value));
+            self.generations.push(0);
             self.slots.len() - 1
         };
         self.len += 1;
-        SlotId(idx)
+        SlotId {
+            index: idx,
+            generation: self.generations[idx],
+        }
     }
 
     /// Removes and returns the value at `id`, freeing the slot for reuse.
@@ -340,9 +357,13 @@ impl<T> SlotArena<T> {
     /// ```
     #[inline]
     pub fn remove(&mut self, id: SlotId) -> Option<T> {
-        let slot = self.slots.get_mut(id.0)?;
-        let value = slot.take()?;
-        self.free_list.push(id.0);
+        let idx = id.index;
+        if *self.generations.get(idx)? != id.generation {
+            return None;
+        }
+        let value = self.slots[idx].take()?;
+        self.generations[idx] = self.generations[idx].wrapping_add(1);
+        self.free_list.push(idx);
         self.len -= 1;
         Some(value)
     }
@@ -361,7 +382,11 @@ impl<T> SlotArena<T> {
     /// ```
     #[inline]
     pub fn get(&self, id: SlotId) -> Option<&T> {
-        self.slots.get(id.0).and_then(|slot| slot.as_ref())
+        let idx = id.index;
+        if *self.generations.get(idx)? != id.generation {
+            return None;
+        }
+        self.slots[idx].as_ref()
     }
 
     /// Returns a mutable reference to the value at `id`.
@@ -381,7 +406,11 @@ impl<T> SlotArena<T> {
     /// ```
     #[inline]
     pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
-        self.slots.get_mut(id.0).and_then(|slot| slot.as_mut())
+        let idx = id.index;
+        if *self.generations.get(idx)? != id.generation {
+            return None;
+        }
+        self.slots[idx].as_mut()
     }
 
     /// Returns `true` if `id` refers to a live slot.
@@ -400,10 +429,10 @@ impl<T> SlotArena<T> {
     /// ```
     #[inline]
     pub fn contains(&self, id: SlotId) -> bool {
-        self.slots
-            .get(id.0)
-            .map(|slot| slot.is_some())
-            .unwrap_or(false)
+        let idx = id.index;
+        self.generations
+            .get(idx)
+            .is_some_and(|&g| g == id.generation && self.slots[idx].is_some())
     }
 
     /// Returns `true` if the raw `index` is in bounds and occupied.
@@ -491,6 +520,7 @@ impl<T> SlotArena<T> {
     /// ```
     pub fn reserve_slots(&mut self, additional: usize) {
         self.slots.reserve(additional);
+        self.generations.reserve(additional);
     }
 
     /// Shrinks internal storage to fit the current state.
@@ -507,6 +537,7 @@ impl<T> SlotArena<T> {
     /// ```
     pub fn shrink_to_fit(&mut self) {
         self.slots.shrink_to_fit();
+        self.generations.shrink_to_fit();
         self.free_list.shrink_to_fit();
     }
 
@@ -547,6 +578,7 @@ impl<T> SlotArena<T> {
     /// ```
     pub fn clear(&mut self) {
         self.slots.clear();
+        self.generations.clear();
         self.free_list.clear();
         self.len = 0;
     }
@@ -568,6 +600,7 @@ impl<T> SlotArena<T> {
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             inner: self.slots.iter().enumerate(),
+            generations: &self.generations,
         }
     }
 
@@ -592,6 +625,7 @@ impl<T> SlotArena<T> {
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             inner: self.slots.iter_mut().enumerate(),
+            generations: &self.generations,
         }
     }
 
@@ -646,12 +680,15 @@ impl<T> SlotArena<T> {
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.slots.capacity() * std::mem::size_of::<Option<T>>()
+            + self.generations.capacity() * std::mem::size_of::<u32>()
             + self.free_list.capacity() * std::mem::size_of::<usize>()
     }
 
     #[cfg(any(test, debug_assertions))]
     /// Validates internal invariants (debug/test builds only).
     pub fn debug_validate_invariants(&self) {
+        assert_eq!(self.slots.len(), self.generations.len());
+
         let live_count = self.slots.iter().filter(|slot| slot.is_some()).count();
         assert_eq!(self.len, live_count);
         assert!(self.len <= self.slots.len());
@@ -1115,6 +1152,7 @@ impl<T> Default for SlotArena<T> {
 #[derive(Debug)]
 pub struct Iter<'a, T> {
     inner: std::iter::Enumerate<std::slice::Iter<'a, Option<T>>>,
+    generations: &'a [u32],
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
@@ -1123,7 +1161,13 @@ impl<'a, T> Iterator for Iter<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.inner.next() {
-                Some((idx, Some(value))) => return Some((SlotId(idx), value)),
+                Some((idx, Some(value))) => {
+                    let id = SlotId {
+                        index: idx,
+                        generation: self.generations[idx],
+                    };
+                    return Some((id, value));
+                },
                 Some((_, None)) => continue,
                 None => return None,
             }
@@ -1138,9 +1182,9 @@ impl<'a, T> Iterator for Iter<'a, T> {
 /// Mutable iterator over `(SlotId, &mut T)` pairs of a [`SlotArena`].
 ///
 /// Created by [`SlotArena::iter_mut`].
-#[derive(Debug)]
 pub struct IterMut<'a, T> {
     inner: std::iter::Enumerate<std::slice::IterMut<'a, Option<T>>>,
+    generations: &'a [u32],
 }
 
 impl<'a, T> Iterator for IterMut<'a, T> {
@@ -1149,7 +1193,13 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.inner.next() {
-                Some((idx, Some(value))) => return Some((SlotId(idx), value)),
+                Some((idx, Some(value))) => {
+                    let id = SlotId {
+                        index: idx,
+                        generation: self.generations[idx],
+                    };
+                    return Some((id, value));
+                },
                 Some((_, None)) => continue,
                 None => return None,
             }
@@ -1167,6 +1217,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 #[derive(Debug)]
 pub struct IntoIter<T> {
     inner: std::iter::Enumerate<std::vec::IntoIter<Option<T>>>,
+    generations: Vec<u32>,
 }
 
 impl<T> Iterator for IntoIter<T> {
@@ -1175,7 +1226,13 @@ impl<T> Iterator for IntoIter<T> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.inner.next() {
-                Some((idx, Some(value))) => return Some((SlotId(idx), value)),
+                Some((idx, Some(value))) => {
+                    let id = SlotId {
+                        index: idx,
+                        generation: self.generations[idx],
+                    };
+                    return Some((id, value));
+                },
                 Some((_, None)) => continue,
                 None => return None,
             }
@@ -1232,6 +1289,7 @@ impl<T> IntoIterator for SlotArena<T> {
     fn into_iter(self) -> Self::IntoIter {
         IntoIter {
             inner: self.slots.into_iter().enumerate(),
+            generations: self.generations,
         }
     }
 }
@@ -1717,7 +1775,10 @@ mod tests {
     #[test]
     fn slot_arena_remove_invalid_id_is_none() {
         let mut arena: SlotArena<i32> = SlotArena::new();
-        let id = SlotId(0);
+        let id = SlotId {
+            index: 0,
+            generation: 0,
+        };
         assert_eq!(arena.remove(id), None);
         assert!(!arena.contains(id));
         assert!(arena.is_empty());
@@ -1869,6 +1930,79 @@ mod tests {
         let id = arena.insert(5);
         arena.get_mut_with(id, |v| *v = 10);
         assert_eq!(arena.get_with(id, |v| *v), Some(10));
+    }
+
+    // -----------------------------------------------------------------------
+    // ABA / generational safety tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stale_id_get_returns_none_after_reuse() {
+        let mut arena = SlotArena::new();
+        let id_a = arena.insert("alice");
+        arena.remove(id_a);
+        let _id_b = arena.insert("bob"); // reuses same physical slot
+
+        // Stale handle must NOT see the new occupant
+        assert_eq!(arena.get(id_a), None);
+        assert!(!arena.contains(id_a));
+    }
+
+    #[test]
+    fn stale_id_get_mut_returns_none_after_reuse() {
+        let mut arena = SlotArena::new();
+        let id_a = arena.insert(1);
+        arena.remove(id_a);
+        let id_b = arena.insert(2); // reuses same physical slot
+
+        assert_eq!(arena.get_mut(id_a), None);
+        // New handle still works
+        assert_eq!(arena.get(id_b), Some(&2));
+    }
+
+    #[test]
+    fn stale_id_remove_returns_none_after_reuse() {
+        let mut arena = SlotArena::new();
+        let id_a = arena.insert(42);
+        arena.remove(id_a);
+        let id_b = arena.insert(99); // reuses same physical slot
+
+        // Must not remove the new occupant via a stale handle
+        assert_eq!(arena.remove(id_a), None);
+        assert_eq!(arena.get(id_b), Some(&99));
+        assert_eq!(arena.len(), 1);
+    }
+
+    #[test]
+    fn stale_id_after_multiple_reuse_cycles() {
+        let mut arena = SlotArena::new();
+
+        let id_gen0 = arena.insert("gen0");
+        arena.remove(id_gen0);
+
+        let id_gen1 = arena.insert("gen1");
+        arena.remove(id_gen1);
+
+        let id_gen2 = arena.insert("gen2");
+
+        // All three share the same physical index
+        assert_eq!(id_gen0.index(), id_gen1.index());
+        assert_eq!(id_gen1.index(), id_gen2.index());
+
+        // Only the latest generation handle is valid
+        assert_eq!(arena.get(id_gen0), None);
+        assert_eq!(arena.get(id_gen1), None);
+        assert_eq!(arena.get(id_gen2), Some(&"gen2"));
+    }
+
+    #[test]
+    fn stale_id_contains_returns_false_after_reuse() {
+        let mut arena = SlotArena::new();
+        let stale = arena.insert(1);
+        arena.remove(stale);
+        let _new = arena.insert(2);
+
+        assert!(!arena.contains(stale));
     }
 
     #[test]
@@ -2043,11 +2177,9 @@ mod tests {
     #[test]
     fn iter_count_matches_len() {
         let mut arena = SlotArena::new();
-        for i in 0..10 {
-            arena.insert(i);
-        }
-        arena.remove(SlotId(3));
-        arena.remove(SlotId(7));
+        let ids: Vec<_> = (0..10).map(|i| arena.insert(i)).collect();
+        arena.remove(ids[3]);
+        arena.remove(ids[7]);
 
         assert_eq!(arena.iter().count(), arena.len());
         assert_eq!(arena.iter_mut().count(), arena.len());
@@ -2672,39 +2804,33 @@ mod property_tests {
             operations in prop::collection::vec((0u8..3, any::<u32>()), 0..50)
         ) {
             let mut arena = SlotArena::new();
-            let mut reference: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+            let mut reference: std::collections::HashMap<SlotId, u32> = std::collections::HashMap::new();
 
             for (op, value) in operations {
                 match op % 3 {
                     0 => {
-                        // insert
                         let id = arena.insert(value);
-                        reference.insert(id.index(), value);
+                        reference.insert(id, value);
                     }
                     1 => {
-                        // remove
                         if !reference.is_empty() {
                             let keys: Vec<_> = reference.keys().copied().collect();
-                            let key = keys[0];
-                            let id = SlotId(key);
+                            let id = keys[0];
 
                             let arena_val = arena.remove(id);
-                            let ref_val = reference.remove(&key);
+                            let ref_val = reference.remove(&id);
 
                             prop_assert_eq!(arena_val, ref_val);
                         }
                     }
                     2 => {
-                        // verify
-                        for (&key, &expected_value) in &reference {
-                            let id = SlotId(key);
+                        for (&id, &expected_value) in &reference {
                             prop_assert_eq!(arena.get(id), Some(&expected_value));
                         }
                     }
                     _ => unreachable!(),
                 }
 
-                // Verify consistency
                 prop_assert_eq!(arena.len(), reference.len());
                 prop_assert_eq!(arena.is_empty(), reference.is_empty());
             }
