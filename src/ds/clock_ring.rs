@@ -1463,28 +1463,40 @@ where
             return None;
         }
 
-        loop {
-            let idx = self.hand;
-            if self.slots[idx].is_some() {
-                if self.referenced[idx] {
+        // Not full — scan for an empty slot without disturbing ref bits.
+        if self.len < self.capacity() {
+            let cap = self.capacity();
+            for offset in 0..cap {
+                let idx = (self.hand + offset) % cap;
+                if self.slots[idx].is_none() {
+                    let entry_key = key.clone();
+                    self.slots[idx] = Some(Entry {
+                        key: entry_key,
+                        value,
+                    });
                     self.referenced[idx] = false;
-                    self.advance_hand();
-                    continue;
+                    self.index.insert(key, idx);
+                    self.len += 1;
+                    self.hand = (idx + 1) % cap;
+                    return None;
                 }
-
-                let evicted = self.slots[idx].take().expect("occupied slot missing");
-                self.index.remove(&evicted.key);
-
-                let entry_key = key.clone();
-                self.slots[idx] = Some(Entry {
-                    key: entry_key,
-                    value,
-                });
-                self.referenced[idx] = false;
-                self.index.insert(key, idx);
-                self.advance_hand();
-                return Some((evicted.key, evicted.value));
             }
+            debug_assert!(false, "len < capacity but no empty slot found");
+        }
+
+        // Full — CLOCK sweep to find and evict a victim.
+        // One pass clears all ref bits; the second finds an unreferenced slot.
+        let cap = self.capacity();
+        for _ in 0..(2 * cap) {
+            let idx = self.hand;
+            if self.referenced[idx] {
+                self.referenced[idx] = false;
+                self.advance_hand();
+                continue;
+            }
+
+            let evicted = self.slots[idx].take().expect("occupied slot missing");
+            self.index.remove(&evicted.key);
 
             let entry_key = key.clone();
             self.slots[idx] = Some(Entry {
@@ -1493,10 +1505,14 @@ where
             });
             self.referenced[idx] = false;
             self.index.insert(key, idx);
-            self.len += 1;
             self.advance_hand();
-            return None;
+            return Some((evicted.key, evicted.value));
         }
+        debug_assert!(
+            false,
+            "insert sweep exceeded 2*capacity without finding victim"
+        );
+        None
     }
 
     /// Peeks the next eviction candidate without modifying state.
@@ -2012,13 +2028,10 @@ mod tests {
         assert!(ring.peek(&"b").is_none());
 
         let evicted = ring.insert("d", 4);
+        assert_eq!(evicted, None, "ring has free slot, must not evict");
         assert!(ring.contains(&"d"));
         assert!(!ring.contains(&"b"));
-        if evicted.is_some() {
-            assert_eq!(ring.len(), 2);
-        } else {
-            assert_eq!(ring.len(), 3);
-        }
+        assert_eq!(ring.len(), 3);
     }
 
     #[test]
@@ -2367,6 +2380,84 @@ mod tests {
 
         let pairs: Vec<_> = cache.into_inner().into_iter().collect();
         assert_eq!(pairs.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: insert must not evict when empty slots exist (len < cap)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn insert_uses_empty_slot_after_remove_no_eviction() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1); // slot 0, hand -> 1
+        ring.insert("b", 2); // slot 1, hand -> 2
+        ring.insert("c", 3); // slot 2, hand -> 0
+
+        ring.remove(&"b"); // slot 1 now empty, len = 2
+        assert_eq!(ring.len(), 2);
+
+        // Ring has room (len=2 < cap=3). Insert must use the empty slot,
+        // not evict a live entry.
+        let evicted = ring.insert("d", 4);
+        assert_eq!(evicted, None, "must not evict when ring has free slots");
+        assert_eq!(ring.len(), 3);
+        assert!(ring.contains(&"a"), "\"a\" should still be present");
+        assert!(ring.contains(&"c"), "\"c\" should still be present");
+        assert!(ring.contains(&"d"), "\"d\" should have been inserted");
+        ring.debug_validate_invariants();
+    }
+
+    #[test]
+    fn insert_uses_empty_slot_after_pop_victim_no_eviction() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+
+        let victim = ring.pop_victim();
+        assert!(victim.is_some());
+        assert_eq!(ring.len(), 2);
+
+        // After pop_victim freed a slot, insert must not evict again.
+        let evicted = ring.insert("d", 4);
+        assert_eq!(evicted, None, "must not evict when ring has free slots");
+        assert_eq!(ring.len(), 3);
+        assert!(ring.contains(&"d"));
+        ring.debug_validate_invariants();
+    }
+
+    #[test]
+    fn insert_no_eviction_preserves_ref_bits() {
+        let mut ring = ClockRing::new(3);
+        ring.insert("a", 1); // slot 0, hand -> 1
+        ring.insert("b", 2); // slot 1, hand -> 2
+        ring.insert("c", 3); // slot 2, hand -> 0
+
+        ring.touch(&"a"); // ref[0] = true
+
+        ring.remove(&"c"); // slot 2 = None, hand stays 0, len = 2
+
+        // Non-full insert: must find the empty slot without clearing
+        // "a"'s reference bit.
+        let evicted = ring.insert("d", 4);
+        assert_eq!(evicted, None, "must not evict when ring has free slots");
+        assert_eq!(ring.len(), 3);
+
+        // Now full. Insert triggers eviction. If "a"'s ref bit was
+        // preserved, "a" survives; victim is "b" or "d".
+        let evicted = ring.insert("e", 5);
+        assert!(evicted.is_some());
+        let (evicted_key, _) = evicted.unwrap();
+        assert!(
+            evicted_key == "b" || evicted_key == "d",
+            "expected unreferenced victim, got {:?}",
+            evicted_key
+        );
+        assert!(
+            ring.contains(&"a"),
+            "\"a\" should survive: ref bit preserved"
+        );
+        ring.debug_validate_invariants();
     }
 }
 

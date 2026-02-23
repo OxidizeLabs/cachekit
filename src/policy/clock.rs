@@ -304,26 +304,20 @@ where
     }
 }
 
-// SAFETY: ClockCache can be sent between threads if K and V are Send.
-unsafe impl<K, V> Send for ClockCache<K, V>
-where
-    K: Clone + Eq + Hash + Send,
-    V: Send,
-{
-}
-
-// SAFETY: ClockCache can be shared between threads if K and V are Sync.
-unsafe impl<K, V> Sync for ClockCache<K, V>
-where
-    K: Clone + Eq + Hash + Sync,
-    V: Sync,
-{
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::traits::MutableCache;
+
+    #[allow(dead_code)]
+    const _: () = {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        fn check() {
+            assert_send::<ClockCache<String, i32>>();
+            assert_sync::<ClockCache<String, i32>>();
+        }
+    };
 
     mod basic_operations {
         use super::*;
