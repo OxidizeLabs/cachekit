@@ -501,7 +501,16 @@ where
     pub fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let new_weight = self.compute_weight(value.as_ref());
         if let Some(entry) = self.map.get_mut(&key) {
-            let next_total = self.total_weight - entry.weight + new_weight;
+            debug_assert!(
+                self.total_weight >= entry.weight,
+                "WeightStore invariant violated: total_weight ({}) is less than entry.weight ({})",
+                self.total_weight,
+                entry.weight
+            );
+            let next_total = self
+                .total_weight
+                .saturating_sub(entry.weight)
+                .saturating_add(new_weight);
             if next_total > self.capacity_weight {
                 return Err(StoreFull);
             }
