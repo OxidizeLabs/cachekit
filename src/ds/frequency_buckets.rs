@@ -2051,7 +2051,7 @@ where
             let Some(freq) = buckets.min_freq() else {
                 continue;
             };
-            let is_better = best.is_none_or(|(_, best_freq)| freq < best_freq);
+            let is_better = best.map_or(true, |(_, best_freq)| freq < best_freq);
             if is_better {
                 best = Some((idx, freq));
             }
