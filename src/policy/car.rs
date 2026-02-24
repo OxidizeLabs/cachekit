@@ -13,17 +13,17 @@
 //! │   Slot array with per-ring intrusive circular linked lists:                 │
 //! │                                                                             │
 //! │   ┌─────────────────────────────────────────────────────────────────────┐   │
-//! │   │  index: HashMap<K, usize>    slots: Vec<Option<SlotPayload>>      │   │
+//! │   │  index: HashMap<K, usize>    slots: Vec<Option<SlotPayload>>        │   │
 //! │   │                                                                     │   │
-//! │   │  Parallel hot-path arrays (cache-friendly sweeps):                   │   │
-//! │   │    referenced: Vec<bool>       ring_kind: Vec<Ring>              │   │
+//! │   │  Parallel hot-path arrays (cache-friendly sweeps):                  │   │
+//! │   │    referenced: Vec<bool>       ring_kind: Vec<Ring>                 │   │
 //! │   │    ring_next:  Vec<usize>      ring_prev: Vec<usize>                │   │
 //! │   │                                                                     │   │
-//! │   │  Recent ring (recency)         Frequent ring (frequency)              │   │
-//! │   │  ┌───────────────────┐        ┌───────────────────┐                  │   │
-//! │   │  │ hand_recent ──► A ──►│        │ hand_frequent──► X ──►│              │   │
-//! │   │  │  ◄── C ◄── B ◄───│        │  ◄── Z ◄── Y ◄───│                  │   │
-//! │   │  └───────────────────┘        └───────────────────┘                  │   │
+//! │   │  Recent ring (recency)         Frequent ring (frequency)            │   │
+//! │   │  ┌───────────────────────┐        ┌───────────────────────┐         │   │
+//! │   │  │ hand_recent ──► A ──► │        │ hand_frequent──► X ──►│         │   │
+//! │   │  │  ◄── C ◄── B ◄───     │        │  ◄── Z ◄── Y ◄───     │         │   │
+//! │   │  └───────────────────────┘        └───────────────────────┘         │   │
 //! │   │  Ref=0 → evict to ghost_recent Ref=0 → evict to ghost_frequent      │   │
 //! │   │  Ref=1 → demote to Frequent   Ref=1 → clear ref, advance            │   │
 //! │   │                                                                     │   │
