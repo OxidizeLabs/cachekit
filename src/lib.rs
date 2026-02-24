@@ -119,7 +119,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! cachekit = { version = "0.4", default-features = false, features = ["policy-s3-fifo"] }
+//! cachekit = { version = "0.x", default-features = false, features = ["policy-s3-fifo"] }
 //! ```
 //!
 //! # Data Structures (`ds`)
