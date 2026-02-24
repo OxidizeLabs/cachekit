@@ -551,6 +551,7 @@ where
     /// ```
     pub fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let entry = self.map.remove(key)?;
+        debug_assert!(self.total_weight >= entry.weight, "total_weight underflow in remove");
         self.total_weight = self.total_weight.saturating_sub(entry.weight);
         self.metrics.inc_remove();
         Some(entry.value)
