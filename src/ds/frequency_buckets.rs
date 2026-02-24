@@ -1230,10 +1230,10 @@ where
         let mut prev = None;
         let mut next = None;
         for &f in self.buckets.keys() {
-            if f < freq && prev.is_none_or(|p| f > p) {
+            if f < freq && prev.map_or(true, |p| f > p) {
                 prev = Some(f);
             }
-            if f > freq && next.is_none_or(|n| f < n) {
+            if f > freq && next.map_or(true, |n| f < n) {
                 next = Some(f);
             }
         }
