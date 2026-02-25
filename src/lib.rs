@@ -1,6 +1,6 @@
 //! High-performance cache primitives with pluggable eviction policies.
 //!
-//! `cachekit` provides a trait-based cache framework with 17 eviction policies,
+//! `cachekit` provides a trait-based cache framework with 18 eviction policies,
 //! arena-backed data structures, and optional metrics — all designed for
 //! allocation-free hot paths and predictable tail latency.
 //!
@@ -119,7 +119,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! cachekit = { version = "0.4", default-features = false, features = ["policy-s3-fifo"] }
+//! cachekit = { version = "0.x", default-features = false, features = ["policy-s3-fifo"] }
 //! ```
 //!
 //! # Data Structures (`ds`)
