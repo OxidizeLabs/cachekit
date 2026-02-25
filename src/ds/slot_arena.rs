@@ -142,7 +142,9 @@
 //!
 //! ## Implementation Notes
 //!
-//! - `SlotId` carries a generation counter; stale handles return `None`
+//! - `SlotId` stores the generation value assigned by the arena; the arena
+//!   maintains the authoritative generation counter and validates `SlotId`s
+//!   against it so that stale handles return `None`
 //! - Physical slot indices may be reused after removal, but the
 //!   generation counter prevents ABA hazards
 //! - `len()` tracks live entries, not `slots.len()`
