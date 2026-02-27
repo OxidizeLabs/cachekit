@@ -1,7 +1,6 @@
 //! # Least Recently Used (LRU) Cache Implementation
 //!
-//! This module provides a high-performance, concurrent LRU cache implementation used primarily
-//! for the disk buffer pool and other caching needs in Ferrite.
+//! Pool-based, allocation-free LRU cache backed by a `SlotArena`.
 //!
 //! ## Architecture
 //!
@@ -18,32 +17,26 @@
 //!   │   │                         LruCore<K, V>                              │ │
 //!   │   │                                                                    │ │
 //!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
-//!   │   │   │  HashMap<K, SlotId> (index into SlotArena)                   │ │ │
+//!   │   │   │  FxHashMap<K, SlotId>    (key -> slot index)                 │ │ │
+//!   │   │   └──────────────────────────────────────────────────────────────┘ │ │
+//!   │   │                                  │                                 │ │
+//!   │   │                                  ▼                                 │ │
+//!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
+//!   │   │   │  SlotArena<Node<K,V>>   (contiguous Vec + free list)         │ │ │
 //!   │   │   │                                                              │ │ │
-//!   │   │   │  ┌─────────┬────────────────────────────────────────────┐    │ │ │
-//!   │   │   │  │   Key   │  SlotId                                    │    │ │ │
-//!   │   │   │  ├─────────┼────────────────────────────────────────────┤    │ │ │
-//!   │   │   │  │  page_1 │  ────────────────────────────────────────┐ │    │ │ │
-//!   │   │   │  │  page_2 │  ──────────────────────────────────┐     │ │    │ │ │
-//!   │   │   │  │  page_3 │  ────────────────────────────┐     │     │ │    │ │ │
-//!   │   │   │  └─────────┴──────────────────────────────┼─────┼─────┼─┘    │ │ │
-//!   │   │   └───────────────────────────────────────────┼─────┼─────┼──────┘ │ │
-//!   │   │                                               │     │     │        │ │
-//!   │   │   ┌───────────────────────────────────────────┼─────┼─────┼──────┐ │ │
-//!   │   │   │  IntrusiveList<SlotId> (LRU Order)        │     │     │      │ │ │
-//!   │   │   │                                           ▼     ▼     ▼      │ │ │
-//!   │   │   │  head ──► ┌──────┐ ◄──► ┌──────┐ ◄──► ┌──────┐ ◄── tail      │ │ │
-//!   │   │   │    (MRU)  │ Slot │      │ Slot │      │ Slot │   (LRU)       │ │ │
-//!   │   │   │           │id_1  │      │id_2  │      │id_3  │               │ │ │
-//!   │   │   │           └──────┘      └──────┘      └──────┘               │ │ │
+//!   │   │   │  ┌──────────┬──────────┬──────────┬──────────┬──────────┐   │ │ │
+//!   │   │   │  │  Node 0  │  Node 1  │  (free)  │  Node 3  │  (free)  │   │ │ │
+//!   │   │   │  │  prev/   │  prev/   │          │  prev/   │          │   │ │ │
+//!   │   │   │  │  next/   │  next/   │          │  next/   │          │   │ │ │
+//!   │   │   │  │  key/val │  key/val │          │  key/val │          │   │ │ │
+//!   │   │   │  └──────────┴──────────┴──────────┴──────────┴──────────┘   │ │ │
 //!   │   │   │                                                              │ │ │
-//!   │   │   │  Most Recently Used ────────────────► Least Recently Used    │ │ │
+//!   │   │   │  free_list: [2, 4]   (reused on next insert, no malloc)      │ │ │
 //!   │   │   └──────────────────────────────────────────────────────────────┘ │ │
 //!   │   │                                                                    │ │
-//!   │   │   ┌──────────────────────────────────────────────────────────────┐ │ │
-//!   │   │   │  HashMapStore<K, V> (values live here)                       │ │ │
-//!   │   │   │  K -> Arc<V>                                                 │ │ │
-//!   │   │   └──────────────────────────────────────────────────────────────┘ │ │
+//!   │   │   Doubly-linked LRU order via SlotId indices:                      │ │
+//!   │   │     head ──► [id_1] ◄──► [id_0] ◄──► [id_3] ◄── tail              │ │
+//!   │   │      MRU                                      LRU                  │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   └──────────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -52,14 +45,10 @@
 //!
 //! | Component              | Description                                        |
 //! |------------------------|----------------------------------------------------|
-//! | `LruCore<K, V>`        | Single-threaded core with list + index + store     |
+//! | `LruCore<K, V>`        | Single-threaded core: arena + map + list pointers  |
 //! | `ConcurrentLruCache`   | Thread-safe wrapper with `parking_lot::RwLock`     |
-//! | `Entry<K>`             | SlotArena entry storing key + list node id         |
-//! | `IntrusiveList`        | Recency list storing SlotId ordering               |
-//! | `HashMapStore<K, V>`   | Store for key -> `Arc<V>` ownership                |
-//! | `BufferPoolCache<V>`   | Type alias for `ConcurrentLruCache<u32, V>`        |
-//! | `PageCache<K, V>`      | Type alias for generic page caching                |
-//! | `LruCache<K, V>`       | Type alias for `LruCore` (single-threaded usage)   |
+//! | `Node<K, V>`           | Arena entry: prev/next `SlotId` + key + `Arc<V>`  |
+//! | `SlotArena<Node>`      | Contiguous pool with free-list slot reuse          |
 //!
 //! ## LRU Operations Flow
 //!
@@ -107,21 +96,26 @@
 //!   Order unchanged: head ──► [A] ◄──► [B] ◄──► [C] ◄── tail
 //! ```
 //!
-//! ## Entry Structure
+//! ## Node Layout
 //!
 //! ```text
-//!   ┌────────────────────────────────────────────┐
-//!   │                 Entry<K>                   │
-//!   ├────────────────────────────────────────────┤
-//!   │  key: K (Copy)         │  Owned, cheap     │
-//!   ├────────────────────────┼───────────────────┤
-//!   │  list_node: Option<Id> │  Intrusive list   │
-//!   └────────────────────────┴───────────────────┘
+//!   ┌──────────────────────────────────────────────────┐
+//!   │                 Node<K, V>                       │
+//!   ├──────────────────────────────────────────────────┤
+//!   │  prev: Option<SlotId>  │  Index into arena       │
+//!   ├────────────────────────┼─────────────────────────┤
+//!   │  next: Option<SlotId>  │  Index into arena       │
+//!   ├────────────────────────┼─────────────────────────┤
+//!   │  key: K (Copy)         │  Owned, cheap           │
+//!   ├────────────────────────┼─────────────────────────┤
+//!   │  value: Arc<V>         │  Shared ownership       │
+//!   └────────────────────────┴─────────────────────────┘
 //!
-//!   Memory allocation:
-//!     • Entries live in a SlotArena (stable SlotId handles)
-//!     • IntrusiveList owns prev/next links for list order
-//!     • No raw pointers in the policy core
+//!   Allocation strategy:
+//!     • Nodes live in a SlotArena (contiguous Vec)
+//!     • Free slots are recycled via an internal free list
+//!     • At steady state: zero heap allocations per insert/evict
+//!     • No raw pointers — all links are SlotId indices
 //! ```
 //!
 //! ## LruCore Methods (CoreCache + MutableCache + LruCacheTrait)
@@ -174,13 +168,13 @@
 //!
 //! ## Design Rationale
 //!
-//! This custom implementation was chosen over standard crates (like `lru` or `cached`) for:
-//!
-//! - **Store-backed Value Storage**: Values are held in the store as `Arc<V>`,
-//!   so callers can keep references even after eviction (e.g., during writeback).
-//! - **Internal Visibility**: Buffer managers need precise eviction control
-//!   (pinning, touching without retrieval).
-//! - **Stable Handles**: `SlotArena` provides stable SlotId handles for list order.
+//! - **Pool-based allocation**: `SlotArena` reuses freed slots via a free list,
+//!   eliminating per-operation heap allocations at steady state.
+//! - **Cache-friendly layout**: Nodes are stored contiguously in a `Vec`, improving
+//!   prefetch and reducing allocator fragmentation.
+//! - **Safe Rust**: All list manipulation uses `SlotId` indices into the arena;
+//!   no `unsafe`, no raw pointers.
+//! - **Arc-wrapped values**: Callers keep `Arc<V>` references that survive eviction.
 //!
 //! ## Concurrency Model
 //!
@@ -207,12 +201,13 @@
 //!
 //! ## Trade-offs
 //!
-//! | Aspect           | Pros                              | Cons                          |
-//! |------------------|-----------------------------------|-------------------------------|
-//! | Performance      | Predictable O(1) operations       | Global lock can bottleneck    |
-//! | Memory           | Arc sharing, no Clone needed      | Slot/list metadata overhead   |
-//! | Safety           | Arc prevents use-after-free       | No raw pointer manipulation   |
-//! | Simplicity       | Simple recency-based policy       | No frequency tracking         |
+//! | Aspect           | Pros                                    | Cons                          |
+//! |------------------|-----------------------------------------|-------------------------------|
+//! | Allocation       | Zero per-op allocs at steady state      | Full capacity reserved upfront|
+//! | Layout           | Contiguous Vec, good cache locality     | Sparse slots when partially full |
+//! | Safety           | 100% safe Rust, no `unsafe`             | Arena bounds/generation checks|
+//! | Concurrency      | RwLock wrapper for thread safety        | Global lock can bottleneck    |
+//! | Simplicity       | Simple recency-based policy             | No frequency tracking         |
 //!
 //! ## When to Use
 //!
@@ -287,25 +282,25 @@
 //!
 //! ## Safety
 //!
-//! This implementation is safe Rust throughout the core policy:
+//! The entire policy core is safe Rust:
 //!
-//! - **Stable handles**: `SlotArena` provides `SlotId` indirection
-//! - **List invariants**: `IntrusiveList` owns prev/next links internally
-//! - **No raw pointers**: list updates use SlotId handles only
-//!
-//! Extensive testing (correctness, edge cases, memory safety) verifies soundness.
+//! - **No raw pointers**: `SlotId` indices replace `NonNull` / `Box` indirection
+//! - **No `unsafe` blocks**: arena access is bounds- and generation-checked
+//! - **Automatic cleanup**: `SlotArena` drops all live nodes on `Drop`
+//! - **ABA prevention**: `SlotId` generation counters detect stale handles
 //!
 //! ## Thread Safety
 //!
-//! - `LruCore`: **NOT thread-safe** - single-threaded only
+//! - `LruCore`: **Not thread-safe** — single-threaded only.
+//!   `Send`/`Sync` auto-derive from its fields.
 //! - `ConcurrentLruCache`: **Thread-safe** via `parking_lot::RwLock`
-//! - `Entry`: Stored in `SlotArena`; thread safety provided by the outer lock
-//! - Values: `Arc<V>` in the store enables safe sharing across threads
+//! - Values: `Arc<V>` enables safe sharing across threads
 
 use std::fmt;
 use std::hash::Hash;
-use std::ptr::NonNull;
 use std::sync::Arc;
+
+use crate::ds::{SlotArena, SlotId};
 
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
@@ -322,73 +317,40 @@ use crate::metrics::traits::{
 use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, LruCacheTrait, MutableCache};
 
-/// Node in the LRU linked list.
+/// Node in the LRU linked list, stored in a `SlotArena`.
 ///
-/// Layout optimized for cache locality:
-/// - Linked list pointers first for fast traversal
-/// - Key needed for map removal during eviction
-/// - Value accessed on get/peek
-#[repr(C)]
+/// Links use `SlotId` indices into the arena instead of raw pointers,
+/// so all list manipulation is safe.
 struct Node<K, V> {
-    prev: Option<NonNull<Node<K, V>>>,
-    next: Option<NonNull<Node<K, V>>>,
+    prev: Option<SlotId>,
+    next: Option<SlotId>,
     key: K,
     value: Arc<V>,
 }
 
-/// High-performance LRU Cache Core using HashMap + raw pointer linked list.
+/// High-performance LRU cache core using `SlotArena` + `FxHashMap`.
 ///
-/// # Zero-Copy Design Philosophy
+/// Nodes live in a pre-allocated `SlotArena` with a free-list for O(1) slot
+/// reuse. At steady state (cache full), insert + evict recycles a slot index
+/// instead of hitting the allocator. All list links are `SlotId` indices —
+/// no raw pointers, no `unsafe`.
 ///
-/// This implementation achieves zero-copy semantics through:
-/// - Keys: Copy types (like PageId) - cheap to copy, owned in nodes
-/// - Values: `Arc<V>` for zero-copy sharing
-///
-/// ## Memory Safety Guarantees:
-/// - Nodes are heap-allocated and tracked via NonNull pointers
-/// - HashMap owns the mapping from key to node pointer
-/// - Proper cleanup via Drop implementation
-/// - `Arc<V>` provides thread-safe reference counting
-///
-/// ## Performance Characteristics:
-/// - All operations are O(1): insert, get, remove, eviction
-/// - Minimal indirection: single HashMap lookup per operation
-/// - No SlotArena/IntrusiveList overhead
-/// - FxHash for fast hashing
-///
-/// ## Thread Safety:
-/// - Core is single-threaded for maximum performance
-/// - Thread safety provided by wrapper (ConcurrentLruCache)
-/// - Values are thread-safe via `Arc<V>`
+/// Values are stored as `Arc<V>` for zero-copy sharing after eviction.
 pub struct LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    map: FxHashMap<K, NonNull<Node<K, V>>>,
-    head: Option<NonNull<Node<K, V>>>,
-    tail: Option<NonNull<Node<K, V>>>,
+    arena: SlotArena<Node<K, V>>,
+    map: FxHashMap<K, SlotId>,
+    head: Option<SlotId>,
+    tail: Option<SlotId>,
     capacity: usize,
     #[cfg(feature = "metrics")]
     metrics: LruMetrics,
 }
 
-// SAFETY: LruCore can be sent between threads if K and V are Send.
-// The raw pointers only reference heap memory owned by the struct.
-unsafe impl<K, V> Send for LruCore<K, V>
-where
-    K: Copy + Eq + Hash + Send,
-    V: Send,
-{
-}
-
-// SAFETY: LruCore can be shared between threads if K and V are Sync.
-// Actual thread-safety is provided by the RwLock in ConcurrentLruCache.
-unsafe impl<K, V> Sync for LruCore<K, V>
-where
-    K: Copy + Eq + Hash + Sync,
-    V: Sync,
-{
-}
+// Send + Sync are auto-derived: SlotArena<Node<K,V>>, FxHashMap<K,SlotId>,
+// Option<SlotId>, usize — all Send/Sync when K and V are.
 
 impl<K, V> LruCore<K, V>
 where
@@ -396,13 +358,7 @@ where
 {
     /// Creates a new LRU cache core with the given capacity.
     ///
-    /// # Arguments
-    /// * `capacity` - Maximum number of items the cache can hold. A capacity of 0
-    ///   creates a cache that accepts no items (all inserts are no-ops).
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
+    /// Pre-allocates the arena and map so the warm-up phase is allocation-free.
     ///
     /// # Example
     /// ```
@@ -413,6 +369,7 @@ where
     #[inline]
     pub fn new(capacity: usize) -> Self {
         LruCore {
+            arena: SlotArena::with_capacity(capacity),
             map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             head: None,
             tail: None,
@@ -422,60 +379,80 @@ where
         }
     }
 
-    /// Detach a node from the linked list without removing it from the map.
+    /// Detach a node from the linked list without removing it from the arena or map.
     #[inline(always)]
-    fn detach(&mut self, node_ptr: NonNull<Node<K, V>>) {
-        unsafe {
-            let node = node_ptr.as_ref();
-            let prev = node.prev;
-            let next = node.next;
+    fn detach(&mut self, id: SlotId) {
+        let node = self.arena.get(id).expect("detach: stale SlotId");
+        let prev = node.prev;
+        let next = node.next;
 
-            match prev {
-                Some(mut p) => p.as_mut().next = next,
-                None => self.head = next,
-            }
+        match prev {
+            Some(prev_id) => {
+                self.arena
+                    .get_mut(prev_id)
+                    .expect("detach: stale prev")
+                    .next = next
+            },
+            None => self.head = next,
+        }
 
-            match next {
-                Some(mut n) => n.as_mut().prev = prev,
-                None => self.tail = prev,
-            }
+        match next {
+            Some(next_id) => {
+                self.arena
+                    .get_mut(next_id)
+                    .expect("detach: stale next")
+                    .prev = prev
+            },
+            None => self.tail = prev,
         }
     }
 
     /// Attach a node at the front (MRU position).
     #[inline(always)]
-    fn attach_front(&mut self, mut node_ptr: NonNull<Node<K, V>>) {
-        unsafe {
-            let node = node_ptr.as_mut();
+    fn attach_front(&mut self, id: SlotId) {
+        {
+            let node = self.arena.get_mut(id).expect("attach_front: stale SlotId");
             node.prev = None;
             node.next = self.head;
-
-            match self.head {
-                Some(mut h) => h.as_mut().prev = Some(node_ptr),
-                None => self.tail = Some(node_ptr),
-            }
-
-            self.head = Some(node_ptr);
         }
+
+        match self.head {
+            Some(old_head) => {
+                self.arena
+                    .get_mut(old_head)
+                    .expect("attach_front: stale head")
+                    .prev = Some(id);
+            },
+            None => self.tail = Some(id),
+        }
+
+        self.head = Some(id);
     }
 
-    /// Pop the tail node (LRU) and return it.
+    /// Remove the tail node (LRU) from the arena and return its key + value.
     #[inline(always)]
-    fn pop_tail(&mut self) -> Option<Box<Node<K, V>>> {
-        self.tail.map(|tail_ptr| unsafe {
-            let node = Box::from_raw(tail_ptr.as_ptr());
+    fn pop_tail(&mut self) -> Option<(K, Arc<V>)> {
+        let tail_id = self.tail?;
+        let node = self.arena.get(tail_id)?;
+        let new_tail = node.prev;
 
-            self.tail = node.prev;
-            match self.tail {
-                Some(mut t) => t.as_mut().next = None,
-                None => self.head = None,
-            }
+        let node = self.arena.remove(tail_id).expect("pop_tail: stale tail");
 
-            node
-        })
+        self.tail = new_tail;
+        match self.tail {
+            Some(t) => {
+                self.arena
+                    .get_mut(t)
+                    .expect("pop_tail: stale new tail")
+                    .next = None;
+            },
+            None => self.head = None,
+        }
+
+        Some((node.key, node.value))
     }
 
-    /// Validate internal invariants (debug builds only)
+    /// Validate internal invariants (debug builds only).
     fn validate_invariants(&self) {
         #[cfg(debug_assertions)]
         {
@@ -485,16 +462,13 @@ where
                 return;
             }
 
-            // Count nodes from head
             let mut count = 0usize;
             let mut current = self.head;
-            while let Some(ptr) = current {
+            while let Some(id) = current {
                 count += 1;
-                unsafe {
-                    let node = ptr.as_ref();
-                    debug_assert!(self.map.contains_key(&node.key));
-                    current = node.next;
-                }
+                let node = self.arena.get(id).expect("validate: stale SlotId");
+                debug_assert!(self.map.contains_key(&node.key));
+                current = node.next;
                 if count > self.map.len() {
                     panic!("Cycle detected in list");
                 }
@@ -525,30 +499,24 @@ where
     }
 }
 
-// Implementation of specialized traits for zero-copy operations
 impl<K, V> CoreCache<K, Arc<V>> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    /// Zero-copy insert: key is copied (cheap), value is Arc-wrapped and moved
     #[inline]
     fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        // Check for existing key
-        if let Some(&node_ptr) = self.map.get(&key) {
+        if let Some(&id) = self.map.get(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            // Update value and move to front
-            let previous = unsafe {
-                let node = &mut *node_ptr.as_ptr();
-                std::mem::replace(&mut node.value, value)
-            };
+            let node = self.arena.get_mut(id).expect("insert: stale SlotId");
+            let previous = std::mem::replace(&mut node.value, value);
 
-            self.detach(node_ptr);
-            self.attach_front(node_ptr);
+            self.detach(id);
+            self.attach_front(id);
 
             #[cfg(debug_assertions)]
             self.validate_invariants();
@@ -556,7 +524,6 @@ where
             return Some(previous);
         }
 
-        // For zero capacity, never insert anything
         if self.capacity == 0 {
             return None;
         }
@@ -564,29 +531,26 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_new();
 
-        // Evict if at capacity
         if self.map.len() >= self.capacity {
             #[cfg(feature = "metrics")]
             self.metrics.record_evict_call();
 
-            if let Some(evicted) = self.pop_tail() {
-                self.map.remove(&evicted.key);
+            if let Some((evicted_key, _)) = self.pop_tail() {
+                self.map.remove(&evicted_key);
                 #[cfg(feature = "metrics")]
                 self.metrics.record_evicted_entry();
             }
         }
 
-        // Allocate new node
-        let node = Box::new(Node {
+        let id = self.arena.insert(Node {
             prev: None,
             next: None,
             key,
             value,
         });
-        let node_ptr = NonNull::new(Box::into_raw(node)).unwrap();
 
-        self.map.insert(key, node_ptr);
-        self.attach_front(node_ptr);
+        self.map.insert(key, id);
+        self.attach_front(id);
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
@@ -594,11 +558,10 @@ where
         None
     }
 
-    /// Zero-copy get: returns reference to `Arc<V>`
     #[inline]
     fn get(&mut self, key: &K) -> Option<&Arc<V>> {
-        let node_ptr = match self.map.get(key) {
-            Some(&ptr) => ptr,
+        let &id = match self.map.get(key) {
+            Some(id) => id,
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
@@ -609,24 +572,23 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        // Move to front (MRU position)
-        self.detach(node_ptr);
-        self.attach_front(node_ptr);
+        self.detach(id);
+        self.attach_front(id);
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
 
-        // Return reference to value
-        unsafe { Some(&(*node_ptr.as_ptr()).value) }
+        self.arena.get(id).map(|node| &node.value)
     }
 
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
 
-        // Drop all nodes
-        while self.pop_tail().is_some() {}
         self.map.clear();
+        self.head = None;
+        self.tail = None;
+        self.arena = SlotArena::with_capacity(self.capacity);
 
         self.validate_invariants();
     }
@@ -666,11 +628,11 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
-        if let Some(&node_ptr) = self.map.get(key) {
+        if let Some(&id) = self.map.get(key) {
             #[cfg(feature = "metrics")]
             (&self.metrics).record_peek_lru_found();
-            let value = unsafe { &(*node_ptr.as_ptr()).value };
-            return Some(Arc::clone(value));
+            let node = self.arena.get(id).expect("peek: stale SlotId");
+            return Some(Arc::clone(&node.value));
         }
         None
     }
@@ -680,13 +642,12 @@ impl<K, V> MutableCache<K, Arc<V>> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    /// Zero-copy remove: returns `Arc<V>` without cloning data
     #[inline]
     fn remove(&mut self, key: &K) -> Option<Arc<V>> {
-        let node_ptr = self.map.remove(key)?;
+        let id = self.map.remove(key)?;
 
-        self.detach(node_ptr);
-        let node = unsafe { Box::from_raw(node_ptr.as_ptr()) };
+        self.detach(id);
+        let node = self.arena.remove(id).expect("remove: stale SlotId");
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
@@ -699,14 +660,13 @@ impl<K, V> LruCacheTrait<K, Arc<V>> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    /// Zero-copy pop_lru: returns `(K, Arc<V>)` without cloning data
     #[inline]
     fn pop_lru(&mut self) -> Option<(K, Arc<V>)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_call();
 
-        let node = self.pop_tail()?;
-        self.map.remove(&node.key);
+        let (key, value) = self.pop_tail()?;
+        self.map.remove(&key);
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
@@ -714,23 +674,21 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_found();
 
-        Some((node.key, node.value))
+        Some((key, value))
     }
 
-    /// Zero-copy peek_lru: returns references without affecting LRU order
     #[inline]
     fn peek_lru(&self) -> Option<(&K, &Arc<V>)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
-        self.tail.map(|tail_ptr| {
-            #[cfg(feature = "metrics")]
-            (&self.metrics).record_peek_lru_found();
-            unsafe {
-                let node = tail_ptr.as_ref();
-                (&node.key, &node.value)
-            }
-        })
+        let tail_id = self.tail?;
+        let node = self.arena.get(tail_id)?;
+
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lru_found();
+
+        Some((&node.key, &node.value))
     }
 
     #[inline]
@@ -738,9 +696,9 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_call();
 
-        if let Some(&node_ptr) = self.map.get(key) {
-            self.detach(node_ptr);
-            self.attach_front(node_ptr);
+        if let Some(&id) = self.map.get(key) {
+            self.detach(id);
+            self.attach_front(id);
 
             #[cfg(debug_assertions)]
             self.validate_invariants();
@@ -758,21 +716,21 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_recency_rank_call();
 
-        let &target_ptr = self.map.get(key)?;
+        let &target_id = self.map.get(key)?;
         let mut rank = 0usize;
         let mut current = self.head;
 
-        while let Some(ptr) = current {
+        while let Some(id) = current {
             #[cfg(feature = "metrics")]
             (&self.metrics).record_recency_rank_scan_step();
 
-            if ptr == target_ptr {
+            if id == target_id {
                 #[cfg(feature = "metrics")]
                 (&self.metrics).record_recency_rank_found();
                 return Some(rank);
             }
             rank += 1;
-            current = unsafe { ptr.as_ref().next };
+            current = self.arena.get(id).expect("recency_rank: stale SlotId").next;
         }
         None
     }
@@ -808,16 +766,7 @@ where
     }
 }
 
-// Proper cleanup when cache core is dropped - free all heap-allocated nodes
-impl<K, V> Drop for LruCore<K, V>
-where
-    K: Copy + Eq + Hash,
-{
-    fn drop(&mut self) {
-        // Free all nodes by traversing the list
-        while self.pop_tail().is_some() {}
-    }
-}
+// No custom Drop needed: SlotArena drops all live nodes when it goes out of scope.
 
 impl<K, V> fmt::Debug for LruCore<K, V>
 where
@@ -852,11 +801,8 @@ where
     }
 }
 
-// Send + Sync analysis:
-// - LruCore is Send if K and V are Send (no shared references)
-// - LruCore is NOT Sync (requires &mut for modifications)
-// - Thread safety provided by ConcurrentLruCache wrapper
-// This is enforced by Rust's auto traits
+// LruCore auto-derives Send/Sync from its fields (SlotArena, FxHashMap, SlotId).
+// Thread-safety for concurrent use is provided by ConcurrentLruCache.
 
 /// Thread-safe concurrent LRU cache wrapper using RwLock
 /// Optimized for read-heavy database workloads (buffer pools)
@@ -5180,12 +5126,10 @@ mod tests {
             {
                 let mut keys = Vec::new();
                 let mut current = cache.head;
-                while let Some(ptr) = current {
-                    unsafe {
-                        let node = ptr.as_ref();
-                        keys.push(node.key);
-                        current = node.next;
-                    }
+                while let Some(id) = current {
+                    let node = cache.arena.get(id).unwrap();
+                    keys.push(node.key);
+                    current = node.next;
                 }
                 keys
             }
@@ -5194,14 +5138,14 @@ mod tests {
             where
                 K: Copy + Eq + Hash,
             {
-                cache.head.map(|ptr| unsafe { ptr.as_ref().key })
+                cache.head.and_then(|id| cache.arena.get(id)).map(|n| n.key)
             }
 
             fn tail_key<K, V>(cache: &LruCore<K, V>) -> Option<K>
             where
                 K: Copy + Eq + Hash,
             {
-                cache.tail.map(|ptr| unsafe { ptr.as_ref().key })
+                cache.tail.and_then(|id| cache.arena.get(id)).map(|n| n.key)
             }
 
             #[test]
@@ -5442,12 +5386,10 @@ mod tests {
                 }
 
                 for i in 0..5 {
-                    let node_ptr = cache.map.get(&i).unwrap();
-                    unsafe {
-                        let node = node_ptr.as_ref();
-                        assert_eq!(node.key, i);
-                        assert_eq!(*node.value, i * 10);
-                    }
+                    let &id = cache.map.get(&i).unwrap();
+                    let node = cache.arena.get(id).unwrap();
+                    assert_eq!(node.key, i);
+                    assert_eq!(*node.value, i * 10);
                 }
             }
 
@@ -5598,11 +5540,9 @@ mod tests {
                 cache.insert(1, Arc::new(1));
                 cache.insert(2, Arc::new(2));
 
-                for (k, node_ptr) in &cache.map {
-                    unsafe {
-                        let node = node_ptr.as_ref();
-                        assert_eq!(node.key, *k);
-                    }
+                for (k, &id) in &cache.map {
+                    let node = cache.arena.get(id).unwrap();
+                    assert_eq!(node.key, *k);
                 }
             }
 
