@@ -9,9 +9,15 @@ If a policy moves into production code, its document should be moved back to
 
 ## Roadmap Policies
 
+- [GDS](gds.md)
 - [GDSF](gdsf.md)
+- [Hyperbolic](hyperbolic.md)
+- [LeCaR](lecar.md)
 - [LFU Aging](lfu-aging.md)
+- [LHD](lhd.md)
 - [LIRS](lirs.md)
+- [LRFU](lrfu.md)
 - [OPT](opt.md)
+- [SIEVE](sieve.md)
 - [TinyLFU / W-TinyLFU](tinylfu.md)
 - [TTL](ttl.md)
