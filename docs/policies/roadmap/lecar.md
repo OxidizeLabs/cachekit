@@ -29,5 +29,5 @@ Under shifting workloads, weights move toward the better-performing strategy.
 - Evaluate under non-stationary workloads with hotspot shifts.
 
 ## References
-- Vietri et al. (2018): “Driving cache replacement with ML-based LeCaR”.
+- Vietri et al. (2018): “Driving cache replacement with ML-based LeCaR”, NSDI 2018.
 - Wikipedia (taxonomy context): https://en.wikipedia.org/wiki/Cache_replacement_policies
