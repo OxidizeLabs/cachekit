@@ -266,8 +266,8 @@
 //! // Touch to mark as recently used without retrieving
 //! concurrent_cache.touch(&2);
 //!
-//! // Type aliases for common patterns
-//! use crate::storage::disk::async_disk::cache::lru::BufferPoolCache;
+//! // Type alias for a concurrent page cache using this policy
+//! type BufferPoolCache<V> = ConcurrentLruCache<u64, V>;
 //! let page_cache: BufferPoolCache<Vec<u8>> = BufferPoolCache::new(256);
 //! ```
 //!
