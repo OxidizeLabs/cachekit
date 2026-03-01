@@ -973,7 +973,10 @@ mod tests {
     fn weight_store_clear_resets_contents_but_preserves_counters() {
         let mut store = WeightStore::with_capacity(4, 20, weight_by_len);
         assert_eq!(store.try_insert("k1", Arc::new("aa".to_string())), Ok(None));
-        assert_eq!(store.try_insert("k2", Arc::new("bbb".to_string())), Ok(None));
+        assert_eq!(
+            store.try_insert("k2", Arc::new("bbb".to_string())),
+            Ok(None)
+        );
         let _ = store.get(&"k1");
         let _ = store.get(&"missing");
         store.record_eviction();
@@ -999,7 +1002,10 @@ mod tests {
         assert!(store.is_empty());
         assert!(!store.contains(&"k1"));
 
-        assert_eq!(store.try_insert("k1", Arc::new("abc".to_string())), Ok(None));
+        assert_eq!(
+            store.try_insert("k1", Arc::new("abc".to_string())),
+            Ok(None)
+        );
         assert!(!store.is_empty());
         assert!(store.contains(&"k1"));
         assert_eq!(store.peek(&"k1"), Some(&Arc::new("abc".to_string())));
