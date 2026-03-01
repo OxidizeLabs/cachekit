@@ -4569,7 +4569,7 @@ mod tests {
                             break;
                         }
                     }
-                    if !found_rank && i < cache.len() {
+                    if !found_rank {
                         // This should not happen in correct LRU implementation
                         panic!("Missing rank {} in steady state", i);
                     }
