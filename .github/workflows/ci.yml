@@ -160,6 +160,19 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Dependency policy checks across all execution paths
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+      - name: Run cargo-deny checks
+        run: cargo deny check all
+
   # Benchmarks (only on the main branch)
   bench:
     name: Benchmarks
