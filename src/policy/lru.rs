@@ -680,13 +680,13 @@ where
     #[inline]
     fn peek_lru(&self) -> Option<(&K, &Arc<V>)> {
         #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lru_call();
+        self.metrics.record_peek_lru_call();
 
         let tail_id = self.tail?;
         let node = self.arena.get(tail_id)?;
 
         #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lru_found();
+        self.metrics.record_peek_lru_found();
 
         Some((&node.key, &node.value))
     }
@@ -714,7 +714,7 @@ where
 
     fn recency_rank(&self, key: &K) -> Option<usize> {
         #[cfg(feature = "metrics")]
-        (&self.metrics).record_recency_rank_call();
+        self.metrics.record_recency_rank_call();
 
         let &target_id = self.map.get(key)?;
         let mut rank = 0usize;
@@ -722,11 +722,11 @@ where
 
         while let Some(id) = current {
             #[cfg(feature = "metrics")]
-            (&self.metrics).record_recency_rank_scan_step();
+            self.metrics.record_recency_rank_scan_step();
 
             if id == target_id {
                 #[cfg(feature = "metrics")]
-                (&self.metrics).record_recency_rank_found();
+                self.metrics.record_recency_rank_found();
                 return Some(rank);
             }
             rank += 1;
