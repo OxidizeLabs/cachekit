@@ -29,5 +29,5 @@ instead of relying on fixed formulas.
 - Benchmark against `GDS`, `GDSF`, and `Hyperbolic` on mixed-size traces.
 
 ## References
-- Beckmann et al. (2018): “LHD: Improving Cache Hit Rate by Maximizing Hit Density”.
-- USENIX OSDI 2018 paper and follow-up implementations.
+- Beckmann et al. (2018): “LHD: Improving Cache Hit Rate by Maximizing Hit Density”, USENIX OSDI 2018 paper with follow-up implementations.
+
