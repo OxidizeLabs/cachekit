@@ -228,7 +228,7 @@
 //! };
 //! use std::sync::Arc;
 //!
-//! // Single-threaded usage
+//! // Single-threaded usage (non-concurrent)
 //! let mut cache: LruCore<u32, String> = LruCore::new(100);
 //! cache.insert(1, Arc::new("page_data".to_string()));
 //!
@@ -239,6 +239,17 @@
 //! // Peek without affecting LRU order
 //! if let Some(value) = cache.peek(&1) {
 //!     println!("Peeked: {}", value);  // returns Arc<String>
+//! }
+//!
+//! // Multi-threaded usage with thread-safe wrapper
+//! let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(100);
+//!
+//! // Clone the handle and send to other threads; internal access is synchronized.
+//! let cache_clone = cache.clone();
+//! cache_clone.insert(2, Arc::new("other_page".to_string()));
+//!
+//! if let Some(value) = cache_clone.get(&2) {
+//!     println!("Concurrent got: {}", value);  // safe across threads
 //! }
 //!
 //! // Evict least recently used
