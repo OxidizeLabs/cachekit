@@ -12,21 +12,28 @@ permissions:
   contents: read
 
 jobs:
-  security-audit:
-    name: Security Audit
+  # Weekly dependency policy drift check.
+  dependency-policy:
+    name: Dependency Policy (cargo-deny)
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  latest-stable-smoke:
-    name: Latest Stable Smoke
-    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
-      - name: Build and test
-        run: cargo test --all-features --all-targets
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+      - name: Check advisories, bans, licenses, and sources
+        run: cargo deny check all
+
+  # Weekly toolchain drift check against latest stable.
+  latest-stable-smoke:
+    name: Latest Stable Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and test workspace
+        run: cargo test --workspace --all-features --all-targets

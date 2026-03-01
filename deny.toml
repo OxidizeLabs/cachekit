@@ -1,0 +1,57 @@
+[licenses]
+confidence-threshold = 0.93
+unused-allowed-license = "warn"
+include-build = true
+include-dev = true
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+
+[licenses.private]
+ignore = true
+
+[[licenses.exceptions]]
+crate = "unicode-ident"
+allow = ["Unicode-3.0"]
+
+[[licenses.exceptions]]
+crate = "foldhash"
+allow = ["Zlib"]
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+exclude-dev = false
+
+[advisories]
+ignore = []
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = [
+    "https://github.com/rust-lang/crates.io-index",
+]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
