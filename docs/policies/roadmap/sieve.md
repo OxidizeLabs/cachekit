@@ -29,5 +29,5 @@ This creates low-cost second-chance behavior without maintaining full LRU order.
 - Benchmark against `S3-FIFO`, `Clock`, and `LRU` on scan-heavy mixes.
 
 ## References
-- SIEVE policy publication and follow-up implementation notes.
+- Zhang et al. (2023): "SIEVE is Simpler than LRU: an Efficient Turn-Key Eviction Algorithm for Web Caches", in *Proceedings of the ACM on Measurement and Analysis of Computing Systems (POMACS)*.
 - Wikipedia (taxonomy context): https://en.wikipedia.org/wiki/Cache_replacement_policies
