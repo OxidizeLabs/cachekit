@@ -33,5 +33,5 @@ Eviction removes the smallest score, so stale/low-value entries fall out first.
 - Benchmark against `LRU`, `Heap-LFU`, `S3-FIFO`, and `TinyLFU/W-TinyLFU`.
 
 ## References
-- Blankstein et al.: “Hyperbolic Caching: Flexible Caching for Web Applications”.
+- Blankstein et al. (2017): “Hyperbolic Caching: Flexible Caching for Web Applications”, USENIX ATC 2017.
 - Wikipedia (taxonomy context): https://en.wikipedia.org/wiki/Cache_replacement_policies
