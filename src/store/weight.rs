@@ -501,16 +501,17 @@ where
     pub fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let new_weight = self.compute_weight(value.as_ref());
         if let Some(entry) = self.map.get_mut(&key) {
-            debug_assert!(
+            assert!(
                 self.total_weight >= entry.weight,
                 "WeightStore invariant violated: total_weight ({}) is less than entry.weight ({})",
                 self.total_weight,
                 entry.weight
             );
-            let next_total = self
+            let base_total = self
                 .total_weight
-                .saturating_sub(entry.weight)
-                .saturating_add(new_weight);
+                .checked_sub(entry.weight)
+                .expect("WeightStore invariant violated: checked_sub failed after invariant check");
+            let next_total = base_total.checked_add(new_weight).ok_or(StoreFull)?;
             if next_total > self.capacity_weight {
                 return Err(StoreFull);
             }
@@ -525,7 +526,8 @@ where
         if self.map.len() >= self.capacity_entries {
             return Err(StoreFull);
         }
-        if self.total_weight + new_weight > self.capacity_weight {
+        let next_total = self.total_weight.checked_add(new_weight).ok_or(StoreFull)?;
+        if next_total > self.capacity_weight {
             return Err(StoreFull);
         }
 
@@ -536,7 +538,7 @@ where
                 weight: new_weight,
             },
         );
-        self.total_weight += new_weight;
+        self.total_weight = next_total;
         self.metrics.inc_insert();
         Ok(None)
     }
@@ -560,11 +562,14 @@ where
     /// ```
     pub fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let entry = self.map.remove(key)?;
-        debug_assert!(
+        assert!(
             self.total_weight >= entry.weight,
             "total_weight underflow in remove"
         );
-        self.total_weight = self.total_weight.saturating_sub(entry.weight);
+        self.total_weight = self
+            .total_weight
+            .checked_sub(entry.weight)
+            .expect("WeightStore invariant violated: checked_sub failed after invariant check");
         self.metrics.inc_remove();
         Some(entry.value)
     }
