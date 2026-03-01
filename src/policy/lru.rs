@@ -3757,20 +3757,20 @@ mod tests {
                 assert_eq!(cache.recency_rank(&3), Some(0)); // New head
                 assert_eq!(cache.recency_rank(&1), Some(1)); // Old item is tail
 
-                // Test insertion with available capacity (cache capacity is 3, we have 2 items)
+                // Test insertion when there is still available capacity (cache capacity is 3, we currently have 2 items)
                 cache.insert(4, Arc::new(400));
-                assert_eq!(cache.len(), 3); // Should be 3 items now (1, 3, 4)
-                assert!(cache.contains(&1)); // Should still be present
+                assert_eq!(cache.len(), 3); // Cache should now be at full capacity
+                assert!(cache.contains(&1)); // Key 1 is expected to be present before any further evictions
                 assert!(cache.contains(&3));
                 assert!(cache.contains(&4));
                 assert_eq!(cache.recency_rank(&4), Some(0)); // Most recent
                 assert_eq!(cache.recency_rank(&3), Some(1)); // Previous head
                 assert_eq!(cache.recency_rank(&1), Some(2)); // Least recent (tail)
 
-                // Now test eviction by inserting another item (5th item, exceeds capacity)
+                // Now test eviction by inserting another item (5th distinct key, exceeds capacity)
                 cache.insert(5, Arc::new(500));
-                assert_eq!(cache.len(), 3); // Should maintain capacity
-                assert!(!cache.contains(&1)); // LRU evicted
+                assert_eq!(cache.len(), 3); // Cache should remain at its maximum capacity
+                assert!(!cache.contains(&1)); // LRU (key 1) should be evicted at this point
                 assert!(cache.contains(&3));
                 assert!(cache.contains(&4));
                 assert!(cache.contains(&5));
