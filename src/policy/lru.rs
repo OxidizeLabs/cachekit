@@ -626,11 +626,11 @@ where
     #[inline]
     pub fn peek(&self, key: &K) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lru_call();
+        self.metrics.record_peek_lru_call();
 
         if let Some(&id) = self.map.get(key) {
             #[cfg(feature = "metrics")]
-            (&self.metrics).record_peek_lru_found();
+            self.metrics.record_peek_lru_found();
             let node = self.arena.get(id).expect("peek: stale SlotId");
             return Some(Arc::clone(&node.value));
         }
