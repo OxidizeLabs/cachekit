@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-02
+
 ### Fixed
 - **ConcurrentSlabStore TOCTOU race conditions** — Separate `RwLock`s for index, entries, and free list allowed data corruption on concurrent update-after-remove, capacity overshoot under parallel inserts, and inconsistent reads during `clear()`. Consolidated into a single `SlabInner` behind one `RwLock` for full mutation atomicity.
 - **ARC ghost-list directory leak** — Case 4 (complete miss) did not prune ghost lists B1/B2, violating the paper's invariant that T1+T2+B1+B2 ≤ 2×capacity. Fixed to match the original ARC eviction logic.
@@ -21,9 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration test suite `tests/slab_concurrency.rs` for ConcurrentSlabStore race conditions and atomicity.
 - Integration test suite `tests/policy_invariants.rs` for cross-policy capacity-0 semantics.
 - Per-policy regression tests for capacity-0 behavior, insert return values, ARC ghost-list bounds, and ConcurrentWeightStore metrics.
+- Metrics tracking for `ClockRing`, `ArcCache`, `CarCache`, and `ClockProCache`.
+- `cargo-deny` policy configuration (`deny.toml`) and CI checks for licenses/advisories.
 
 ### Changed
 - `ClockRing` module documentation updated with rustdoc intra-doc links and expanded operations table.
+- `LruCore` internals refactored to a pool-based, allocation-free design for improved hot-path predictability.
+- `SlotId`/`SlotArena` internals improved for stability and performance, including iterator refinements and corrected `approx_bytes` accounting.
+- `ClockRing::insert` slot management optimized to reduce unnecessary evictions.
+- `WeightStore` weight accounting updated to checked arithmetic with stronger invariant enforcement.
+- CI/release automation updated for benchmark reporting and crate publishing workflow improvements.
+- Dependency refreshes (including `chrono` patch update and lockfile refreshes).
+
+### Documentation
+- Policy roadmap expanded and refreshed (including SIEVE, LHD, LeCaR, and Hyperbolic entries).
+- Additional architecture/API-guideline documentation polish across core data structures and policy docs.
 
 ## [0.4.0] - 2026-02-18
 
