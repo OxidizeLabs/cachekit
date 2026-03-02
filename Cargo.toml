@@ -83,7 +83,7 @@ parking_lot = { version = "0.12", optional = true }
 rustc-hash = "2.1"
 
 [dev-dependencies]
-bench-support = { path = "bench-support", version = "0.1.0" }
+bench-support = { path = "bench-support" }
 criterion = "0.8"
 dhat = "0.3"
 lru = "0.16"
