@@ -30,4 +30,3 @@ instead of relying on fixed formulas.
 
 ## References
 - Beckmann et al. (2018): “LHD: Improving Cache Hit Rate by Maximizing Hit Density”, USENIX OSDI 2018 paper with follow-up implementations.
-
