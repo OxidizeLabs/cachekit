@@ -36,6 +36,7 @@ ignore = []
 multiple-versions = "deny"
 wildcards = "deny"
 highlight = "all"
+allow-wildcard-paths = true
 workspace-default-features = "allow"
 external-default-features = "allow"
 allow = []
