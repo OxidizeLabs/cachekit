@@ -11,24 +11,24 @@
 //!   │                          FifoCache<K, V>                                 │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  cache: HashMap<K, Arc<V>>                                         │ │
+//!   │   │  store: HashMapStore<K, V>                                         │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────────┬────────────────────────────────────────────────┐  │ │
-//!   │   │  │   K         │  Arc<V>                                        │  │ │
+//!   │   │  │   K         │  V                                             │  │ │
 //!   │   │  ├─────────────┼────────────────────────────────────────────────┤  │ │
-//!   │   │  │  Arc(key1)  │  Arc(value1)                                   │  │ │
-//!   │   │  │  Arc(key2)  │  Arc(value2)                                   │  │ │
-//!   │   │  │  Arc(key3)  │  Arc(value3)                                   │  │ │
+//!   │   │  │  key1       │  value1                                        │  │ │
+//!   │   │  │  key2       │  value2                                        │  │ │
+//!   │   │  │  key3       │  value3                                        │  │ │
 //!   │   │  └─────────────┴────────────────────────────────────────────────┘  │ │
 //!   │   │                                                                    │ │
-//!   │   │  O(1) lookup by key (via hash)                                     │ │
+//!   │   │  O(1) lookup by key (via hash), direct &V references               │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
 //!   │   │  insertion_order: VecDeque<K>                                      │ │
 //!   │   │                                                                    │ │
-//!   │   │  front ──► [Arc(key1)] ─ [Arc(key2)] ─ [Arc(key3)] ◄── back        │ │
-//!   │   │            (oldest)                      (newest)                  │ │
+//!   │   │  front ──► [key1] ─ [key2] ─ [key3] ◄── back                      │ │
+//!   │   │            (oldest)           (newest)                             │ │
 //!   │   │                                                                    │ │
 //!   │   │  O(1) pop_front for FIFO eviction                                  │ │
 //!   │   │  O(1) push_back for new insertions                                 │ │
@@ -98,17 +98,17 @@
 //!
 //! ```text
 //!   Stale entries occur when:
-//!   - An item is removed via remove() but VecDeque entry remains
-//!   - The update path creates a new HashMap entry but keeps old VecDeque entry
+//!   - An item is evicted from the store but its VecDeque entry is not yet popped
+//!   - External systems manipulate the store directly (e.g., tiered caches)
 //!
 //!   ═══════════════════════════════════════════════════════════════════════════
 //!
 //!   Initial state:
-//!     HashMap:     { A: v1, B: v2, C: v3 }
+//!     Store:       { A: v1, B: v2, C: v3 }
 //!     VecDeque:    [A, B, C]
 //!
-//!   After remove(&B):
-//!     HashMap:     { A: v1, C: v3 }         ← B removed
+//!   After B is removed from the store (e.g., by a tiered cache manager):
+//!     Store:       { A: v1, C: v3 }         ← B removed
 //!     VecDeque:    [A, B, C]                ← B still present (STALE)
 //!
 //!   During eviction:
@@ -123,7 +123,7 @@
 //!
 //! | Component         | Type                     | Purpose                       |
 //! |-------------------|--------------------------|-------------------------------|
-//! | `cache`           | `HashMap<K,Arc<V>>`      | O(1) key-value storage        |
+//! | `store`           | `HashMapStore<K,V>`      | O(1) key-value storage        |
 //! | `insertion_order` | `VecDeque<K>`            | Tracks insertion order        |
 //! | `capacity`        | `usize`                  | Maximum entries               |
 //!
@@ -136,6 +136,7 @@
 //! | `get(&k)`        | O(1)       | Get value (no order change in FIFO)      |
 //! | `contains(&k)`   | O(1)       | Check if key exists                      |
 //! | `len()`          | O(1)       | Current number of entries                |
+//! | `is_empty()`     | O(1)       | Check if cache has no entries            |
 //! | `capacity()`     | O(1)       | Maximum capacity                         |
 //! | `clear()`        | O(n)       | Remove all entries                       |
 //!
@@ -162,7 +163,7 @@
 //! | `pop_oldest`       | O(1)*      | pop_front + HashMap remove         |
 //! | `peek_oldest`      | O(n)*      | May scan for valid entry           |
 //! | `age_rank`         | O(n)       | Linear scan of VecDeque            |
-//! | Per-entry overhead | ~48 bytes  | 2 × Arc + HashMap + VecDeque entry |
+//! | Per-entry overhead | ~varies    | HashMap entry + VecDeque K clone   |
 //!
 //! \* Amortized, skipping stale entries
 //!
@@ -173,7 +174,7 @@
 //! | Simplicity       | No access tracking needed         | Can evict hot items             |
 //! | Predictability   | Deterministic eviction order      | Ignores access patterns         |
 //! | Performance      | O(1) get (no order update)        | O(n) for age_rank, peek         |
-//! | Memory           | Arc enables zero-copy sharing     | Arc overhead per entry.         |
+//! | Memory           | Direct ownership, no Arc overhead | Clone required for K            |
 //!
 //! ## When to Use
 //!
@@ -191,15 +192,11 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::fifo::FifoCache;
-//! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, FifoCacheTrait,
-//! };
+//! use cachekit::policy::fifo::FifoCache;
+//! use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
 //!
-//! // Create cache
 //! let mut cache: FifoCache<String, i32> = FifoCache::new(100);
 //!
-//! // Insert items
 //! cache.insert("key1".to_string(), 100);
 //! cache.insert("key2".to_string(), 200);
 //! cache.insert("key3".to_string(), 300);
@@ -210,8 +207,8 @@
 //! }
 //!
 //! // Check age rank (0 = oldest)
-//! assert_eq!(cache.age_rank(&"key1".to_string()), Some(0)); // oldest
-//! assert_eq!(cache.age_rank(&"key3".to_string()), Some(2)); // newest
+//! assert_eq!(cache.age_rank(&"key1".to_string()), Some(0));
+//! assert_eq!(cache.age_rank(&"key3".to_string()), Some(2));
 //!
 //! // Peek at oldest without removing
 //! if let Some((key, value)) = cache.peek_oldest() {
@@ -226,23 +223,19 @@
 //! // Batch eviction
 //! let evicted = cache.pop_oldest_batch(2);
 //! println!("Batch evicted {} items", evicted.len());
+//! ```
 //!
-//! // Thread-safe usage
-//! use std::sync::{Arc, RwLock};
-//! let shared_cache = Arc::new(RwLock::new(FifoCache::<u64, Vec<u8>>::new(1000)));
+//! Thread-safe usage (requires `concurrency` feature):
 //!
-//! // Write access
-//! {
-//!     let mut cache = shared_cache.write().unwrap();
-//!     cache.insert(page_id, page_data);
-//! }
+//! ```rust,ignore
+//! use cachekit::policy::fifo::ConcurrentFifoCache;
 //!
-//! // Read access
-//! {
-//!     let cache = shared_cache.read().unwrap();
-//!     if let Some(data) = cache.get(&page_id) {
-//!         // use data
-//!     }
+//! let cache = ConcurrentFifoCache::<u64, Vec<u8>>::new(1000);
+//!
+//! // All operations are internally synchronized
+//! cache.insert(42, vec![1, 2, 3]);
+//! if let Some(data) = cache.get(&42) {
+//!     // use data
 //! }
 //! ```
 //!
@@ -259,17 +252,16 @@
 //!
 //! ## Thread Safety
 //!
-//! - `FifoCache` is **NOT thread-safe**
-//! - Use `ConcurrentFifoCache` for thread-safe access
-//! - Designed for single-threaded use with external synchronization
-//! - Follows Rust's zero-cost abstractions principle
+//! - `FifoCache` is **NOT thread-safe** — designed for single-threaded use
+//! - `ConcurrentFifoCache` provides thread-safe access (requires `concurrency` feature)
+//! - Alternatively, wrap in `Arc<RwLock<FifoCache>>` for external synchronization
 //!
 //! ## Implementation Notes
 //!
-//! - **Arc Sharing**: Values are stored as `Arc<V>` inside the store for zero-copy sharing
-//! - **Stale Entries**: VecDeque may contain entries not in the store (lazy cleanup)
-//! - **Update Semantics**: Updating existing key preserves insertion position
-//! - **Zero Capacity**: Supported - rejects all insertions
+//! - **Direct Ownership**: Values are stored as `V` in `HashMapStore` — no Arc indirection
+//! - **Stale Entries**: VecDeque may contain keys no longer in the store (lazy cleanup on eviction)
+//! - **Update Semantics**: Updating an existing key preserves its insertion position
+//! - **Zero Capacity**: Supported — all insertions are rejected
 
 use std::collections::VecDeque;
 use std::fmt::Debug;
