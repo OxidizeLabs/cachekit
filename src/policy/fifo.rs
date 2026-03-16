@@ -11,24 +11,24 @@
 //!   │                          FifoCache<K, V>                                 │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  cache: HashMap<K, Arc<V>>                                         │ │
+//!   │   │  store: HashMapStore<K, V>                                         │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────────┬────────────────────────────────────────────────┐  │ │
-//!   │   │  │   K         │  Arc<V>                                        │  │ │
+//!   │   │  │   K         │  V                                             │  │ │
 //!   │   │  ├─────────────┼────────────────────────────────────────────────┤  │ │
-//!   │   │  │  Arc(key1)  │  Arc(value1)                                   │  │ │
-//!   │   │  │  Arc(key2)  │  Arc(value2)                                   │  │ │
-//!   │   │  │  Arc(key3)  │  Arc(value3)                                   │  │ │
+//!   │   │  │  key1       │  value1                                        │  │ │
+//!   │   │  │  key2       │  value2                                        │  │ │
+//!   │   │  │  key3       │  value3                                        │  │ │
 //!   │   │  └─────────────┴────────────────────────────────────────────────┘  │ │
 //!   │   │                                                                    │ │
-//!   │   │  O(1) lookup by key (via hash)                                     │ │
+//!   │   │  O(1) lookup by key (via hash), direct &V references               │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
 //!   │   │  insertion_order: VecDeque<K>                                      │ │
 //!   │   │                                                                    │ │
-//!   │   │  front ──► [Arc(key1)] ─ [Arc(key2)] ─ [Arc(key3)] ◄── back        │ │
-//!   │   │            (oldest)                      (newest)                  │ │
+//!   │   │  front ──► [key1] ─ [key2] ─ [key3] ◄── back                      │ │
+//!   │   │            (oldest)           (newest)                             │ │
 //!   │   │                                                                    │ │
 //!   │   │  O(1) pop_front for FIFO eviction                                  │ │
 //!   │   │  O(1) push_back for new insertions                                 │ │
@@ -98,17 +98,17 @@
 //!
 //! ```text
 //!   Stale entries occur when:
-//!   - An item is removed via remove() but VecDeque entry remains
-//!   - The update path creates a new HashMap entry but keeps old VecDeque entry
+//!   - An item is evicted from the store but its VecDeque entry is not yet popped
+//!   - External systems manipulate the store directly (e.g., tiered caches)
 //!
 //!   ═══════════════════════════════════════════════════════════════════════════
 //!
 //!   Initial state:
-//!     HashMap:     { A: v1, B: v2, C: v3 }
+//!     Store:       { A: v1, B: v2, C: v3 }
 //!     VecDeque:    [A, B, C]
 //!
-//!   After remove(&B):
-//!     HashMap:     { A: v1, C: v3 }         ← B removed
+//!   After B is removed from the store (e.g., by a tiered cache manager):
+//!     Store:       { A: v1, C: v3 }         ← B removed
 //!     VecDeque:    [A, B, C]                ← B still present (STALE)
 //!
 //!   During eviction:
@@ -123,7 +123,7 @@
 //!
 //! | Component         | Type                     | Purpose                       |
 //! |-------------------|--------------------------|-------------------------------|
-//! | `cache`           | `HashMap<K,Arc<V>>`      | O(1) key-value storage        |
+//! | `store`           | `HashMapStore<K,V>`      | O(1) key-value storage        |
 //! | `insertion_order` | `VecDeque<K>`            | Tracks insertion order        |
 //! | `capacity`        | `usize`                  | Maximum entries               |
 //!
@@ -136,6 +136,7 @@
 //! | `get(&k)`        | O(1)       | Get value (no order change in FIFO)      |
 //! | `contains(&k)`   | O(1)       | Check if key exists                      |
 //! | `len()`          | O(1)       | Current number of entries                |
+//! | `is_empty()`     | O(1)       | Check if cache has no entries            |
 //! | `capacity()`     | O(1)       | Maximum capacity                         |
 //! | `clear()`        | O(n)       | Remove all entries                       |
 //!
@@ -162,7 +163,7 @@
 //! | `pop_oldest`       | O(1)*      | pop_front + HashMap remove         |
 //! | `peek_oldest`      | O(n)*      | May scan for valid entry           |
 //! | `age_rank`         | O(n)       | Linear scan of VecDeque            |
-//! | Per-entry overhead | ~48 bytes  | 2 × Arc + HashMap + VecDeque entry |
+//! | Per-entry overhead | ~varies    | HashMap entry + VecDeque K clone   |
 //!
 //! \* Amortized, skipping stale entries
 //!
@@ -173,7 +174,7 @@
 //! | Simplicity       | No access tracking needed         | Can evict hot items             |
 //! | Predictability   | Deterministic eviction order      | Ignores access patterns         |
 //! | Performance      | O(1) get (no order update)        | O(n) for age_rank, peek         |
-//! | Memory           | Arc enables zero-copy sharing     | Arc overhead per entry.         |
+//! | Memory           | Direct ownership, no Arc overhead | Clone required for K            |
 //!
 //! ## When to Use
 //!
@@ -191,15 +192,11 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::fifo::FifoCache;
-//! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, FifoCacheTrait,
-//! };
+//! use cachekit::policy::fifo::FifoCache;
+//! use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
 //!
-//! // Create cache
 //! let mut cache: FifoCache<String, i32> = FifoCache::new(100);
 //!
-//! // Insert items
 //! cache.insert("key1".to_string(), 100);
 //! cache.insert("key2".to_string(), 200);
 //! cache.insert("key3".to_string(), 300);
@@ -210,8 +207,8 @@
 //! }
 //!
 //! // Check age rank (0 = oldest)
-//! assert_eq!(cache.age_rank(&"key1".to_string()), Some(0)); // oldest
-//! assert_eq!(cache.age_rank(&"key3".to_string()), Some(2)); // newest
+//! assert_eq!(cache.age_rank(&"key1".to_string()), Some(0));
+//! assert_eq!(cache.age_rank(&"key3".to_string()), Some(2));
 //!
 //! // Peek at oldest without removing
 //! if let Some((key, value)) = cache.peek_oldest() {
@@ -226,23 +223,19 @@
 //! // Batch eviction
 //! let evicted = cache.pop_oldest_batch(2);
 //! println!("Batch evicted {} items", evicted.len());
+//! ```
 //!
-//! // Thread-safe usage
-//! use std::sync::{Arc, RwLock};
-//! let shared_cache = Arc::new(RwLock::new(FifoCache::<u64, Vec<u8>>::new(1000)));
+//! Thread-safe usage (requires `concurrency` feature):
 //!
-//! // Write access
-//! {
-//!     let mut cache = shared_cache.write().unwrap();
-//!     cache.insert(page_id, page_data);
-//! }
+//! ```rust,ignore
+//! use cachekit::policy::fifo::ConcurrentFifoCache;
 //!
-//! // Read access
-//! {
-//!     let cache = shared_cache.read().unwrap();
-//!     if let Some(data) = cache.get(&page_id) {
-//!         // use data
-//!     }
+//! let cache = ConcurrentFifoCache::<u64, Vec<u8>>::new(1000);
+//!
+//! // All operations are internally synchronized
+//! cache.insert(42, vec![1, 2, 3]);
+//! if let Some(data) = cache.get(&42) {
+//!     // use data
 //! }
 //! ```
 //!
@@ -259,20 +252,18 @@
 //!
 //! ## Thread Safety
 //!
-//! - `FifoCache` is **NOT thread-safe**
-//! - Use `ConcurrentFifoCache` for thread-safe access
-//! - Designed for single-threaded use with external synchronization
-//! - Follows Rust's zero-cost abstractions principle
+//! - `FifoCache` is **NOT thread-safe** — designed for single-threaded use
+//! - `ConcurrentFifoCache` provides thread-safe access (requires `concurrency` feature)
+//! - Alternatively, wrap in `Arc<RwLock<FifoCache>>` for external synchronization
 //!
 //! ## Implementation Notes
 //!
-//! - **Arc Sharing**: Values are stored as `Arc<V>` inside the store for zero-copy sharing
-//! - **Stale Entries**: VecDeque may contain entries not in the store (lazy cleanup)
-//! - **Update Semantics**: Updating existing key preserves insertion position
-//! - **Zero Capacity**: Supported - rejects all insertions
+//! - **Direct Ownership**: Values are stored as `V` in `HashMapStore` — no Arc indirection
+//! - **Stale Entries**: VecDeque may contain keys no longer in the store (lazy cleanup on eviction)
+//! - **Update Semantics**: Updating an existing key preserves its insertion position
+//! - **Zero Capacity**: Supported — all insertions are rejected
 
 use std::collections::VecDeque;
-use std::fmt::Debug;
 use std::hash::Hash;
 #[cfg(feature = "concurrency")]
 use std::sync::Arc;
@@ -300,18 +291,12 @@ use crate::metrics::traits::{
 /// Evicts the oldest (first inserted) item when capacity is reached.
 /// See module-level documentation for details.
 #[derive(Debug)]
-pub struct FifoCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+pub struct FifoCache<K, V> {
     inner: FifoCacheInner<K, V>,
 }
 
 #[derive(Debug)]
-pub struct FifoCacheInner<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+struct FifoCacheInner<K, V> {
     store: HashMapStore<K, V>,
     insertion_order: VecDeque<K>,
     #[cfg(feature = "metrics")]
@@ -320,7 +305,7 @@ where
 
 impl<K, V> FifoCacheInner<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     fn new(capacity: usize) -> Self {
         Self {
@@ -332,12 +317,39 @@ where
     }
 }
 
+impl<K, V> Default for FifoCache<K, V>
+where
+    K: Eq + Hash,
+{
+    /// Returns a zero-capacity cache that rejects all insertions.
+    fn default() -> Self {
+        Self {
+            inner: FifoCacheInner {
+                store: HashMapStore::new(0),
+                insertion_order: VecDeque::new(),
+                #[cfg(feature = "metrics")]
+                metrics: CacheMetrics::default(),
+            },
+        }
+    }
+}
+
 impl<K, V> FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
-    V: Debug,
+    K: Clone + Eq + Hash,
 {
-    /// Creates a new FIFO cache with the given capacity
+    /// Creates a new FIFO cache with the given capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::FifoCache;
+    /// use cachekit::traits::ReadOnlyCache;
+    ///
+    /// let cache: FifoCache<String, i32> = FifoCache::new(100);
+    /// assert_eq!(cache.capacity(), 100);
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: FifoCacheInner::new(capacity),
@@ -345,25 +357,84 @@ where
     }
 
     /// Returns the number of items currently in the cache.
-    /// This is a duplicate of the CoreCache::len() method but provides direct access.
+    ///
+    /// Equivalent to [`ReadOnlyCache::len`] but available without a trait import.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::FifoCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = FifoCache::new(10);
+    /// assert_eq!(cache.current_size(), 0);
+    ///
+    /// cache.insert("a", 1);
+    /// assert_eq!(cache.current_size(), 1);
+    /// ```
     pub fn current_size(&self) -> usize {
         self.inner.store.len()
     }
 
     /// Returns the insertion order length (may include stale entries).
-    /// This is primarily for testing and debugging purposes.
+    ///
+    /// Primarily for testing and debugging — this count may exceed
+    /// [`current_size`](Self::current_size) when stale entries are present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::FifoCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// assert_eq!(cache.insertion_order_len(), 2);
+    /// ```
     pub fn insertion_order_len(&self) -> usize {
         self.inner.insertion_order.len()
     }
 
     /// Checks if the internal store contains a specific key.
-    /// This is primarily for testing stale entry behavior.
+    ///
+    /// Primarily for testing stale entry behavior — equivalent to
+    /// [`ReadOnlyCache::contains`] but bypasses any trait dispatch.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::FifoCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = FifoCache::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// assert!(cache.cache_contains_key(&"a"));
+    /// assert!(!cache.cache_contains_key(&"b"));
+    /// ```
     pub fn cache_contains_key(&self, key: &K) -> bool {
         self.inner.store.contains(key)
     }
 
     /// Returns an iterator over the insertion order keys.
-    /// This is primarily for testing and debugging purposes.
+    ///
+    /// Primarily for testing and debugging — yields keys in insertion
+    /// order (oldest first), including stale entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::FifoCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let keys: Vec<_> = cache.insertion_order_iter().collect();
+    /// assert_eq!(keys, vec![&"a", &"b"]);
+    /// ```
     pub fn insertion_order_iter(&self) -> impl Iterator<Item = &K> {
         self.inner.insertion_order.iter()
     }
@@ -412,30 +483,74 @@ where
 /// Thread-safe FIFO cache wrapper using RwLock.
 #[cfg(feature = "concurrency")]
 #[derive(Clone, Debug)]
-pub struct ConcurrentFifoCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+pub struct ConcurrentFifoCache<K, V> {
     inner: Arc<RwLock<FifoCache<K, V>>>,
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V> Default for ConcurrentFifoCache<K, V>
+where
+    K: Eq + Hash,
+{
+    /// Returns a zero-capacity thread-safe cache that rejects all insertions.
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(FifoCache::default())),
+        }
+    }
 }
 
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug,
-    V: Debug,
+    K: Clone + Eq + Hash,
 {
+    /// Creates a new thread-safe FIFO cache with the given capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::<String, i32>::new(100);
+    /// assert_eq!(cache.capacity(), 100);
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(RwLock::new(FifoCache::new(capacity))),
         }
     }
 
+    /// Inserts a key-value pair, returning the previous value if the key existed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// assert_eq!(cache.insert("key", 1), None);
+    /// assert_eq!(cache.insert("key", 2), Some(1));
+    /// ```
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         let mut cache = self.inner.write();
         cache.insert(key, value)
     }
 
+    /// Returns a clone of the value for the given key.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("key", 42);
+    ///
+    /// assert_eq!(cache.get(&"key"), Some(42));
+    /// assert_eq!(cache.get(&"missing"), None);
+    /// ```
     pub fn get(&self, key: &K) -> Option<V>
     where
         V: Clone,
@@ -444,36 +559,131 @@ where
         cache.get(key).cloned()
     }
 
+    /// Checks if a key exists in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("key", 42);
+    ///
+    /// assert!(cache.contains(&"key"));
+    /// assert!(!cache.contains(&"missing"));
+    /// ```
     pub fn contains(&self, key: &K) -> bool {
         let cache = self.inner.read();
         cache.contains(key)
     }
 
+    /// Returns the number of entries in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// assert_eq!(cache.len(), 0);
+    ///
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// assert_eq!(cache.len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         let cache = self.inner.read();
         cache.len()
     }
 
+    /// Returns `true` if the cache contains no entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::<String, i32>::new(10);
+    /// assert!(cache.is_empty());
+    ///
+    /// cache.insert("key".to_string(), 1);
+    /// assert!(!cache.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         let cache = self.inner.read();
         cache.is_empty()
     }
 
+    /// Returns the maximum capacity of the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::<String, i32>::new(500);
+    /// assert_eq!(cache.capacity(), 500);
+    /// ```
     pub fn capacity(&self) -> usize {
         let cache = self.inner.read();
         cache.capacity()
     }
 
+    /// Removes all entries from the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// ```
     pub fn clear(&self) {
         let mut cache = self.inner.write();
         cache.clear();
     }
 
+    /// Removes and returns the oldest entry.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("first", 1);
+    /// cache.insert("second", 2);
+    ///
+    /// assert_eq!(cache.pop_oldest(), Some(("first", 1)));
+    /// assert_eq!(cache.pop_oldest(), Some(("second", 2)));
+    /// assert_eq!(cache.pop_oldest(), None);
+    /// ```
     pub fn pop_oldest(&self) -> Option<(K, V)> {
         let mut cache = self.inner.write();
         cache.pop_oldest()
     }
 
+    /// Peeks at the oldest entry without removing it.
+    ///
+    /// Returns cloned key and value since the lock cannot be held across the return.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("first", 1);
+    /// cache.insert("second", 2);
+    ///
+    /// assert_eq!(cache.peek_oldest(), Some(("first", 1)));
+    /// assert_eq!(cache.len(), 2);
+    /// ```
     pub fn peek_oldest(&self) -> Option<(K, V)>
     where
         K: Clone,
@@ -483,11 +693,42 @@ where
         cache.peek_oldest().map(|(k, v)| (k.clone(), v.clone()))
     }
 
+    /// Removes up to `count` oldest entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.insert("c", 3);
+    ///
+    /// let batch = cache.pop_oldest_batch(2);
+    /// assert_eq!(batch, vec![("a", 1), ("b", 2)]);
+    /// assert_eq!(cache.len(), 1);
+    /// ```
     pub fn pop_oldest_batch(&self, count: usize) -> Vec<(K, V)> {
         let mut cache = self.inner.write();
         cache.pop_oldest_batch(count)
     }
 
+    /// Gets the age rank of a key (0 = oldest).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("first", 1);
+    /// cache.insert("second", 2);
+    ///
+    /// assert_eq!(cache.age_rank(&"first"), Some(0));
+    /// assert_eq!(cache.age_rank(&"second"), Some(1));
+    /// assert_eq!(cache.age_rank(&"missing"), None);
+    /// ```
     pub fn age_rank(&self, key: &K) -> Option<usize> {
         let cache = self.inner.read();
         cache.age_rank(key)
@@ -497,15 +738,14 @@ where
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentCache for ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug + Send + Sync,
-    V: Debug + Send + Sync,
+    K: Clone + Eq + Hash + Send + Sync,
+    V: Send + Sync,
 {
 }
 
 impl<K, V> ReadOnlyCache<K, V> for FifoCache<K, V>
 where
-    K: Clone + Eq + Hash,
-    V: Debug,
+    K: Eq + Hash,
 {
     fn contains(&self, key: &K) -> bool {
         self.inner.store.contains(key)
@@ -522,8 +762,7 @@ where
 
 impl<K, V> CoreCache<K, V> for FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
-    V: Debug,
+    K: Clone + Eq + Hash,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
@@ -586,8 +825,7 @@ where
 
 impl<K, V> FifoCacheTrait<K, V> for FifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug,
-    V: Debug,
+    K: Clone + Eq + Hash,
 {
     fn pop_oldest(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
@@ -658,9 +896,24 @@ where
 #[cfg(feature = "metrics")]
 impl<K, V> FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
-    V: Debug,
+    K: Clone + Eq + Hash,
 {
+    /// Returns a snapshot of all cache metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::FifoCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = FifoCache::new(10);
+    /// cache.insert("key", 42);
+    /// cache.get(&"key");
+    ///
+    /// let snap = cache.metrics_snapshot();
+    /// assert_eq!(snap.insert_calls, 1);
+    /// assert_eq!(snap.get_hits, 1);
+    /// ```
     pub fn metrics_snapshot(&self) -> CacheMetricsSnapshot {
         CacheMetricsSnapshot {
             get_calls: self.inner.metrics.get_calls,
@@ -691,8 +944,7 @@ where
 #[cfg(feature = "metrics")]
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
-    V: Debug,
+    K: Clone + Eq + Hash,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
         self.metrics_snapshot()
@@ -702,9 +954,24 @@ where
 #[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug + Send + Sync,
-    V: Debug + Send + Sync,
+    K: Clone + Eq + Hash + Send + Sync,
+    V: Send + Sync,
 {
+    /// Returns a snapshot of all cache metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("key", 42);
+    /// cache.get(&"key");
+    ///
+    /// let snap = cache.metrics_snapshot();
+    /// assert_eq!(snap.insert_calls, 1);
+    /// assert_eq!(snap.get_hits, 1);
+    /// ```
     pub fn metrics_snapshot(&self) -> CacheMetricsSnapshot {
         let cache = self.inner.read();
         cache.metrics_snapshot()
@@ -714,8 +981,8 @@ where
 #[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug + Send + Sync,
-    V: Debug + Send + Sync,
+    K: Clone + Eq + Hash + Send + Sync,
+    V: Send + Sync,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
         self.metrics_snapshot()
@@ -728,6 +995,24 @@ mod tests {
 
     use crate::policy::fifo::FifoCache;
     use crate::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
+
+    // C-SEND-SYNC: Verify auto-trait derivation is not accidentally broken.
+    fn _assert_send<T: Send>() {}
+    fn _assert_sync<T: Sync>() {}
+
+    #[test]
+    fn fifo_cache_is_send_and_sync() {
+        _assert_send::<FifoCache<String, String>>();
+        _assert_sync::<FifoCache<String, String>>();
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_fifo_cache_is_send_and_sync() {
+        use crate::policy::fifo::ConcurrentFifoCache;
+        _assert_send::<ConcurrentFifoCache<String, String>>();
+        _assert_sync::<ConcurrentFifoCache<String, String>>();
+    }
 
     // Basic FIFO Behavior Tests
     mod basic_behavior {
