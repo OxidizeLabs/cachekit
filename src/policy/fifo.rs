@@ -305,7 +305,7 @@ struct FifoCacheInner<K, V> {
 
 impl<K, V> FifoCacheInner<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     fn new(capacity: usize) -> Self {
         Self {
@@ -317,9 +317,26 @@ where
     }
 }
 
+impl<K, V> Default for FifoCache<K, V>
+where
+    K: Eq + Hash,
+{
+    /// Returns a zero-capacity cache that rejects all insertions.
+    fn default() -> Self {
+        Self {
+            inner: FifoCacheInner {
+                store: HashMapStore::new(0),
+                insertion_order: VecDeque::new(),
+                #[cfg(feature = "metrics")]
+                metrics: CacheMetrics::default(),
+            },
+        }
+    }
+}
+
 impl<K, V> FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     /// Creates a new FIFO cache with the given capacity.
     ///
@@ -471,9 +488,22 @@ pub struct ConcurrentFifoCache<K, V> {
 }
 
 #[cfg(feature = "concurrency")]
+impl<K, V> Default for ConcurrentFifoCache<K, V>
+where
+    K: Eq + Hash,
+{
+    /// Returns a zero-capacity thread-safe cache that rejects all insertions.
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(FifoCache::default())),
+        }
+    }
+}
+
+#[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     /// Creates a new thread-safe FIFO cache with the given capacity.
     ///
@@ -708,7 +738,7 @@ where
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentCache for ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Send + Sync,
+    K: Clone + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
 }
@@ -732,7 +762,7 @@ where
 
 impl<K, V> CoreCache<K, V> for FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
@@ -795,7 +825,7 @@ where
 
 impl<K, V> FifoCacheTrait<K, V> for FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     fn pop_oldest(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
@@ -866,7 +896,7 @@ where
 #[cfg(feature = "metrics")]
 impl<K, V> FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     /// Returns a snapshot of all cache metrics.
     ///
@@ -914,7 +944,7 @@ where
 #[cfg(feature = "metrics")]
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FifoCache<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Eq + Hash,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
         self.metrics_snapshot()
@@ -924,7 +954,7 @@ where
 #[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Send + Sync,
+    K: Clone + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
     /// Returns a snapshot of all cache metrics.
@@ -951,7 +981,7 @@ where
 #[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Send + Sync,
+    K: Clone + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
