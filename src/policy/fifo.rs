@@ -264,7 +264,6 @@
 //! - **Zero Capacity**: Supported — all insertions are rejected
 
 use std::collections::VecDeque;
-use std::fmt::Debug;
 use std::hash::Hash;
 #[cfg(feature = "concurrency")]
 use std::sync::Arc;
@@ -292,18 +291,12 @@ use crate::metrics::traits::{
 /// Evicts the oldest (first inserted) item when capacity is reached.
 /// See module-level documentation for details.
 #[derive(Debug)]
-pub struct FifoCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+pub struct FifoCache<K, V> {
     inner: FifoCacheInner<K, V>,
 }
 
 #[derive(Debug)]
-pub struct FifoCacheInner<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+struct FifoCacheInner<K, V> {
     store: HashMapStore<K, V>,
     insertion_order: VecDeque<K>,
     #[cfg(feature = "metrics")]
@@ -327,7 +320,6 @@ where
 impl<K, V> FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Debug,
 {
     /// Creates a new FIFO cache with the given capacity.
     ///
@@ -474,18 +466,14 @@ where
 /// Thread-safe FIFO cache wrapper using RwLock.
 #[cfg(feature = "concurrency")]
 #[derive(Clone, Debug)]
-pub struct ConcurrentFifoCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+pub struct ConcurrentFifoCache<K, V> {
     inner: Arc<RwLock<FifoCache<K, V>>>,
 }
 
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug,
-    V: Debug,
+    K: Eq + Hash + Clone,
 {
     /// Creates a new thread-safe FIFO cache with the given capacity.
     ///
@@ -720,15 +708,14 @@ where
 #[cfg(feature = "concurrency")]
 impl<K, V> ConcurrentCache for ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug + Send + Sync,
-    V: Debug + Send + Sync,
+    K: Eq + Hash + Clone + Send + Sync,
+    V: Send + Sync,
 {
 }
 
 impl<K, V> ReadOnlyCache<K, V> for FifoCache<K, V>
 where
-    K: Clone + Eq + Hash,
-    V: Debug,
+    K: Eq + Hash,
 {
     fn contains(&self, key: &K) -> bool {
         self.inner.store.contains(key)
@@ -746,7 +733,6 @@ where
 impl<K, V> CoreCache<K, V> for FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Debug,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
@@ -809,8 +795,7 @@ where
 
 impl<K, V> FifoCacheTrait<K, V> for FifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug,
-    V: Debug,
+    K: Eq + Hash + Clone,
 {
     fn pop_oldest(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
@@ -882,7 +867,6 @@ where
 impl<K, V> FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Debug,
 {
     /// Returns a snapshot of all cache metrics.
     ///
@@ -931,7 +915,6 @@ where
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for FifoCache<K, V>
 where
     K: Eq + Hash + Clone,
-    V: Debug,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
         self.metrics_snapshot()
@@ -941,8 +924,8 @@ where
 #[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug + Send + Sync,
-    V: Debug + Send + Sync,
+    K: Eq + Hash + Clone + Send + Sync,
+    V: Send + Sync,
 {
     /// Returns a snapshot of all cache metrics.
     ///
@@ -968,8 +951,8 @@ where
 #[cfg(all(feature = "metrics", feature = "concurrency"))]
 impl<K, V> MetricsSnapshotProvider<CacheMetricsSnapshot> for ConcurrentFifoCache<K, V>
 where
-    K: Eq + Hash + Clone + Debug + Send + Sync,
-    V: Debug + Send + Sync,
+    K: Eq + Hash + Clone + Send + Sync,
+    V: Send + Sync,
 {
     fn snapshot(&self) -> CacheMetricsSnapshot {
         self.metrics_snapshot()
@@ -982,6 +965,24 @@ mod tests {
 
     use crate::policy::fifo::FifoCache;
     use crate::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
+
+    // C-SEND-SYNC: Verify auto-trait derivation is not accidentally broken.
+    fn _assert_send<T: Send>() {}
+    fn _assert_sync<T: Sync>() {}
+
+    #[test]
+    fn fifo_cache_is_send_and_sync() {
+        _assert_send::<FifoCache<String, String>>();
+        _assert_sync::<FifoCache<String, String>>();
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_fifo_cache_is_send_and_sync() {
+        use crate::policy::fifo::ConcurrentFifoCache;
+        _assert_send::<ConcurrentFifoCache<String, String>>();
+        _assert_sync::<ConcurrentFifoCache<String, String>>();
+    }
 
     // Basic FIFO Behavior Tests
     mod basic_behavior {
