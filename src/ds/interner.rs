@@ -43,11 +43,21 @@
 //!
 //! ## Operations
 //!
-//! | Operation    | Description                          | Complexity |
-//! |--------------|--------------------------------------|------------|
-//! | `intern`     | Get or create handle for key         | O(1) avg   |
-//! | `get_handle` | Lookup handle without inserting      | O(1) avg   |
-//! | `resolve`    | Convert handle back to key reference | O(1)       |
+//! | Operation               | Description                                  | Complexity |
+//! |-------------------------|----------------------------------------------|------------|
+//! | `new`                   | Create an empty interner                     | O(1)       |
+//! | `with_capacity`         | Create an empty interner with reserved space | O(1)       |
+//! | `intern`                | Get or create handle for key                 | O(1) avg   |
+//! | `get_handle`            | Lookup handle without inserting              | O(1) avg   |
+//! | `get_handle_borrowed`   | Lookup handle using a borrowed key form      | O(1) avg   |
+//! | `resolve`               | Convert handle back to key reference         | O(1)       |
+//! | `len`                   | Return number of interned keys               | O(1)       |
+//! | `is_empty`              | Check whether any keys are interned          | O(1)       |
+//! | `clear`                 | Remove all interned keys                     | O(n)       |
+//! | `shrink_to_fit`         | Shrink backing storage to fit length         | O(n)       |
+//! | `clear_shrink`          | Clear all keys and release spare capacity    | O(n)       |
+//! | `approx_bytes`          | Estimate memory footprint                    | O(1)       |
+//! | `iter`                  | Iterate over `(handle, key)` pairs           | O(n) total |
 //!
 //! ## Use Cases
 //!
