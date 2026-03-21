@@ -210,7 +210,7 @@ use crate::ds::slot_arena::SlotId;
 /// # Traits
 ///
 /// Implements [`Clone`], [`PartialEq`], [`Eq`], [`Default`], [`Extend<K>`](Extend),
-/// [`IntoIterator`] (consuming and borrowed).
+/// [`FromIterator<K>`](FromIterator), and [`IntoIterator`] (consuming and borrowed).
 #[derive(Debug)]
 pub struct GhostList<K> {
     list: IntrusiveList<K>,
@@ -243,6 +243,21 @@ where
 /// Iterator over keys in a [`GhostList`], yielding references in MRU to LRU order.
 ///
 /// Created by [`GhostList::iter`].
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::GhostList;
+///
+/// let mut ghost = GhostList::new(3);
+/// ghost.record("a");
+/// ghost.record("b");
+///
+/// let mut iter = ghost.iter();
+/// assert_eq!(iter.next(), Some(&"b"));
+/// assert_eq!(iter.next(), Some(&"a"));
+/// assert_eq!(iter.next(), None);
+/// ```
 pub struct Iter<'a, K> {
     inner: MapToKey<'a, K>,
 }
@@ -277,6 +292,19 @@ impl<'a, K> std::iter::FusedIterator for Iter<'a, K> {}
 /// Consuming iterator over keys in a [`GhostList`], yielding owned keys in MRU to LRU order.
 ///
 /// Created by calling `.into_iter()` on a `GhostList`.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::GhostList;
+///
+/// let mut ghost = GhostList::new(3);
+/// ghost.record("a");
+/// ghost.record("b");
+///
+/// let keys: Vec<_> = ghost.into_iter().collect();
+/// assert_eq!(keys, vec!["b", "a"]);
+/// ```
 #[derive(Debug)]
 pub struct IntoIter<K> {
     inner: std::vec::IntoIter<K>,
@@ -347,6 +375,36 @@ where
         for key in iter {
             self.record(key);
         }
+    }
+}
+
+impl<K> FromIterator<K> for GhostList<K>
+where
+    K: Eq + Hash + Clone,
+{
+    /// Collects keys into a ghost list whose capacity equals the number of unique keys.
+    ///
+    /// Duplicate keys are promoted rather than inserted twice, so the resulting
+    /// length may be less than the iterator length.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let ghost: GhostList<&str> = ["a", "b", "c", "b"].into_iter().collect();
+    /// assert_eq!(ghost.len(), 3);
+    /// assert!(ghost.contains(&"a"));
+    /// ```
+    fn from_iter<I: IntoIterator<Item = K>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut ghost = Self::new(lower.max(16));
+        for key in iter {
+            ghost.record(key);
+        }
+        ghost.capacity = ghost.len();
+        ghost
     }
 }
 
@@ -836,13 +894,13 @@ where
     }
 
     #[cfg(any(test, debug_assertions))]
-    /// Returns SlotIds in MRU -> LRU order.
+    /// Returns `SlotId`s in MRU to LRU order, useful for snapshot-based testing.
     pub fn debug_snapshot_ids(&self) -> Vec<SlotId> {
         self.list.iter_ids().collect()
     }
 
     #[cfg(any(test, debug_assertions))]
-    /// Returns SlotIds sorted by index for deterministic snapshots.
+    /// Returns `SlotId`s sorted by internal index for deterministic comparisons.
     pub fn debug_snapshot_ids_sorted(&self) -> Vec<SlotId> {
         let mut ids: Vec<_> = self.list.iter_ids().collect();
         ids.sort_by_key(|id| id.index());
@@ -850,7 +908,7 @@ where
     }
 
     #[cfg(any(test, debug_assertions))]
-    /// Returns keys ordered by SlotId index for deterministic snapshots.
+    /// Returns keys ordered by internal `SlotId` index for deterministic comparisons.
     pub fn debug_snapshot_keys_sorted(&self) -> Vec<K>
     where
         K: Clone,
@@ -863,6 +921,12 @@ where
     }
 
     #[cfg(any(test, debug_assertions))]
+    /// Asserts that all internal invariants hold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the list length and index length diverge, the length exceeds
+    /// capacity, or any index entry points to a missing slot.
     pub fn debug_validate_invariants(&self) {
         assert_eq!(self.list.len(), self.index.len());
         assert!(self.list.len() <= self.capacity);
