@@ -102,8 +102,9 @@
 //!
 //! ## Thread Safety
 //!
-//! `KeyInterner` is not thread-safe. For concurrent use, wrap in
-//! `parking_lot::RwLock` or similar synchronization primitive.
+//! `KeyInterner<K>` is `Send + Sync` when `K` is, but provides no internal
+//! synchronization. For shared mutable access, wrap in `parking_lot::RwLock`
+//! or similar synchronization primitive.
 //!
 //! ## Implementation Notes
 //!
@@ -167,16 +168,19 @@ use std::hash::Hash;
 /// let handle_a = interner.get_handle_borrowed("page_a").unwrap();
 /// assert_eq!(freq[&handle_a], 2);
 /// ```
-#[derive(Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct KeyInterner<K> {
     index: FxHashMap<K, u64>,
     keys: Vec<K>,
 }
 
-impl<K> KeyInterner<K>
-where
-    K: Eq + Hash + Clone,
-{
+impl<K> Default for KeyInterner<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K> KeyInterner<K> {
     /// Creates an empty interner.
     ///
     /// # Example
@@ -214,7 +218,12 @@ where
             keys: Vec::with_capacity(capacity),
         }
     }
+}
 
+impl<K> KeyInterner<K>
+where
+    K: Eq + Hash + Clone,
+{
     /// Returns the handle for `key`, inserting it if missing.
     ///
     /// If the key is already interned, returns the existing handle.
@@ -249,7 +258,12 @@ where
         self.index.insert(key.clone(), id);
         id
     }
+}
 
+impl<K> KeyInterner<K>
+where
+    K: Eq + Hash,
+{
     /// Returns the handle for `key` if it exists.
     ///
     /// Does not insert the key if missing.
@@ -296,6 +310,49 @@ where
         self.index.get(key).copied()
     }
 
+    /// Shrinks internal storage to fit current length.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::KeyInterner;
+    ///
+    /// let mut interner = KeyInterner::new();
+    /// for i in 0..100u32 {
+    ///     interner.intern(&i);
+    /// }
+    /// interner.clear();
+    /// interner.shrink_to_fit();
+    /// ```
+    pub fn shrink_to_fit(&mut self) {
+        self.index.shrink_to_fit();
+        self.keys.shrink_to_fit();
+    }
+
+    /// Clears all interned keys and shrinks internal storage.
+    ///
+    /// After calling this, all previously returned handles become invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::KeyInterner;
+    ///
+    /// let mut interner = KeyInterner::new();
+    /// let handle = interner.intern(&"key");
+    /// assert_eq!(interner.resolve(handle), Some(&"key"));
+    ///
+    /// interner.clear_shrink();
+    /// assert!(interner.is_empty());
+    /// assert_eq!(interner.resolve(handle), None);  // Handle now invalid
+    /// ```
+    pub fn clear_shrink(&mut self) {
+        self.clear();
+        self.shrink_to_fit();
+    }
+}
+
+impl<K> KeyInterner<K> {
     /// Resolves a handle to its original key.
     ///
     /// Returns `None` if the handle is out of bounds.
@@ -361,20 +418,6 @@ where
     /// Clears all interned keys.
     ///
     /// After calling this, all previously returned handles become invalid.
-    pub fn clear(&mut self) {
-        self.index.clear();
-        self.keys.clear();
-    }
-
-    /// Shrinks internal storage to fit current length.
-    pub fn shrink_to_fit(&mut self) {
-        self.index.shrink_to_fit();
-        self.keys.shrink_to_fit();
-    }
-
-    /// Clears all interned keys and shrinks internal storage.
-    ///
-    /// After calling this, all previously returned handles become invalid.
     ///
     /// # Example
     ///
@@ -382,16 +425,15 @@ where
     /// use cachekit::ds::KeyInterner;
     ///
     /// let mut interner = KeyInterner::new();
-    /// let handle = interner.intern(&"key");
-    /// assert_eq!(interner.resolve(handle), Some(&"key"));
+    /// interner.intern(&"key");
+    /// assert!(!interner.is_empty());
     ///
-    /// interner.clear_shrink();
+    /// interner.clear();
     /// assert!(interner.is_empty());
-    /// assert_eq!(interner.resolve(handle), None);  // Handle now invalid
     /// ```
-    pub fn clear_shrink(&mut self) {
-        self.clear();
-        self.shrink_to_fit();
+    pub fn clear(&mut self) {
+        self.index.clear();
+        self.keys.clear();
     }
 
     /// Returns an approximate memory footprint in bytes.
@@ -417,6 +459,24 @@ where
             + self.index.capacity() * std::mem::size_of::<(K, u64)>()
             + self.keys.capacity() * std::mem::size_of::<K>()
     }
+
+    /// Returns an iterator over (handle, key) pairs in insertion order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::KeyInterner;
+    ///
+    /// let mut interner = KeyInterner::new();
+    /// interner.intern(&"a");
+    /// interner.intern(&"b");
+    ///
+    /// let pairs: Vec<_> = interner.iter().collect();
+    /// assert_eq!(pairs, vec![(0, &"a"), (1, &"b")]);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &K)> + '_ {
+        self.keys.iter().enumerate().map(|(i, k)| (i as u64, k))
+    }
 }
 
 #[cfg(test)]
@@ -435,6 +495,18 @@ mod tests {
         assert_eq!(interner.len(), 2);
         assert_eq!(interner.get_handle_borrowed("b"), Some(b));
         assert_eq!(interner.resolve(a).map(String::as_str), Some("a"));
+    }
+
+    #[test]
+    fn key_interner_iter() {
+        let mut interner: KeyInterner<String> = KeyInterner::new();
+        interner.intern(&"x".to_owned());
+        interner.intern(&"y".to_owned());
+
+        let mut pairs = interner.iter();
+        assert_eq!(pairs.next(), Some((0, &"x".to_owned())));
+        assert_eq!(pairs.next(), Some((1, &"y".to_owned())));
+        assert_eq!(pairs.next(), None);
     }
 }
 
