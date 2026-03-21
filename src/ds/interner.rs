@@ -60,18 +60,18 @@
 //! ```
 //! use cachekit::ds::KeyInterner;
 //!
-//! let mut interner = KeyInterner::new();
+//! let mut interner: KeyInterner<String> = KeyInterner::new();
 //!
 //! // Intern keys to get compact handles
-//! let h1 = interner.intern(&"long_key_name_1".to_string());
-//! let h2 = interner.intern(&"long_key_name_2".to_string());
+//! let h1 = interner.intern(&"long_key_name_1".to_owned());
+//! let _h2 = interner.intern(&"long_key_name_2".to_owned());
 //!
 //! // Same key returns same handle
-//! let h1_again = interner.intern(&"long_key_name_1".to_string());
+//! let h1_again = interner.intern(&"long_key_name_1".to_owned());
 //! assert_eq!(h1, h1_again);
 //!
 //! // Resolve handle back to key
-//! assert_eq!(interner.resolve(h1), Some(&"long_key_name_1".to_string()));
+//! assert_eq!(interner.resolve(h1).map(String::as_str), Some("long_key_name_1"));
 //! ```
 //!
 //! ## Use Case: Handle-Based Cache
@@ -86,13 +86,13 @@
 //!
 //! fn put(interner: &mut KeyInterner<String>, cache: &mut HashMap<u64, Vec<u8>>,
 //!        key: &str, value: Vec<u8>) {
-//!     let handle = interner.intern(&key.to_string());
+//!     let handle = interner.intern(&key.to_owned());
 //!     cache.insert(handle, value);
 //! }
 //!
 //! fn get<'a>(interner: &KeyInterner<String>, cache: &'a HashMap<u64, Vec<u8>>,
 //!            key: &str) -> Option<&'a Vec<u8>> {
-//!     let handle = interner.get_handle(&key.to_string())?;
+//!     let handle = interner.get_handle_borrowed(key)?;
 //!     cache.get(&handle)
 //! }
 //!
@@ -112,6 +112,7 @@
 //! - Both `index` and `keys` store copies of the key
 
 use rustc_hash::FxHashMap;
+use std::borrow::Borrow;
 use std::hash::Hash;
 
 /// Monotonic key interner that assigns a `u64` handle to each unique key.
@@ -155,7 +156,7 @@ use std::hash::Hash;
 ///
 /// // Track access frequency using handles (cheaper than cloning keys)
 /// fn access(interner: &mut KeyInterner<String>, freq: &mut HashMap<u64, u32>, key: &str) {
-///     let handle = interner.intern(&key.to_string());
+///     let handle = interner.intern(&key.to_owned());
 ///     *freq.entry(handle).or_insert(0) += 1;
 /// }
 ///
@@ -163,7 +164,7 @@ use std::hash::Hash;
 /// access(&mut interner, &mut freq, "page_a");
 /// access(&mut interner, &mut freq, "page_b");
 ///
-/// let handle_a = interner.get_handle(&"page_a".to_string()).unwrap();
+/// let handle_a = interner.get_handle_borrowed("page_a").unwrap();
 /// assert_eq!(freq[&handle_a], 2);
 /// ```
 #[derive(Debug, Default)]
@@ -186,6 +187,7 @@ where
     /// let interner: KeyInterner<String> = KeyInterner::new();
     /// assert!(interner.is_empty());
     /// ```
+    #[must_use]
     pub fn new() -> Self {
         Self {
             index: FxHashMap::default(),
@@ -205,6 +207,7 @@ where
     /// let interner: KeyInterner<String> = KeyInterner::with_capacity(1000);
     /// assert!(interner.is_empty());
     /// ```
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
@@ -262,7 +265,34 @@ where
     /// assert_eq!(interner.get_handle(&"existing"), Some(handle));
     /// assert_eq!(interner.get_handle(&"missing"), None);
     /// ```
+    #[must_use]
     pub fn get_handle(&self, key: &K) -> Option<u64> {
+        self.get_handle_borrowed(key)
+    }
+
+    /// Returns the handle for a borrowed form of `K` if it exists.
+    ///
+    /// This enables allocation-free lookups for owned key types like `String`
+    /// by querying with `&str`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::KeyInterner;
+    ///
+    /// let mut interner: KeyInterner<String> = KeyInterner::new();
+    /// interner.intern(&"hello".to_string());
+    ///
+    /// // Lookup by &str without allocating a String
+    /// assert_eq!(interner.get_handle_borrowed("hello"), Some(0));
+    /// assert_eq!(interner.get_handle_borrowed("missing"), None);
+    /// ```
+    #[must_use]
+    pub fn get_handle_borrowed<Q>(&self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         self.index.get(key).copied()
     }
 
@@ -281,8 +311,10 @@ where
     /// assert_eq!(interner.resolve(handle), Some(&"my_key"));
     /// assert_eq!(interner.resolve(999), None);  // Invalid handle
     /// ```
+    #[must_use]
     pub fn resolve(&self, handle: u64) -> Option<&K> {
-        self.keys.get(handle as usize)
+        let index = usize::try_from(handle).ok()?;
+        self.keys.get(index)
     }
 
     /// Returns the number of interned keys.
@@ -303,6 +335,7 @@ where
     /// interner.intern(&"a");
     /// assert_eq!(interner.len(), 2);
     /// ```
+    #[must_use]
     pub fn len(&self) -> usize {
         self.keys.len()
     }
@@ -320,8 +353,23 @@ where
     /// interner.intern(&"key");
     /// assert!(!interner.is_empty());
     /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
+    }
+
+    /// Clears all interned keys.
+    ///
+    /// After calling this, all previously returned handles become invalid.
+    pub fn clear(&mut self) {
+        self.index.clear();
+        self.keys.clear();
+    }
+
+    /// Shrinks internal storage to fit current length.
+    pub fn shrink_to_fit(&mut self) {
+        self.index.shrink_to_fit();
+        self.keys.shrink_to_fit();
     }
 
     /// Clears all interned keys and shrinks internal storage.
@@ -342,10 +390,8 @@ where
     /// assert_eq!(interner.resolve(handle), None);  // Handle now invalid
     /// ```
     pub fn clear_shrink(&mut self) {
-        self.index.clear();
-        self.keys.clear();
-        self.index.shrink_to_fit();
-        self.keys.shrink_to_fit();
+        self.clear();
+        self.shrink_to_fit();
     }
 
     /// Returns an approximate memory footprint in bytes.
@@ -365,6 +411,7 @@ where
     ///
     /// assert!(interner.approx_bytes() > base_bytes);
     /// ```
+    #[must_use]
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.index.capacity() * std::mem::size_of::<(K, u64)>()
@@ -378,16 +425,16 @@ mod tests {
 
     #[test]
     fn key_interner_basic_flow() {
-        let mut interner = KeyInterner::new();
+        let mut interner: KeyInterner<String> = KeyInterner::new();
         assert!(interner.is_empty());
-        let a = interner.intern(&"a".to_string());
-        let b = interner.intern(&"b".to_string());
-        let a2 = interner.intern(&"a".to_string());
+        let a = interner.intern(&"a".to_owned());
+        let b = interner.intern(&"b".to_owned());
+        let a2 = interner.intern(&"a".to_owned());
         assert_eq!(a, a2);
         assert_ne!(a, b);
         assert_eq!(interner.len(), 2);
-        assert_eq!(interner.get_handle(&"b".to_string()), Some(b));
-        assert_eq!(interner.resolve(a), Some(&"a".to_string()));
+        assert_eq!(interner.get_handle_borrowed("b"), Some(b));
+        assert_eq!(interner.resolve(a).map(String::as_str), Some("a"));
     }
 }
 
