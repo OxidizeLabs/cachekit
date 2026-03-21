@@ -13,7 +13,9 @@ pub use clock_ring::ConcurrentClockRing;
 pub use clock_ring::{ClockRing, IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
 pub use fixed_history::FixedHistory;
 pub use frequency_buckets::{
-    DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
+    BucketEntries, BucketIds, DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryDebug,
+    FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
+    Iter as FrequencyBucketsIter,
 };
 #[cfg(feature = "concurrency")]
 pub use frequency_buckets::{ShardedFrequencyBucketEntryMeta, ShardedFrequencyBuckets};

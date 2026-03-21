@@ -1151,7 +1151,7 @@ impl<T> Default for SlotArena<T> {
 /// Iterator over `(SlotId, &T)` pairs of a [`SlotArena`].
 ///
 /// Created by [`SlotArena::iter`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Iter<'a, T> {
     inner: std::iter::Enumerate<std::slice::Iter<'a, Option<T>>>,
     generations: &'a [u32],

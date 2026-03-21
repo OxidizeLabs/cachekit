@@ -183,7 +183,7 @@ impl ShardSelector {
     /// let int_shard = selector.shard_for_key(&12345_u64);
     /// assert!(int_shard < 4);
     /// ```
-    pub fn shard_for_key<K: Hash>(&self, key: &K) -> usize {
+    pub fn shard_for_key<K: Hash + ?Sized>(&self, key: &K) -> usize {
         let mut hasher = DefaultHasher::new();
         self.seed.hash(&mut hasher);
         key.hash(&mut hasher);
