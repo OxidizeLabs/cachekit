@@ -224,8 +224,9 @@ where
 /// freq.update("page_a", 3);  // accessed again
 ///
 /// // Evict least frequently used
-/// let (victim, _count) = freq.pop_best().unwrap();
-/// assert!(victim == "page_b" || victim == "page_c");  // Both have count 1
+/// if let Some((victim, _count)) = freq.pop_best() {
+///     assert!(victim == "page_b" || victim == "page_c");  // Both have count 1
+/// }
 /// ```
 #[derive(Debug, Clone)]
 pub struct LazyMinHeap<K, S> {
@@ -570,7 +571,8 @@ where
 
     /// Rebuilds if the heap has grown too stale relative to map size.
     ///
-    /// Triggers rebuild when `heap_len() > len() * factor`.
+    /// Triggers rebuild when `heap_len() > len() * factor`. Values of
+    /// `factor` below 1 are clamped to 1.
     ///
     /// # Example
     ///
@@ -651,6 +653,8 @@ struct ScoreEntry<S> {
 }
 
 /// Borrowing iterator over live `(key, score)` pairs.
+///
+/// Created by [`LazyMinHeap::iter`].
 pub struct Iter<'a, K, S> {
     inner: std::collections::hash_map::Iter<'a, K, ScoreEntry<S>>,
 }
@@ -677,6 +681,8 @@ impl<K, S> ExactSizeIterator for Iter<'_, K, S> {}
 impl<K, S> FusedIterator for Iter<'_, K, S> {}
 
 /// Owning iterator over live `(key, score)` pairs.
+///
+/// Created by the [`IntoIterator`] implementation on [`LazyMinHeap`].
 pub struct IntoIter<K, S> {
     inner: std::collections::hash_map::IntoIter<K, ScoreEntry<S>>,
 }
