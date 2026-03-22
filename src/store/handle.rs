@@ -93,27 +93,24 @@
 //! ## Example Usage
 //!
 //! ```rust
-//! use std::sync::Arc;
-//! use cachekit::ds::KeyInterner;
-//! use cachekit::store::handle::HandleStore;
-//!
-//! // Create interner and store
+//! # use std::sync::Arc;
+//! # use cachekit::ds::KeyInterner;
+//! # use cachekit::store::handle::HandleStore;
+//! # use cachekit::store::traits::StoreFull;
+//! # fn main() -> Result<(), StoreFull> {
 //! let mut interner = KeyInterner::new();
 //! let mut store: HandleStore<u64, String> = HandleStore::new(100);
 //!
-//! // Intern a key to get a handle
 //! let handle = interner.intern(&"user:12345".to_string());
+//! store.try_insert(handle, Arc::new("cached_data".to_string()))?;
 //!
-//! // Store value by handle
-//! store.try_insert(handle, Arc::new("cached_data".to_string())).unwrap();
-//!
-//! // Retrieve by handle
 //! assert_eq!(store.get(&handle), Some(Arc::new("cached_data".to_string())));
 //!
-//! // Check metrics
 //! let metrics = store.metrics();
 //! assert_eq!(metrics.hits, 1);
 //! assert_eq!(metrics.inserts, 1);
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Type Constraints
@@ -152,7 +149,7 @@ use crate::store::traits::{StoreFull, StoreMetrics};
 ///
 /// Uses `Cell<u64>` for interior mutability without synchronization overhead.
 /// Not thread-safe—intended for use with [`HandleStore`] only.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct StoreCounters {
     /// Successful lookups via `get()`.
     hits: Cell<u64>,
@@ -282,35 +279,32 @@ impl ConcurrentStoreCounters {
 /// # Example
 ///
 /// ```
-/// use std::sync::Arc;
-/// use cachekit::store::handle::HandleStore;
-///
+/// # use std::sync::Arc;
+/// # use cachekit::store::handle::HandleStore;
+/// # use cachekit::store::traits::StoreFull;
+/// # fn main() -> Result<(), StoreFull> {
 /// let mut store: HandleStore<u64, String> = HandleStore::new(3);
 ///
-/// // Insert entries using handles (e.g., from an interner)
 /// let handle_a = 1u64;
 /// let handle_b = 2u64;
 ///
-/// store.try_insert(handle_a, Arc::new("alice".into())).unwrap();
-/// store.try_insert(handle_b, Arc::new("bob".into())).unwrap();
+/// store.try_insert(handle_a, Arc::new("alice".into()))?;
+/// store.try_insert(handle_b, Arc::new("bob".into()))?;
 ///
-/// // Lookup returns Arc<V>
 /// assert_eq!(store.get(&handle_a), Some(Arc::new("alice".into())));
-///
-/// // Peek without affecting metrics
 /// assert!(store.peek(&handle_b).is_some());
 ///
-/// // Update existing entry
-/// let old = store.try_insert(handle_a, Arc::new("alice_v2".into())).unwrap();
+/// let old = store.try_insert(handle_a, Arc::new("alice_v2".into()))?;
 /// assert_eq!(old, Some(Arc::new("alice".into())));
 ///
-/// // Check metrics
 /// let m = store.metrics();
-/// assert_eq!(m.inserts, 2);  // handle_a, handle_b
-/// assert_eq!(m.updates, 1);  // handle_a updated
-/// assert_eq!(m.hits, 1);     // one get() call
+/// assert_eq!(m.inserts, 2);
+/// assert_eq!(m.updates, 1);
+/// assert_eq!(m.hits, 1);
+/// # Ok(())
+/// # }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HandleStore<H, V> {
     map: FxHashMap<H, Arc<V>>,
     capacity: usize,
@@ -347,18 +341,21 @@ where
     /// # Example
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use cachekit::store::handle::HandleStore;
-    ///
+    /// # use std::sync::Arc;
+    /// # use cachekit::store::handle::HandleStore;
+    /// # use cachekit::store::traits::StoreFull;
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HandleStore<u64, &str> = HandleStore::new(10);
-    /// store.try_insert(1, Arc::new("value")).unwrap();
+    /// store.try_insert(1, Arc::new("value"))?;
     ///
     /// assert_eq!(store.get(&1), Some(Arc::new("value")));
-    /// assert_eq!(store.get(&999), None);  // miss
+    /// assert_eq!(store.get(&999), None);
     ///
     /// let m = store.metrics();
     /// assert_eq!(m.hits, 1);
     /// assert_eq!(m.misses, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn get(&self, handle: &H) -> Option<Arc<V>> {
         match self.map.get(handle).cloned() {
@@ -380,15 +377,17 @@ where
     /// # Example
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use cachekit::store::handle::HandleStore;
-    ///
+    /// # use std::sync::Arc;
+    /// # use cachekit::store::handle::HandleStore;
+    /// # use cachekit::store::traits::StoreFull;
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HandleStore<u64, i32> = HandleStore::new(10);
-    /// store.try_insert(1, Arc::new(42)).unwrap();
+    /// store.try_insert(1, Arc::new(42))?;
     ///
-    /// // Peek doesn't update metrics
     /// assert_eq!(store.peek(&1), Some(&Arc::new(42)));
     /// assert_eq!(store.metrics().hits, 0);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn peek(&self, handle: &H) -> Option<&Arc<V>> {
         self.map.get(handle)
@@ -449,15 +448,18 @@ where
     /// # Example
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use cachekit::store::handle::HandleStore;
-    ///
+    /// # use std::sync::Arc;
+    /// # use cachekit::store::handle::HandleStore;
+    /// # use cachekit::store::traits::StoreFull;
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HandleStore<u64, &str> = HandleStore::new(10);
-    /// store.try_insert(1, Arc::new("value")).unwrap();
+    /// store.try_insert(1, Arc::new("value"))?;
     ///
     /// assert_eq!(store.remove(&1), Some(Arc::new("value")));
-    /// assert_eq!(store.remove(&1), None);  // already removed
+    /// assert_eq!(store.remove(&1), None);
     /// assert_eq!(store.metrics().removes, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn remove(&mut self, handle: &H) -> Option<Arc<V>> {
         let removed = self.map.remove(handle);
@@ -494,18 +496,21 @@ where
     /// # Example
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use cachekit::store::handle::HandleStore;
-    ///
+    /// # use std::sync::Arc;
+    /// # use cachekit::store::handle::HandleStore;
+    /// # use cachekit::store::traits::StoreFull;
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HandleStore<u64, i32> = HandleStore::new(10);
-    /// store.try_insert(1, Arc::new(100)).unwrap();
+    /// store.try_insert(1, Arc::new(100))?;
     /// store.get(&1);
-    /// store.get(&999);  // miss
+    /// store.get(&999);
     ///
     /// let m = store.metrics();
     /// assert_eq!(m.inserts, 1);
     /// assert_eq!(m.hits, 1);
     /// assert_eq!(m.misses, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
@@ -519,19 +524,21 @@ where
     /// # Example
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use cachekit::store::handle::HandleStore;
-    ///
+    /// # use std::sync::Arc;
+    /// # use cachekit::store::handle::HandleStore;
+    /// # use cachekit::store::traits::StoreFull;
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HandleStore<u64, i32> = HandleStore::new(10);
-    /// store.try_insert(1, Arc::new(100)).unwrap();
+    /// store.try_insert(1, Arc::new(100))?;
     ///
-    /// // Policy decides to evict
     /// store.remove(&1);
     /// store.record_eviction();
     ///
     /// let m = store.metrics();
     /// assert_eq!(m.removes, 1);
     /// assert_eq!(m.evictions, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
@@ -562,34 +569,31 @@ where
 /// # Example
 ///
 /// ```
-/// use std::sync::Arc;
-/// use std::thread;
-/// use cachekit::store::handle::ConcurrentHandleStore;
-/// use cachekit::store::traits::ConcurrentStoreRead;
-///
+/// # use std::sync::Arc;
+/// # use std::thread;
+/// # use cachekit::store::handle::ConcurrentHandleStore;
+/// # use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull};
 /// let store = Arc::new(ConcurrentHandleStore::<u64, String>::new(100));
 ///
-/// // Spawn writers
 /// let store_w = Arc::clone(&store);
-/// let writer = thread::spawn(move || {
-///     use cachekit::store::traits::ConcurrentStore;
+/// let writer = thread::spawn(move || -> Result<(), StoreFull> {
 ///     for i in 0..10 {
-///         store_w.try_insert(i, Arc::new(format!("value_{}", i))).unwrap();
+///         store_w.try_insert(i, Arc::new(format!("value_{}", i)))?;
 ///     }
+///     Ok(())
 /// });
 ///
-/// // Spawn readers
 /// let store_r = Arc::clone(&store);
 /// let reader = thread::spawn(move || {
-///     // Readers may see partial writes
 ///     let _ = store_r.get(&5);
 ///     store_r.len()
 /// });
 ///
-/// writer.join().unwrap();
-/// reader.join().unwrap();
+/// writer.join().expect("writer panicked")?;
+/// reader.join().expect("reader panicked");
 ///
 /// assert_eq!(store.len(), 10);
+/// # Ok::<(), StoreFull>(())
 /// ```
 ///
 /// # Trait Implementations
@@ -640,18 +644,19 @@ where
     /// # Example
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use cachekit::store::handle::ConcurrentHandleStore;
-    /// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead};
-    ///
+    /// # use std::sync::Arc;
+    /// # use cachekit::store::handle::ConcurrentHandleStore;
+    /// # use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull};
+    /// # fn main() -> Result<(), StoreFull> {
     /// let store: ConcurrentHandleStore<u64, i32> = ConcurrentHandleStore::new(10);
-    /// store.try_insert(1, Arc::new(100)).unwrap();
+    /// store.try_insert(1, Arc::new(100))?;
     ///
-    /// // Policy evicts the entry
     /// store.remove(&1);
     /// store.record_eviction();
     ///
     /// assert_eq!(store.metrics().evictions, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();

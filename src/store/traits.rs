@@ -140,6 +140,14 @@ pub struct StoreMetrics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoreFull;
 
+impl std::fmt::Display for StoreFull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("store is at capacity")
+    }
+}
+
+impl std::error::Error for StoreFull {}
+
 // =============================================================================
 // Single-threaded store traits
 // =============================================================================
