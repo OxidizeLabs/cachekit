@@ -135,6 +135,7 @@
 //! - `debug_validate_invariants()` available in debug/test builds
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
+use std::iter::{FromIterator, FusedIterator};
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
@@ -801,12 +802,14 @@ impl<T> IntrusiveList<T> {
     }
 
     #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
     /// Returns the list order as SlotIds from head to tail.
     pub fn debug_snapshot_ids(&self) -> Vec<SlotId> {
         self.iter_ids().collect()
     }
 
     #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
     /// Returns SlotIds sorted by index for deterministic snapshots.
     pub fn debug_snapshot_ids_sorted(&self) -> Vec<SlotId> {
         let mut ids: Vec<_> = self.iter_ids().collect();
@@ -886,6 +889,12 @@ impl<T> IntrusiveList<T> {
     }
 
     #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
+    ///
+    /// # Panics
+    ///
+    /// Panics if the list contains broken forward/backward links, duplicate
+    /// nodes in traversal order, or a node count that does not match the arena.
     pub fn debug_validate_invariants(&self) {
         if self.head.is_none() || self.tail.is_none() {
             assert!(self.head.is_none());
@@ -922,6 +931,7 @@ impl<T> IntrusiveList<T> {
 }
 
 /// Iterator over values from front to back.
+#[derive(Debug)]
 pub struct IntrusiveListIter<'a, T> {
     list: &'a IntrusiveList<T>,
     current: Option<SlotId>,
@@ -938,7 +948,10 @@ impl<'a, T> Iterator for IntrusiveListIter<'a, T> {
     }
 }
 
+impl<T> FusedIterator for IntrusiveListIter<'_, T> {}
+
 /// Iterator over [`SlotId`]s from front to back.
+#[derive(Debug)]
 pub struct IntrusiveListIdIter<'a, T> {
     list: &'a IntrusiveList<T>,
     current: Option<SlotId>,
@@ -955,7 +968,10 @@ impl<'a, T> Iterator for IntrusiveListIdIter<'a, T> {
     }
 }
 
+impl<T> FusedIterator for IntrusiveListIdIter<'_, T> {}
+
 /// Iterator over `(SlotId, &T)` pairs from front to back.
+#[derive(Debug)]
 pub struct IntrusiveListEntryIter<'a, T> {
     list: &'a IntrusiveList<T>,
     current: Option<SlotId>,
@@ -972,9 +988,36 @@ impl<'a, T> Iterator for IntrusiveListEntryIter<'a, T> {
     }
 }
 
+impl<T> FusedIterator for IntrusiveListEntryIter<'_, T> {}
+
 impl<T> Default for IntrusiveList<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T> Extend<T> for IntrusiveList<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        for value in iter {
+            self.push_back(value);
+        }
+    }
+}
+
+impl<T> FromIterator<T> for IntrusiveList<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut list = Self::new();
+        list.extend(iter);
+        list
+    }
+}
+
+impl<'a, T> IntoIterator for &'a IntrusiveList<T> {
+    type Item = &'a T;
+    type IntoIter = IntrusiveListIter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -1024,7 +1067,7 @@ impl<T> Default for IntrusiveList<T> {
 /// let id = list.push_front(42);
 ///
 /// // Non-blocking read
-/// if let Some(val) = list.try_get_with(id, |v| *v) {
+/// if let Some(Some(val)) = list.try_get_with(id, |v| *v) {
 ///     assert_eq!(val, 42);
 /// }
 ///
@@ -1339,9 +1382,14 @@ impl<T> ConcurrentIntrusiveList<T> {
     }
 
     /// Non-blocking version of [`get_with`](Self::get_with).
-    pub fn try_get_with<R>(&self, id: SlotId, f: impl FnOnce(&T) -> R) -> Option<R> {
+    ///
+    /// Returns:
+    /// - `None` if the read lock could not be acquired immediately
+    /// - `Some(None)` if `id` is not present
+    /// - `Some(Some(_))` with the closure result on success
+    pub fn try_get_with<R>(&self, id: SlotId, f: impl FnOnce(&T) -> R) -> Option<Option<R>> {
         let list = self.inner.try_read()?;
-        list.get(id).map(f)
+        Some(list.get(id).map(f))
     }
 
     /// Runs a closure on a mutable reference to the value at `id`.
@@ -1363,9 +1411,18 @@ impl<T> ConcurrentIntrusiveList<T> {
     }
 
     /// Non-blocking version of [`get_mut_with`](Self::get_mut_with).
-    pub fn try_get_mut_with<R>(&self, id: SlotId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    ///
+    /// Returns:
+    /// - `None` if the write lock could not be acquired immediately
+    /// - `Some(None)` if `id` is not present
+    /// - `Some(Some(_))` with the closure result on success
+    pub fn try_get_mut_with<R>(
+        &self,
+        id: SlotId,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<Option<R>> {
         let mut list = self.inner.try_write()?;
-        list.get_mut(id).map(f)
+        Some(list.get_mut(id).map(f))
     }
 
     /// Runs a closure on a shared reference to the front value.
@@ -1386,9 +1443,14 @@ impl<T> ConcurrentIntrusiveList<T> {
     }
 
     /// Non-blocking version of [`front_with`](Self::front_with).
-    pub fn try_front_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
+    ///
+    /// Returns:
+    /// - `None` if the read lock could not be acquired immediately
+    /// - `Some(None)` if the list is empty
+    /// - `Some(Some(_))` with the closure result on success
+    pub fn try_front_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<Option<R>> {
         let list = self.inner.try_read()?;
-        list.front().map(f)
+        Some(list.front().map(f))
     }
 
     /// Runs a closure on a shared reference to the back value.
@@ -1410,9 +1472,14 @@ impl<T> ConcurrentIntrusiveList<T> {
     }
 
     /// Non-blocking version of [`back_with`](Self::back_with).
-    pub fn try_back_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
+    ///
+    /// Returns:
+    /// - `None` if the read lock could not be acquired immediately
+    /// - `Some(None)` if the list is empty
+    /// - `Some(Some(_))` with the closure result on success
+    pub fn try_back_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<Option<R>> {
         let list = self.inner.try_read()?;
-        list.back().map(f)
+        Some(list.back().map(f))
     }
 
     /// Returns the epoch recorded for `id`, if present.
@@ -1685,6 +1752,18 @@ mod tests {
     }
 
     #[test]
+    fn intrusive_list_supports_standard_collection_traits() {
+        let mut list: IntrusiveList<_> = [1, 2, 3].into_iter().collect();
+        list.extend([4, 5]);
+
+        let from_iter: Vec<_> = list.iter().copied().collect();
+        assert_eq!(from_iter, vec![1, 2, 3, 4, 5]);
+
+        let via_into_iter: Vec<_> = (&list).into_iter().copied().collect();
+        assert_eq!(via_into_iter, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
     fn intrusive_list_epoch_tracking() {
         let mut list = IntrusiveList::new();
         let a = list.push_front_with_epoch("a", 7);
@@ -1737,13 +1816,37 @@ mod tests {
         let list = ConcurrentIntrusiveList::new();
         let a = list.try_push_front(1).unwrap();
         let b = list.try_push_back(2).unwrap();
-        assert_eq!(list.try_get_with(a, |v| *v), Some(1));
-        assert_eq!(list.try_get_with(b, |v| *v), Some(2));
-        assert_eq!(list.try_front_with(|v| *v), Some(1));
+        assert_eq!(list.try_get_with(a, |v| *v), Some(Some(1)));
+        assert_eq!(list.try_get_with(b, |v| *v), Some(Some(2)));
+        assert_eq!(list.try_front_with(|v| *v), Some(Some(1)));
         assert!(list.try_move_to_back(a).unwrap());
         assert_eq!(list.try_pop_front().unwrap(), Some(2));
+        assert_eq!(list.try_back_with(|v| *v), Some(Some(1)));
         assert!(list.try_clear());
         assert!(list.is_empty());
+        assert_eq!(list.try_front_with(|v| *v), Some(None));
+        assert_eq!(list.try_back_with(|v| *v), Some(None));
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_intrusive_list_try_accessors_preserve_missing_state() {
+        let list = ConcurrentIntrusiveList::new();
+        let id = list.push_back(1);
+
+        assert_eq!(list.try_get_with(id, |v| *v), Some(Some(1)));
+        assert_eq!(
+            list.try_get_mut_with(id, |v| {
+                *v = 2;
+                *v
+            }),
+            Some(Some(2))
+        );
+        assert_eq!(list.try_get_with(id, |v| *v), Some(Some(2)));
+
+        assert_eq!(list.remove(id), Some(2));
+        assert_eq!(list.try_get_with(id, |v| *v), Some(None));
+        assert_eq!(list.try_get_mut_with(id, |v| *v), Some(None));
     }
 
     #[cfg(feature = "concurrency")]
