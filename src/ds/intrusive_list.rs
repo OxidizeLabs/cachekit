@@ -135,14 +135,14 @@
 //! - `debug_validate_invariants()` available in debug/test builds
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
-use std::iter::{FromIterator, FusedIterator};
+use std::iter::{ExactSizeIterator, FusedIterator};
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
 /// Internal node with cache-line optimized layout.
 /// Link pointers (prev/next) are placed first as they're accessed on every
 /// list operation. Epoch is used for versioning. Value is accessed last.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[repr(C)]
 struct Node<T> {
     // Hot fields - accessed during every list traversal
@@ -201,10 +201,9 @@ struct Node<T> {
 /// // Order: page3, page1, page2
 ///
 /// // Evict LRU (back)
-/// let evicted = lru.pop_back().unwrap();
-/// assert_eq!(evicted, "page2");  // page2 is now oldest
+/// assert_eq!(lru.pop_back(), Some("page2"));  // page2 is now oldest
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IntrusiveList<T> {
     arena: SlotArena<Node<T>>,
     head: Option<SlotId>,
@@ -429,9 +428,8 @@ impl<T> IntrusiveList<T> {
     /// let a = list.push_back("a");
     /// let b = list.push_back("b");
     ///
-    /// for (id, value) in list.iter_entries() {
-    ///     println!("id {:?} = {}", id, value);
-    /// }
+    /// let entries: Vec<_> = list.iter_entries().map(|(id, v)| (id, *v)).collect();
+    /// assert_eq!(entries, vec![(a, "a"), (b, "b")]);
     /// ```
     pub fn iter_entries(&self) -> IntrusiveListEntryIter<'_, T> {
         IntrusiveListEntryIter {
@@ -1018,6 +1016,37 @@ impl<'a, T> IntoIterator for &'a IntrusiveList<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
+    }
+}
+
+/// Owning iterator that consumes an [`IntrusiveList`] front to back.
+#[derive(Debug)]
+pub struct IntrusiveListIntoIter<T> {
+    list: IntrusiveList<T>,
+}
+
+impl<T> Iterator for IntrusiveListIntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.list.pop_front()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.list.len();
+        (len, Some(len))
+    }
+}
+
+impl<T> ExactSizeIterator for IntrusiveListIntoIter<T> {}
+impl<T> FusedIterator for IntrusiveListIntoIter<T> {}
+
+impl<T> IntoIterator for IntrusiveList<T> {
+    type Item = T;
+    type IntoIter = IntrusiveListIntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntrusiveListIntoIter { list: self }
     }
 }
 
@@ -1759,8 +1788,69 @@ mod tests {
         let from_iter: Vec<_> = list.iter().copied().collect();
         assert_eq!(from_iter, vec![1, 2, 3, 4, 5]);
 
-        let via_into_iter: Vec<_> = (&list).into_iter().copied().collect();
-        assert_eq!(via_into_iter, vec![1, 2, 3, 4, 5]);
+        let via_ref_into_iter: Vec<_> = (&list).into_iter().copied().collect();
+        assert_eq!(via_ref_into_iter, vec![1, 2, 3, 4, 5]);
+
+        let owned: Vec<_> = list.into_iter().collect();
+        assert_eq!(owned, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn intrusive_list_into_iter_exact_size() {
+        let mut list = IntrusiveList::new();
+        list.push_back(10);
+        list.push_back(20);
+        list.push_back(30);
+
+        let mut iter = list.into_iter();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.next(), Some(10));
+        assert_eq!(iter.len(), 2);
+        assert_eq!(iter.next(), Some(20));
+        assert_eq!(iter.next(), Some(30));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.len(), 0);
+    }
+
+    #[test]
+    fn intrusive_list_clone_preserves_order_and_epochs() {
+        let mut list = IntrusiveList::new();
+        list.push_back_with_epoch("a", 1);
+        list.push_back_with_epoch("b", 2);
+        list.push_back_with_epoch("c", 3);
+
+        let cloned = list.clone();
+        assert_eq!(cloned.len(), 3);
+
+        let orig_values: Vec<_> = list.iter().copied().collect();
+        let clone_values: Vec<_> = cloned.iter().copied().collect();
+        assert_eq!(orig_values, clone_values);
+
+        let orig_epochs: Vec<_> = list.iter_ids().filter_map(|id| list.epoch(id)).collect();
+        let clone_epochs: Vec<_> = cloned
+            .iter_ids()
+            .filter_map(|id| cloned.epoch(id))
+            .collect();
+        assert_eq!(orig_epochs, clone_epochs);
+    }
+
+    #[test]
+    fn intrusive_list_clone_is_independent() {
+        let mut list = IntrusiveList::new();
+        list.push_back(1);
+        list.push_back(2);
+
+        let mut cloned = list.clone();
+        cloned.push_back(3);
+        cloned.pop_front();
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(cloned.len(), 2);
+
+        let orig: Vec<_> = list.iter().copied().collect();
+        let clone: Vec<_> = cloned.iter().copied().collect();
+        assert_eq!(orig, vec![1, 2]);
+        assert_eq!(clone, vec![2, 3]);
     }
 
     #[test]
