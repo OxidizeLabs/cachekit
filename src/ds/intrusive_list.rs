@@ -135,7 +135,7 @@
 //! - `debug_validate_invariants()` available in debug/test builds
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
-use std::iter::{ExactSizeIterator, FusedIterator};
+use std::iter::FusedIterator;
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
