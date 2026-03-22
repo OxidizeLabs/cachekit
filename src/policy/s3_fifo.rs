@@ -1528,7 +1528,7 @@ where
     /// Returns merged performance metrics (inner write-path + concurrent read-path).
     #[cfg(feature = "metrics")]
     pub fn metrics(&self) -> S3FifoMetrics {
-        let mut m = self.inner.read().metrics().clone();
+        let mut m = *self.inner.read().metrics();
         let rh = self.read_hits.load(Ordering::Relaxed);
         let rm = self.read_misses.load(Ordering::Relaxed);
         m.get_hits += rh;

@@ -10,11 +10,6 @@ pub(crate) struct MetricsCell(Cell<u64>);
 
 impl MetricsCell {
     #[inline]
-    pub fn new() -> Self {
-        Self(Cell::new(0))
-    }
-
-    #[inline]
     pub fn get(&self) -> u64 {
         self.0.get()
     }
