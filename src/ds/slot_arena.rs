@@ -1188,6 +1188,10 @@ impl<T> Extend<T> for SlotArena<T> {
     }
 }
 
+/// # Panics
+///
+/// Panics if `id` is invalid, out of bounds, or refers to a slot that has
+/// been removed and reused (stale generation).
 impl<T> std::ops::Index<SlotId> for SlotArena<T> {
     type Output = T;
 
@@ -1196,6 +1200,10 @@ impl<T> std::ops::Index<SlotId> for SlotArena<T> {
     }
 }
 
+/// # Panics
+///
+/// Panics if `id` is invalid, out of bounds, or refers to a slot that has
+/// been removed and reused (stale generation).
 impl<T> std::ops::IndexMut<SlotId> for SlotArena<T> {
     fn index_mut(&mut self, id: SlotId) -> &mut T {
         self.get_mut(id).expect("invalid or stale SlotId")
