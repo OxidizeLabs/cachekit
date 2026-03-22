@@ -119,10 +119,11 @@
 //! use cachekit::store::slab::{SlabStore, EntryId};
 //! use cachekit::store::traits::{StoreCore, StoreMut};
 //!
+//! # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
 //! let mut store: SlabStore<String, Vec<u8>> = SlabStore::new(100);
 //!
 //! // Insert and get stable handle
-//! store.try_insert("image.png".into(), vec![0x89, 0x50]).unwrap();
+//! store.try_insert("image.png".into(), vec![0x89, 0x50])?;
 //! let id: EntryId = store.entry_id(&"image.png".into()).unwrap();
 //!
 //! // Access by handle (O(1), no hash lookup)
@@ -133,9 +134,11 @@
 //!
 //! // Remove and verify slot reuse
 //! store.remove(&"image.png".into());
-//! store.try_insert("icon.png".into(), vec![0x00]).unwrap();
+//! store.try_insert("icon.png".into(), vec![0x00])?;
 //! let new_id = store.entry_id(&"icon.png".into()).unwrap();
 //! assert_eq!(id.index(), new_id.index());  // Same slot reused
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Type Constraints
@@ -191,8 +194,9 @@ use crate::store::traits::{StoreCore, StoreFactory, StoreFull, StoreMetrics, Sto
 /// use cachekit::store::slab::{SlabStore, EntryId};
 /// use cachekit::store::traits::StoreMut;
 ///
+/// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
 /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
-/// store.try_insert("key", 42).unwrap();
+/// store.try_insert("key", 42)?;
 ///
 /// // Get stable handle
 /// let id: EntryId = store.entry_id(&"key").unwrap();
@@ -202,8 +206,11 @@ use crate::store::traits::{StoreCore, StoreFactory, StoreFull, StoreMetrics, Sto
 ///
 /// // Inspect raw index (for debugging/logging)
 /// println!("Entry at slot {}", id.index());
+/// # Ok(())
+/// # }
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[must_use]
 pub struct EntryId(usize);
 
 impl EntryId {
@@ -211,6 +218,7 @@ impl EntryId {
     ///
     /// Useful for debugging, logging, or custom data structures that need
     /// to track slot positions.
+    #[must_use]
     pub fn index(&self) -> usize {
         self.0
     }
@@ -300,11 +308,12 @@ impl StoreCounters {
 /// use cachekit::store::slab::{SlabStore, EntryId};
 /// use cachekit::store::traits::{StoreCore, StoreMut};
 ///
+/// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
 /// let mut store: SlabStore<String, Vec<u8>> = SlabStore::new(100);
 ///
 /// // Insert entries
-/// store.try_insert("file1.txt".into(), vec![1, 2, 3]).unwrap();
-/// store.try_insert("file2.txt".into(), vec![4, 5, 6]).unwrap();
+/// store.try_insert("file1.txt".into(), vec![1, 2, 3])?;
+/// store.try_insert("file2.txt".into(), vec![4, 5, 6])?;
 ///
 /// // Get stable handle for policy metadata
 /// let id1 = store.entry_id(&"file1.txt".into()).unwrap();
@@ -319,9 +328,11 @@ impl StoreCounters {
 ///
 /// // Remove and observe slot reuse
 /// store.remove(&"file1.txt".into());
-/// store.try_insert("file3.txt".into(), vec![7, 8, 9]).unwrap();
+/// store.try_insert("file3.txt".into(), vec![7, 8, 9])?;
 /// let id3 = store.entry_id(&"file3.txt".into()).unwrap();
 /// assert_eq!(id1.index(), id3.index());  // Same slot reused
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// # Policy Integration
@@ -330,8 +341,9 @@ impl StoreCounters {
 /// use cachekit::store::slab::{SlabStore, EntryId};
 /// use cachekit::store::traits::StoreMut;
 ///
+/// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
 /// let mut store: SlabStore<u64, String> = SlabStore::new(10);
-/// store.try_insert(1, "value".into()).unwrap();
+/// store.try_insert(1, "value".into())?;
 ///
 /// // Policy tracks EntryId for O(1) eviction
 /// let victim_id = store.entry_id(&1).unwrap();
@@ -342,8 +354,11 @@ impl StoreCounters {
 ///
 /// assert_eq!(key, 1);
 /// assert_eq!(value, "value");
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
+#[must_use]
 pub struct SlabStore<K, V> {
     entries: Vec<Option<Entry<K, V>>>,
     free_list: Vec<usize>,
@@ -390,13 +405,16 @@ where
     /// use cachekit::store::slab::SlabStore;
     /// use cachekit::store::traits::StoreMut;
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
-    /// store.try_insert("key", 42).unwrap();
+    /// store.try_insert("key", 42)?;
     ///
     /// let id = store.entry_id(&"key").unwrap();
     /// assert_eq!(store.get_by_id(id), Some(&42));
     ///
     /// assert!(store.entry_id(&"missing").is_none());
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn entry_id(&self, key: &K) -> Option<EntryId> {
         self.index.get(key).copied()
@@ -412,11 +430,14 @@ where
     /// use cachekit::store::slab::SlabStore;
     /// use cachekit::store::traits::StoreMut;
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
-    /// store.try_insert("key", 100).unwrap();
+    /// store.try_insert("key", 100)?;
     /// let id = store.entry_id(&"key").unwrap();
     ///
     /// assert_eq!(store.get_by_id(id), Some(&100));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn get_by_id(&self, id: EntryId) -> Option<&V> {
         self.entries
@@ -434,8 +455,9 @@ where
     /// use cachekit::store::slab::SlabStore;
     /// use cachekit::store::traits::StoreMut;
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let mut store: SlabStore<&str, Vec<i32>> = SlabStore::new(10);
-    /// store.try_insert("nums", vec![1, 2, 3]).unwrap();
+    /// store.try_insert("nums", vec![1, 2, 3])?;
     /// let id = store.entry_id(&"nums").unwrap();
     ///
     /// // Modify in place
@@ -444,6 +466,8 @@ where
     /// }
     ///
     /// assert_eq!(store.get_by_id(id), Some(&vec![1, 2, 3, 4]));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn get_by_id_mut(&mut self, id: EntryId) -> Option<&mut V> {
         self.entries
@@ -461,11 +485,14 @@ where
     /// use cachekit::store::slab::SlabStore;
     /// use cachekit::store::traits::StoreMut;
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let mut store: SlabStore<String, i32> = SlabStore::new(10);
-    /// store.try_insert("my_key".into(), 42).unwrap();
+    /// store.try_insert("my_key".into(), 42)?;
     /// let id = store.entry_id(&"my_key".into()).unwrap();
     ///
     /// assert_eq!(store.key_by_id(id), Some(&"my_key".into()));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn key_by_id(&self, id: EntryId) -> Option<&K> {
         self.entries
@@ -481,12 +508,15 @@ where
     /// use cachekit::store::slab::SlabStore;
     /// use cachekit::store::traits::{StoreCore, StoreMut};
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
-    /// store.try_insert("key", 42).unwrap();
+    /// store.try_insert("key", 42)?;
     ///
     /// // Peek doesn't update metrics
     /// assert_eq!(store.peek(&"key"), Some(&42));
     /// assert_eq!(store.metrics().hits, 0);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn peek(&self, key: &K) -> Option<&V> {
         self.index.get(key).and_then(|id| self.get_by_id(*id))
@@ -513,8 +543,9 @@ where
     /// use cachekit::store::slab::SlabStore;
     /// use cachekit::store::traits::{StoreCore, StoreMut};
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
-    /// store.try_insert("victim", 1).unwrap();
+    /// store.try_insert("victim", 1)?;
     /// let id = store.entry_id(&"victim").unwrap();
     ///
     /// // Policy evicts
@@ -524,6 +555,8 @@ where
     /// let m = store.metrics();
     /// assert_eq!(m.removes, 1);
     /// assert_eq!(m.evictions, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
@@ -540,8 +573,9 @@ where
     /// use cachekit::store::slab::SlabStore;
     /// use cachekit::store::traits::{StoreCore, StoreMut};
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let mut store: SlabStore<&str, i32> = SlabStore::new(10);
-    /// store.try_insert("key", 42).unwrap();
+    /// store.try_insert("key", 42)?;
     /// let id = store.entry_id(&"key").unwrap();
     ///
     /// let (key, value) = store.remove_by_id(id).unwrap();
@@ -550,6 +584,8 @@ where
     ///
     /// // Slot is now free for reuse
     /// assert!(!store.contains(&"key"));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn remove_by_id(&mut self, id: EntryId) -> Option<(K, V)> {
         let entry = self.entries.get_mut(id.0)?.take()?;
@@ -621,6 +657,11 @@ where
     /// # Errors
     ///
     /// Returns [`StoreFull`] if at capacity and the key is new.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the index references a slot that is unexpectedly empty,
+    /// indicating an internal invariant violation.
     fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreFull> {
         if let Some(id) = self.index.get(&key).copied() {
             let entry = self.entries[id.0].as_mut().expect("slab entry missing");
@@ -764,6 +805,7 @@ impl<K: Eq + Hash, V> SlabInner<K, V> {
 
 #[cfg(feature = "concurrency")]
 #[derive(Debug)]
+#[must_use]
 #[allow(clippy::type_complexity)]
 pub struct ConcurrentSlabStore<K, V> {
     inner: RwLock<SlabInner<K, V>>,
@@ -810,11 +852,14 @@ where
     /// use cachekit::store::slab::ConcurrentSlabStore;
     /// use cachekit::store::traits::ConcurrentStore;
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let store: ConcurrentSlabStore<&str, i32> = ConcurrentSlabStore::new(10);
-    /// store.try_insert("key", Arc::new(42)).unwrap();
+    /// store.try_insert("key", Arc::new(42))?;
     ///
     /// let id = store.entry_id(&"key").unwrap();
     /// assert!(store.get_by_id(id).is_some());
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn entry_id(&self, key: &K) -> Option<EntryId> {
         self.inner.read().index.get(key).copied()
@@ -832,12 +877,15 @@ where
     /// use cachekit::store::slab::ConcurrentSlabStore;
     /// use cachekit::store::traits::ConcurrentStore;
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let store: ConcurrentSlabStore<&str, i32> = ConcurrentSlabStore::new(10);
-    /// store.try_insert("key", Arc::new(42)).unwrap();
+    /// store.try_insert("key", Arc::new(42))?;
     /// let id = store.entry_id(&"key").unwrap();
     ///
     /// let value: Arc<i32> = store.get_by_id(id).unwrap();
     /// assert_eq!(*value, 42);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn get_by_id(&self, id: EntryId) -> Option<Arc<V>> {
         let inner = self.inner.read();
@@ -858,11 +906,14 @@ where
     /// use cachekit::store::slab::ConcurrentSlabStore;
     /// use cachekit::store::traits::ConcurrentStore;
     ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
     /// let store: ConcurrentSlabStore<String, i32> = ConcurrentSlabStore::new(10);
-    /// store.try_insert("my_key".into(), Arc::new(42)).unwrap();
+    /// store.try_insert("my_key".into(), Arc::new(42))?;
     /// let id = store.entry_id(&"my_key".into()).unwrap();
     ///
     /// assert_eq!(store.key_by_id(id), Some("my_key".into()));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn key_by_id(&self, id: EntryId) -> Option<K>
     where
@@ -875,9 +926,97 @@ where
             .and_then(|slot| slot.as_ref().map(|entry| entry.key.clone()))
     }
 
+    /// Returns a clone of the value without updating metrics.
+    ///
+    /// Acquires read lock.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead};
+    ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
+    /// let store: ConcurrentSlabStore<&str, i32> = ConcurrentSlabStore::new(10);
+    /// store.try_insert("key", Arc::new(42))?;
+    ///
+    /// // Peek doesn't update metrics
+    /// assert_eq!(store.peek(&"key"), Some(Arc::new(42)));
+    /// assert_eq!(store.metrics().hits, 0);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn peek(&self, key: &K) -> Option<Arc<V>> {
+        let inner = self.inner.read();
+        let id = inner.index.get(key)?;
+        inner
+            .entries
+            .get(id.0)
+            .and_then(|slot| slot.as_ref().map(|entry| Arc::clone(&entry.value)))
+    }
+
+    /// Removes an entry by `EntryId`, returning the key and value.
+    ///
+    /// Enables O(1) eviction when the policy tracks handles. The slot is
+    /// returned to the free list for reuse.
+    ///
+    /// Acquires write lock.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead};
+    ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
+    /// let store: ConcurrentSlabStore<&str, i32> = ConcurrentSlabStore::new(10);
+    /// store.try_insert("key", Arc::new(42))?;
+    /// let id = store.entry_id(&"key").unwrap();
+    ///
+    /// let (key, value) = store.remove_by_id(id).unwrap();
+    /// assert_eq!(key, "key");
+    /// assert_eq!(*value, 42);
+    ///
+    /// assert!(!store.contains(&"key"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn remove_by_id(&self, id: EntryId) -> Option<(K, Arc<V>)> {
+        let mut inner = self.inner.write();
+        let entry = inner.entries.get_mut(id.0)?.take()?;
+        inner.index.remove(&entry.key);
+        inner.free_list.push(id.0);
+        self.metrics.inc_remove();
+        Some((entry.key, entry.value))
+    }
+
     /// Records an eviction in the metrics.
     ///
     /// Thread-safe via atomic increment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead};
+    ///
+    /// # fn main() -> Result<(), cachekit::store::traits::StoreFull> {
+    /// let store: ConcurrentSlabStore<&str, i32> = ConcurrentSlabStore::new(10);
+    /// store.try_insert("victim", Arc::new(1))?;
+    /// let id = store.entry_id(&"victim").unwrap();
+    ///
+    /// store.remove_by_id(id);
+    /// store.record_eviction();
+    ///
+    /// let m = store.metrics();
+    /// assert_eq!(m.removes, 1);
+    /// assert_eq!(m.evictions, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
@@ -1118,5 +1257,30 @@ mod tests {
         let id = store.entry_id(&"k1").expect("missing entry id");
         assert_eq!(store.get_by_id(id), Some(Arc::new("v1".to_string())));
         assert_eq!(store.key_by_id(id), Some("k1"));
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_slab_store_remove_by_id() {
+        let store = ConcurrentSlabStore::new(2);
+        store.try_insert("k1", Arc::new("v1".to_string())).unwrap();
+        let id = store.entry_id(&"k1").unwrap();
+        let (key, value) = store.remove_by_id(id).unwrap();
+        assert_eq!(key, "k1");
+        assert_eq!(*value, "v1".to_string());
+        assert!(!store.contains(&"k1"));
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_slab_store_peek() {
+        let store = ConcurrentSlabStore::new(2);
+        store.try_insert("k1", Arc::new("v1".to_string())).unwrap();
+
+        assert_eq!(store.peek(&"k1"), Some(Arc::new("v1".to_string())));
+        assert_eq!(store.metrics().hits, 0);
+
+        assert!(store.peek(&"missing").is_none());
+        assert_eq!(store.metrics().misses, 0);
     }
 }

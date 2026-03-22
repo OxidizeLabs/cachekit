@@ -117,13 +117,15 @@
 //! ```rust
 //! use std::sync::Arc;
 //! use cachekit::store::weight::WeightStore;
+//! use cachekit::store::traits::StoreFull;
 //!
+//! # fn main() -> Result<(), StoreFull> {
 //! // Cache with max 100 entries OR 1MB total, whichever is hit first
 //! let mut store = WeightStore::with_capacity(100, 1_000_000, |v: &Vec<u8>| v.len());
 //!
 //! // Insert entries
-//! store.try_insert("small", Arc::new(vec![0u8; 100])).unwrap();
-//! store.try_insert("large", Arc::new(vec![0u8; 10_000])).unwrap();
+//! store.try_insert("small", Arc::new(vec![0u8; 100]))?;
+//! store.try_insert("large", Arc::new(vec![0u8; 10_000]))?;
 //!
 //! assert_eq!(store.len(), 2);
 //! assert_eq!(store.total_weight(), 10_100);
@@ -131,6 +133,8 @@
 //! // Remove adjusts weight
 //! store.remove(&"large");
 //! assert_eq!(store.total_weight(), 100);
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Type Constraints
@@ -151,6 +155,7 @@
 //! - Does **not** implement `StoreCore`/`StoreMut` (uses `Arc<V>` API)
 //! - Metrics use atomic counters for concurrent compatibility
 
+use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -252,7 +257,9 @@ impl StoreCounters {
 /// ```
 /// use std::sync::Arc;
 /// use cachekit::store::weight::WeightStore;
+/// use cachekit::store::traits::StoreFull;
 ///
+/// # fn main() -> Result<(), StoreFull> {
 /// // Image cache: max 50 images OR 100MB, whichever is hit first
 /// let mut store = WeightStore::with_capacity(
 ///     50,           // max entries
@@ -264,8 +271,8 @@ impl StoreCounters {
 /// let small_img = Arc::new(vec![0u8; 1_000]);      // 1KB
 /// let large_img = Arc::new(vec![0u8; 10_000_000]); // 10MB
 ///
-/// store.try_insert("thumbnail", small_img).unwrap();
-/// store.try_insert("fullsize", large_img).unwrap();
+/// store.try_insert("thumbnail", small_img)?;
+/// store.try_insert("fullsize", large_img)?;
 ///
 /// assert_eq!(store.len(), 2);
 /// assert_eq!(store.total_weight(), 10_001_000);
@@ -276,6 +283,8 @@ impl StoreCounters {
 /// let _ = store.get(&"missing");
 /// assert_eq!(store.metrics().hits, 1);
 /// assert_eq!(store.metrics().misses, 1);
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// # Weight Function Examples
@@ -299,11 +308,7 @@ impl StoreCounters {
 ///     |doc: &Document| doc.content.len() + doc.metadata.len()
 /// );
 /// ```
-#[derive(Debug)]
-pub struct WeightStore<K, V, F>
-where
-    F: Fn(&V) -> usize,
-{
+pub struct WeightStore<K, V, F> {
     map: FxHashMap<K, WeightEntry<V>>,
     capacity_entries: usize,
     capacity_weight: usize,
@@ -359,19 +364,34 @@ where
     /// ```
     /// use std::sync::Arc;
     /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
     ///
-    /// store.try_insert("a", Arc::new("hello".into())).unwrap();  // weight 5
-    /// store.try_insert("b", Arc::new("world!".into())).unwrap(); // weight 6
+    /// store.try_insert("a", Arc::new("hello".into()))?;  // weight 5
+    /// store.try_insert("b", Arc::new("world!".into()))?; // weight 6
     ///
     /// assert_eq!(store.total_weight(), 11);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn total_weight(&self) -> usize {
         self.total_weight
     }
 
     /// Returns the configured maximum weight capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let store: WeightStore<&str, String, _> =
+    ///     WeightStore::with_capacity(100, 50_000, |s: &String| s.len());
+    ///
+    /// assert_eq!(store.capacity_weight(), 50_000);
+    /// ```
     pub fn capacity_weight(&self) -> usize {
         self.capacity_weight
     }
@@ -390,15 +410,19 @@ where
     /// ```
     /// use std::sync::Arc;
     /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
-    /// store.try_insert("key", Arc::new("value".into())).unwrap();
+    /// store.try_insert("key", Arc::new("value".into()))?;
     ///
     /// assert_eq!(store.get(&"key"), Some(Arc::new("value".into())));
     /// assert_eq!(store.get(&"missing"), None);
     ///
     /// assert_eq!(store.metrics().hits, 1);
     /// assert_eq!(store.metrics().misses, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn get(&self, key: &K) -> Option<Arc<V>> {
         match self.map.get(key).map(|entry| Arc::clone(&entry.value)) {
@@ -420,39 +444,124 @@ where
     /// ```
     /// use std::sync::Arc;
     /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
-    /// store.try_insert("key", Arc::new("value".into())).unwrap();
+    /// store.try_insert("key", Arc::new("value".into()))?;
     ///
     /// // Peek doesn't affect metrics
     /// assert!(store.peek(&"key").is_some());
     /// assert_eq!(store.metrics().hits, 0);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn peek(&self, key: &K) -> Option<&Arc<V>> {
         self.map.get(key).map(|entry| &entry.value)
     }
 
     /// Returns `true` if the key exists in the store.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
+    ///
+    /// # fn main() -> Result<(), StoreFull> {
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// store.try_insert("key", Arc::new("value".into()))?;
+    ///
+    /// assert!(store.contains(&"key"));
+    /// assert!(!store.contains(&"missing"));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
     /// Returns the current number of entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
+    ///
+    /// # fn main() -> Result<(), StoreFull> {
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// assert_eq!(store.len(), 0);
+    ///
+    /// store.try_insert("key", Arc::new("value".into()))?;
+    /// assert_eq!(store.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
     /// Returns `true` if the store contains no entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
+    ///
+    /// # fn main() -> Result<(), StoreFull> {
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// assert!(store.is_empty());
+    ///
+    /// store.try_insert("key", Arc::new("value".into()))?;
+    /// assert!(!store.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
     /// Returns the maximum entry capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let store: WeightStore<&str, String, _> =
+    ///     WeightStore::with_capacity(100, 50_000, |s: &String| s.len());
+    ///
+    /// assert_eq!(store.capacity(), 100);
+    /// ```
     pub fn capacity(&self) -> usize {
         self.capacity_entries
     }
 
     /// Returns a snapshot of the store's metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
+    ///
+    /// # fn main() -> Result<(), StoreFull> {
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// store.try_insert("key", Arc::new("value".into()))?;
+    /// let _ = store.get(&"key");
+    ///
+    /// let m = store.metrics();
+    /// assert_eq!(m.inserts, 1);
+    /// assert_eq!(m.hits, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn metrics(&self) -> StoreMetrics {
         self.metrics.snapshot()
     }
@@ -461,6 +570,18 @@ where
     ///
     /// Call when the policy evicts an entry. Separate from `remove()` to
     /// distinguish user-initiated removals from policy-driven evictions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let store: WeightStore<&str, String, _> =
+    ///     WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    ///
+    /// store.record_eviction();
+    /// assert_eq!(store.metrics().evictions, 1);
+    /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
@@ -478,6 +599,10 @@ where
     /// - Entry count would exceed `capacity_entries` (new key only)
     /// - Total weight would exceed `capacity_weight`
     ///
+    /// # Panics
+    ///
+    /// Panics if internal weight accounting is inconsistent (indicates a bug).
+    ///
     /// # Example
     ///
     /// ```
@@ -485,18 +610,21 @@ where
     /// use cachekit::store::weight::WeightStore;
     /// use cachekit::store::traits::StoreFull;
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store = WeightStore::with_capacity(10, 100, |s: &String| s.len());
     ///
     /// // Insert succeeds
-    /// assert!(store.try_insert("a", Arc::new("hello".into())).is_ok());
+    /// store.try_insert("a", Arc::new("hello".into()))?;
     ///
     /// // Update returns old value
-    /// let old = store.try_insert("a", Arc::new("hi".into())).unwrap();
+    /// let old = store.try_insert("a", Arc::new("hi".into()))?;
     /// assert_eq!(old, Some(Arc::new("hello".into())));
     ///
     /// // Weight limit exceeded
     /// let huge = Arc::new("x".repeat(200));
     /// assert_eq!(store.try_insert("b", huge), Err(StoreFull));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let new_weight = self.compute_weight(value.as_ref());
@@ -547,18 +675,26 @@ where
     ///
     /// Adjusts `total_weight` by subtracting the entry's weight.
     ///
+    /// # Panics
+    ///
+    /// Panics if internal weight accounting is inconsistent (indicates a bug).
+    ///
     /// # Example
     ///
     /// ```
     /// use std::sync::Arc;
     /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
-    /// store.try_insert("key", Arc::new("value".into())).unwrap();
+    /// store.try_insert("key", Arc::new("value".into()))?;
     ///
     /// assert_eq!(store.total_weight(), 5);
     /// store.remove(&"key");
     /// assert_eq!(store.total_weight(), 0);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let entry = self.map.remove(key)?;
@@ -575,9 +711,39 @@ where
     }
 
     /// Removes all entries and resets total weight to zero.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::weight::WeightStore;
+    /// use cachekit::store::traits::StoreFull;
+    ///
+    /// # fn main() -> Result<(), StoreFull> {
+    /// let mut store = WeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    /// store.try_insert("a", Arc::new("hello".into()))?;
+    /// store.try_insert("b", Arc::new("world".into()))?;
+    ///
+    /// store.clear();
+    /// assert!(store.is_empty());
+    /// assert_eq!(store.total_weight(), 0);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn clear(&mut self) {
         self.map.clear();
         self.total_weight = 0;
+    }
+}
+
+impl<K, V, F> fmt::Debug for WeightStore<K, V, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WeightStore")
+            .field("len", &self.map.len())
+            .field("capacity_entries", &self.capacity_entries)
+            .field("capacity_weight", &self.capacity_weight)
+            .field("total_weight", &self.total_weight)
+            .finish_non_exhaustive()
     }
 }
 
@@ -629,12 +795,8 @@ where
 /// assert_eq!(store.len(), 100);
 /// assert_eq!(store.total_weight(), 10_000);  // 100 entries × 100 bytes
 /// ```
-#[derive(Debug)]
 #[cfg(feature = "concurrency")]
-pub struct ConcurrentWeightStore<K, V, F>
-where
-    F: Fn(&V) -> usize,
-{
+pub struct ConcurrentWeightStore<K, V, F> {
     inner: RwLock<WeightStore<K, V, F>>,
     metrics: StoreCounters,
 }
@@ -689,12 +851,15 @@ where
     /// ```
     /// use std::sync::Arc;
     /// use cachekit::store::weight::ConcurrentWeightStore;
-    /// use cachekit::store::traits::ConcurrentStore;
+    /// use cachekit::store::traits::{ConcurrentStore, StoreFull};
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let store = ConcurrentWeightStore::with_capacity(10, 1000, |s: &String| s.len());
-    /// store.try_insert("key", Arc::new("hello".into())).unwrap();
+    /// store.try_insert("key", Arc::new("hello".into()))?;
     ///
     /// assert_eq!(store.total_weight(), 5);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn total_weight(&self) -> usize {
         self.inner.read().total_weight()
@@ -703,6 +868,18 @@ where
     /// Returns the configured maximum weight capacity.
     ///
     /// Acquires read lock.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::ConcurrentWeightStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentWeightStore<String, String, _> =
+    ///     ConcurrentWeightStore::with_capacity(100, 50_000, |s: &String| s.len());
+    ///
+    /// assert_eq!(store.capacity_weight(), 50_000);
+    /// ```
     pub fn capacity_weight(&self) -> usize {
         self.inner.read().capacity_weight()
     }
@@ -710,8 +887,34 @@ where
     /// Records an eviction in the metrics.
     ///
     /// Thread-safe via atomic increment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::ConcurrentWeightStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentWeightStore<String, String, _> =
+    ///     ConcurrentWeightStore::with_capacity(10, 1000, |s: &String| s.len());
+    ///
+    /// store.record_eviction();
+    /// assert_eq!(store.metrics().evictions, 1);
+    /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V, F> fmt::Debug for ConcurrentWeightStore<K, V, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let inner = self.inner.read();
+        f.debug_struct("ConcurrentWeightStore")
+            .field("len", &inner.map.len())
+            .field("capacity_entries", &inner.capacity_entries)
+            .field("capacity_weight", &inner.capacity_weight)
+            .field("total_weight", &inner.total_weight)
+            .finish_non_exhaustive()
     }
 }
 

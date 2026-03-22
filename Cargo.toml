@@ -35,6 +35,7 @@ crate-type = ["lib"]
 [features]
 default = ["policy-s3-fifo", "policy-lru", "policy-fast-lru", "policy-lru-k", "policy-clock"]
 metrics = []
+serde = ["dep:serde"]
 concurrency = ["parking_lot"]
 
 # Eviction policy feature flags. Enable only the policies you need for smaller builds.
@@ -81,6 +82,7 @@ policy-nru = []
 [dependencies]
 parking_lot = { version = "0.12", optional = true }
 rustc-hash = "2.1"
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 bench-support = { path = "bench-support" }
