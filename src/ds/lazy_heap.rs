@@ -133,11 +133,12 @@
 //!
 //! - Uses `BinaryHeap<Reverse<_>>` for min-heap behavior
 //! - Tie-breaking uses sequence numbers for FIFO among equal scores
-//! - `debug_validate_invariants()` available in debug/test builds
 use std::borrow::Borrow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
+use std::fmt;
 use std::hash::Hash;
+use std::iter::FusedIterator;
 
 #[derive(Debug, Clone)]
 struct HeapEntry<K, S> {
@@ -413,8 +414,10 @@ where
     /// entries.sort();
     /// assert_eq!(entries, vec![(&"a", &1), (&"b", &2)]);
     /// ```
-    pub fn iter(&self) -> impl Iterator<Item = (&K, &S)> + '_ {
-        self.scores.iter().map(|(k, entry)| (k, &entry.score))
+    pub fn iter(&self) -> Iter<'_, K, S> {
+        Iter {
+            inner: self.scores.iter(),
+        }
     }
 
     /// Returns the current score for `key`, if present.
@@ -590,9 +593,8 @@ where
         }
     }
 
-    #[cfg(any(test, debug_assertions))]
-    /// Returns a debug snapshot of heap/map sizes.
-    pub fn debug_snapshot(&self) -> LazyHeapSnapshot {
+    #[cfg(test)]
+    fn debug_snapshot(&self) -> LazyHeapSnapshot {
         LazyHeapSnapshot {
             len: self.len(),
             heap_len: self.heap_len(),
@@ -616,9 +618,8 @@ where
             + self.heap.capacity() * std::mem::size_of::<std::cmp::Reverse<HeapEntry<K, S>>>()
     }
 
-    #[cfg(any(test, debug_assertions))]
-    /// Returns a cloned view of scores for debugging.
-    pub fn debug_snapshot_scores(&self) -> Vec<(K, S)>
+    #[cfg(test)]
+    fn debug_snapshot_scores(&self) -> Vec<(K, S)>
     where
         K: Clone,
         S: Clone,
@@ -629,9 +630,8 @@ where
             .collect()
     }
 
-    #[cfg(any(test, debug_assertions))]
-    /// Validates internal invariants (debug/test builds only).
-    pub fn debug_validate_invariants(&self) {
+    #[cfg(test)]
+    fn debug_validate_invariants(&self) {
         assert_eq!(self.len(), self.scores.len());
         if self.is_empty() {
             assert!(self.scores.is_empty());
@@ -650,12 +650,63 @@ struct ScoreEntry<S> {
     seq: u64,
 }
 
-#[cfg(any(test, debug_assertions))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct LazyHeapSnapshot {
-    pub len: usize,
-    pub heap_len: usize,
+/// Borrowing iterator over live `(key, score)` pairs.
+pub struct Iter<'a, K, S> {
+    inner: std::collections::hash_map::Iter<'a, K, ScoreEntry<S>>,
+}
+
+impl<K: fmt::Debug, S: fmt::Debug> fmt::Debug for Iter<'_, K, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Iter").finish_non_exhaustive()
+    }
+}
+
+impl<'a, K, S> Iterator for Iter<'a, K, S> {
+    type Item = (&'a K, &'a S);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(key, entry)| (key, &entry.score))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, S> ExactSizeIterator for Iter<'_, K, S> {}
+impl<K, S> FusedIterator for Iter<'_, K, S> {}
+
+/// Owning iterator over live `(key, score)` pairs.
+pub struct IntoIter<K, S> {
+    inner: std::collections::hash_map::IntoIter<K, ScoreEntry<S>>,
+}
+
+impl<K: fmt::Debug, S: fmt::Debug> fmt::Debug for IntoIter<K, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IntoIter").finish_non_exhaustive()
+    }
+}
+
+impl<K, S> Iterator for IntoIter<K, S> {
+    type Item = (K, S);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(key, entry)| (key, entry.score))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, S> ExactSizeIterator for IntoIter<K, S> {}
+impl<K, S> FusedIterator for IntoIter<K, S> {}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LazyHeapSnapshot {
+    len: usize,
+    heap_len: usize,
 }
 
 impl<K, S> Default for LazyMinHeap<K, S>
@@ -693,6 +744,34 @@ where
         for (key, score) in iter {
             self.update(key, score);
         }
+    }
+}
+
+impl<K, S> IntoIterator for LazyMinHeap<K, S>
+where
+    K: Eq + Hash + Clone,
+    S: Ord + Clone,
+{
+    type Item = (K, S);
+    type IntoIter = IntoIter<K, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            inner: self.scores.into_iter(),
+        }
+    }
+}
+
+impl<'a, K, S> IntoIterator for &'a LazyMinHeap<K, S>
+where
+    K: Eq + Hash + Clone,
+    S: Ord + Clone,
+{
+    type Item = (&'a K, &'a S);
+    type IntoIter = Iter<'a, K, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -827,6 +906,30 @@ mod tests {
 
         let scores = heap.debug_snapshot_scores();
         assert_eq!(scores.len(), 2);
+    }
+
+    #[test]
+    fn lazy_heap_iter_visits_live_entries() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 3);
+        heap.update("b", 1);
+        heap.update("a", 2);
+
+        let mut entries: Vec<_> = heap.iter().collect();
+        entries.sort();
+        assert_eq!(entries, vec![(&"a", &2), (&"b", &1)]);
+    }
+
+    #[test]
+    fn lazy_heap_into_iter_yields_live_entries() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 3);
+        heap.update("b", 1);
+        heap.update("a", 2);
+
+        let mut entries: Vec<_> = heap.into_iter().collect();
+        entries.sort();
+        assert_eq!(entries, vec![("a", 2), ("b", 1)]);
     }
 }
 
