@@ -1,4 +1,28 @@
-#[derive(Debug, Default, Clone, Copy)]
+//! Point-in-time snapshots of cache metrics counters.
+//!
+//! Each eviction policy has a dedicated snapshot struct that captures both the
+//! core counters (gets, inserts, evictions) and policy-specific signals at the
+//! moment [`MetricsSnapshotProvider::snapshot`] is called.
+//!
+//! Snapshots are cheap `Copy` value types intended for assertion in tests,
+//! export via [`PrometheusTextExporter`], or ad-hoc inspection with `Debug`.
+//!
+//! ## Example
+//!
+//! ```
+//! use cachekit::metrics::snapshot::CoreOnlyMetricsSnapshot;
+//!
+//! let snap = CoreOnlyMetricsSnapshot::default();
+//! assert_eq!(snap.get_calls, snap.get_hits + snap.get_misses);
+//! ```
+//!
+//! [`MetricsSnapshotProvider::snapshot`]: crate::metrics::traits::MetricsSnapshotProvider::snapshot
+//! [`PrometheusTextExporter`]: crate::metrics::exporter::PrometheusTextExporter
+
+/// FIFO / insertion-order cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CacheMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -10,8 +34,10 @@ pub struct CacheMetricsSnapshot {
 
     pub evict_calls: u64,
     pub evicted_entries: u64,
-    pub stale_skips: u64, // queue entries popped that were already removed from map
-    pub evict_scan_steps: u64, // how many pop_front iterations inside eviction
+    /// Queue entries popped that were already removed from the map.
+    pub stale_skips: u64,
+    /// How many `pop_front` iterations inside a single eviction call.
+    pub evict_scan_steps: u64,
 
     pub pop_oldest_calls: u64,
     pub pop_oldest_found: u64,
@@ -24,13 +50,18 @@ pub struct CacheMetricsSnapshot {
     pub age_rank_found: u64,
     pub age_rank_scan_steps: u64,
 
-    // gauges captured at snapshot time
+    /// Current number of entries in the cache (gauge).
     pub cache_len: usize,
+    /// Current length of the insertion-order queue (gauge).
     pub insertion_order_len: usize,
+    /// Configured maximum capacity (gauge).
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// LRU (Least Recently Used) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LruMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -57,7 +88,10 @@ pub struct LruMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// LFU (Least Frequently Used) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LfuMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -85,7 +119,10 @@ pub struct LfuMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// LRU-K cache metrics, combining standard LRU counters with K-distance tracking.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LruKMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -122,7 +159,10 @@ pub struct LruKMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// Core-only metrics for policies that add no policy-specific counters.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoreOnlyMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -139,7 +179,10 @@ pub struct CoreOnlyMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// ARC (Adaptive Replacement Cache) metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArcMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -164,7 +207,10 @@ pub struct ArcMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// CAR (Clock with Adaptive Replacement) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CarMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -188,7 +234,10 @@ pub struct CarMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// CLOCK cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ClockMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -208,7 +257,10 @@ pub struct ClockMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// CLOCK-Pro cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ClockProMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -230,7 +282,10 @@ pub struct ClockProMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// MFU (Most Frequently Used) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MfuMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -254,7 +309,10 @@ pub struct MfuMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// NRU (Not Recently Used) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NruMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -274,7 +332,10 @@ pub struct NruMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// SLRU (Segmented LRU) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlruMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -294,7 +355,10 @@ pub struct SlruMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// 2Q (Two-Queue) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TwoQMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -314,7 +378,10 @@ pub struct TwoQMetricsSnapshot {
     pub capacity: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// S3-FIFO cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct S3FifoMetricsSnapshot {
     pub get_calls: u64,
     pub get_hits: u64,

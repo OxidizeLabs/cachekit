@@ -43,8 +43,25 @@
 //! - **Environment split**:
 //!   - Production: use lightweight recorders + exporters.
 //!   - Bench/Test: use snapshot providers + resettable metrics.
+//!
+//! ## Example
+//!
+//! ```
+//! use cachekit::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
+//!
+//! fn run_workload<M: CoreMetricsRecorder>(m: &mut M) {
+//!     m.record_get_hit();
+//!     m.record_get_miss();
+//!     m.record_insert_call();
+//!     m.record_insert_new();
+//! }
+//! ```
 
 /// Common counters for any cache policy.
+///
+/// Every policy-specific recorder (e.g. [`FifoMetricsRecorder`],
+/// [`LruMetricsRecorder`]) extends this trait so shared hit/miss/insert/evict
+/// counters are always available.
 pub trait CoreMetricsRecorder {
     fn record_get_hit(&mut self);
     fn record_get_miss(&mut self);
@@ -57,6 +74,8 @@ pub trait CoreMetricsRecorder {
 }
 
 /// Metrics for FIFO behavior (insertion order).
+///
+/// See also [`FifoMetricsReadRecorder`] for read-only (`&self`) counters.
 pub trait FifoMetricsRecorder: CoreMetricsRecorder {
     fn record_evict_scan_step(&mut self);
     fn record_stale_skip(&mut self);
@@ -65,10 +84,12 @@ pub trait FifoMetricsRecorder: CoreMetricsRecorder {
     fn record_pop_oldest_empty_or_stale(&mut self);
 }
 
-/// Read-only FIFO metrics for &self methods (uses interior mutability).
+/// Read-only FIFO metrics for `&self` methods (uses interior mutability).
 ///
 /// Use this for cache operations that only take `&self` (e.g., `peek_oldest`,
 /// `age_rank`) where a mutable recorder is not available.
+///
+/// See also [`FifoMetricsRecorder`] for the mutable counterpart.
 pub trait FifoMetricsReadRecorder {
     fn record_peek_oldest_call(&self);
     fn record_peek_oldest_found(&self);
@@ -78,6 +99,8 @@ pub trait FifoMetricsReadRecorder {
 }
 
 /// Metrics for LRU behavior (recency order).
+///
+/// See also [`LruMetricsReadRecorder`] for read-only (`&self`) counters.
 pub trait LruMetricsRecorder: CoreMetricsRecorder {
     fn record_pop_lru_call(&mut self);
     fn record_pop_lru_found(&mut self);
@@ -90,7 +113,9 @@ pub trait LruMetricsRecorder: CoreMetricsRecorder {
     fn record_recency_rank_scan_step(&mut self);
 }
 
-/// Read-only LRU metrics for &self methods (uses interior mutability).
+/// Read-only LRU metrics for `&self` methods (uses interior mutability).
+///
+/// See also [`LruMetricsRecorder`] for the mutable counterpart.
 pub trait LruMetricsReadRecorder {
     fn record_peek_lru_call(&self);
     fn record_peek_lru_found(&self);
@@ -100,6 +125,8 @@ pub trait LruMetricsReadRecorder {
 }
 
 /// Metrics for LFU behavior (frequency order).
+///
+/// See also [`LfuMetricsReadRecorder`] for read-only (`&self`) counters.
 pub trait LfuMetricsRecorder: CoreMetricsRecorder {
     fn record_pop_lfu_call(&mut self);
     fn record_pop_lfu_found(&mut self);
@@ -113,7 +140,9 @@ pub trait LfuMetricsRecorder: CoreMetricsRecorder {
     fn record_increment_frequency_found(&mut self);
 }
 
-/// Read-only LFU metrics for &self methods (uses interior mutability).
+/// Read-only LFU metrics for `&self` methods (uses interior mutability).
+///
+/// See also [`LfuMetricsRecorder`] for the mutable counterpart.
 pub trait LfuMetricsReadRecorder {
     fn record_peek_lfu_call(&self);
     fn record_peek_lfu_found(&self);
@@ -122,6 +151,9 @@ pub trait LfuMetricsReadRecorder {
 }
 
 /// Metrics for LRU-K behavior (K-distance order).
+///
+/// Extends [`LruMetricsRecorder`] with backward K-distance counters.
+/// See also [`LruKMetricsReadRecorder`] for read-only (`&self`) counters.
 pub trait LruKMetricsRecorder: LruMetricsRecorder {
     fn record_pop_lru_k_call(&mut self);
     fn record_pop_lru_k_found(&mut self);
@@ -134,7 +166,9 @@ pub trait LruKMetricsRecorder: LruMetricsRecorder {
     fn record_k_distance_rank_scan_step(&mut self);
 }
 
-/// Read-only LRU-K metrics for &self methods (uses interior mutability).
+/// Read-only LRU-K metrics for `&self` methods (uses interior mutability).
+///
+/// See also [`LruKMetricsRecorder`] for the mutable counterpart.
 pub trait LruKMetricsReadRecorder {
     fn record_peek_lru_k_call(&self);
     fn record_peek_lru_k_found(&self);
@@ -181,6 +215,8 @@ pub trait ClockProMetricsRecorder: CoreMetricsRecorder {
 }
 
 /// Metrics for MFU behavior (most frequently used eviction).
+///
+/// See also [`MfuMetricsReadRecorder`] for read-only (`&self`) counters.
 pub trait MfuMetricsRecorder: CoreMetricsRecorder {
     fn record_pop_mfu_call(&mut self);
     fn record_pop_mfu_found(&mut self);
@@ -190,7 +226,9 @@ pub trait MfuMetricsRecorder: CoreMetricsRecorder {
     fn record_frequency_found(&mut self);
 }
 
-/// Read-only MFU metrics for &self methods (uses interior mutability).
+/// Read-only MFU metrics for `&self` methods (uses interior mutability).
+///
+/// See also [`MfuMetricsRecorder`] for the mutable counterpart.
 pub trait MfuMetricsReadRecorder {
     fn record_peek_mfu_call(&self);
     fn record_peek_mfu_found(&self);
@@ -226,43 +264,26 @@ pub trait S3FifoMetricsRecorder: CoreMetricsRecorder {
 }
 
 /// Snapshot provider for bench/testing.
+///
+/// Returns a point-in-time copy of all counters as a snapshot struct `S`.
+/// Pair with [`MetricsReset`] to clear counters between iterations, or
+/// with [`MetricsExporter`] to publish snapshots to a monitoring backend.
 pub trait MetricsSnapshotProvider<S> {
     fn snapshot(&self) -> S;
 }
 
 /// Reset metrics between tests or benchmark iterations.
+///
+/// Typically used alongside [`MetricsSnapshotProvider`] to isolate
+/// measurements across successive runs.
 pub trait MetricsReset {
     fn reset_metrics(&self);
 }
 
 /// Export/publish metrics to production monitoring backends.
+///
+/// Consumes a snapshot produced by [`MetricsSnapshotProvider::snapshot`]
+/// and writes it to an external system (e.g. Prometheus, StatsD).
 pub trait MetricsExporter<S> {
     fn export(&self, snapshot: &S);
-}
-
-/// Shared counters for any policy.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct CoreMetricsSnapshot {
-    pub get_calls: u64,
-    pub get_hits: u64,
-    pub get_misses: u64,
-    pub insert_calls: u64,
-    pub insert_updates: u64,
-    pub insert_new: u64,
-    pub evict_calls: u64,
-    pub evicted_entries: u64,
-}
-
-/// FIFO-specific snapshot composed from the core snapshot.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FifoMetricsSnapshot {
-    pub core: CoreMetricsSnapshot,
-    pub pop_oldest_calls: u64,
-    pub pop_oldest_found: u64,
-    pub pop_oldest_empty_or_stale: u64,
-    pub peek_oldest_calls: u64,
-    pub peek_oldest_found: u64,
-    pub age_rank_calls: u64,
-    pub age_rank_found: u64,
-    pub age_rank_scan_steps: u64,
 }

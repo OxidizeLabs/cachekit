@@ -1,3 +1,16 @@
+//! Concrete metrics recorders for each eviction policy.
+//!
+//! Each struct accumulates lightweight counters that the corresponding policy
+//! increments on its hot path. The [`snapshot`](super::snapshot) module provides
+//! read-only, `Copy` snapshots of these counters for bench/test consumption,
+//! while [`exporter`](super::exporter) publishes them to monitoring backends.
+//!
+//! ## Field visibility
+//!
+//! Fields backed by plain `u64` are `pub` for direct reads.
+//! Fields that require interior mutability (recorded through `&self` on read
+//! paths) use the crate-internal `MetricsCell` and are `pub(crate)`.
+
 use crate::metrics::cell::MetricsCell;
 use crate::metrics::traits::{
     ArcMetricsRecorder, CarMetricsRecorder, ClockMetricsRecorder, ClockProMetricsRecorder,
@@ -7,7 +20,8 @@ use crate::metrics::traits::{
     S3FifoMetricsRecorder, SlruMetricsRecorder, TwoQMetricsRecorder,
 };
 
-#[derive(Debug, Default)]
+/// FIFO / insertion-order cache metrics.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CacheMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -29,7 +43,8 @@ pub struct CacheMetrics {
     pub(crate) age_rank_found: MetricsCell,
 }
 
-#[derive(Debug, Default)]
+/// LRU (least-recently-used) cache metrics.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LruMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -50,7 +65,8 @@ pub struct LruMetrics {
     pub(crate) recency_rank_scan_steps: MetricsCell,
 }
 
-#[derive(Debug, Default)]
+/// LFU (least-frequently-used) cache metrics.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LfuMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -72,7 +88,8 @@ pub struct LfuMetrics {
     pub increment_frequency_found: u64,
 }
 
-#[derive(Debug, Default)]
+/// LRU-K (K-distance) cache metrics.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LruKMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -100,31 +117,6 @@ pub struct LruKMetrics {
     pub(crate) k_distance_rank_calls: MetricsCell,
     pub(crate) k_distance_rank_found: MetricsCell,
     pub(crate) k_distance_rank_scan_steps: MetricsCell,
-}
-
-impl CacheMetrics {
-    pub fn new() -> CacheMetrics {
-        Self {
-            get_calls: 0,
-            get_hits: 0,
-            get_misses: 0,
-            insert_calls: 0,
-            insert_updates: 0,
-            insert_new: 0,
-            evict_calls: 0,
-            evicted_entries: 0,
-            stale_skips: 0,
-            evict_scan_steps: 0,
-            pop_oldest_calls: 0,
-            pop_oldest_found: 0,
-            pop_oldest_empty_or_stale: 0,
-            peek_oldest_calls: MetricsCell::new(),
-            peek_oldest_found: MetricsCell::new(),
-            age_rank_calls: MetricsCell::new(),
-            age_rank_scan_steps: MetricsCell::new(),
-            age_rank_found: MetricsCell::new(),
-        }
-    }
 }
 
 impl CoreMetricsRecorder for CacheMetrics {
@@ -185,6 +177,7 @@ impl FifoMetricsRecorder for CacheMetrics {
     }
 }
 
+#[doc(hidden)]
 impl FifoMetricsReadRecorder for &CacheMetrics {
     fn record_peek_oldest_call(&self) {
         self.peek_oldest_calls.incr();
@@ -279,6 +272,7 @@ impl LruMetricsRecorder for LruMetrics {
     }
 }
 
+#[doc(hidden)]
 impl LruMetricsReadRecorder for &LruMetrics {
     fn record_peek_lru_call(&self) {
         self.peek_lru_calls.incr();
@@ -377,6 +371,7 @@ impl LfuMetricsRecorder for LfuMetrics {
     }
 }
 
+#[doc(hidden)]
 impl LfuMetricsReadRecorder for &LfuMetrics {
     fn record_peek_lfu_call(&self) {
         self.peek_lfu_calls.incr();
@@ -505,6 +500,7 @@ impl LruKMetricsRecorder for LruKMetrics {
     }
 }
 
+#[doc(hidden)]
 impl LruKMetricsReadRecorder for &LruKMetrics {
     fn record_peek_lru_k_call(&self) {
         self.peek_lru_k_calls.incr();
@@ -535,11 +531,8 @@ impl LruKMetricsReadRecorder for &LruKMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CoreOnlyMetrics (LIFO, Random)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// Minimal metrics for policies with no policy-specific counters (LIFO, Random).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CoreOnlyMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -578,11 +571,8 @@ impl CoreMetricsRecorder for CoreOnlyMetrics {
     fn record_clear(&mut self) {}
 }
 
-// ---------------------------------------------------------------------------
-// ArcMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// ARC (adaptive replacement cache) metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ArcMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -652,11 +642,8 @@ impl ArcMetricsRecorder for ArcMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CarMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// CAR (clock with adaptive replacement) metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CarMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -722,11 +709,8 @@ impl CarMetricsRecorder for CarMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ClockMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// Clock (second-chance) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ClockMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -776,11 +760,8 @@ impl ClockMetricsRecorder for ClockMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ClockProMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// Clock-PRO (adaptive hot/cold/test clock) metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ClockProMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -838,11 +819,8 @@ impl ClockProMetricsRecorder for ClockProMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MfuMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// MFU (most-frequently-used eviction) metrics.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MfuMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -908,6 +886,7 @@ impl MfuMetricsRecorder for MfuMetrics {
     }
 }
 
+#[doc(hidden)]
 impl MfuMetricsReadRecorder for &MfuMetrics {
     fn record_peek_mfu_call(&self) {
         self.peek_mfu_calls.incr();
@@ -923,11 +902,8 @@ impl MfuMetricsReadRecorder for &MfuMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NruMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// NRU (not-recently-used) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NruMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -977,11 +953,8 @@ impl NruMetricsRecorder for NruMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SlruMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// SLRU (segmented LRU) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SlruMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -1031,11 +1004,8 @@ impl SlruMetricsRecorder for SlruMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TwoQMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+/// Two-Q (A1in/A1out/Am queue) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TwoQMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
@@ -1085,11 +1055,8 @@ impl TwoQMetricsRecorder for TwoQMetrics {
     }
 }
 
-// ---------------------------------------------------------------------------
-// S3FifoMetrics
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default, Clone)]
+/// S3-FIFO (small/main/ghost queue) cache metrics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct S3FifoMetrics {
     pub get_calls: u64,
     pub get_hits: u64,
