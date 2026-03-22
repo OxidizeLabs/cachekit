@@ -165,6 +165,7 @@ dependencies = [
  "proptest",
  "quick_cache",
  "rustc-hash 2.1.1",
+ "serde",
  "serde_json",
 ]
 
