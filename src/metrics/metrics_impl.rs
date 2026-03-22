@@ -9,7 +9,7 @@
 //!
 //! Fields backed by plain `u64` are `pub` for direct reads.
 //! Fields that require interior mutability (recorded through `&self` on read
-//! paths) use the crate-internal [`MetricsCell`](super::cell::MetricsCell) and are `pub(crate)`.
+//! paths) use the crate-internal `MetricsCell` and are `pub(crate)`.
 
 use crate::metrics::cell::MetricsCell;
 use crate::metrics::traits::{
