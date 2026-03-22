@@ -379,7 +379,7 @@ mod thread_safety {
                             if i % 2 == 0 {
                                 cache_clone.lock().unwrap().peek_lfu();
                             } else {
-                                cache_clone.lock().unwrap().pop_lfu();
+                                let _ = cache_clone.lock().unwrap().pop_lfu();
                             }
                             counts_clone.lock().unwrap().4 += 1;
                         },

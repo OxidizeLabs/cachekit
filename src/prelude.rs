@@ -1,19 +1,22 @@
-pub use crate::ds::{
-    ClockRing, FixedHistory, FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
-    GhostList, IntrusiveList, KeyInterner, LazyMinHeap, ShardSelector, SlotArena, SlotId,
+//! Convenience re-exports for the most common cachekit types.
+//!
+//! Import everything with:
+//!
+//! ```
+//! use cachekit::prelude::*;
+//! ```
+//!
+//! This gives you the core traits ([`CoreCache`], [`ReadOnlyCache`],
+//! [`MutableCache`]), the policy-specific traits, and the [`CacheBuilder`]
+//! entry point. Internal data structures and concrete policy types are
+//! available from their respective modules ([`ds`](crate::ds),
+//! [`policy`](crate::policy)).
+
+pub use crate::builder::{Cache, CacheBuilder, CachePolicy};
+pub use crate::traits::{
+    ConcurrentCache, CoreCache, FifoCacheTrait, LfuCacheTrait, LruCacheTrait, LrukCacheTrait,
+    MutableCache, ReadOnlyCache,
 };
 
-#[cfg(feature = "concurrency")]
-pub use crate::ds::{
-    ConcurrentClockRing, ConcurrentIntrusiveList, ConcurrentSlotArena,
-    ShardedFrequencyBucketEntryMeta, ShardedFrequencyBuckets, ShardedSlotArena, ShardedSlotId,
-};
 #[cfg(feature = "metrics")]
 pub use crate::metrics::snapshot::CacheMetricsSnapshot;
-#[cfg(feature = "policy-fifo")]
-pub use crate::policy::fifo::FifoCache;
-pub use crate::traits::{
-    AsyncCacheFuture, CacheConfig, CacheFactory, CacheTier, CacheTierManager, ConcurrentCache,
-    CoreCache, FifoCacheTrait, LfuCacheTrait, LruCacheTrait, LrukCacheTrait, MutableCache,
-    ReadOnlyCache,
-};

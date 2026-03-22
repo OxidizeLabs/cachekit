@@ -92,7 +92,7 @@
 //! | `LfuCacheTrait`        | `MutableCache`    | LFU-specific with frequency tracking |
 //! | `LrukCacheTrait`       | `MutableCache`    | LRU-K with K-distance tracking       |
 //! | -                      | -                 | -                                    |
-//! | `ConcurrentCache`      | `Send + Sync`     | Marker for thread-safe caches        |
+//! | `ConcurrentCache`      | `Send + Sync`     | Safety marker for thread-safe caches |
 //! | `CacheTierManager`     | -                 | Multi-tier cache management          |
 //! | `CacheFactory`         | -                 | Cache instance creation              |
 //! | `AsyncCacheFuture`     | `Send + Sync`     | Future async operation support       |
@@ -134,9 +134,9 @@
 //!
 //! ```text
 //!   ┌─────────────────────────────────────────────────────────────────────────┐
-//!   │ ConcurrentCache                                                         │
+//!   │ unsafe trait ConcurrentCache                                            │
 //!   │                                                                         │
-//!   │   Marker trait: Send + Sync                                             │
+//!   │   Safety marker: Send + Sync                                            │
 //!   │   Purpose: Guarantee thread-safe cache implementations                  │
 //!   │   Usage: fn use_cache<C: CoreCache<K, V> + ConcurrentCache>(c: &C)      │
 //!   └─────────────────────────────────────────────────────────────────────────┘
@@ -153,10 +153,10 @@
 //!
 //! ## Example Usage
 //!
-//! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     ReadOnlyCache, ReadOnlyLruCache, ReadOnlyFifoCache,
-//!     CoreCache, MutableCache, FifoCacheTrait, LruCacheTrait, LfuCacheTrait,
+//! ```
+//! use cachekit::traits::{
+//!     ReadOnlyCache, CoreCache, MutableCache,
+//!     FifoCacheTrait, LruCacheTrait, LfuCacheTrait,
 //! };
 //!
 //! // Read-only inspection - no side effects, works with shared references
@@ -165,11 +165,6 @@
 //!     let cap = cache.capacity();
 //!     let utilization = len as f64 / cap as f64;
 //!     (len, cap, utilization)
-//! }
-//!
-//! // Policy-specific read-only inspection
-//! fn inspect_lru_order<C: ReadOnlyLruCache<u64, Vec<u8>>>(cache: &C) -> Option<u64> {
-//!     cache.peek_lru().map(|(k, _)| *k)
 //! }
 //!
 //! // Function accepting any cache
@@ -197,27 +192,14 @@
 //! // LRU-specific function
 //! fn touch_hot_keys<C: LruCacheTrait<u64, Vec<u8>>>(cache: &mut C, keys: &[u64]) {
 //!     for key in keys {
-//!         cache.touch(key); // Mark as recently used without retrieving
+//!         cache.touch(key);
 //!     }
 //! }
 //!
 //! // LFU-specific function with frequency-based prioritization
 //! fn boost_key_priority<C: LfuCacheTrait<u64, Vec<u8>>>(cache: &mut C, key: &u64) {
-//!     // Increment frequency without accessing value
 //!     cache.increment_frequency(key);
 //! }
-//!
-//! // Thread-safe cache usage
-//! use std::sync::{Arc, RwLock};
-//! use crate::storage::disk::async_disk::cache::lru::ConcurrentLruCache;
-//!
-//! let shared_cache = Arc::new(ConcurrentLruCache::<u64, Vec<u8>>::new(1000));
-//!
-//! // Safe to use from multiple threads
-//! let cache_clone = shared_cache.clone();
-//! std::thread::spawn(move || {
-//!     cache_clone.insert(42, vec![1, 2, 3]);
-//! });
 //! ```
 //!
 //! ## Thread Safety
@@ -479,9 +461,10 @@ pub trait MutableCache<K, V>: CoreCache<K, V> {
     /// ```
     fn remove(&mut self, key: &K) -> Option<V>;
 
-    /// Removes multiple keys efficiently.
+    /// Removes multiple keys, appending results to the provided buffer.
     ///
-    /// Returns a vector of `Option<V>` in the same order as the input keys.
+    /// Results are appended in the same order as the input keys. Callers
+    /// can reuse the buffer across calls to avoid repeated allocation.
     /// The default implementation loops over [`remove`](Self::remove).
     ///
     /// # Example
@@ -495,12 +478,25 @@ pub trait MutableCache<K, V>: CoreCache<K, V> {
     /// cache.insert(2, "two");
     /// cache.insert(3, "three");
     ///
-    /// let removed = cache.remove_batch(&[1, 99, 3]);
-    /// assert_eq!(removed, vec![Some("one"), None, Some("three")]);
+    /// let mut results = Vec::new();
+    /// cache.remove_batch_into(&[1, 99, 3], &mut results);
+    /// assert_eq!(results, vec![Some("one"), None, Some("three")]);
     /// assert_eq!(cache.len(), 1);
     /// ```
+    fn remove_batch_into(&mut self, keys: &[K], out: &mut Vec<Option<V>>) {
+        out.reserve(keys.len());
+        out.extend(keys.iter().map(|k| self.remove(k)));
+    }
+
+    /// Removes multiple keys, returning results in a new `Vec`.
+    ///
+    /// Convenience wrapper around [`remove_batch_into`](Self::remove_batch_into).
+    /// Prefer `remove_batch_into` when reusing a buffer across calls.
+    #[must_use]
     fn remove_batch(&mut self, keys: &[K]) -> Vec<Option<V>> {
-        keys.iter().map(|k| self.remove(k)).collect()
+        let mut out = Vec::with_capacity(keys.len());
+        self.remove_batch_into(keys, &mut out);
+        out
     }
 }
 
@@ -558,6 +554,7 @@ pub trait FifoCacheTrait<K, V>: CoreCache<K, V> {
     /// assert_eq!(cache.pop_oldest(), Some((2, "second")));
     /// assert_eq!(cache.pop_oldest(), None);
     /// ```
+    #[must_use]
     fn pop_oldest(&mut self) -> Option<(K, V)>;
 
     /// Peeks at the oldest entry without removing it.
@@ -580,9 +577,10 @@ pub trait FifoCacheTrait<K, V>: CoreCache<K, V> {
     /// ```
     fn peek_oldest(&self) -> Option<(&K, &V)>;
 
-    /// Removes multiple oldest entries efficiently.
+    /// Removes up to `count` oldest entries, appending them to the provided buffer.
     ///
-    /// Returns up to `count` entries in FIFO order (oldest first).
+    /// Entries are appended in FIFO order (oldest first). Callers can reuse
+    /// the buffer across calls to avoid repeated allocation.
     /// The default implementation calls [`pop_oldest`](Self::pop_oldest) in a loop.
     ///
     /// # Example
@@ -596,12 +594,30 @@ pub trait FifoCacheTrait<K, V>: CoreCache<K, V> {
     /// cache.insert(2, "b");
     /// cache.insert(3, "c");
     ///
-    /// let batch = cache.pop_oldest_batch(2);
+    /// let mut batch = Vec::new();
+    /// cache.pop_oldest_batch_into(2, &mut batch);
     /// assert_eq!(batch, vec![(1, "a"), (2, "b")]);
     /// assert_eq!(cache.len(), 1);
     /// ```
+    fn pop_oldest_batch_into(&mut self, count: usize, out: &mut Vec<(K, V)>) {
+        out.reserve(count);
+        for _ in 0..count {
+            match self.pop_oldest() {
+                Some(entry) => out.push(entry),
+                None => break,
+            }
+        }
+    }
+
+    /// Removes up to `count` oldest entries, returning them in a new `Vec`.
+    ///
+    /// Convenience wrapper around [`pop_oldest_batch_into`](Self::pop_oldest_batch_into).
+    /// Prefer `pop_oldest_batch_into` when reusing a buffer across calls.
+    #[must_use]
     fn pop_oldest_batch(&mut self, count: usize) -> Vec<(K, V)> {
-        (0..count).filter_map(|_| self.pop_oldest()).collect()
+        let mut out = Vec::with_capacity(count.min(self.len()));
+        self.pop_oldest_batch_into(count, &mut out);
+        out
     }
 
     /// Gets the age rank of a key (0 = oldest, higher = newer).
@@ -677,6 +693,7 @@ pub trait LruCacheTrait<K, V>: MutableCache<K, V> {
     /// let (key, _) = cache.pop_lru().unwrap();
     /// assert_eq!(key, 1);  // First inserted, not accessed since
     /// ```
+    #[must_use]
     fn pop_lru(&mut self) -> Option<(K, V)>;
 
     /// Peeks at the LRU entry without removing it.
@@ -813,6 +830,7 @@ pub trait LfuCacheTrait<K, V>: MutableCache<K, V> {
     /// let (key, _) = cache.pop_lfu().unwrap();
     /// assert_eq!(key, 1);
     /// ```
+    #[must_use]
     fn pop_lfu(&mut self) -> Option<(K, V)>;
 
     /// Peeks at the LFU entry without removing it.
@@ -966,6 +984,7 @@ pub trait LrukCacheTrait<K, V>: MutableCache<K, V> {
     /// let (key, _) = cache.pop_lru_k().unwrap();
     /// assert_eq!(key, 1);
     /// ```
+    #[must_use]
     fn pop_lru_k(&mut self) -> Option<(K, V)>;
 
     /// Peeks at the LRU-K entry without removing it.
@@ -1127,6 +1146,12 @@ pub trait LrukCacheTrait<K, V>: MutableCache<K, V> {
 /// Implementors guarantee thread-safe operations. This trait extends
 /// `Send + Sync` and can be used as a bound to require concurrent access.
 ///
+/// # Safety
+///
+/// Implementing this trait asserts that the cache handles internal
+/// synchronization correctly. An incorrect implementation may lead to
+/// data races when the cache is shared across threads.
+///
 /// # Example
 ///
 /// ```
@@ -1162,7 +1187,7 @@ pub trait LrukCacheTrait<K, V>: MutableCache<K, V> {
 ///     guard.insert(1, "value".to_string());
 /// });
 /// ```
-pub trait ConcurrentCache: Send + Sync {}
+pub unsafe trait ConcurrentCache: Send + Sync {}
 
 /// High-level cache tier management.
 ///
@@ -1241,6 +1266,7 @@ pub trait CacheTierManager<K, V> {
 ///
 /// let tier = CacheTier::Hot;
 /// assert_eq!(tier, CacheTier::Hot);
+/// assert_eq!(tier.to_string(), "Hot");
 ///
 /// // Tiers can be compared and hashed
 /// use std::collections::HashSet;
@@ -1251,6 +1277,7 @@ pub trait CacheTierManager<K, V> {
 /// assert_eq!(tiers.len(), 3);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CacheTier {
     /// Hot tier: frequently accessed data (LRU-managed).
     ///
@@ -1266,6 +1293,16 @@ pub enum CacheTier {
     ///
     /// Best for: new entries, infrequently accessed data.
     Cold,
+}
+
+impl std::fmt::Display for CacheTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hot => f.write_str("Hot"),
+            Self::Warm => f.write_str("Warm"),
+            Self::Cold => f.write_str("Cold"),
+        }
+    }
 }
 
 /// Factory trait for creating cache instances.
@@ -1287,18 +1324,18 @@ pub enum CacheTier {
 /// impl CacheFactory<u64, String> for LruFactory {
 ///     type Cache = LruCache<u64, String>;
 ///
-///     fn create(capacity: usize) -> Self::Cache {
+///     fn new(capacity: usize) -> Self::Cache {
 ///         LruCache::new(capacity)
 ///     }
 ///
-///     fn create_with_config(config: CacheConfig) -> Self::Cache {
+///     fn with_config(config: CacheConfig) -> Self::Cache {
 ///         LruCache::new(config.capacity)
 ///     }
 /// }
 ///
 /// // Generic function using factory
 /// fn build_cache<F: CacheFactory<u64, String>>() -> F::Cache {
-///     F::create(100)
+///     F::new(100)
 /// }
 /// ```
 pub trait CacheFactory<K, V> {
@@ -1306,15 +1343,15 @@ pub trait CacheFactory<K, V> {
     type Cache: CoreCache<K, V>;
 
     /// Creates a new cache instance with the specified capacity.
-    fn create(capacity: usize) -> Self::Cache;
+    fn new(capacity: usize) -> Self::Cache;
 
     /// Creates a cache with custom configuration.
-    fn create_with_config(config: CacheConfig) -> Self::Cache;
+    fn with_config(config: CacheConfig) -> Self::Cache;
 }
 
 /// Configuration for cache creation.
 ///
-/// Used with [`CacheFactory::create_with_config`] to customize cache behavior.
+/// Used with [`CacheFactory::with_config`] to customize cache behavior.
 ///
 /// # Fields
 ///
@@ -1335,17 +1372,14 @@ pub trait CacheFactory<K, V> {
 /// assert_eq!(config.capacity, 1000);
 /// assert!(!config.enable_stats);
 ///
-/// // Custom configuration
-/// let config = CacheConfig {
-///     capacity: 5000,
-///     enable_stats: true,
-///     ..Default::default()
-/// };
+/// // Custom configuration via builder methods
+/// let config = CacheConfig::new(5000).with_stats(true);
 /// assert_eq!(config.capacity, 5000);
 /// assert!(config.enable_stats);
 /// assert!(config.prealloc_memory);  // from default
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CacheConfig {
     /// Maximum number of entries the cache can hold.
     pub capacity: usize,
@@ -1369,14 +1403,64 @@ pub struct CacheConfig {
     pub thread_safe: bool,
 }
 
-impl Default for CacheConfig {
-    /// Creates a default configuration.
+impl CacheConfig {
+    /// Creates a new configuration with the given capacity and default options.
     ///
-    /// Defaults:
-    /// - `capacity`: 1000
-    /// - `enable_stats`: false
-    /// - `prealloc_memory`: true
-    /// - `thread_safe`: false
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::traits::CacheConfig;
+    ///
+    /// let config = CacheConfig::new(500);
+    /// assert_eq!(config.capacity, 500);
+    /// assert!(!config.enable_stats);
+    /// ```
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            ..Default::default()
+        }
+    }
+
+    /// Enables or disables hit/miss statistics tracking.
+    pub fn with_stats(mut self, enable: bool) -> Self {
+        self.enable_stats = enable;
+        self
+    }
+
+    /// Enables or disables upfront memory pre-allocation.
+    pub fn with_prealloc(mut self, prealloc: bool) -> Self {
+        self.prealloc_memory = prealloc;
+        self
+    }
+
+    /// Enables or disables internal thread-safe synchronization.
+    pub fn with_thread_safe(mut self, thread_safe: bool) -> Self {
+        self.thread_safe = thread_safe;
+        self
+    }
+
+    /// Validates the configuration, returning an error if any parameter is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::traits::CacheConfig;
+    ///
+    /// assert!(CacheConfig::new(100).validate().is_ok());
+    /// assert!(CacheConfig::new(0).validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), crate::error::ConfigError> {
+        if self.capacity == 0 {
+            return Err(crate::error::ConfigError::new(
+                "capacity must be greater than 0",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             capacity: 1000,

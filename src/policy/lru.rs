@@ -2155,8 +2155,8 @@ mod tests {
                 assert_eq!(cache.len(), 5);
 
                 // Simulate capacity reduction to 3 by removing 2 LRU items
-                cache.pop_lru(); // Remove 1
-                cache.pop_lru(); // Remove 2
+                let _ = cache.pop_lru(); // Remove 1
+                let _ = cache.pop_lru(); // Remove 2
                 assert_eq!(cache.len(), 3);
 
                 // Remaining items should be 3, 4, 5
@@ -3175,12 +3175,12 @@ mod tests {
                 assert_eq!(*new_tail_key, 2);
 
                 // Pop again
-                cache.pop_lru();
+                let _ = cache.pop_lru();
                 let (final_tail_key, _) = cache.peek_lru().unwrap();
                 assert_eq!(*final_tail_key, 3);
 
                 // Pop last item
-                cache.pop_lru();
+                let _ = cache.pop_lru();
                 assert!(cache.peek_lru().is_none());
                 assert_eq!(cache.len(), 0);
             }
@@ -4258,7 +4258,7 @@ mod tests {
                 cache.insert(6, Arc::new(600));
                 verify_ranks(&cache);
 
-                cache.pop_lru();
+                let _ = cache.pop_lru();
                 verify_ranks(&cache);
             }
 
@@ -6165,7 +6165,7 @@ mod tests {
             cache.insert(3, Arc::new(3));
 
             // Pop LRU
-            cache.pop_lru(); // Removes 1
+            let _ = cache.pop_lru(); // Removes 1
 
             // Check recency rank of remaining items to force traversal
             assert!(cache.recency_rank(&2).is_some());
@@ -6231,7 +6231,7 @@ mod tests {
             cache.get(&2);
 
             // Remove head (LRU)
-            cache.pop_lru(); // Should remove 0 (LRU)
+            let _ = cache.pop_lru(); // Should remove 0 (LRU)
 
             // Remove tail (MRU)
             cache.remove(&2); // 2 was MRU

@@ -2579,10 +2579,10 @@ mod tests {
             assert_eq!(cache.len(), 2);
 
             // Test pop_lfu operations
-            cache.pop_lfu();
+            let _ = cache.pop_lfu();
             assert_eq!(cache.len(), 1);
 
-            cache.pop_lfu();
+            let _ = cache.pop_lfu();
             assert_eq!(cache.len(), 0);
 
             // Test pop_lfu on empty cache doesn't change length
@@ -2642,7 +2642,7 @@ mod tests {
                     cache.remove(&format!("key{}", capacity - 1));
                     assert_eq!(cache.capacity(), capacity);
 
-                    cache.pop_lfu();
+                    let _ = cache.pop_lfu();
                     assert_eq!(cache.capacity(), capacity);
 
                     cache.clear();
@@ -2673,7 +2673,7 @@ mod tests {
                         cache.remove(&format!("key{}", i % 10));
                     },
                     3 => {
-                        cache.pop_lfu();
+                        let _ = cache.pop_lfu();
                     },
                     _ => unreachable!(),
                 }
@@ -3113,7 +3113,7 @@ mod tests {
                         cache.remove(&format!("temp{}", i - 1));
                     },
                     3 => {
-                        cache.pop_lfu();
+                        let _ = cache.pop_lfu();
                     },
                     4 => {
                         cache.increment_frequency(&"key2".to_string());
@@ -3140,7 +3140,7 @@ mod tests {
 
             // Test invariants after pop_lfu operations
             while cache.len() > 0 {
-                cache.pop_lfu();
+                let _ = cache.pop_lfu();
                 verify_invariants(&mut cache);
             }
 

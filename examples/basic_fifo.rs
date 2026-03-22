@@ -1,4 +1,4 @@
-use cachekit::prelude::FifoCache;
+use cachekit::policy::fifo::FifoCache;
 use cachekit::traits::CoreCache;
 
 fn main() {
