@@ -101,7 +101,7 @@ fn test_min_freq_accuracy(data: &[u8]) {
 
         // Compute actual minimum frequency
         let mut actual_min: Option<u64> = None;
-        for (_, meta) in buckets.iter_entries() {
+        for (_, meta) in buckets.iter() {
             actual_min = match actual_min {
                 None => Some(meta.freq),
                 Some(min) => Some(min.min(meta.freq)),
