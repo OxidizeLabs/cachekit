@@ -66,9 +66,9 @@
 //! - [`FrequencyBuckets`]: Single-threaded O(1) LFU tracker
 //! - [`ShardedFrequencyBuckets`]: Concurrent sharded variant
 //! - [`FrequencyBucketsHandle`]: Handle-based variant for interned keys
-//! - [`EntryIter`]: Iterator over all entries; produced by [`FrequencyBuckets::iter_entries`]
-//! - [`FrequencyBucketIdIter`]: Iterator over [`SlotId`]s in a bucket; produced by [`FrequencyBuckets::iter_bucket_ids`]
-//! - [`FrequencyBucketEntryIter`]: Iterator over `(SlotId, meta)` pairs in a bucket; produced by [`FrequencyBuckets::iter_bucket_entries`]
+//! - [`Iter`]: Iterator over all entries; produced by [`FrequencyBuckets::iter`]
+//! - [`BucketIds`]: Iterator over [`SlotId`]s in a bucket; produced by [`FrequencyBuckets::iter_bucket_ids`]
+//! - [`BucketEntries`]: Iterator over `(SlotId, meta)` pairs in a bucket; produced by [`FrequencyBuckets::iter_bucket_entries`]
 //!
 //! ## Operations
 //!
@@ -81,7 +81,7 @@
 //! | [`frequency`](FrequencyBuckets::frequency) | O(1) | Query current frequency |
 //! | [`decay_halve`](FrequencyBuckets::decay_halve) | O(n) | Halve all frequencies |
 //! | [`rebase_min_freq`](FrequencyBuckets::rebase_min_freq) | O(n) | Rebase so min becomes 1 |
-//! | [`iter_entries`](FrequencyBuckets::iter_entries) | O(n) | Iterate all entries |
+//! | [`iter`](FrequencyBuckets::iter) | O(n) | Iterate all entries |
 //! | [`iter_bucket_ids`](FrequencyBuckets::iter_bucket_ids) | O(k) | Iterate bucket by frequency |
 //!
 //! ## Use Cases
@@ -177,15 +177,17 @@
 //! - `debug_validate_invariants()` available in debug/test builds
 //!
 
-use rustc_hash::FxHashMap;
+use std::borrow::Borrow;
 use std::hash::Hash;
+
+use rustc_hash::FxHashMap;
 
 use crate::ds::slot_arena::{SlotArena, SlotId};
 
 /// LFU entry with cache-line optimized layout.
 /// Link pointers (prev/next) are accessed on every touch/evict operation,
 /// so they're placed first for better cache locality.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[repr(C)]
 struct Entry<K> {
     // Hot fields - accessed during list operations
@@ -197,7 +199,7 @@ struct Entry<K> {
     key: K,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Bucket {
     head: Option<SlotId>,
     tail: Option<SlotId>,
@@ -259,7 +261,7 @@ struct Bucket {
 /// assert!(!should_admit(&mut freq, "page_x"));  // First access
 /// assert!(should_admit(&mut freq, "page_x"));   // Second access - admit!
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FrequencyBuckets<K> {
     entries: SlotArena<Entry<K>>,
     index: FxHashMap<K, SlotId>,
@@ -268,24 +270,27 @@ pub struct FrequencyBuckets<K> {
     epoch: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Read-only view of a frequency bucket entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct FrequencyBucketEntryMeta<'a, K> {
     pub key: &'a K,
     pub freq: u64,
     pub last_epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Owned view of a frequency bucket entry for sharded readers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct ShardedFrequencyBucketEntryMeta<K> {
     pub key: K,
     pub freq: u64,
     pub last_epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Debug view of a bucket entry for snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct FrequencyBucketEntryDebug<K> {
     pub id: SlotId,
     pub key: K,
@@ -401,19 +406,25 @@ where
 
     /// Returns `true` if `key` is present.
     ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
+    ///
     /// # Example
     ///
     /// ```
     /// use cachekit::ds::FrequencyBuckets;
     ///
     /// let mut freq = FrequencyBuckets::new();
-    /// freq.insert("key");
+    /// freq.insert("hello".to_string());
     ///
-    /// assert!(freq.contains(&"key"));
-    /// assert!(!freq.contains(&"missing"));
+    /// assert!(freq.contains("hello"));       // Query with &str
+    /// assert!(!freq.contains("missing"));
     /// ```
     #[inline]
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         self.index.contains_key(key)
     }
 
@@ -465,25 +476,33 @@ where
 
     /// Returns the current frequency for `key`, if present.
     ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
+    ///
     /// # Example
     ///
     /// ```
     /// use cachekit::ds::FrequencyBuckets;
     ///
     /// let mut freq = FrequencyBuckets::new();
-    /// freq.insert("key");
-    /// freq.touch(&"key");
+    /// freq.insert("hello".to_string());
+    /// freq.touch("hello");
     ///
-    /// assert_eq!(freq.frequency(&"key"), Some(2));
-    /// assert_eq!(freq.frequency(&"missing"), None);
+    /// assert_eq!(freq.frequency("hello"), Some(2));
+    /// assert_eq!(freq.frequency("missing"), None);
     /// ```
     #[inline]
-    pub fn frequency(&self, key: &K) -> Option<u64> {
+    pub fn frequency<Q>(&self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let id = *self.index.get(key)?;
         self.entries.get(id).map(|entry| entry.freq)
     }
 
     /// Returns the last epoch recorded for `key`.
+    ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
     ///
     /// # Example
     ///
@@ -497,12 +516,18 @@ where
     /// assert_eq!(freq.entry_epoch(&"key"), Some(10));
     /// assert_eq!(freq.entry_epoch(&"missing"), None);
     /// ```
-    pub fn entry_epoch(&self, key: &K) -> Option<u64> {
+    pub fn entry_epoch<Q>(&self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let id = *self.index.get(key)?;
         self.entries.get(id).map(|entry| entry.last_epoch)
     }
 
     /// Sets the last epoch for `key`; returns `false` if missing.
+    ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
     ///
     /// # Example
     ///
@@ -517,7 +542,11 @@ where
     ///
     /// assert!(!freq.set_entry_epoch(&"missing", 42));
     /// ```
-    pub fn set_entry_epoch(&mut self, key: &K, epoch: u64) -> bool {
+    pub fn set_entry_epoch<Q>(&mut self, key: &Q, epoch: u64) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let id = match self.index.get(key) {
             Some(id) => *id,
             None => return false,
@@ -527,51 +556,6 @@ where
             return true;
         }
         false
-    }
-
-    /// Returns `true` if a borrowed key is present (avoids cloning).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::ds::FrequencyBuckets;
-    ///
-    /// let mut freq = FrequencyBuckets::new();
-    /// freq.insert("hello".to_string());
-    ///
-    /// // Query with &str instead of String
-    /// assert!(freq.contains_borrowed("hello"));
-    /// ```
-    pub fn contains_borrowed<Q>(&self, key: &Q) -> bool
-    where
-        K: std::borrow::Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        self.index.contains_key(key)
-    }
-
-    /// Returns the frequency for a borrowed key if present (avoids cloning).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::ds::FrequencyBuckets;
-    ///
-    /// let mut freq = FrequencyBuckets::new();
-    /// freq.insert("hello".to_string());
-    /// freq.touch(&"hello".to_string());
-    ///
-    /// // Query with &str instead of String
-    /// assert_eq!(freq.frequency_borrowed("hello"), Some(2));
-    /// assert_eq!(freq.frequency_borrowed("missing"), None);
-    /// ```
-    pub fn frequency_borrowed<Q>(&self, key: &Q) -> Option<u64>
-    where
-        K: std::borrow::Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        let id = *self.index.get(key)?;
-        self.entries.get(id).map(|entry| entry.freq)
     }
 
     /// Returns the minimum frequency currently present.
@@ -689,9 +673,9 @@ where
     /// let ids: Vec<_> = freq.iter_bucket_ids(1).collect();
     /// assert_eq!(ids.len(), 3);
     /// ```
-    pub fn iter_bucket_ids(&self, freq: u64) -> FrequencyBucketIdIter<'_, K> {
+    pub fn iter_bucket_ids(&self, freq: u64) -> BucketIds<'_, K> {
         let head = self.buckets.get(&freq).and_then(|bucket| bucket.head);
-        FrequencyBucketIdIter {
+        BucketIds {
             buckets: self,
             current: head,
         }
@@ -714,9 +698,9 @@ where
     /// assert_eq!(entries.len(), 1);
     /// assert_eq!(*entries[0].1.key, "b");
     /// ```
-    pub fn iter_bucket_entries(&self, freq: u64) -> FrequencyBucketEntryIter<'_, K> {
+    pub fn iter_bucket_entries(&self, freq: u64) -> BucketEntries<'_, K> {
         let head = self.buckets.get(&freq).and_then(|bucket| bucket.head);
-        FrequencyBucketEntryIter {
+        BucketEntries {
             buckets: self,
             current: head,
         }
@@ -736,7 +720,7 @@ where
     /// freq.insert("b");
     /// freq.touch(&"a");
     ///
-    /// let entries: Vec<_> = freq.iter_entries().collect();
+    /// let entries: Vec<_> = freq.iter().collect();
     /// assert_eq!(entries.len(), 2);
     ///
     /// // Check we have both keys
@@ -744,8 +728,8 @@ where
     /// assert!(keys.contains(&"a"));
     /// assert!(keys.contains(&"b"));
     /// ```
-    pub fn iter_entries(&self) -> EntryIter<'_, K> {
-        EntryIter {
+    pub fn iter(&self) -> Iter<'_, K> {
+        Iter {
             inner: self.entries.iter(),
         }
     }
@@ -827,6 +811,8 @@ where
     /// Returns `None` if `key` is missing. Within each frequency bucket,
     /// the key is treated as MRU by being pushed to the front.
     ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
+    ///
     /// # Example
     ///
     /// ```
@@ -840,7 +826,11 @@ where
     /// assert_eq!(freq.touch(&"missing"), None);
     /// ```
     #[inline]
-    pub fn touch(&mut self, key: &K) -> Option<u64> {
+    pub fn touch<Q>(&mut self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let id = *self.index.get(key)?;
         let current_freq = self.entries.get(id)?.freq;
         if current_freq == u64::MAX {
@@ -921,6 +911,8 @@ where
     /// If the key is already at `max_freq`, it is moved to the front of its
     /// bucket (MRU position) and the frequency is unchanged.
     ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
+    ///
     /// # Example
     ///
     /// ```
@@ -934,7 +926,11 @@ where
     /// assert_eq!(freq.touch_capped(&"key", 3), Some(3));  // Capped
     /// assert_eq!(freq.frequency(&"key"), Some(3));
     /// ```
-    pub fn touch_capped(&mut self, key: &K, max_freq: u64) -> Option<u64> {
+    pub fn touch_capped<Q>(&mut self, key: &Q, max_freq: u64) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let max_freq = max_freq.max(1);
         let id = *self.index.get(key)?;
         let current_freq = self.entries.get(id)?.freq;
@@ -1051,6 +1047,8 @@ where
 
     /// Removes `key` from tracking and returns its previous frequency.
     ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
+    ///
     /// # Example
     ///
     /// ```
@@ -1065,7 +1063,11 @@ where
     /// assert!(!freq.contains(&"key"));
     /// ```
     #[inline]
-    pub fn remove(&mut self, key: &K) -> Option<u64> {
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let id = self.index.remove(key)?;
         let freq = self.entries.get(id)?.freq;
 
@@ -1276,8 +1278,8 @@ where
         }
     }
 
-    #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of bucket chains.
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot<K> {
         let mut buckets: Vec<(u64, Vec<SlotId>)> = self
             .buckets
@@ -1462,6 +1464,7 @@ where
 
 #[cfg(any(test, debug_assertions))]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrequencyBucketsSnapshot<K> {
     pub min_freq: Option<u64>,
     pub entries_len: usize,
@@ -1623,11 +1626,13 @@ where
         self.shards.len()
     }
 
-    fn shard_for(&self, key: &K) -> usize {
+    fn shard_for<Q: Hash + ?Sized>(&self, key: &Q) -> usize {
         self.selector.shard_for_key(key)
     }
 
     /// Returns the shard index for `key` using the configured selector.
+    ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
     ///
     /// # Example
     ///
@@ -1638,7 +1643,11 @@ where
     /// let shard = freq.shard_for_key(&"my_key");
     /// assert!(shard < 4);
     /// ```
-    pub fn shard_for_key(&self, key: &K) -> usize {
+    pub fn shard_for_key<Q>(&self, key: &Q) -> usize
+    where
+        K: Borrow<Q>,
+        Q: Hash + ?Sized,
+    {
         self.selector.shard_for_key(key)
     }
 
@@ -1661,6 +1670,8 @@ where
 
     /// Touches a key in its shard.
     ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
+    ///
     /// # Example
     ///
     /// ```
@@ -1672,13 +1683,19 @@ where
     /// assert_eq!(freq.touch(&"key"), Some(2));
     /// assert_eq!(freq.touch(&"missing"), None);
     /// ```
-    pub fn touch(&self, key: &K) -> Option<u64> {
+    pub fn touch<Q>(&self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let shard = self.shard_for(key);
         let mut buckets = self.shards[shard].write();
         buckets.touch(key)
     }
 
     /// Removes a key from its shard.
+    ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
     ///
     /// # Example
     ///
@@ -1691,7 +1708,11 @@ where
     /// assert_eq!(freq.remove(&"key"), Some(1));
     /// assert_eq!(freq.remove(&"key"), None);
     /// ```
-    pub fn remove(&self, key: &K) -> Option<u64> {
+    pub fn remove<Q>(&self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let shard = self.shard_for(key);
         let mut buckets = self.shards[shard].write();
         buckets.remove(key)
@@ -1710,13 +1731,19 @@ where
     ///
     /// assert_eq!(freq.frequency(&"key"), Some(2));
     /// ```
-    pub fn frequency(&self, key: &K) -> Option<u64> {
+    pub fn frequency<Q>(&self, key: &Q) -> Option<u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let shard = self.shard_for(key);
         let buckets = self.shards[shard].read();
         buckets.frequency(key)
     }
 
     /// Returns `true` if the key exists in its shard.
+    ///
+    /// Accepts borrowed forms of the key type via [`Borrow`].
     ///
     /// # Example
     ///
@@ -1729,7 +1756,11 @@ where
     /// assert!(freq.contains(&"key"));
     /// assert!(!freq.contains(&"missing"));
     /// ```
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let shard = self.shard_for(key);
         let buckets = self.shards[shard].read();
         buckets.contains(key)
@@ -1809,9 +1840,9 @@ where
         }
     }
 
-    /// Returns a snapshot of `(SlotId, meta)` for a given frequency.
+    /// Returns a collected snapshot of `(SlotId, meta)` for a given frequency.
     ///
-    /// Collects entries from all shards at the specified frequency.
+    /// Acquires a read lock on each shard and collects entries into a `Vec`.
     ///
     /// # Example
     ///
@@ -1824,11 +1855,11 @@ where
     /// freq.touch(&"a");  // "a" at freq=2
     ///
     /// // Get all entries at frequency 1
-    /// let at_freq_1 = freq.iter_bucket_entries(1);
+    /// let at_freq_1 = freq.collect_bucket_entries(1);
     /// assert_eq!(at_freq_1.len(), 1);
     /// assert_eq!(at_freq_1[0].1.key, "b");
     /// ```
-    pub fn iter_bucket_entries(
+    pub fn collect_bucket_entries(
         &self,
         freq: u64,
     ) -> Vec<(SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
@@ -1849,7 +1880,9 @@ where
         entries
     }
 
-    /// Returns a snapshot of all `(SlotId, meta)` entries across all shards.
+    /// Returns a collected snapshot of all `(SlotId, meta)` entries across all shards.
+    ///
+    /// Acquires a read lock on each shard and collects entries into a `Vec`.
     ///
     /// # Example
     ///
@@ -1861,14 +1894,14 @@ where
     /// freq.insert("b");
     /// freq.touch(&"a");
     ///
-    /// let all = freq.iter_entries();
+    /// let all = freq.collect_entries();
     /// assert_eq!(all.len(), 2);
     /// ```
-    pub fn iter_entries(&self) -> Vec<(SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
+    pub fn collect_entries(&self) -> Vec<(SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
         let mut entries = Vec::new();
         for shard in &self.shards {
             let buckets = shard.read();
-            entries.extend(buckets.iter_entries().map(|(id, meta)| {
+            entries.extend(buckets.iter().map(|(id, meta)| {
                 (
                     id,
                     ShardedFrequencyBucketEntryMeta {
@@ -1882,7 +1915,7 @@ where
         entries
     }
 
-    /// Returns a snapshot of `(shard_idx, SlotId, meta)` for a given frequency.
+    /// Returns a collected snapshot of `(shard_idx, SlotId, meta)` for a given frequency.
     ///
     /// Includes the shard index for each entry.
     ///
@@ -1895,7 +1928,7 @@ where
     /// freq.insert("a");
     /// freq.insert("b");
     ///
-    /// let entries = freq.iter_bucket_entries_with_shard(1);
+    /// let entries = freq.collect_bucket_entries_with_shard(1);
     /// assert_eq!(entries.len(), 2);
     ///
     /// // Each entry includes its shard index
@@ -1904,7 +1937,7 @@ where
     ///     assert_eq!(meta.freq, 1);
     /// }
     /// ```
-    pub fn iter_bucket_entries_with_shard(
+    pub fn collect_bucket_entries_with_shard(
         &self,
         freq: u64,
     ) -> Vec<(usize, SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
@@ -1926,7 +1959,7 @@ where
         entries
     }
 
-    /// Returns a snapshot of all `(shard_idx, SlotId, meta)` entries.
+    /// Returns a collected snapshot of all `(shard_idx, SlotId, meta)` entries.
     ///
     /// Includes the shard index for each entry.
     ///
@@ -1940,20 +1973,20 @@ where
     /// freq.insert("b");
     /// freq.touch(&"a");
     ///
-    /// let all = freq.iter_entries_with_shard();
+    /// let all = freq.collect_entries_with_shard();
     /// assert_eq!(all.len(), 2);
     ///
     /// // Find the entry for "a" and verify its frequency
     /// let a_entry = all.iter().find(|(_, _, m)| m.key == "a").unwrap();
     /// assert_eq!(a_entry.2.freq, 2);
     /// ```
-    pub fn iter_entries_with_shard(
+    pub fn collect_entries_with_shard(
         &self,
     ) -> Vec<(usize, SlotId, ShardedFrequencyBucketEntryMeta<K>)> {
         let mut entries = Vec::new();
         for (idx, shard) in self.shards.iter().enumerate() {
             let buckets = shard.read();
-            entries.extend(buckets.iter_entries().map(|(id, meta)| {
+            entries.extend(buckets.iter().map(|(id, meta)| {
                 (
                     idx,
                     id,
@@ -2098,7 +2131,7 @@ where
 /// // Resolve handle back to key if needed
 /// assert_eq!(interner.resolve(evicted_handle), Some(&"another_key".to_string()));
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FrequencyBucketsHandle<H> {
     inner: FrequencyBuckets<H>,
 }
@@ -2385,7 +2418,7 @@ where
     /// let ids: Vec<_> = freq.iter_bucket_ids(1).collect();
     /// assert_eq!(ids.len(), 2);
     /// ```
-    pub fn iter_bucket_ids(&self, freq: u64) -> FrequencyBucketIdIter<'_, H> {
+    pub fn iter_bucket_ids(&self, freq: u64) -> BucketIds<'_, H> {
         self.inner.iter_bucket_ids(freq)
     }
 
@@ -2406,7 +2439,7 @@ where
     /// assert_eq!(entries.len(), 1);
     /// assert_eq!(*entries[0].1.key, 2);
     /// ```
-    pub fn iter_bucket_entries(&self, freq: u64) -> FrequencyBucketEntryIter<'_, H> {
+    pub fn iter_bucket_entries(&self, freq: u64) -> BucketEntries<'_, H> {
         self.inner.iter_bucket_entries(freq)
     }
 
@@ -2421,11 +2454,11 @@ where
     /// freq.insert(1u64);
     /// freq.insert(2u64);
     ///
-    /// let entries: Vec<_> = freq.iter_entries().collect();
+    /// let entries: Vec<_> = freq.iter().collect();
     /// assert_eq!(entries.len(), 2);
     /// ```
-    pub fn iter_entries(&self) -> EntryIter<'_, H> {
-        self.inner.iter_entries()
+    pub fn iter(&self) -> Iter<'_, H> {
+        self.inner.iter()
     }
 
     /// Inserts a new handle with frequency 1.
@@ -2627,14 +2660,14 @@ where
         self.inner.approx_bytes()
     }
 
-    #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of bucket chains.
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_snapshot(&self) -> FrequencyBucketsSnapshot<H> {
         self.inner.debug_snapshot()
     }
 
-    #[cfg(any(test, debug_assertions))]
     /// Validates internal invariants (debug/test only).
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_validate_invariants(&self) {
         self.inner.debug_validate_invariants();
     }
@@ -2649,17 +2682,17 @@ where
     }
 }
 
-/// Iterator over SlotIds for a given frequency bucket.
+/// Iterator over [`SlotId`]s for a given frequency bucket.
 ///
 /// Created by [`FrequencyBuckets::iter_bucket_ids`]. Yields entries from
 /// head (MRU) to tail (LRU) within a single frequency bucket.
-#[derive(Debug)]
-pub struct FrequencyBucketIdIter<'a, K> {
+#[derive(Debug, Clone)]
+pub struct BucketIds<'a, K> {
     buckets: &'a FrequencyBuckets<K>,
     current: Option<SlotId>,
 }
 
-impl<'a, K> Iterator for FrequencyBucketIdIter<'a, K> {
+impl<'a, K> Iterator for BucketIds<'a, K> {
     type Item = SlotId;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2675,13 +2708,13 @@ impl<'a, K> Iterator for FrequencyBucketIdIter<'a, K> {
 /// Created by [`FrequencyBuckets::iter_bucket_entries`]. Yields entries from
 /// head (MRU) to tail (LRU) within a single frequency bucket, including
 /// metadata like key, frequency, and last_epoch.
-#[derive(Debug)]
-pub struct FrequencyBucketEntryIter<'a, K> {
+#[derive(Debug, Clone)]
+pub struct BucketEntries<'a, K> {
     buckets: &'a FrequencyBuckets<K>,
     current: Option<SlotId>,
 }
 
-impl<'a, K> Iterator for FrequencyBucketEntryIter<'a, K> {
+impl<'a, K> Iterator for BucketEntries<'a, K> {
     type Item = (SlotId, FrequencyBucketEntryMeta<'a, K>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2701,14 +2734,14 @@ impl<'a, K> Iterator for FrequencyBucketEntryIter<'a, K> {
 
 /// Iterator over all `(SlotId, meta)` entries in a [`FrequencyBuckets`].
 ///
-/// Created by [`FrequencyBuckets::iter_entries`]. Yields every tracked entry
+/// Created by [`FrequencyBuckets::iter`]. Yields every tracked entry
 /// in unspecified (arena) order.
-#[derive(Debug)]
-pub struct EntryIter<'a, K> {
+#[derive(Debug, Clone)]
+pub struct Iter<'a, K> {
     inner: crate::ds::slot_arena::Iter<'a, Entry<K>>,
 }
 
-impl<'a, K: 'a> Iterator for EntryIter<'a, K> {
+impl<'a, K: 'a> Iterator for Iter<'a, K> {
     type Item = (SlotId, FrequencyBucketEntryMeta<'a, K>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2730,6 +2763,18 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<'a, K> IntoIterator for &'a FrequencyBuckets<K>
+where
+    K: Eq + Hash + Clone,
+{
+    type Item = (SlotId, FrequencyBucketEntryMeta<'a, K>);
+    type IntoIter = Iter<'a, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -2951,7 +2996,7 @@ mod tests {
         buckets.touch(&"a");
         buckets.insert("b");
 
-        let mut entries: Vec<_> = buckets.iter_entries().collect();
+        let mut entries: Vec<_> = buckets.iter().collect();
         entries.sort_by_key(|(id, _)| id.index());
         assert_eq!(entries.len(), 2);
         let metas: Vec<_> = entries
@@ -2987,10 +3032,10 @@ mod tests {
     fn frequency_buckets_borrowed_key_lookups() {
         let mut buckets = FrequencyBuckets::new();
         buckets.insert("alpha".to_string());
-        buckets.touch(&"alpha".to_string());
+        buckets.touch("alpha");
 
-        assert!(buckets.contains_borrowed("alpha"));
-        assert_eq!(buckets.frequency_borrowed("alpha"), Some(2));
+        assert!(buckets.contains("alpha"));
+        assert_eq!(buckets.frequency("alpha"), Some(2));
     }
 
     #[test]
@@ -3074,13 +3119,13 @@ mod tests {
 
     #[cfg(feature = "concurrency")]
     #[test]
-    fn sharded_frequency_buckets_iter_entries() {
+    fn sharded_frequency_buckets_collect_entries() {
         let buckets = ShardedFrequencyBuckets::new(2);
         assert!(buckets.insert("a"));
         assert!(buckets.insert("b"));
         assert_eq!(buckets.touch(&"a"), Some(2));
 
-        let mut entries = buckets.iter_entries();
+        let mut entries = buckets.collect_entries();
         entries.sort_by_key(|(_, meta)| meta.key);
         let metas: Vec<_> = entries
             .into_iter()
@@ -3089,12 +3134,12 @@ mod tests {
         assert!(metas.contains(&("a", 2, 0)));
         assert!(metas.contains(&("b", 1, 0)));
 
-        let mut bucket_entries = buckets.iter_bucket_entries(1);
+        let mut bucket_entries = buckets.collect_bucket_entries(1);
         bucket_entries.sort_by_key(|(_, meta)| meta.key);
         assert_eq!(bucket_entries.len(), 1);
         assert_eq!(bucket_entries[0].1.key, "b");
 
-        let mut shard_entries = buckets.iter_entries_with_shard();
+        let mut shard_entries = buckets.collect_entries_with_shard();
         shard_entries.sort_by_key(|(_, _, meta)| meta.key);
         assert_eq!(shard_entries.len(), 2);
         assert!(
@@ -3103,7 +3148,7 @@ mod tests {
                 .all(|(idx, _, _)| *idx < buckets.shard_count())
         );
 
-        let mut shard_bucket_entries = buckets.iter_bucket_entries_with_shard(1);
+        let mut shard_bucket_entries = buckets.collect_bucket_entries_with_shard(1);
         shard_bucket_entries.sort_by_key(|(_, _, meta)| meta.key);
         assert_eq!(shard_bucket_entries.len(), 1);
         assert_eq!(shard_bucket_entries[0].2.key, "b");
@@ -3292,7 +3337,7 @@ mod property_tests {
 
                 // Compute actual minimum frequency
                 let mut actual_min: Option<u64> = None;
-                for (_, meta) in buckets.iter_entries() {
+                for (_, meta) in buckets.iter() {
                     actual_min = match actual_min {
                         None => Some(meta.freq),
                         Some(min) => Some(min.min(meta.freq)),
@@ -3446,7 +3491,7 @@ mod property_tests {
             // Pop should return a key with the minimum frequency
             if let Some((_, popped_freq)) = buckets.pop_min() {
                 // All remaining keys should have freq >= popped_freq
-                for (_, meta) in buckets.iter_entries() {
+                for (_, meta) in buckets.iter() {
                     prop_assert!(meta.freq >= popped_freq);
                 }
             }
@@ -3593,7 +3638,7 @@ mod property_tests {
 
             // Record frequencies before decay
             let mut before: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
-            for (_, meta) in buckets.iter_entries() {
+            for (_, meta) in buckets.iter() {
                 before.insert(*meta.key, meta.freq);
             }
 
@@ -3634,7 +3679,7 @@ mod property_tests {
 
             // Record frequencies before rebase
             let mut before: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
-            for (_, meta) in buckets.iter_entries() {
+            for (_, meta) in buckets.iter() {
                 before.insert(*meta.key, meta.freq);
             }
 

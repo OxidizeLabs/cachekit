@@ -13,7 +13,9 @@ pub use clock_ring::ConcurrentClockRing;
 pub use clock_ring::{ClockRing, IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
 pub use fixed_history::FixedHistory;
 pub use frequency_buckets::{
-    DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
+    BucketEntries, BucketIds, DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryDebug,
+    FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
+    Iter as FrequencyBucketsIter,
 };
 #[cfg(feature = "concurrency")]
 pub use frequency_buckets::{ShardedFrequencyBucketEntryMeta, ShardedFrequencyBuckets};
@@ -22,8 +24,12 @@ pub use interner::KeyInterner;
 #[cfg(feature = "concurrency")]
 pub use intrusive_list::ConcurrentIntrusiveList;
 pub use intrusive_list::IntrusiveList;
-pub use lazy_heap::LazyMinHeap;
+pub use lazy_heap::{IntoIter as LazyHeapIntoIter, Iter as LazyHeapIter, LazyMinHeap};
 pub use shard::ShardSelector;
 #[cfg(feature = "concurrency")]
 pub use slot_arena::{ConcurrentSlotArena, ShardedSlotArena, ShardedSlotId};
+pub use slot_arena::{
+    IntoIter as SlotArenaIntoIter, Iter as SlotArenaIter, IterIds as SlotArenaIterIds,
+    IterMut as SlotArenaIterMut,
+};
 pub use slot_arena::{SlotArena, SlotId};
