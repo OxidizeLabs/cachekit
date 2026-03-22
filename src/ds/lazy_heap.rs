@@ -134,6 +134,7 @@
 //! - Uses `BinaryHeap<Reverse<_>>` for min-heap behavior
 //! - Tie-breaking uses sequence numbers for FIFO among equal scores
 //! - `debug_validate_invariants()` available in debug/test builds
+use std::borrow::Borrow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
@@ -225,7 +226,7 @@ where
 /// let (victim, _count) = freq.pop_best().unwrap();
 /// assert!(victim == "page_b" || victim == "page_c");  // Both have count 1
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LazyMinHeap<K, S> {
     scores: HashMap<K, ScoreEntry<S>>,
     heap: BinaryHeap<Reverse<HeapEntry<K, S>>>,
@@ -304,6 +305,25 @@ where
         self.heap.shrink_to_fit();
     }
 
+    /// Clears all entries, retaining allocated capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::with_capacity(100);
+    /// heap.update("a", 1);
+    /// heap.update("b", 2);
+    ///
+    /// heap.clear();
+    /// assert!(heap.is_empty());
+    /// ```
+    pub fn clear(&mut self) {
+        self.scores.clear();
+        self.heap.clear();
+    }
+
     /// Clears all entries and shrinks internal storage.
     ///
     /// # Example
@@ -319,8 +339,7 @@ where
     /// assert!(heap.is_empty());
     /// ```
     pub fn clear_shrink(&mut self) {
-        self.scores.clear();
-        self.heap.clear();
+        self.clear();
         self.scores.shrink_to_fit();
         self.heap.shrink_to_fit();
     }
@@ -379,7 +398,28 @@ where
         self.heap.len()
     }
 
+    /// Iterates over live `(key, score)` pairs in arbitrary order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("a", 1);
+    /// heap.update("b", 2);
+    ///
+    /// let mut entries: Vec<_> = heap.iter().collect();
+    /// entries.sort();
+    /// assert_eq!(entries, vec![(&"a", &1), (&"b", &2)]);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &S)> + '_ {
+        self.scores.iter().map(|(k, entry)| (k, &entry.score))
+    }
+
     /// Returns the current score for `key`, if present.
+    ///
+    /// Accepts any borrowed form of the key type.
     ///
     /// # Example
     ///
@@ -392,7 +432,11 @@ where
     /// assert_eq!(heap.score_of(&"task"), Some(&5));
     /// assert_eq!(heap.score_of(&"missing"), None);
     /// ```
-    pub fn score_of(&self, key: &K) -> Option<&S> {
+    pub fn score_of<Q>(&self, key: &Q) -> Option<&S>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.scores.get(key).map(|entry| &entry.score)
     }
 
@@ -431,8 +475,9 @@ where
 
     /// Removes `key` and returns its score, if present.
     ///
-    /// This only removes from the authoritative map; stale heap entries
-    /// will be skipped by [`pop_best`](Self::pop_best).
+    /// Accepts any borrowed form of the key type. This only removes from
+    /// the authoritative map; stale heap entries will be skipped by
+    /// [`pop_best`](Self::pop_best).
     ///
     /// # Example
     ///
@@ -449,7 +494,11 @@ where
     /// // "b" is still there
     /// assert_eq!(heap.pop_best(), Some(("b", 2)));
     /// ```
-    pub fn remove(&mut self, key: &K) -> Option<S> {
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<S>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         self.scores.remove(key).map(|entry| entry.score)
     }
 
@@ -603,6 +652,7 @@ struct ScoreEntry<S> {
 
 #[cfg(any(test, debug_assertions))]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LazyHeapSnapshot {
     pub len: usize,
     pub heap_len: usize,
@@ -615,6 +665,34 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<K, S> FromIterator<(K, S)> for LazyMinHeap<K, S>
+where
+    K: Eq + Hash + Clone,
+    S: Ord + Clone,
+{
+    fn from_iter<I: IntoIterator<Item = (K, S)>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut heap = Self::with_capacity(lower);
+        for (key, score) in iter {
+            heap.update(key, score);
+        }
+        heap
+    }
+}
+
+impl<K, S> Extend<(K, S)> for LazyMinHeap<K, S>
+where
+    K: Eq + Hash + Clone,
+    S: Ord + Clone,
+{
+    fn extend<I: IntoIterator<Item = (K, S)>>(&mut self, iter: I) {
+        for (key, score) in iter {
+            self.update(key, score);
+        }
     }
 }
 
