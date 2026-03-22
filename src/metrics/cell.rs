@@ -1,13 +1,12 @@
 use std::cell::Cell;
 
-/// A metrics-only cell.
+/// A metrics-only cell backed by [`Cell<u64>`].
 ///
-/// # Safety
-/// This type is only safe if all accesses are externally synchronized.
-/// In this system, it is protected by an RwLock at a higher level.
+/// All accesses must be externally synchronized (e.g. by an `RwLock`).
+/// This type is **not** safe for unsynchronized concurrent use.
 #[repr(transparent)]
-#[derive(Debug, Default)]
-pub struct MetricsCell(Cell<u64>);
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct MetricsCell(Cell<u64>);
 
 impl MetricsCell {
     #[inline]

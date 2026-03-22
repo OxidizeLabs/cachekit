@@ -22,11 +22,11 @@ pub struct CacheMetrics {
     pub pop_oldest_calls: u64,
     pub pop_oldest_found: u64,
     pub pop_oldest_empty_or_stale: u64,
-    pub peek_oldest_calls: MetricsCell,
-    pub peek_oldest_found: MetricsCell,
-    pub age_rank_calls: MetricsCell,
-    pub age_rank_scan_steps: MetricsCell,
-    pub age_rank_found: MetricsCell,
+    pub(crate) peek_oldest_calls: MetricsCell,
+    pub(crate) peek_oldest_found: MetricsCell,
+    pub(crate) age_rank_calls: MetricsCell,
+    pub(crate) age_rank_scan_steps: MetricsCell,
+    pub(crate) age_rank_found: MetricsCell,
 }
 
 #[derive(Debug, Default)]
@@ -41,13 +41,13 @@ pub struct LruMetrics {
     pub evicted_entries: u64,
     pub pop_lru_calls: u64,
     pub pop_lru_found: u64,
-    pub peek_lru_calls: MetricsCell,
-    pub peek_lru_found: MetricsCell,
+    pub(crate) peek_lru_calls: MetricsCell,
+    pub(crate) peek_lru_found: MetricsCell,
     pub touch_calls: u64,
     pub touch_found: u64,
-    pub recency_rank_calls: MetricsCell,
-    pub recency_rank_found: MetricsCell,
-    pub recency_rank_scan_steps: MetricsCell,
+    pub(crate) recency_rank_calls: MetricsCell,
+    pub(crate) recency_rank_found: MetricsCell,
+    pub(crate) recency_rank_scan_steps: MetricsCell,
 }
 
 #[derive(Debug, Default)]
@@ -62,10 +62,10 @@ pub struct LfuMetrics {
     pub evicted_entries: u64,
     pub pop_lfu_calls: u64,
     pub pop_lfu_found: u64,
-    pub peek_lfu_calls: MetricsCell,
-    pub peek_lfu_found: MetricsCell,
-    pub frequency_calls: MetricsCell,
-    pub frequency_found: MetricsCell,
+    pub(crate) peek_lfu_calls: MetricsCell,
+    pub(crate) peek_lfu_found: MetricsCell,
+    pub(crate) frequency_calls: MetricsCell,
+    pub(crate) frequency_found: MetricsCell,
     pub reset_frequency_calls: u64,
     pub reset_frequency_found: u64,
     pub increment_frequency_calls: u64,
@@ -93,13 +93,13 @@ pub struct LruKMetrics {
     pub recency_rank_scan_steps: u64,
     pub pop_lru_k_calls: u64,
     pub pop_lru_k_found: u64,
-    pub peek_lru_k_calls: MetricsCell,
-    pub peek_lru_k_found: MetricsCell,
-    pub k_distance_calls: MetricsCell,
-    pub k_distance_found: MetricsCell,
-    pub k_distance_rank_calls: MetricsCell,
-    pub k_distance_rank_found: MetricsCell,
-    pub k_distance_rank_scan_steps: MetricsCell,
+    pub(crate) peek_lru_k_calls: MetricsCell,
+    pub(crate) peek_lru_k_found: MetricsCell,
+    pub(crate) k_distance_calls: MetricsCell,
+    pub(crate) k_distance_found: MetricsCell,
+    pub(crate) k_distance_rank_calls: MetricsCell,
+    pub(crate) k_distance_rank_found: MetricsCell,
+    pub(crate) k_distance_rank_scan_steps: MetricsCell,
 }
 
 impl CacheMetrics {
@@ -854,10 +854,10 @@ pub struct MfuMetrics {
     pub evicted_entries: u64,
     pub pop_mfu_calls: u64,
     pub pop_mfu_found: u64,
-    pub peek_mfu_calls: MetricsCell,
-    pub peek_mfu_found: MetricsCell,
-    pub frequency_calls: MetricsCell,
-    pub frequency_found: MetricsCell,
+    pub(crate) peek_mfu_calls: MetricsCell,
+    pub(crate) peek_mfu_found: MetricsCell,
+    pub(crate) frequency_calls: MetricsCell,
+    pub(crate) frequency_found: MetricsCell,
 }
 
 impl CoreMetricsRecorder for MfuMetrics {

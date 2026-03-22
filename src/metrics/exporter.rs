@@ -11,15 +11,40 @@ use crate::metrics::traits::MetricsExporter;
 
 /// Prometheus text exporter for cache metrics snapshots.
 ///
-/// This exporter writes in the Prometheus text exposition format so it can be
+/// Writes metrics in the [Prometheus text exposition format] so they can be
 /// scraped by Prometheus or forwarded to an OpenTelemetry collector.
+/// Implements [`MetricsExporter`] for every policy-specific snapshot type.
+///
+/// I/O errors during export are silently ignored — this is intentional for
+/// fire-and-forget monitoring where a write failure should not interrupt
+/// cache operations.
+///
+/// # Panics
+///
+/// [`export`](MetricsExporter::export) panics if the internal [`Mutex`] is
+/// poisoned (i.e. a previous thread panicked while holding the writer lock).
+///
+/// # Examples
+///
+/// ```
+/// use cachekit::metrics::exporter::PrometheusTextExporter;
+/// use cachekit::metrics::traits::MetricsExporter;
+/// use cachekit::metrics::snapshot::CoreOnlyMetricsSnapshot;
+///
+/// let exporter = PrometheusTextExporter::new("myapp_cache", Vec::new());
+/// let snapshot = CoreOnlyMetricsSnapshot::default();
+/// exporter.export(&snapshot);
+/// ```
+///
+/// [Prometheus text exposition format]: https://prometheus.io/docs/instrumenting/exposition_formats/#text-based-format
 #[derive(Debug)]
-pub struct PrometheusTextExporter<W: Write + Send + Sync> {
+pub struct PrometheusTextExporter<W> {
     prefix: String,
     writer: Mutex<W>,
 }
 
-impl<W: Write + Send + Sync> PrometheusTextExporter<W> {
+impl<W: Write + Send> PrometheusTextExporter<W> {
+    /// Creates a new exporter that writes metrics with the given `prefix` to `writer`.
     pub fn new(prefix: impl Into<String>, writer: W) -> Self {
         Self {
             prefix: prefix.into(),
@@ -54,7 +79,7 @@ impl<W: Write + Send + Sync> PrometheusTextExporter<W> {
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<CacheMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<CacheMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &CacheMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -119,7 +144,7 @@ impl<W: Write + Send + Sync> MetricsExporter<CacheMetricsSnapshot> for Prometheu
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<LruMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<LruMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &LruMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -173,7 +198,7 @@ impl<W: Write + Send + Sync> MetricsExporter<LruMetricsSnapshot> for PrometheusT
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<LfuMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<LfuMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &LfuMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -237,7 +262,7 @@ impl<W: Write + Send + Sync> MetricsExporter<LfuMetricsSnapshot> for PrometheusT
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<LruKMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<LruKMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &LruKMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -327,9 +352,7 @@ impl<W: Write + Send + Sync> MetricsExporter<LruKMetricsSnapshot> for Prometheus
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<CoreOnlyMetricsSnapshot>
-    for PrometheusTextExporter<W>
-{
+impl<W: Write + Send> MetricsExporter<CoreOnlyMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &CoreOnlyMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -353,7 +376,7 @@ impl<W: Write + Send + Sync> MetricsExporter<CoreOnlyMetricsSnapshot>
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<ArcMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<ArcMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &ArcMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -399,7 +422,7 @@ impl<W: Write + Send + Sync> MetricsExporter<ArcMetricsSnapshot> for PrometheusT
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<CarMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<CarMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &CarMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -444,7 +467,7 @@ impl<W: Write + Send + Sync> MetricsExporter<CarMetricsSnapshot> for PrometheusT
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<ClockMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<ClockMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &ClockMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -476,9 +499,7 @@ impl<W: Write + Send + Sync> MetricsExporter<ClockMetricsSnapshot> for Prometheu
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<ClockProMetricsSnapshot>
-    for PrometheusTextExporter<W>
-{
+impl<W: Write + Send> MetricsExporter<ClockProMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &ClockProMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -515,7 +536,7 @@ impl<W: Write + Send + Sync> MetricsExporter<ClockProMetricsSnapshot>
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<MfuMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<MfuMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &MfuMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -563,7 +584,7 @@ impl<W: Write + Send + Sync> MetricsExporter<MfuMetricsSnapshot> for PrometheusT
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<NruMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<NruMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &NruMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -592,7 +613,7 @@ impl<W: Write + Send + Sync> MetricsExporter<NruMetricsSnapshot> for PrometheusT
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<SlruMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<SlruMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &SlruMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -624,7 +645,7 @@ impl<W: Write + Send + Sync> MetricsExporter<SlruMetricsSnapshot> for Prometheus
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<TwoQMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<TwoQMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &TwoQMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
@@ -656,7 +677,7 @@ impl<W: Write + Send + Sync> MetricsExporter<TwoQMetricsSnapshot> for Prometheus
     }
 }
 
-impl<W: Write + Send + Sync> MetricsExporter<S3FifoMetricsSnapshot> for PrometheusTextExporter<W> {
+impl<W: Write + Send> MetricsExporter<S3FifoMetricsSnapshot> for PrometheusTextExporter<W> {
     fn export(&self, snapshot: &S3FifoMetricsSnapshot) {
         self.write_counter(&self.metric_name("get_calls_total"), snapshot.get_calls);
         self.write_counter(&self.metric_name("get_hits_total"), snapshot.get_hits);
