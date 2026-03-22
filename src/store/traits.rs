@@ -90,19 +90,20 @@ use std::sync::Arc;
 /// ```
 /// use cachekit::store::traits::StoreMetrics;
 ///
-/// let metrics = StoreMetrics {
-///     hits: 150,
-///     misses: 50,
-///     inserts: 100,
-///     updates: 20,
-///     removes: 10,
-///     evictions: 40,
-/// };
+/// let mut metrics = StoreMetrics::default();
+/// metrics.hits = 150;
+/// metrics.misses = 50;
+/// metrics.inserts = 100;
+/// metrics.updates = 20;
+/// metrics.removes = 10;
+/// metrics.evictions = 40;
 ///
 /// let hit_rate = metrics.hits as f64 / (metrics.hits + metrics.misses) as f64;
 /// assert!((hit_rate - 0.75).abs() < f64::EPSILON);
 /// ```
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct StoreMetrics {
     /// Number of successful lookups.
     pub hits: u64,
@@ -137,8 +138,16 @@ pub struct StoreMetrics {
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StoreFull;
+
+impl std::fmt::Display for StoreFull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("store is at capacity")
+    }
+}
+
+impl std::error::Error for StoreFull {}
 
 // =============================================================================
 // Single-threaded store traits
