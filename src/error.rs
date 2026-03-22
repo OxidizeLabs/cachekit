@@ -34,11 +34,24 @@ use std::fmt;
 /// Produced by debug-only `check_invariants` methods on cache types
 /// (e.g. [`S3FifoCache::check_invariants`](crate::policy::s3_fifo::S3FifoCache::check_invariants)).
 /// Carries a human-readable description of which invariant failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # Example
+///
+/// ```
+/// use cachekit::error::InvariantError;
+///
+/// let err = InvariantError::new("queue length mismatch");
+/// assert_eq!(err.to_string(), "queue length mismatch");
+/// assert_eq!(err.message(), "queue length mismatch");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InvariantError(String);
 
 impl InvariantError {
     /// Creates a new `InvariantError` with the given description.
+    ///
+    /// By convention, `msg` should be lowercase and without trailing
+    /// punctuation (e.g. `"queue length mismatch"`).
     #[inline]
     pub fn new(msg: impl Into<String>) -> Self {
         Self(msg.into())
@@ -58,6 +71,20 @@ impl fmt::Display for InvariantError {
 }
 
 impl std::error::Error for InvariantError {}
+
+impl From<String> for InvariantError {
+    #[inline]
+    fn from(msg: String) -> Self {
+        Self(msg)
+    }
+}
+
+impl From<&str> for InvariantError {
+    #[inline]
+    fn from(msg: &str) -> Self {
+        Self(msg.to_owned())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ConfigError
@@ -79,11 +106,14 @@ impl std::error::Error for InvariantError {}
 /// let err = S3FifoCache::<u64, u64>::try_with_ratios(0, 0.1, 0.9).unwrap_err();
 /// assert!(err.to_string().contains("capacity"));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConfigError(String);
 
 impl ConfigError {
     /// Creates a new `ConfigError` with the given description.
+    ///
+    /// By convention, `msg` should be lowercase and without trailing
+    /// punctuation (e.g. `"capacity must be greater than zero"`).
     #[inline]
     pub fn new(msg: impl Into<String>) -> Self {
         Self(msg.into())
@@ -103,6 +133,20 @@ impl fmt::Display for ConfigError {
 }
 
 impl std::error::Error for ConfigError {}
+
+impl From<String> for ConfigError {
+    #[inline]
+    fn from(msg: String) -> Self {
+        Self(msg)
+    }
+}
+
+impl From<&str> for ConfigError {
+    #[inline]
+    fn from(msg: &str) -> Self {
+        Self(msg.to_owned())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -146,6 +190,24 @@ mod tests {
         assert_error::<InvariantError>();
     }
 
+    #[test]
+    fn invariant_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<InvariantError>();
+    }
+
+    #[test]
+    fn invariant_from_string() {
+        let err = InvariantError::from(String::from("from string"));
+        assert_eq!(err.message(), "from string");
+    }
+
+    #[test]
+    fn invariant_from_str() {
+        let err = InvariantError::from("from str");
+        assert_eq!(err.message(), "from str");
+    }
+
     // -- ConfigError ------------------------------------------------------
 
     #[test]
@@ -178,5 +240,23 @@ mod tests {
     fn config_implements_std_error() {
         fn assert_error<T: std::error::Error>() {}
         assert_error::<ConfigError>();
+    }
+
+    #[test]
+    fn config_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ConfigError>();
+    }
+
+    #[test]
+    fn config_from_string() {
+        let err = ConfigError::from(String::from("from string"));
+        assert_eq!(err.message(), "from string");
+    }
+
+    #[test]
+    fn config_from_str() {
+        let err = ConfigError::from("from str");
+        assert_eq!(err.message(), "from str");
     }
 }
