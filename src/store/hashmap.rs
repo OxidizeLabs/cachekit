@@ -116,12 +116,13 @@
 //!
 //! ```rust
 //! use cachekit::store::hashmap::HashMapStore;
-//! use cachekit::store::traits::{StoreCore, StoreMut};
+//! use cachekit::store::traits::{StoreCore, StoreFull, StoreMut};
 //!
+//! # fn main() -> Result<(), StoreFull> {
 //! let mut store: HashMapStore<&str, i32> = HashMapStore::new(100);
 //!
 //! // Insert and access
-//! store.try_insert("key", 42).unwrap();
+//! store.try_insert("key", 42)?;
 //! assert_eq!(store.get(&"key"), Some(&42));  // Returns &V, zero-copy
 //!
 //! // Peek without metrics
@@ -131,6 +132,8 @@
 //! let m = store.metrics();
 //! assert_eq!(m.hits, 1);  // get() counted
 //! assert_eq!(m.inserts, 1);
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Type Constraints
@@ -248,12 +251,13 @@ impl StoreCounters {
 ///
 /// ```
 /// use cachekit::store::hashmap::HashMapStore;
-/// use cachekit::store::traits::{StoreCore, StoreMut};
+/// use cachekit::store::traits::{StoreCore, StoreFull, StoreMut};
 ///
+/// # fn main() -> Result<(), StoreFull> {
 /// let mut store: HashMapStore<String, Vec<u8>> = HashMapStore::new(1000);
 ///
 /// // Insert data
-/// store.try_insert("image.png".into(), vec![0x89, 0x50, 0x4E, 0x47]).unwrap();
+/// store.try_insert("image.png".into(), vec![0x89, 0x50, 0x4E, 0x47])?;
 ///
 /// // Access returns &V (zero-copy)
 /// let data: &Vec<u8> = store.get(&"image.png".into()).unwrap();
@@ -268,6 +272,8 @@ impl StoreCounters {
 /// let m = store.metrics();
 /// assert_eq!(m.hits, 1);
 /// assert_eq!(m.inserts, 1);
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// # Custom Hasher
@@ -348,14 +354,17 @@ where
     ///
     /// ```
     /// use cachekit::store::hashmap::HashMapStore;
-    /// use cachekit::store::traits::{StoreCore, StoreMut};
+    /// use cachekit::store::traits::{StoreCore, StoreFull, StoreMut};
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HashMapStore<&str, i32> = HashMapStore::new(10);
-    /// store.try_insert("key", 42).unwrap();
+    /// store.try_insert("key", 42)?;
     ///
     /// // Peek doesn't update metrics
     /// assert_eq!(store.peek(&"key"), Some(&42));
     /// assert_eq!(store.metrics().hits, 0);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn peek(&self, key: &K) -> Option<&V> {
         self.map.get(key)
@@ -369,10 +378,11 @@ where
     ///
     /// ```
     /// use cachekit::store::hashmap::HashMapStore;
-    /// use cachekit::store::traits::StoreMut;
+    /// use cachekit::store::traits::{StoreFull, StoreMut};
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HashMapStore<&str, Vec<i32>> = HashMapStore::new(10);
-    /// store.try_insert("nums", vec![1, 2, 3]).unwrap();
+    /// store.try_insert("nums", vec![1, 2, 3])?;
     ///
     /// // Modify in place
     /// if let Some(nums) = store.peek_mut(&"nums") {
@@ -380,6 +390,8 @@ where
     /// }
     ///
     /// assert_eq!(store.peek(&"nums"), Some(&vec![1, 2, 3, 4]));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn peek_mut(&mut self, key: &K) -> Option<&mut V> {
         self.map.get_mut(key)
@@ -388,6 +400,16 @@ where
     /// Returns the underlying HashMap's allocated capacity.
     ///
     /// This may be larger than the logical capacity limit set at creation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::hashmap::HashMapStore;
+    /// use cachekit::store::traits::StoreCore;
+    ///
+    /// let store: HashMapStore<&str, i32> = HashMapStore::new(100);
+    /// assert!(store.map_capacity() >= store.capacity());
+    /// ```
     pub fn map_capacity(&self) -> usize {
         self.map.capacity()
     }
@@ -401,10 +423,11 @@ where
     ///
     /// ```
     /// use cachekit::store::hashmap::HashMapStore;
-    /// use cachekit::store::traits::{StoreCore, StoreMut};
+    /// use cachekit::store::traits::{StoreCore, StoreFull, StoreMut};
     ///
+    /// # fn main() -> Result<(), StoreFull> {
     /// let mut store: HashMapStore<&str, i32> = HashMapStore::new(10);
-    /// store.try_insert("key", 1).unwrap();
+    /// store.try_insert("key", 1)?;
     ///
     /// // Policy evicts the entry
     /// store.remove(&"key");
@@ -413,9 +436,28 @@ where
     /// let m = store.metrics();
     /// assert_eq!(m.removes, 1);
     /// assert_eq!(m.evictions, 1);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
+    }
+}
+
+impl<K: Clone, V: Clone, S: Clone> Clone for HashMapStore<K, V, S> {
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            capacity: self.capacity,
+            metrics: StoreCounters {
+                hits: AtomicU64::new(self.metrics.hits.load(Ordering::Relaxed)),
+                misses: AtomicU64::new(self.metrics.misses.load(Ordering::Relaxed)),
+                inserts: AtomicU64::new(self.metrics.inserts.load(Ordering::Relaxed)),
+                updates: AtomicU64::new(self.metrics.updates.load(Ordering::Relaxed)),
+                removes: AtomicU64::new(self.metrics.removes.load(Ordering::Relaxed)),
+                evictions: AtomicU64::new(self.metrics.evictions.load(Ordering::Relaxed)),
+            },
+        }
     }
 }
 
@@ -646,6 +688,23 @@ where
     /// Records an eviction in the metrics.
     ///
     /// Thread-safe via atomic increment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::hashmap::ConcurrentHashMapStore;
+    /// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull};
+    ///
+    /// # fn main() -> Result<(), StoreFull> {
+    /// let store = ConcurrentHashMapStore::<&str, i32>::new(10);
+    /// store.try_insert("key", Arc::new(1))?;
+    /// store.remove(&"key");
+    /// store.record_eviction();
+    /// assert_eq!(store.metrics().evictions, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
@@ -935,6 +994,23 @@ where
     /// Records an eviction in the metrics.
     ///
     /// Thread-safe via atomic increment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use cachekit::store::hashmap::ShardedHashMapStore;
+    /// use cachekit::store::traits::{ConcurrentStore, ConcurrentStoreRead, StoreFull};
+    ///
+    /// # fn main() -> Result<(), StoreFull> {
+    /// let store = ShardedHashMapStore::<&str, i32>::new(10, 4);
+    /// store.try_insert("key", Arc::new(1))?;
+    /// store.remove(&"key");
+    /// store.record_eviction();
+    /// assert_eq!(store.metrics().evictions, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn record_eviction(&self) {
         self.metrics.inc_eviction();
     }
