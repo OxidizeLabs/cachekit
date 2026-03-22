@@ -1547,7 +1547,9 @@ where
 }
 
 #[cfg(feature = "concurrency")]
-impl<K, V> ConcurrentCache for ConcurrentS3FifoCache<K, V>
+// SAFETY: ConcurrentS3FifoCache uses parking_lot RwLock internally for all
+// shared-state access, so concurrent operations are correctly synchronised.
+unsafe impl<K, V> ConcurrentCache for ConcurrentS3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Send + Sync,
     V: Send + Sync,

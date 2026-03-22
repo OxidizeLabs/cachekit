@@ -736,7 +736,9 @@ where
 }
 
 #[cfg(feature = "concurrency")]
-impl<K, V> ConcurrentCache for ConcurrentFifoCache<K, V>
+// SAFETY: ConcurrentFifoCache uses parking_lot RwLock internally for all
+// shared-state access, so concurrent operations are correctly synchronised.
+unsafe impl<K, V> ConcurrentCache for ConcurrentFifoCache<K, V>
 where
     K: Clone + Eq + Hash + Send + Sync,
     V: Send + Sync,
@@ -859,16 +861,14 @@ where
         None
     }
 
-    fn pop_oldest_batch(&mut self, count: usize) -> Vec<(K, V)> {
-        let mut result = Vec::with_capacity(count.min(self.len()));
+    fn pop_oldest_batch_into(&mut self, count: usize, out: &mut Vec<(K, V)>) {
+        out.reserve(count.min(self.len()));
         for _ in 0..count {
-            if let Some(entry) = self.pop_oldest() {
-                result.push(entry);
-            } else {
-                break;
+            match self.pop_oldest() {
+                Some(entry) => out.push(entry),
+                None => break,
             }
         }
-        result
     }
 
     fn age_rank(&self, key: &K) -> Option<usize> {
@@ -1513,8 +1513,8 @@ mod tests {
             partial_cache.insert("d", 4);
 
             // Remove 2 items
-            partial_cache.pop_oldest(); // Remove "a"
-            partial_cache.pop_oldest(); // Remove "b"
+            let _ = partial_cache.pop_oldest(); // Remove "a"
+            let _ = partial_cache.pop_oldest(); // Remove "b"
             assert_eq!(partial_cache.len(), 2);
 
             // Add 2 new items

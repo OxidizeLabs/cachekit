@@ -36,7 +36,7 @@
 //! │                                                                      │
 //! │   traits        Trait hierarchy (ReadOnlyCache → CoreCache → …)      │
 //! │   builder       Unified CacheBuilder + Cache<K,V> wrapper            │
-//! │   policy        17 eviction policies behind feature flags            │
+//! │   policy        18 eviction policies behind feature flags            │
 //! │   ds            Arena, ring buffer, intrusive list, ghost list, …    │
 //! │   store         Storage backends (HashMap, slab, weighted)           │
 //! │   metrics       Hit/miss counters and snapshots (feature-gated)      │
@@ -161,6 +161,11 @@
 //! [`S3FifoCache::try_with_ratios`](policy::s3_fifo::S3FifoCache::try_with_ratios))
 //! return [`ConfigError`](error::ConfigError) for invalid parameters. Debug-only
 //! invariant checks produce [`InvariantError`](error::InvariantError).
+//!
+//! # Release Notes
+//!
+//! See the [changelog](https://github.com/OxidizeLabs/cachekit/blob/main/CHANGELOG.md)
+//! for a summary of changes in each published version.
 //!
 //! # Choosing a Policy
 //!
