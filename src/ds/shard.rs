@@ -117,7 +117,8 @@ use std::hash::{Hash, Hasher};
 /// let s2 = sel2.shard_for_key(&"test");
 /// // s1 and s2 may differ (not guaranteed, but probable)
 /// ```
-#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ShardSelector {
     shards: usize,
     seed: u64,
@@ -159,6 +160,20 @@ impl ShardSelector {
     /// ```
     pub fn shard_count(&self) -> usize {
         self.shards
+    }
+
+    /// Returns the seed used for hashing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ShardSelector;
+    ///
+    /// let selector = ShardSelector::new(4, 42);
+    /// assert_eq!(selector.seed(), 42);
+    /// ```
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     /// Maps a key to a shard index in `[0, shards)`.
