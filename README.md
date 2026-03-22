@@ -166,9 +166,7 @@ let s3_fifo = CacheBuilder::new(100).build::<u64, String>(
 let lifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lifo);
 
 // MFU - Most Frequently Used (evicts hot items)
-let mfu = CacheBuilder::new(100).build::<u64, String>(
-    CachePolicy::Mfu { bucket_hint: None }
-);
+let mfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mfu);
 
 // MRU - Most Recently Used (evicts recently accessed)
 let mru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mru);

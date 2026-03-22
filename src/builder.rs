@@ -100,6 +100,7 @@
 //!    └────────── Required for value extraction from Arc<V>
 //! ```
 
+use std::fmt;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -181,7 +182,7 @@ use crate::traits::{CoreCache, ReadOnlyCache};
 /// let lifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lifo);
 ///
 /// // MFU for inverse frequency (evicts hot items)
-/// let mfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mfu { bucket_hint: None });
+/// let mfu = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mfu);
 ///
 /// // MRU for anti-recency patterns
 /// let mru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Mru);
@@ -200,7 +201,8 @@ use crate::traits::{CoreCache, ReadOnlyCache};
 /// // FastLru for maximum single-threaded performance
 /// let fast_lru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::FastLru);
 /// ```
-#[derive(Debug, Clone)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CachePolicy {
     /// First In, First Out eviction.
     ///
@@ -311,14 +313,9 @@ pub enum CachePolicy {
     /// Evicts the item with the highest access count.
     /// Inverse of LFU - useful for specific niche workloads.
     ///
-    /// - `bucket_hint: Option<usize>` - Pre-allocated frequency buckets (default: 32)
-    ///
     /// Good for: Niche cases where most frequent = least needed next.
     #[cfg(feature = "policy-mfu")]
-    Mfu {
-        /// Pre-allocated frequency buckets for high-frequency items.
-        bucket_hint: Option<usize>,
-    },
+    Mfu,
 
     /// Most Recently Used eviction.
     ///
@@ -825,6 +822,56 @@ where
     }
 }
 
+impl<K, V> fmt::Debug for Cache<K, V>
+where
+    K: Copy + Eq + Hash + Ord,
+    V: Clone + Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let policy = match &self.inner {
+            #[cfg(feature = "policy-fifo")]
+            CacheInner::Fifo(_) => "Fifo",
+            #[cfg(feature = "policy-lru")]
+            CacheInner::Lru(_) => "Lru",
+            #[cfg(feature = "policy-fast-lru")]
+            CacheInner::FastLru(_) => "FastLru",
+            #[cfg(feature = "policy-lru-k")]
+            CacheInner::LruK(_) => "LruK",
+            #[cfg(feature = "policy-lfu")]
+            CacheInner::Lfu(_) => "Lfu",
+            #[cfg(feature = "policy-heap-lfu")]
+            CacheInner::HeapLfu(_) => "HeapLfu",
+            #[cfg(feature = "policy-two-q")]
+            CacheInner::TwoQ(_) => "TwoQ",
+            #[cfg(feature = "policy-s3-fifo")]
+            CacheInner::S3Fifo(_) => "S3Fifo",
+            #[cfg(feature = "policy-arc")]
+            CacheInner::Arc(_) => "Arc",
+            #[cfg(feature = "policy-lifo")]
+            CacheInner::Lifo(_) => "Lifo",
+            #[cfg(feature = "policy-mfu")]
+            CacheInner::Mfu(_) => "Mfu",
+            #[cfg(feature = "policy-mru")]
+            CacheInner::Mru(_) => "Mru",
+            #[cfg(feature = "policy-random")]
+            CacheInner::Random(_) => "Random",
+            #[cfg(feature = "policy-slru")]
+            CacheInner::Slru(_) => "Slru",
+            #[cfg(feature = "policy-clock")]
+            CacheInner::Clock(_) => "Clock",
+            #[cfg(feature = "policy-clock-pro")]
+            CacheInner::ClockPro(_) => "ClockPro",
+            #[cfg(feature = "policy-nru")]
+            CacheInner::Nru(_) => "Nru",
+        };
+        f.debug_struct("Cache")
+            .field("policy", &policy)
+            .field("len", &self.len())
+            .field("capacity", &self.capacity())
+            .finish()
+    }
+}
+
 /// Builder for creating cache instances.
 ///
 /// # Example
@@ -839,6 +886,7 @@ where
 /// let lru_cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
 /// let lfu_cache = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lfu { bucket_hint: None });
 /// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CacheBuilder {
     capacity: usize,
 }
@@ -864,6 +912,13 @@ impl CacheBuilder {
     /// - `K`: Key type, must be `Copy + Eq + Hash + Ord`
     /// - `V`: Value type, must be `Clone + Debug`
     ///
+    /// # Panics
+    ///
+    /// - If `capacity` is 0.
+    /// - If `LruK { k }` has `k == 0`.
+    /// - If any fractional parameter (`probation_frac`, `probationary_frac`,
+    ///   `small_ratio`, `ghost_ratio`) is outside `0.0..=1.0` or non-finite.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -883,6 +938,10 @@ impl CacheBuilder {
         K: Copy + Eq + Hash + Ord,
         V: Clone + Debug,
     {
+        assert!(self.capacity > 0, "cache capacity must be greater than 0");
+
+        self.validate_policy(&policy);
+
         let inner = match policy {
             #[cfg(feature = "policy-fifo")]
             CachePolicy::Fifo => CacheInner::Fifo(FifoCache::new(self.capacity)),
@@ -917,10 +976,7 @@ impl CacheBuilder {
             #[cfg(feature = "policy-lifo")]
             CachePolicy::Lifo => CacheInner::Lifo(LifoCore::new(self.capacity)),
             #[cfg(feature = "policy-mfu")]
-            CachePolicy::Mfu { bucket_hint: _ } => {
-                // MfuCore uses heap internally, bucket_hint is ignored
-                CacheInner::Mfu(MfuCore::new(self.capacity))
-            },
+            CachePolicy::Mfu => CacheInner::Mfu(MfuCore::new(self.capacity)),
             #[cfg(feature = "policy-mru")]
             CachePolicy::Mru => CacheInner::Mru(MruCore::new(self.capacity)),
             #[cfg(feature = "policy-random")]
@@ -938,6 +994,39 @@ impl CacheBuilder {
         };
 
         Cache { inner }
+    }
+
+    fn validate_policy(&self, policy: &CachePolicy) {
+        fn check_frac(name: &str, value: f64) {
+            assert!(
+                value.is_finite() && (0.0..=1.0).contains(&value),
+                "{name} must be a finite value in 0.0..=1.0, got {value}"
+            );
+        }
+
+        match policy {
+            #[cfg(feature = "policy-lru-k")]
+            CachePolicy::LruK { k } => {
+                assert!(*k > 0, "LruK: k must be greater than 0");
+            },
+            #[cfg(feature = "policy-two-q")]
+            CachePolicy::TwoQ { probation_frac } => {
+                check_frac("TwoQ: probation_frac", *probation_frac);
+            },
+            #[cfg(feature = "policy-s3-fifo")]
+            CachePolicy::S3Fifo {
+                small_ratio,
+                ghost_ratio,
+            } => {
+                check_frac("S3Fifo: small_ratio", *small_ratio);
+                check_frac("S3Fifo: ghost_ratio", *ghost_ratio);
+            },
+            #[cfg(feature = "policy-slru")]
+            CachePolicy::Slru { probationary_frac } => {
+                check_frac("Slru: probationary_frac", *probationary_frac);
+            },
+            _ => {},
+        }
     }
 }
 
@@ -973,7 +1062,7 @@ mod tests {
             #[cfg(feature = "policy-lifo")]
             CachePolicy::Lifo,
             #[cfg(feature = "policy-mfu")]
-            CachePolicy::Mfu { bucket_hint: None },
+            CachePolicy::Mfu,
             #[cfg(feature = "policy-mru")]
             CachePolicy::Mru,
             #[cfg(feature = "policy-random")]
@@ -1043,4 +1132,61 @@ mod tests {
         assert!(cache.contains(&2));
         assert!(cache.contains(&3));
     }
+
+    #[test]
+    #[cfg(feature = "policy-lru")]
+    fn test_debug_output() {
+        let mut cache = CacheBuilder::new(10).build::<u64, String>(CachePolicy::Lru);
+        cache.insert(1, "one".to_string());
+        let debug = format!("{:?}", cache);
+        assert!(debug.contains("Cache"));
+        assert!(debug.contains("Lru"));
+        assert!(debug.contains("len: 1"));
+    }
+
+    #[test]
+    #[cfg(feature = "policy-lru")]
+    #[should_panic(expected = "cache capacity must be greater than 0")]
+    fn test_zero_capacity_panics() {
+        let _ = CacheBuilder::new(0).build::<u64, String>(CachePolicy::Lru);
+    }
+
+    #[test]
+    #[cfg(feature = "policy-lru-k")]
+    #[should_panic(expected = "LruK: k must be greater than 0")]
+    fn test_lru_k_zero_panics() {
+        let _ = CacheBuilder::new(10).build::<u64, String>(CachePolicy::LruK { k: 0 });
+    }
+
+    #[test]
+    #[cfg(feature = "policy-two-q")]
+    #[should_panic(expected = "TwoQ: probation_frac must be a finite value in 0.0..=1.0")]
+    fn test_two_q_invalid_frac_panics() {
+        let _ = CacheBuilder::new(10).build::<u64, String>(CachePolicy::TwoQ {
+            probation_frac: 1.5,
+        });
+    }
+
+    // Cache<K,V> is Send+Sync only when policy-fast-lru is disabled:
+    // FastLru uses NonNull for single-threaded performance, which is !Send + !Sync.
+    #[cfg(all(feature = "policy-lru", not(feature = "policy-fast-lru")))]
+    #[allow(dead_code)]
+    const _: () = {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        fn check() {
+            assert_send::<Cache<u64, String>>();
+            assert_sync::<Cache<u64, String>>();
+        }
+    };
+
+    #[allow(dead_code)]
+    const _: () = {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        fn check() {
+            assert_send::<CacheBuilder>();
+            assert_sync::<CacheBuilder>();
+        }
+    };
 }
