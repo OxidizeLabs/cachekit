@@ -179,6 +179,7 @@
 /// assert_eq!(arena.get(new_id), Some(&100));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct SlotId {
     pub(crate) index: usize,
     pub(crate) generation: u32,
@@ -200,6 +201,12 @@ impl SlotId {
     /// refer to different logical entries.
     pub fn generation(self) -> u32 {
         self.generation
+    }
+}
+
+impl std::fmt::Display for SlotId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "slot[{}:gen{}]", self.index, self.generation)
     }
 }
 
@@ -264,7 +271,7 @@ impl SlotId {
 ///     current = node.next;
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotArena<T> {
     slots: Vec<Option<T>>,
     generations: Vec<u32>,
@@ -517,10 +524,10 @@ impl<T> SlotArena<T> {
     /// use cachekit::ds::SlotArena;
     ///
     /// let mut arena: SlotArena<i32> = SlotArena::new();
-    /// arena.reserve_slots(100);
+    /// arena.reserve(100);
     /// assert!(arena.capacity() >= 100);
     /// ```
-    pub fn reserve_slots(&mut self, additional: usize) {
+    pub fn reserve(&mut self, additional: usize) {
         self.slots.reserve(additional);
         self.generations.reserve(additional);
     }
@@ -708,6 +715,7 @@ impl<T> SlotArena<T> {
 
 #[cfg(any(test, debug_assertions))]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SlotArenaSnapshot {
     pub len: usize,
     pub slots_len: usize,
@@ -735,6 +743,7 @@ pub struct SlotArenaSnapshot {
 /// assert_eq!(arena.get_with(id, |v| *v), Some(42));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 #[cfg(feature = "concurrency")]
 pub struct ShardedSlotId {
     shard: usize,
@@ -772,6 +781,17 @@ impl ShardedSlotId {
     /// ```
     pub fn slot(self) -> SlotId {
         self.slot
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl std::fmt::Display for ShardedSlotId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "slot[shard{}:{}:gen{}]",
+            self.shard, self.slot.index, self.slot.generation
+        )
     }
 }
 
@@ -871,6 +891,7 @@ impl<T> ShardedSlotArena<T> {
     }
 
     /// Alias for [`with_capacity`](Self::with_capacity).
+    #[deprecated(since = "0.6.0", note = "use `with_capacity` instead")]
     pub fn with_shards(shards: usize, capacity_per_shard: usize) -> Self {
         Self::with_capacity(shards, capacity_per_shard)
     }
@@ -1063,7 +1084,7 @@ impl<T> ShardedSlotArena<T> {
     /// assert!(!arena.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.shards.iter().all(|s| s.read().is_empty())
     }
 
     /// Reserves capacity in each shard.
@@ -1074,11 +1095,11 @@ impl<T> ShardedSlotArena<T> {
     /// use cachekit::ds::ShardedSlotArena;
     ///
     /// let arena: ShardedSlotArena<i32> = ShardedSlotArena::new(4);
-    /// arena.reserve_slots(100);  // Each shard gets 100 additional capacity
+    /// arena.reserve(100);  // Each shard gets 100 additional capacity
     /// ```
-    pub fn reserve_slots(&self, additional: usize) {
+    pub fn reserve(&self, additional: usize) {
         for arena in &self.shards {
-            arena.write().reserve_slots(additional);
+            arena.write().reserve(additional);
         }
     }
 
@@ -1144,6 +1165,43 @@ impl<T> Default for SlotArena<T> {
     }
 }
 
+impl<T> FromIterator<T> for SlotArena<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut arena = SlotArena::with_capacity(lower);
+        for value in iter {
+            arena.insert(value);
+        }
+        arena
+    }
+}
+
+impl<T> Extend<T> for SlotArena<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        self.reserve(lower);
+        for value in iter {
+            self.insert(value);
+        }
+    }
+}
+
+impl<T> std::ops::Index<SlotId> for SlotArena<T> {
+    type Output = T;
+
+    fn index(&self, id: SlotId) -> &T {
+        self.get(id).expect("invalid or stale SlotId")
+    }
+}
+
+impl<T> std::ops::IndexMut<SlotId> for SlotArena<T> {
+    fn index_mut(&mut self, id: SlotId) -> &mut T {
+        self.get_mut(id).expect("invalid or stale SlotId")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Iterator types (C-ITER-TY: names match the methods that produce them)
 // ---------------------------------------------------------------------------
@@ -1184,6 +1242,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 /// Mutable iterator over `(SlotId, &mut T)` pairs of a [`SlotArena`].
 ///
 /// Created by [`SlotArena::iter_mut`].
+#[derive(Debug)]
 pub struct IterMut<'a, T> {
     inner: std::iter::Enumerate<std::slice::IterMut<'a, Option<T>>>,
     generations: &'a [u32],
@@ -1249,7 +1308,7 @@ impl<T> Iterator for IntoIter<T> {
 /// Iterator over live [`SlotId`]s of a [`SlotArena`].
 ///
 /// Created by [`SlotArena::iter_ids`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IterIds<'a, T> {
     inner: Iter<'a, T>,
 }
@@ -1313,6 +1372,15 @@ impl<'a, T> IntoIterator for &'a mut SlotArena<T> {
         self.iter_mut()
     }
 }
+
+// ---------------------------------------------------------------------------
+// FusedIterator (all iterators yield None permanently after exhaustion)
+// ---------------------------------------------------------------------------
+
+impl<T> std::iter::FusedIterator for Iter<'_, T> {}
+impl<T> std::iter::FusedIterator for IterMut<'_, T> {}
+impl<T> std::iter::FusedIterator for IntoIter<T> {}
+impl<T> std::iter::FusedIterator for IterIds<'_, T> {}
 
 /// Thread-safe [`SlotArena`] wrapper using `parking_lot::RwLock`.
 ///
@@ -1593,12 +1661,12 @@ impl<T> ConcurrentSlotArena<T> {
     /// use cachekit::ds::ConcurrentSlotArena;
     ///
     /// let arena: ConcurrentSlotArena<i32> = ConcurrentSlotArena::new();
-    /// arena.reserve_slots(100);
+    /// arena.reserve(100);
     /// assert!(arena.capacity() >= 100);
     /// ```
-    pub fn reserve_slots(&self, additional: usize) {
+    pub fn reserve(&self, additional: usize) {
         let mut arena = self.inner.write();
-        arena.reserve_slots(additional);
+        arena.reserve(additional);
     }
 
     /// Shrinks internal storage to fit current state.
@@ -1850,10 +1918,10 @@ mod tests {
     }
 
     #[test]
-    fn slot_arena_reserve_slots_grows_capacity() {
+    fn slot_arena_reserve_grows_capacity() {
         let mut arena: SlotArena<i32> = SlotArena::new();
         let before = arena.capacity();
-        arena.reserve_slots(32);
+        arena.reserve(32);
         assert!(arena.capacity() >= before + 32);
     }
 

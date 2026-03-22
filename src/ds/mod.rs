@@ -28,4 +28,8 @@ pub use lazy_heap::{IntoIter as LazyHeapIntoIter, Iter as LazyHeapIter, LazyMinH
 pub use shard::ShardSelector;
 #[cfg(feature = "concurrency")]
 pub use slot_arena::{ConcurrentSlotArena, ShardedSlotArena, ShardedSlotId};
+pub use slot_arena::{
+    IntoIter as SlotArenaIntoIter, Iter as SlotArenaIter, IterIds as SlotArenaIterIds,
+    IterMut as SlotArenaIterMut,
+};
 pub use slot_arena::{SlotArena, SlotId};
