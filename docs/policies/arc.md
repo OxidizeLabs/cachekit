@@ -64,11 +64,11 @@ depending on the workload's characteristics.
 ## Example Usage
 
 ```rust
-use cachekit::policy::arc::ARCCore;
+use cachekit::policy::arc::ArcCore;
 use cachekit::traits::CoreCache;
 
 // Create ARC cache with 100 entry capacity
-let mut cache = ARCCore::new(100);
+let mut cache = ArcCore::new(100);
 
 // Insert items (go to T1 - recent list)
 cache.insert("page1", "content1");

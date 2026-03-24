@@ -22,7 +22,7 @@
 //! │         ├─── CachePolicy::HeapLfu ─► HeapLfuCache<K, V>                     │
 //! │         ├─── CachePolicy::TwoQ ────► TwoQCore<K, V>                         │
 //! │         ├─── CachePolicy::S3Fifo ──► S3FifoCache<K, V>                      │
-//! │         ├─── CachePolicy::Arc ─────► ARCCore<K, V>                          │
+//! │         ├─── CachePolicy::Arc ─────► ArcCore<K, V>                          │
 //! │         ├─── CachePolicy::Lifo ────► LifoCore<K, V>                         │
 //! │         ├─── CachePolicy::Mfu ─────► MfuCore<K, V>                          │
 //! │         ├─── CachePolicy::Mru ─────► MruCore<K, V>                          │
@@ -108,7 +108,7 @@ use std::sync::Arc;
 #[cfg(feature = "policy-lfu")]
 use crate::ds::frequency_buckets::DEFAULT_BUCKET_PREALLOC;
 #[cfg(feature = "policy-arc")]
-use crate::policy::arc::ARCCore;
+use crate::policy::arc::ArcCore;
 #[cfg(feature = "policy-clock")]
 use crate::policy::clock::ClockCache;
 #[cfg(feature = "policy-clock-pro")]
@@ -445,7 +445,7 @@ where
     #[cfg(feature = "policy-s3-fifo")]
     S3Fifo(S3FifoCache<K, V>),
     #[cfg(feature = "policy-arc")]
-    Arc(ARCCore<K, V>),
+    Arc(ArcCore<K, V>),
     #[cfg(feature = "policy-lifo")]
     Lifo(LifoCore<K, V>),
     #[cfg(feature = "policy-mfu")]
@@ -972,7 +972,7 @@ impl CacheBuilder {
                 ghost_ratio,
             )),
             #[cfg(feature = "policy-arc")]
-            CachePolicy::Arc => CacheInner::Arc(ARCCore::new(self.capacity)),
+            CachePolicy::Arc => CacheInner::Arc(ArcCore::new(self.capacity)),
             #[cfg(feature = "policy-lifo")]
             CachePolicy::Lifo => CacheInner::Lifo(LifoCore::new(self.capacity)),
             #[cfg(feature = "policy-mfu")]

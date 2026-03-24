@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────────────────┐
-//! │                           ARCCore<K, V> Layout                              │
+//! │                           ArcCore<K, V> Layout                              │
 //! │                                                                             │
 //! │   ┌─────────────────────────────────────────────────────────────────────┐   │
 //! │   │  index: HashMap<K, NonNull<Node>>    nodes: Allocated on heap       │   │
@@ -89,7 +89,7 @@
 //!
 //! ## Key Components
 //!
-//! - [`ARCCore`]: Main ARC cache implementation
+//! - [`ArcCore`]: Main ARC cache implementation
 //! - Four lists: T1 (recent once), T2 (frequent), B1 (ghost for T1), B2 (ghost for T2)
 //! - Adaptation parameter `p`: target size for T1 vs T2
 //!
@@ -120,11 +120,11 @@
 //! ## Example Usage
 //!
 //! ```
-//! use cachekit::policy::arc::ARCCore;
+//! use cachekit::policy::arc::ArcCore;
 //! use cachekit::traits::{CoreCache, ReadOnlyCache};
 //!
 //! // Create ARC cache with 100 entry capacity
-//! let mut cache = ARCCore::new(100);
+//! let mut cache = ArcCore::new(100);
 //!
 //! // Insert items (go to T1 - recent list)
 //! cache.insert("page1", "content1");
@@ -141,7 +141,7 @@
 //!
 //! ## Thread Safety
 //!
-//! - [`ARCCore`]: Not thread-safe, designed for single-threaded use
+//! - [`ArcCore`]: Not thread-safe, designed for single-threaded use
 //! - For concurrent access, wrap in external synchronization
 //!
 //! ## Implementation Notes
@@ -177,6 +177,8 @@ use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
+use std::iter::FusedIterator;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 /// Indicates which list an entry resides in.
@@ -220,11 +222,11 @@ struct Node<K, V> {
 /// # Example
 ///
 /// ```
-/// use cachekit::policy::arc::ARCCore;
+/// use cachekit::policy::arc::ArcCore;
 /// use cachekit::traits::{CoreCache, ReadOnlyCache};
 ///
 /// // 100 capacity ARC cache
-/// let mut cache = ARCCore::new(100);
+/// let mut cache = ArcCore::new(100);
 ///
 /// // Insert goes to T1 (recent list)
 /// cache.insert("key1", "value1");
@@ -248,10 +250,7 @@ struct Node<K, V> {
 ///
 /// Uses raw pointer linked lists for O(1) operations with minimal overhead.
 /// Ghost lists track recently evicted keys to enable adaptation.
-pub struct ARCCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct ArcCore<K, V> {
     /// Direct key -> node pointer mapping
     map: FxHashMap<K, NonNull<Node<K, V>>>,
 
@@ -281,23 +280,107 @@ where
     metrics: ArcMetrics,
 }
 
-// SAFETY: ARCCore can be sent between threads if K and V are Send.
-unsafe impl<K, V> Send for ARCCore<K, V>
+// SAFETY: The `NonNull<Node>` pointers are exclusively owned by this `ArcCore`
+// instance. They are never aliased or exposed externally, and all mutation is
+// gated behind `&mut self`, so transferring ownership between threads is safe
+// when K and V are Send.
+unsafe impl<K, V> Send for ArcCore<K, V>
 where
-    K: Clone + Eq + Hash + Send,
+    K: Send,
     V: Send,
 {
 }
 
-// SAFETY: ARCCore can be shared between threads if K and V are Sync.
-unsafe impl<K, V> Sync for ARCCore<K, V>
+// SAFETY: Shared references (`&ArcCore`) only expose `ReadOnlyCache` methods
+// (`contains`, `len`, `capacity`), none of which dereference the internal
+// `NonNull` pointers through interior mutability. Sharing `&ArcCore` across
+// threads is safe when K and V are Sync.
+unsafe impl<K, V> Sync for ArcCore<K, V>
 where
-    K: Clone + Eq + Hash + Sync,
+    K: Sync,
     V: Sync,
 {
 }
 
-impl<K, V> ARCCore<K, V>
+impl<K, V> ArcCore<K, V> {
+    /// Drops all heap-allocated nodes reachable from the T1 and T2 lists.
+    fn drop_all_nodes(&mut self) {
+        let mut current = self.t1_head;
+        while let Some(node_ptr) = current {
+            unsafe {
+                current = node_ptr.as_ref().next;
+                let _ = Box::from_raw(node_ptr.as_ptr());
+            }
+        }
+        let mut current = self.t2_head;
+        while let Some(node_ptr) = current {
+            unsafe {
+                current = node_ptr.as_ref().next;
+                let _ = Box::from_raw(node_ptr.as_ptr());
+            }
+        }
+    }
+
+    /// Returns an iterator over all cached key-value pairs.
+    ///
+    /// Iterates over T1 entries first, then T2 entries, from MRU to LRU within
+    /// each list. Does not modify access state.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::arc::ArcCore;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ArcCore::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let entries: Vec<_> = cache.iter().collect();
+    /// assert_eq!(entries.len(), 2);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            current: self.t1_head,
+            t2_head: self.t2_head,
+            in_t2: false,
+            remaining: self.t1_len + self.t2_len,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns a mutable iterator over all cached key-value pairs.
+    ///
+    /// Keys are yielded as shared references; values as mutable references.
+    /// Modifying values does not affect eviction ordering.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::arc::ArcCore;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = ArcCore::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// for (_key, value) in cache.iter_mut() {
+    ///     *value += 10;
+    /// }
+    /// assert_eq!(cache.get(&"a"), Some(&11));
+    /// ```
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            current: self.t1_head,
+            t2_head: self.t2_head,
+            in_t2: false,
+            remaining: self.t1_len + self.t2_len,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<K, V> ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -313,11 +396,11 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::arc::ARCCore;
+    /// use cachekit::policy::arc::ArcCore;
     /// use cachekit::traits::ReadOnlyCache;
     ///
     /// // 100 capacity ARC cache
-    /// let cache: ARCCore<String, i32> = ARCCore::new(100);
+    /// let cache: ArcCore<String, i32> = ArcCore::new(100);
     /// assert_eq!(cache.capacity(), 100);
     /// assert!(cache.is_empty());
     /// ```
@@ -497,9 +580,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::arc::ARCCore;
+    /// use cachekit::policy::arc::ArcCore;
     ///
-    /// let cache: ARCCore<String, i32> = ARCCore::new(100);
+    /// let cache: ArcCore<String, i32> = ArcCore::new(100);
     /// // Initial p is capacity / 2
     /// assert_eq!(cache.p_value(), 50);
     /// ```
@@ -512,10 +595,10 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::arc::ARCCore;
+    /// use cachekit::policy::arc::ArcCore;
     /// use cachekit::traits::CoreCache;
     ///
-    /// let mut cache = ARCCore::new(100);
+    /// let mut cache = ArcCore::new(100);
     /// cache.insert("key", "value");
     /// assert_eq!(cache.t1_len(), 1);  // New entries go to T1
     /// ```
@@ -528,10 +611,10 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::arc::ARCCore;
+    /// use cachekit::policy::arc::ArcCore;
     /// use cachekit::traits::CoreCache;
     ///
-    /// let mut cache = ARCCore::new(100);
+    /// let mut cache = ArcCore::new(100);
     /// cache.insert("key", "value");
     /// cache.get(&"key");  // Promotes to T2
     /// assert_eq!(cache.t2_len(), 1);
@@ -540,20 +623,58 @@ where
         self.t2_len
     }
 
-    /// Returns the number of keys in B1 ghost list.
+    /// Returns the number of keys in B1 (ghost list for T1 evictions).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::arc::ArcCore;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = ArcCore::new(2);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.insert("c", 3); // evicts "a" to B1
+    /// assert_eq!(cache.b1_len(), 1);
+    /// ```
     pub fn b1_len(&self) -> usize {
         self.b1.len()
     }
 
-    /// Returns the number of keys in B2 ghost list.
+    /// Returns the number of keys in B2 (ghost list for T2 evictions).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::arc::ArcCore;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = ArcCore::new(2);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.get(&"a"); // promote to T2
+    /// cache.get(&"b"); // promote to T2
+    /// cache.insert("c", 3); // evicts T2 LRU to B2
+    /// assert!(cache.b2_len() <= 1);
+    /// ```
     pub fn b2_len(&self) -> usize {
         self.b2.len()
     }
 
-    #[cfg(any(test, debug_assertions))]
     /// Validates internal invariants of the ARC cache.
     ///
-    /// Panics if any invariant is violated.
+    /// # Panics
+    ///
+    /// Panics if any of the following invariants are violated:
+    /// - `len() == t1_len + t2_len`
+    /// - `map.len() == t1_len + t2_len`
+    /// - total entries do not exceed capacity
+    /// - `p <= capacity`
+    /// - ghost list sizes do not exceed capacity
+    /// - linked-list counts match stored lengths
+    /// - no node appears in both T1 and T2
+    /// - no key appears in both the cache and a ghost list
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_validate_invariants(&self)
     where
         K: std::fmt::Debug,
@@ -685,13 +806,13 @@ where
     }
 }
 
-impl<K, V> std::fmt::Debug for ARCCore<K, V>
+impl<K, V> std::fmt::Debug for ArcCore<K, V>
 where
     K: Clone + Eq + Hash + std::fmt::Debug,
     V: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ARCCore")
+        f.debug_struct("ArcCore")
             .field("capacity", &self.capacity)
             .field("t1_len", &self.t1_len)
             .field("t2_len", &self.t2_len)
@@ -703,7 +824,7 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for ARCCore<K, V>
+impl<K, V> ReadOnlyCache<K, V> for ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -720,7 +841,7 @@ where
     }
 }
 
-impl<K, V> CoreCache<K, V> for ARCCore<K, V>
+impl<K, V> CoreCache<K, V> for ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -892,24 +1013,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
 
-        let mut current = self.t1_head;
-        while let Some(node_ptr) = current {
-            unsafe {
-                let node = node_ptr.as_ref();
-                current = node.next;
-                let _ = Box::from_raw(node_ptr.as_ptr());
-            }
-        }
-
-        let mut current = self.t2_head;
-        while let Some(node_ptr) = current {
-            unsafe {
-                let node = node_ptr.as_ref();
-                current = node.next;
-                let _ = Box::from_raw(node_ptr.as_ptr());
-            }
-        }
-
+        self.drop_all_nodes();
         self.map.clear();
         self.t1_head = None;
         self.t1_tail = None;
@@ -923,7 +1027,7 @@ where
     }
 }
 
-impl<K, V> MutableCache<K, V> for ARCCore<K, V>
+impl<K, V> MutableCache<K, V> for ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -939,17 +1043,93 @@ where
     }
 }
 
-impl<K, V> Drop for ARCCore<K, V>
+impl<K, V> Drop for ArcCore<K, V> {
+    fn drop(&mut self) {
+        self.drop_all_nodes();
+    }
+}
+
+impl<K, V> Clone for ArcCore<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut new_cache = ArcCore::new(self.capacity);
+        new_cache.p = self.p;
+        new_cache.b1 = self.b1.clone();
+        new_cache.b2 = self.b2.clone();
+
+        // Rebuild T1 from tail (LRU) to head (MRU) so attach_t1_head
+        // reproduces the original ordering.
+        let mut t1_entries = Vec::with_capacity(self.t1_len);
+        let mut current = self.t1_tail;
+        while let Some(ptr) = current {
+            unsafe {
+                let node = ptr.as_ref();
+                t1_entries.push((node.key.clone(), node.value.clone()));
+                current = node.prev;
+            }
+        }
+        for (key, value) in t1_entries {
+            let node = Box::new(Node {
+                prev: None,
+                next: None,
+                list: ListKind::T1,
+                key: key.clone(),
+                value,
+            });
+            let ptr = NonNull::new(Box::into_raw(node)).unwrap();
+            new_cache.map.insert(key, ptr);
+            new_cache.attach_t1_head(ptr);
+        }
+
+        // Rebuild T2 the same way.
+        let mut t2_entries = Vec::with_capacity(self.t2_len);
+        let mut current = self.t2_tail;
+        while let Some(ptr) = current {
+            unsafe {
+                let node = ptr.as_ref();
+                t2_entries.push((node.key.clone(), node.value.clone()));
+                current = node.prev;
+            }
+        }
+        for (key, value) in t2_entries {
+            let node = Box::new(Node {
+                prev: None,
+                next: None,
+                list: ListKind::T2,
+                key: key.clone(),
+                value,
+            });
+            let ptr = NonNull::new(Box::into_raw(node)).unwrap();
+            new_cache.map.insert(key, ptr);
+            new_cache.attach_t2_head(ptr);
+        }
+
+        #[cfg(feature = "metrics")]
+        {
+            new_cache.metrics = self.metrics;
+        }
+
+        new_cache
+    }
+}
+
+impl<K, V> Default for ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    fn drop(&mut self) {
-        self.clear();
+    /// Returns an empty `ArcCore` with capacity 0.
+    ///
+    /// Use [`ArcCore::new`] to specify a capacity.
+    fn default() -> Self {
+        Self::new(0)
     }
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> ARCCore<K, V>
+impl<K, V> ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -978,12 +1158,209 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> MetricsSnapshotProvider<ArcMetricsSnapshot> for ARCCore<K, V>
+impl<K, V> MetricsSnapshotProvider<ArcMetricsSnapshot> for ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
     fn snapshot(&self) -> ArcMetricsSnapshot {
         self.metrics_snapshot()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterators
+// ---------------------------------------------------------------------------
+
+/// Iterator over shared references to cached key-value pairs.
+///
+/// Created by [`ArcCore::iter`]. Visits T1 entries (MRU to LRU) then T2.
+pub struct Iter<'a, K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    t2_head: Option<NonNull<Node<K, V>>>,
+    in_t2: bool,
+    remaining: usize,
+    _marker: PhantomData<&'a (K, V)>,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(node_ptr) = self.current {
+                unsafe {
+                    let node = node_ptr.as_ref();
+                    self.current = node.next;
+                    self.remaining -= 1;
+                    return Some((&node.key, &node.value));
+                }
+            } else if !self.in_t2 {
+                self.in_t2 = true;
+                self.current = self.t2_head;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {}
+impl<K, V> FusedIterator for Iter<'_, K, V> {}
+
+/// Iterator over mutable references to cached values.
+///
+/// Created by [`ArcCore::iter_mut`]. Keys are shared; values are mutable.
+pub struct IterMut<'a, K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    t2_head: Option<NonNull<Node<K, V>>>,
+    in_t2: bool,
+    remaining: usize,
+    _marker: PhantomData<&'a mut (K, V)>,
+}
+
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(mut node_ptr) = self.current {
+                unsafe {
+                    let node = node_ptr.as_mut();
+                    self.current = node.next;
+                    self.remaining -= 1;
+                    return Some((&node.key, &mut node.value));
+                }
+            } else if !self.in_t2 {
+                self.in_t2 = true;
+                self.current = self.t2_head;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IterMut<'_, K, V> {}
+impl<K, V> FusedIterator for IterMut<'_, K, V> {}
+
+/// Owning iterator over cached key-value pairs.
+///
+/// Created by calling [`IntoIterator`] on an `ArcCore`.
+pub struct IntoIter<K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    t2_head: Option<NonNull<Node<K, V>>>,
+    in_t2: bool,
+    remaining: usize,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(node_ptr) = self.current {
+                unsafe {
+                    let node = Box::from_raw(node_ptr.as_ptr());
+                    self.current = node.next;
+                    self.remaining -= 1;
+                    return Some((node.key, node.value));
+                }
+            } else if !self.in_t2 {
+                self.in_t2 = true;
+                self.current = self.t2_head;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {}
+impl<K, V> FusedIterator for IntoIter<K, V> {}
+
+impl<K, V> Drop for IntoIter<K, V> {
+    fn drop(&mut self) {
+        while self.next().is_some() {}
+    }
+}
+
+// SAFETY: IntoIter exclusively owns its nodes (moved out of ArcCore).
+unsafe impl<K: Send, V: Send> Send for IntoIter<K, V> {}
+unsafe impl<K: Sync, V: Sync> Sync for IntoIter<K, V> {}
+
+impl<K, V> IntoIterator for ArcCore<K, V> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(mut self) -> IntoIter<K, V> {
+        let iter = IntoIter {
+            current: self.t1_head,
+            t2_head: self.t2_head,
+            in_t2: false,
+            remaining: self.t1_len + self.t2_len,
+        };
+        // Prevent Drop from double-freeing nodes the iterator now owns.
+        self.t1_head = None;
+        self.t1_tail = None;
+        self.t1_len = 0;
+        self.t2_head = None;
+        self.t2_tail = None;
+        self.t2_len = 0;
+        iter
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a ArcCore<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Iter<'a, K, V> {
+        self.iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut ArcCore<K, V> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> IterMut<'a, K, V> {
+        self.iter_mut()
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for ArcCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut cache = ArcCore::new(lower);
+        cache.extend(iter);
+        cache
+    }
+}
+
+impl<K, V> Extend<(K, V)> for ArcCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        for (key, value) in iter {
+            self.insert(key, value);
+        }
     }
 }
 
@@ -993,7 +1370,7 @@ mod tests {
 
     #[test]
     fn arc_new_cache() {
-        let cache: ARCCore<String, i32> = ARCCore::new(100);
+        let cache: ArcCore<String, i32> = ArcCore::new(100);
         assert_eq!(cache.capacity(), 100);
         assert_eq!(cache.len(), 0);
         assert!(cache.is_empty());
@@ -1006,7 +1383,7 @@ mod tests {
 
     #[test]
     fn arc_insert_and_get() {
-        let mut cache = ARCCore::new(10);
+        let mut cache = ArcCore::new(10);
 
         // First insert goes to T1
         cache.insert("key1", "value1");
@@ -1027,7 +1404,7 @@ mod tests {
 
     #[test]
     fn arc_update_existing() {
-        let mut cache = ARCCore::new(10);
+        let mut cache = ArcCore::new(10);
 
         cache.insert("key1", "value1");
         assert_eq!(cache.t1_len(), 1);
@@ -1044,7 +1421,7 @@ mod tests {
 
     #[test]
     fn arc_eviction_fills_ghost_lists() {
-        let mut cache = ARCCore::new(2);
+        let mut cache = ArcCore::new(2);
 
         // Fill cache
         cache.insert("a", 1);
@@ -1062,7 +1439,7 @@ mod tests {
 
     #[test]
     fn arc_ghost_hit_promotes_to_t2() {
-        let mut cache = ARCCore::new(2);
+        let mut cache = ArcCore::new(2);
 
         // Fill and evict
         cache.insert("a", 1);
@@ -1102,7 +1479,7 @@ mod tests {
 
     #[test]
     fn arc_adaptation_increases_p() {
-        let mut cache = ARCCore::new(4);
+        let mut cache = ArcCore::new(4);
         let initial_p = cache.p_value();
 
         // Create scenario with B1 ghost hit
@@ -1146,7 +1523,7 @@ mod tests {
 
     #[test]
     fn arc_remove() {
-        let mut cache = ARCCore::new(10);
+        let mut cache = ArcCore::new(10);
 
         cache.insert("key1", "value1");
         cache.insert("key2", "value2");
@@ -1161,7 +1538,7 @@ mod tests {
 
     #[test]
     fn arc_clear() {
-        let mut cache = ARCCore::new(10);
+        let mut cache = ArcCore::new(10);
 
         cache.insert("key1", "value1");
         cache.insert("key2", "value2");
@@ -1179,7 +1556,7 @@ mod tests {
 
     #[test]
     fn arc_contains() {
-        let mut cache = ARCCore::new(10);
+        let mut cache = ArcCore::new(10);
 
         assert!(!cache.contains(&"key1"));
 
@@ -1192,7 +1569,7 @@ mod tests {
 
     #[test]
     fn arc_promotion_t1_to_t2() {
-        let mut cache = ARCCore::new(10);
+        let mut cache = ArcCore::new(10);
 
         // Insert into T1
         cache.insert("key", "value");
@@ -1212,7 +1589,7 @@ mod tests {
 
     #[test]
     fn arc_multiple_entries() {
-        let mut cache = ARCCore::new(5);
+        let mut cache = ArcCore::new(5);
 
         for i in 0..5 {
             cache.insert(i, i * 10);
@@ -1231,7 +1608,7 @@ mod tests {
 
     #[test]
     fn arc_eviction_and_ghost_tracking() {
-        let mut cache = ARCCore::new(3);
+        let mut cache = ArcCore::new(3);
 
         // Fill cache
         cache.insert(1, 100);
@@ -1261,7 +1638,7 @@ mod tests {
 
     #[test]
     fn arc_zero_capacity() {
-        let mut cache = ARCCore::new(0);
+        let mut cache = ArcCore::new(0);
         assert_eq!(cache.capacity(), 0);
         assert_eq!(cache.len(), 0);
 
@@ -1277,7 +1654,7 @@ mod tests {
     #[test]
     fn ghost_directory_size_within_two_times_capacity() {
         let c = 5usize;
-        let mut cache: ARCCore<u64, u64> = ARCCore::new(c);
+        let mut cache: ArcCore<u64, u64> = ArcCore::new(c);
 
         for i in 0..c as u64 {
             cache.insert(i, i);
@@ -1318,7 +1695,7 @@ mod tests {
     #[test]
     fn ghost_lists_bounded_when_cache_full() {
         let c = 10usize;
-        let mut cache: ARCCore<u64, u64> = ARCCore::new(c);
+        let mut cache: ArcCore<u64, u64> = ArcCore::new(c);
 
         for i in 0..500u64 {
             cache.insert(i, i);
