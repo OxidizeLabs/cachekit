@@ -67,10 +67,10 @@ ghost hit in `ghost_frequent` decreases it.
 ## Example Usage
 
 ```rust
-use cachekit::policy::car::CARCore;
+use cachekit::policy::car::CarCore;
 use cachekit::traits::{CoreCache, ReadOnlyCache};
 
-let mut cache = CARCore::new(100);
+let mut cache = CarCore::new(100);
 cache.insert("page1", "content1");
 cache.insert("page2", "content2");
 assert_eq!(cache.get(&"page1"), Some(&"content1"));
