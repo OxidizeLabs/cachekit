@@ -140,7 +140,7 @@ enum PageStatus {
 }
 
 /// Entry in the resident buffer.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Entry<K, V> {
     key: K,
     value: V,
@@ -149,7 +149,7 @@ struct Entry<K, V> {
 }
 
 /// Ghost ring entry (key only, no value).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct GhostEntry<K> {
     key: K,
 }
@@ -159,10 +159,20 @@ struct GhostEntry<K> {
 /// Improves on Clock by distinguishing hot (frequently accessed) and cold
 /// (candidates for eviction) pages, plus tracking ghost entries for recently
 /// evicted cold pages.
-pub struct ClockProCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+///
+/// Implements [`CoreCache`], [`ReadOnlyCache`], and [`MutableCache`].
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::clock_pro::ClockProCache;
+/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+///
+/// let mut cache = ClockProCache::new(100);
+/// cache.insert("key", 42);
+/// assert_eq!(cache.get(&"key"), Some(&42));
+/// ```
+pub struct ClockProCache<K, V> {
     /// Maps keys to their slot index in the entries buffer.
     index: FxHashMap<K, usize>,
     /// Circular buffer of resident entries.
@@ -193,10 +203,6 @@ where
     metrics: ClockProMetrics,
 }
 
-// Safety: ClockProCache uses no interior mutability or non-Send types
-unsafe impl<K: Send, V: Send> Send for ClockProCache<K, V> where K: Clone + Eq + Hash {}
-unsafe impl<K: Sync, V: Sync> Sync for ClockProCache<K, V> where K: Clone + Eq + Hash {}
-
 impl<K, V> ClockProCache<K, V>
 where
     K: Clone + Eq + Hash,
@@ -221,7 +227,19 @@ where
     /// Creates a new Clock-PRO cache with custom ghost capacity.
     ///
     /// A larger ghost capacity can improve hit rates on workloads with
-    /// periodic re-access patterns.
+    /// periodic re-access patterns. The ghost ring tracks keys of recently
+    /// evicted cold pages; a hit on a ghost entry promotes the next insert
+    /// of that key directly to hot status.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock_pro::ClockProCache;
+    /// use cachekit::traits::ReadOnlyCache;
+    ///
+    /// let cache: ClockProCache<String, i32> = ClockProCache::with_ghost_capacity(100, 200);
+    /// assert_eq!(cache.capacity(), 100);
+    /// ```
     #[inline]
     pub fn with_ghost_capacity(capacity: usize, ghost_capacity: usize) -> Self {
         let mut entries = Vec::with_capacity(capacity);
@@ -249,25 +267,75 @@ where
         }
     }
 
-    /// Returns `true` if the cache is empty.
+    /// Returns `true` if the cache contains no resident entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock_pro::ClockProCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockProCache::new(10);
+    /// assert!(cache.is_empty());
+    ///
+    /// cache.insert("a", 1);
+    /// assert!(!cache.is_empty());
+    /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Returns the number of hot pages.
+    /// Returns the number of hot (protected) pages.
+    ///
+    /// Hot pages are shielded from eviction until demoted to cold.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock_pro::ClockProCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockProCache::new(10);
+    /// cache.insert("a", 1);
+    /// assert_eq!(cache.hot_count(), 0); // new inserts start cold
+    /// ```
     #[inline]
     pub fn hot_count(&self) -> usize {
         self.hot_count
     }
 
-    /// Returns the number of cold pages.
+    /// Returns the number of cold (eviction candidate) pages.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock_pro::ClockProCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockProCache::new(10);
+    /// cache.insert("a", 1);
+    /// assert_eq!(cache.cold_count(), 1); // new inserts start cold
+    /// ```
     #[inline]
     pub fn cold_count(&self) -> usize {
         self.len - self.hot_count
     }
 
-    /// Returns the number of ghost entries.
+    /// Returns the number of ghost entries (recently evicted cold page keys).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock_pro::ClockProCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = ClockProCache::new(2);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.insert("c", 3); // evicts one entry into the ghost ring
+    /// assert!(cache.ghost_count() > 0);
+    /// ```
     #[inline]
     pub fn ghost_count(&self) -> usize {
         self.ghost_len
@@ -551,7 +619,21 @@ where
         }
     }
 
-    /// Clears all entries from the cache.
+    /// Clears all entries, ghost state, and resets the adaptive hot ratio.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock_pro::ClockProCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = ClockProCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// assert_eq!(cache.ghost_count(), 0);
+    /// ```
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -605,11 +687,7 @@ where
     }
 }
 
-impl<K, V> std::fmt::Debug for ClockProCache<K, V>
-where
-    K: Clone + Eq + Hash + std::fmt::Debug,
-    V: std::fmt::Debug,
-{
+impl<K, V> std::fmt::Debug for ClockProCache<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClockProCache")
             .field("len", &self.len)
@@ -621,12 +699,50 @@ where
     }
 }
 
+impl<K, V> Clone for ClockProCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index.clone(),
+            entries: self.entries.clone(),
+            ghost: self.ghost.clone(),
+            ghost_index: self.ghost_index.clone(),
+            hand_cold: self.hand_cold,
+            hand_hot: self.hand_hot,
+            ghost_hand: self.ghost_hand,
+            len: self.len,
+            hot_count: self.hot_count,
+            ghost_len: self.ghost_len,
+            capacity: self.capacity,
+            ghost_capacity: self.ghost_capacity,
+            target_hot_ratio: self.target_hot_ratio,
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics,
+        }
+    }
+}
+
+impl<K, V> Default for ClockProCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Creates a cache with default capacity of 64.
+    fn default() -> Self {
+        Self::new(64)
+    }
+}
+
 #[cfg(feature = "metrics")]
 impl<K, V> ClockProCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
     /// Returns a snapshot of cache metrics.
+    ///
+    /// Requires the `metrics` feature.
     pub fn metrics_snapshot(&self) -> ClockProMetricsSnapshot {
         ClockProMetricsSnapshot {
             get_calls: self.metrics.get_calls,
@@ -883,5 +999,26 @@ mod tests {
 
         assert_send::<ClockProCache<String, i32>>();
         assert_sync::<ClockProCache<String, i32>>();
+    }
+
+    #[test]
+    fn test_clone() {
+        let mut cache = ClockProCache::new(5);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.get(&"a");
+
+        let cloned = cache.clone();
+        assert_eq!(cloned.len(), 2);
+        assert_eq!(cloned.capacity(), 5);
+        assert_eq!(cloned.hot_count(), cache.hot_count());
+        assert_eq!(cloned.ghost_count(), cache.ghost_count());
+    }
+
+    #[test]
+    fn test_default() {
+        let cache: ClockProCache<String, i32> = ClockProCache::default();
+        assert_eq!(cache.capacity(), 64);
+        assert!(cache.is_empty());
     }
 }
