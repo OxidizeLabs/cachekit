@@ -191,7 +191,7 @@
 //!
 //! ## Example Usage
 //!
-//! ```rust,ignore
+//! ```
 //! use cachekit::policy::fifo::FifoCache;
 //! use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
 //!
@@ -223,20 +223,6 @@
 //! // Batch eviction
 //! let evicted = cache.pop_oldest_batch(2);
 //! println!("Batch evicted {} items", evicted.len());
-//! ```
-//!
-//! Thread-safe usage (requires `concurrency` feature):
-//!
-//! ```rust,ignore
-//! use cachekit::policy::fifo::ConcurrentFifoCache;
-//!
-//! let cache = ConcurrentFifoCache::<u64, Vec<u8>>::new(1000);
-//!
-//! // All operations are internally synchronized
-//! cache.insert(42, vec![1, 2, 3]);
-//! if let Some(data) = cache.get(&42) {
-//!     // use data
-//! }
 //! ```
 //!
 //! ## Comparison with Other Policies
@@ -290,6 +276,7 @@ use crate::metrics::traits::{
 ///
 /// Evicts the oldest (first inserted) item when capacity is reached.
 /// See module-level documentation for details.
+#[must_use]
 #[derive(Debug)]
 pub struct FifoCache<K, V> {
     inner: FifoCacheInner<K, V>,
@@ -317,6 +304,23 @@ where
     }
 }
 
+impl<K, V> Clone for FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: FifoCacheInner {
+                store: self.inner.store.clone(),
+                insertion_order: self.inner.insertion_order.clone(),
+                #[cfg(feature = "metrics")]
+                metrics: CacheMetrics::default(),
+            },
+        }
+    }
+}
+
 impl<K, V> Default for FifoCache<K, V>
 where
     K: Eq + Hash,
@@ -340,6 +344,10 @@ where
 {
     /// Creates a new FIFO cache with the given capacity.
     ///
+    /// A capacity of zero is valid and produces a cache that rejects all
+    /// insertions. Use [`try_new`](Self::try_new) if you want to treat
+    /// zero capacity as an error.
+    ///
     /// # Example
     ///
     /// ```
@@ -356,30 +364,36 @@ where
         }
     }
 
-    /// Returns the number of items currently in the cache.
+    /// Creates a new FIFO cache, returning an error if capacity is zero.
     ///
-    /// Equivalent to [`ReadOnlyCache::len`] but available without a trait import.
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`](crate::error::ConfigError) if `capacity` is 0.
     ///
     /// # Example
     ///
     /// ```
     /// use cachekit::policy::fifo::FifoCache;
-    /// use cachekit::traits::CoreCache;
     ///
-    /// let mut cache = FifoCache::new(10);
-    /// assert_eq!(cache.current_size(), 0);
+    /// let cache = FifoCache::<String, i32>::try_new(100);
+    /// assert!(cache.is_ok());
     ///
-    /// cache.insert("a", 1);
-    /// assert_eq!(cache.current_size(), 1);
+    /// let bad = FifoCache::<String, i32>::try_new(0);
+    /// assert!(bad.is_err());
     /// ```
-    pub fn current_size(&self) -> usize {
-        self.inner.store.len()
+    pub fn try_new(capacity: usize) -> Result<Self, crate::error::ConfigError> {
+        if capacity == 0 {
+            return Err(crate::error::ConfigError::new(
+                "cache capacity must be greater than zero",
+            ));
+        }
+        Ok(Self::new(capacity))
     }
 
-    /// Returns the insertion order length (may include stale entries).
+    /// Returns the internal queue length (may include stale entries).
     ///
-    /// Primarily for testing and debugging — this count may exceed
-    /// [`current_size`](Self::current_size) when stale entries are present.
+    /// This count may exceed [`len`](ReadOnlyCache::len) when stale
+    /// entries are present. Primarily useful for diagnostics.
     ///
     /// # Example
     ///
@@ -390,37 +404,15 @@ where
     /// let mut cache = FifoCache::new(10);
     /// cache.insert("a", 1);
     /// cache.insert("b", 2);
-    /// assert_eq!(cache.insertion_order_len(), 2);
+    /// assert_eq!(cache.queue_len(), 2);
     /// ```
-    pub fn insertion_order_len(&self) -> usize {
+    pub fn queue_len(&self) -> usize {
         self.inner.insertion_order.len()
     }
 
-    /// Checks if the internal store contains a specific key.
+    /// Iterates over live entries in insertion order (oldest first).
     ///
-    /// Primarily for testing stale entry behavior — equivalent to
-    /// [`ReadOnlyCache::contains`] but bypasses any trait dispatch.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::fifo::FifoCache;
-    /// use cachekit::traits::CoreCache;
-    ///
-    /// let mut cache = FifoCache::new(10);
-    /// cache.insert("a", 1);
-    ///
-    /// assert!(cache.cache_contains_key(&"a"));
-    /// assert!(!cache.cache_contains_key(&"b"));
-    /// ```
-    pub fn cache_contains_key(&self, key: &K) -> bool {
-        self.inner.store.contains(key)
-    }
-
-    /// Returns an iterator over the insertion order keys.
-    ///
-    /// Primarily for testing and debugging — yields keys in insertion
-    /// order (oldest first), including stale entries.
+    /// Stale entries are skipped automatically.
     ///
     /// # Example
     ///
@@ -432,35 +424,53 @@ where
     /// cache.insert("a", 1);
     /// cache.insert("b", 2);
     ///
-    /// let keys: Vec<_> = cache.insertion_order_iter().collect();
+    /// let pairs: Vec<_> = cache.iter().collect();
+    /// assert_eq!(pairs, vec![(&"a", &1), (&"b", &2)]);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.inner
+            .insertion_order
+            .iter()
+            .filter_map(|k| self.inner.store.peek(k).map(|v| (k, v)))
+    }
+
+    /// Iterates over keys in insertion order (oldest first), including stale entries.
+    ///
+    /// Use [`iter`](Self::iter) to skip stale entries. This method is
+    /// primarily for diagnostics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::FifoCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = FifoCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let keys: Vec<_> = cache.keys_by_age().collect();
     /// assert_eq!(keys, vec![&"a", &"b"]);
     /// ```
-    pub fn insertion_order_iter(&self) -> impl Iterator<Item = &K> {
+    pub fn keys_by_age(&self) -> impl Iterator<Item = &K> {
         self.inner.insertion_order.iter()
     }
 
-    /// Manually removes a key from the store only (for testing stale entries).
-    /// This is only for testing purposes to simulate stale entry conditions.
-    /// Accepts a raw key and removes the corresponding entry from the store.
     #[cfg(test)]
     pub fn remove_from_cache_only(&mut self, key: &K) -> Option<V> {
         self.inner.store.remove(key)
     }
 
-    /// Returns the current store HashMap capacity (for testing memory usage).
     #[cfg(test)]
     pub fn cache_capacity(&self) -> usize {
         self.inner.store.map_capacity()
     }
 
-    /// Returns the current insertion order VecDeque capacity (for testing memory usage).
     #[cfg(test)]
     pub fn insertion_order_capacity(&self) -> usize {
         self.inner.insertion_order.capacity()
     }
 
-    /// Evicts the oldest valid entry from the cache.
-    /// Skips over any stale entries (keys that were lazily deleted).
     fn evict_oldest(&mut self) {
         while let Some(oldest_key) = self.inner.insertion_order.pop_front() {
             #[cfg(feature = "metrics")]
@@ -540,6 +550,11 @@ where
 
     /// Returns a clone of the value for the given key.
     ///
+    /// Because the underlying [`CoreCache::get`] takes `&mut self` (some
+    /// policies update access metadata), this acquires a **write lock**.
+    /// For FIFO, where `get` is side-effect-free, prefer [`peek`](Self::peek)
+    /// which only takes a read lock.
+    ///
     /// # Example
     ///
     /// ```
@@ -557,6 +572,31 @@ where
     {
         let mut cache = self.inner.write();
         cache.get(key).cloned()
+    }
+
+    /// Returns a clone of the value without updating any internal state.
+    ///
+    /// Unlike [`get`](Self::get), this only acquires a **read lock**,
+    /// making it more efficient under contention. Safe to use with FIFO
+    /// because lookups have no side effects.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::fifo::ConcurrentFifoCache;
+    ///
+    /// let cache = ConcurrentFifoCache::new(10);
+    /// cache.insert("key", 42);
+    ///
+    /// assert_eq!(cache.peek(&"key"), Some(42));
+    /// assert_eq!(cache.peek(&"missing"), None);
+    /// ```
+    pub fn peek(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        let cache = self.inner.read();
+        cache.inner.store.peek(key).cloned()
     }
 
     /// Checks if a key exists in the cache.
@@ -1816,7 +1856,7 @@ mod tests {
             assert_eq!(cache.len(), 2); // HashMap now has 2 items
 
             // The insertion_order VecDeque still has 3 entries, but "key1" is now stale
-            assert_eq!(cache.insertion_order_len(), 3);
+            assert_eq!(cache.queue_len(), 3);
             assert!(!cache.contains(&"key1")); // key1 is not in the cache anymore
             assert!(cache.contains(&"key2")); // key2 is still valid
             assert!(cache.contains(&"key3")); // key3 is still valid
@@ -1868,7 +1908,7 @@ mod tests {
 
             // Now "a" and "c" are stale entries in insertion_order
             assert_eq!(cache.len(), 2); // Only "b" and "d" remain in HashMap
-            assert_eq!(cache.insertion_order_len(), 4); // All 4 still in insertion_order
+            assert_eq!(cache.queue_len(), 4); // All 4 still in insertion_order
 
             // age_rank should skip stale entries and give correct ranks for valid entries
             assert_eq!(cache.age_rank(&"a"), None); // Stale, should return None
@@ -1912,7 +1952,7 @@ mod tests {
 
             // Stale entries remain in insertion_order
             assert_eq!(cache.len(), 1); // Only "keep" in HashMap
-            assert_eq!(cache.insertion_order_len(), 3); // All 3 in insertion_order
+            assert_eq!(cache.queue_len(), 3); // All 3 in insertion_order
 
             // Verify operations work correctly despite stale entries
             assert_eq!(cache.peek_oldest(), Some((&"keep", &"value_keep")));
@@ -1927,7 +1967,7 @@ mod tests {
 
             // Now we have: stale("temp1"), stale("temp2"), "keep", "new1", "new2"
             assert_eq!(cache.len(), 3);
-            assert_eq!(cache.insertion_order_len(), 5);
+            assert_eq!(cache.queue_len(), 5);
 
             // pop_oldest should skip stale entries and pop "keep"
             assert_eq!(cache.pop_oldest(), Some(("keep", "value_keep")));
@@ -1987,7 +2027,7 @@ mod tests {
             cache.remove_from_cache_only(&"will_be_stale2");
 
             assert_eq!(cache.len(), 2); // Only valid entries in HashMap
-            assert_eq!(cache.insertion_order_len(), 4); // All entries in insertion_order
+            assert_eq!(cache.queue_len(), 4); // All entries in insertion_order
 
             // Test 1: pop_oldest cleans up stale entries as it encounters them
             assert_eq!(cache.pop_oldest(), Some(("valid1", "value1")));
