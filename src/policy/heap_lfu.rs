@@ -2,7 +2,7 @@
 //!
 //! This module provides an alternative LFU cache implementation that uses a binary heap for
 //! O(log n) eviction operations instead of the O(n) scanning approach used by the standard
-//! `LfuCache`.
+//! [`LfuCache`](crate::policy::lfu::LfuCache).
 //!
 //! ## Architecture
 //!
@@ -228,17 +228,23 @@
 //!
 //! ## Thread Safety
 //!
-//! - `HeapLfuCache` is **NOT thread-safe**
+//! - [`HeapLfuCache`] is **not** thread-safe by itself
 //! - Wrap in `Arc<Mutex<HeapLfuCache>>` for concurrent access
 //! - Shorter lock times than standard LFU due to O(log n) eviction
+//! - The type is [`Send`] and [`Sync`] when `K` and `V` are, so it can be
+//!   moved into an `Arc<Mutex<_>>` or `Arc<RwLock<_>>` freely
 //!
 //! ## Implementation Notes
 //!
-//! - **Stale entries**: Accumulate in heap, cleaned lazily during `pop_lfu()`
-//! - **Bounded rebuilds**: Heap is rebuilt when size exceeds `MAX_HEAP_FACTOR * live_entries`
-//! - **peek_lfu()**: Falls back to O(n) scan (avoiding heap borrow issues)
-//! - **Memory overhead**: ~3x standard LFU due to three data structures
-//! - **Reverse wrapper**: Converts max-heap to min-heap for LFU semantics
+//! - **Stale entries**: Accumulate in heap, cleaned lazily during
+//!   [`pop_lfu()`](LfuCacheTrait::pop_lfu)
+//! - **Bounded rebuilds**: Heap is rebuilt when size exceeds
+//!   `MAX_HEAP_FACTOR × live_entries`
+//! - **[`peek_lfu()`](LfuCacheTrait::peek_lfu)**: Falls back to O(n) scan
+//!   (avoiding heap borrow issues)
+//! - **Memory overhead**: ~3× standard LFU due to three data structures
+//! - **[`Reverse`](std::cmp::Reverse) wrapper**: Converts max-heap to
+//!   min-heap for LFU semantics
 
 use crate::prelude::ReadOnlyCache;
 use crate::store::hashmap::HashMapStore;
@@ -260,13 +266,15 @@ use crate::metrics::traits::{
 
 /// Heap-based LFU Cache with O(log n) eviction.
 ///
-/// Uses a binary min-heap for efficient LFU item identification.
-/// Values are stored as `Arc<V>` to avoid cloning on eviction.
+/// Uses a binary min-heap for efficient least-frequently-used item
+/// identification. Values are stored as [`Arc<V>`] to avoid cloning on
+/// eviction. Implements [`CoreCache`], [`MutableCache`], and
+/// [`LfuCacheTrait`].
 ///
 /// # Type Parameters
 ///
 /// - `K`: Key type, must be `Eq + Hash + Clone + Ord`
-/// - `V`: Value type (stored as `Arc<V>`)
+/// - `V`: Value type (stored as [`Arc<V>`])
 ///
 /// # Example
 ///
@@ -297,13 +305,10 @@ use crate::metrics::traits::{
 /// # Stale Entry Handling
 ///
 /// The heap may contain stale entries with outdated frequencies. These are
-/// lazily cleaned during `pop_lfu()` operations. Periodic heap rebuilds
-/// bound memory growth.
+/// lazily cleaned during [`pop_lfu()`](LfuCacheTrait::pop_lfu) operations.
+/// Periodic heap rebuilds bound memory growth.
 #[derive(Debug)]
-pub struct HeapLfuCache<K, V>
-where
-    K: Eq + Hash + Clone + Ord,
-{
+pub struct HeapLfuCache<K, V> {
     store: HashMapStore<K, Arc<V>>,
     frequencies: HashMap<K, u64>,
     // Min-heap: smallest frequency first
@@ -313,6 +318,22 @@ where
     metrics: LfuMetrics,
 }
 
+impl<K, V> Clone for HeapLfuCache<K, V>
+where
+    K: Eq + Hash + Clone + Ord,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            frequencies: self.frequencies.clone(),
+            freq_heap: self.freq_heap.clone(),
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
 impl<K, V> HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
@@ -320,7 +341,7 @@ where
     /// Maximum ratio of heap size to live entries before rebuild.
     const MAX_HEAP_FACTOR: usize = 4;
 
-    /// Creates a new HeapLfuCache with the specified capacity.
+    /// Creates a new `HeapLfuCache` with the specified capacity.
     ///
     /// # Example
     ///
@@ -332,6 +353,7 @@ where
     /// assert_eq!(cache.len(), 0);
     /// assert!(cache.is_empty());
     /// ```
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         HeapLfuCache {
             store: HashMapStore::new(capacity),
@@ -352,6 +374,7 @@ where
     /// let cache: HeapLfuCache<String, i32> = HeapLfuCache::new(50);
     /// assert_eq!(cache.capacity(), 50);
     /// ```
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.store.capacity()
     }
@@ -371,11 +394,12 @@ where
     /// cache.insert("a", Arc::new(1));
     /// assert_eq!(cache.len(), 1);
     /// ```
+    #[must_use]
     pub fn len(&self) -> usize {
         self.store.len()
     }
 
-    /// Returns true if the cache is empty.
+    /// Returns `true` if the cache is empty.
     ///
     /// # Example
     ///
@@ -390,6 +414,7 @@ where
     /// cache.insert("a", Arc::new(1));
     /// assert!(!cache.is_empty());
     /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.store.is_empty()
     }
@@ -411,6 +436,7 @@ where
     /// assert!(cache.contains(&"key"));
     /// assert!(!cache.contains(&"missing"));
     /// ```
+    #[must_use]
     pub fn contains(&self, key: &K) -> bool {
         self.store.contains(key)
     }
@@ -433,6 +459,7 @@ where
     ///
     /// assert_eq!(cache.frequency(&"missing"), None);
     /// ```
+    #[must_use]
     pub fn frequency(&self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_frequency_call();
@@ -475,7 +502,7 @@ where
     /// Adds a frequency entry to the heap.
     ///
     /// Creates a new heap entry for the key. Old entries become stale
-    /// and are cleaned lazily during `pop_lfu_internal()`.
+    /// and are cleaned lazily during [`pop_lfu_internal`](Self::pop_lfu_internal).
     ///
     /// Complexity: O(log n).
     fn add_to_heap(&mut self, key: &K, frequency: u64) {
@@ -566,7 +593,18 @@ where
     }
 }
 
-/// Core cache operations for heap-based LFU.
+/// [`CoreCache`] operations for heap-based LFU.
+///
+/// # Insert behaviour
+///
+/// When the key already exists, the value is replaced and the previous value
+/// is returned. When the key is new and the cache is at capacity, the least
+/// frequently used entry is evicted first.
+///
+/// If the underlying store rejects a new-key insertion (store full after
+/// eviction), `insert` returns `None` *without* adding the entry. This is
+/// indistinguishable from a successful new-key insert via the return value
+/// alone; use [`len`](HeapLfuCache::len) to confirm the entry was stored.
 ///
 /// # Example
 ///
@@ -658,16 +696,11 @@ where
     }
 
     fn clear(&mut self) {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_clear();
-
-        self.store.clear();
-        self.frequencies.clear();
-        self.freq_heap.clear();
+        HeapLfuCache::clear(self);
     }
 }
 
-/// Mutable cache operations for heap-based LFU.
+/// [`MutableCache`] operations for heap-based LFU.
 ///
 /// # Example
 ///
@@ -703,7 +736,7 @@ where
     }
 }
 
-/// LFU-specific operations for heap-based cache.
+/// [`LfuCacheTrait`] operations for heap-based cache.
 ///
 /// # Example
 ///
@@ -785,17 +818,7 @@ where
     }
 
     fn frequency(&self, key: &K) -> Option<u64> {
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_frequency_call();
-
-        let result = self.frequencies.get(key).copied();
-
-        #[cfg(feature = "metrics")]
-        if result.is_some() {
-            (&self.metrics).record_frequency_found();
-        }
-
-        result
+        HeapLfuCache::frequency(self, key)
     }
 
     fn increment_frequency(&mut self, key: &K) -> Option<u64> {
@@ -826,6 +849,24 @@ impl<K, V> HeapLfuCache<K, V>
 where
     K: Eq + Hash + Clone + Ord,
 {
+    /// Returns a point-in-time snapshot of all LFU metrics counters.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::heap_lfu::HeapLfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
+    /// cache.insert("a", Arc::new(1));
+    /// cache.get(&"a");
+    ///
+    /// let snap = cache.metrics_snapshot();
+    /// assert_eq!(snap.insert_calls, 1);
+    /// assert_eq!(snap.get_hits, 1);
+    /// ```
+    #[must_use]
     pub fn metrics_snapshot(&self) -> LfuMetricsSnapshot {
         LfuMetricsSnapshot {
             get_calls: self.metrics.get_calls,
