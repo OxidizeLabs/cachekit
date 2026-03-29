@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────────────────┐
-//! │                           CARCore<K, V> Layout                              │
+//! │                           CarCore<K, V> Layout                              │
 //! │                                                                             │
 //! │   Slot array with per-ring intrusive circular linked lists:                 │
 //! │                                                                             │
@@ -36,7 +36,7 @@
 //!
 //! ## Key Components
 //!
-//! - [`CARCore`]: Main CAR cache implementation
+//! - [`CarCore`]: Main CAR cache implementation
 //! - Two intrusive circular rings: Recent (seen once), Frequent (repeated access)
 //! - Ghost lists (ghost_recent / ghost_frequent) for evicted keys (ARC-style adaptation)
 //! - `target_recent_size`: target size for the Recent ring, adjusted by ghost hits
@@ -64,10 +64,10 @@
 //! ## Example Usage
 //!
 //! ```
-//! use cachekit::policy::car::CARCore;
+//! use cachekit::policy::car::CarCore;
 //! use cachekit::traits::{CoreCache, ReadOnlyCache};
 //!
-//! let mut cache = CARCore::new(100);
+//! let mut cache = CarCore::new(100);
 //! cache.insert("key1", "value1");
 //! cache.insert("key2", "value2");
 //!
@@ -78,7 +78,7 @@
 //!
 //! ## Thread Safety
 //!
-//! - [`CARCore`]: Not thread-safe, designed for single-threaded use
+//! - [`CarCore`]: Not thread-safe, designed for single-threaded use
 //! - For concurrent access, wrap in external synchronization
 //!
 //! ## Implementation Notes
@@ -106,6 +106,7 @@ use crate::prelude::ReadOnlyCache;
 use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
+use std::iter::FusedIterator;
 
 /// Which logical ring an entry resides in.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -126,6 +127,15 @@ struct SlotPayload<K, V> {
     value: V,
 }
 
+impl<K: Clone, V: Clone> Clone for SlotPayload<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
 /// Core Clock with Adaptive Replacement (CAR) implementation.
 ///
 /// Combines ARC's adaptivity (ghost lists + adaptation target) with Clock mechanics:
@@ -141,10 +151,10 @@ struct SlotPayload<K, V> {
 /// # Example
 ///
 /// ```
-/// use cachekit::policy::car::CARCore;
+/// use cachekit::policy::car::CarCore;
 /// use cachekit::traits::{CoreCache, ReadOnlyCache};
 ///
-/// let mut cache = CARCore::new(100);
+/// let mut cache = CarCore::new(100);
 /// cache.insert("key1", "value1");
 /// assert_eq!(cache.get(&"key1"), Some(&"value1"));
 /// assert_eq!(cache.recent_len() + cache.frequent_len(), cache.len());
@@ -160,10 +170,7 @@ struct SlotPayload<K, V> {
 ///   - Ref=0: evict to ghost_frequent
 ///   - Ref=1: clear ref, advance, continue
 #[must_use]
-pub struct CARCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct CarCore<K, V> {
     /// Key -> slot index.
     index: FxHashMap<K, usize>,
 
@@ -213,7 +220,7 @@ where
     metrics: CarMetrics,
 }
 
-impl<K, V> CARCore<K, V>
+impl<K, V> CarCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -226,10 +233,10 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::car::CARCore;
+    /// use cachekit::policy::car::CarCore;
     /// use cachekit::traits::ReadOnlyCache;
     ///
-    /// let cache: CARCore<String, i32> = CARCore::new(100);
+    /// let cache: CarCore<String, i32> = CarCore::new(100);
     /// assert_eq!(cache.capacity(), 100);
     /// assert!(cache.is_empty());
     /// assert_eq!(cache.target_recent_size(), 50);
@@ -478,9 +485,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::car::CARCore;
+    /// use cachekit::policy::car::CarCore;
     ///
-    /// let cache: CARCore<String, i32> = CARCore::new(100);
+    /// let cache: CarCore<String, i32> = CarCore::new(100);
     /// assert_eq!(cache.target_recent_size(), 50);
     /// ```
     pub fn target_recent_size(&self) -> usize {
@@ -492,10 +499,10 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::car::CARCore;
+    /// use cachekit::policy::car::CarCore;
     /// use cachekit::traits::CoreCache;
     ///
-    /// let mut cache = CARCore::new(100);
+    /// let mut cache = CarCore::new(100);
     /// cache.insert("key", "value");
     /// assert_eq!(cache.recent_len(), 1);
     /// ```
@@ -508,25 +515,105 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::car::CARCore;
+    /// use cachekit::policy::car::CarCore;
     /// use cachekit::traits::CoreCache;
     ///
-    /// let mut cache = CARCore::new(100);
-    /// cache.insert("key", "value");
-    /// cache.get(&"key"); // CAR: ref bit set, but stays in recent ring
+    /// let mut cache = CarCore::new(3);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.insert("c", 3);
+    /// cache.get(&"a");
+    /// cache.get(&"b");
+    /// // Inserting "d" evicts an unreferenced entry and demotes referenced
+    /// // entries from Recent to Frequent.
+    /// cache.insert("d", 4);
+    /// assert!(cache.frequent_len() > 0);
     /// ```
     pub fn frequent_len(&self) -> usize {
         self.frequent_len
     }
 
     /// Returns the number of keys in the ghost_recent list (evicted from recent ring).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::car::CarCore;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = CarCore::new(2);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.insert("c", 3); // evicts one entry to ghost_recent
+    /// assert!(cache.ghost_recent_len() >= 1);
+    /// ```
     pub fn ghost_recent_len(&self) -> usize {
         self.ghost_recent.len()
     }
 
     /// Returns the number of keys in the ghost_frequent list (evicted from frequent ring).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::car::CarCore;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let cache: CarCore<String, i32> = CarCore::new(10);
+    /// assert_eq!(cache.ghost_frequent_len(), 0);
+    /// ```
     pub fn ghost_frequent_len(&self) -> usize {
         self.ghost_frequent.len()
+    }
+
+    /// Returns an iterator over shared references to all cached key-value pairs.
+    ///
+    /// Iteration order is unspecified and not guaranteed to follow ring order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::car::CarCore;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = CarCore::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let entries: Vec<_> = cache.iter().collect();
+    /// assert_eq!(entries.len(), 2);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            slots: self.slots.iter(),
+            remaining: self.recent_len + self.frequent_len,
+        }
+    }
+
+    /// Returns an iterator over cached keys (shared) and values (mutable).
+    ///
+    /// Iteration order is unspecified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::car::CarCore;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = CarCore::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// for (_key, value) in cache.iter_mut() {
+    ///     *value += 10;
+    /// }
+    /// assert_eq!(cache.get(&"a"), Some(&11));
+    /// ```
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            slots: self.slots.iter_mut(),
+            remaining: self.recent_len + self.frequent_len,
+        }
     }
 
     /// Validates internal invariants. Available in debug/test builds.
@@ -679,13 +766,13 @@ where
     }
 }
 
-impl<K, V> std::fmt::Debug for CARCore<K, V>
+impl<K, V> std::fmt::Debug for CarCore<K, V>
 where
     K: Clone + Eq + Hash + std::fmt::Debug,
     V: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CARCore")
+        f.debug_struct("CarCore")
             .field("capacity", &self.capacity)
             .field("recent_len", &self.recent_len)
             .field("frequent_len", &self.frequent_len)
@@ -697,7 +784,35 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for CARCore<K, V>
+impl<K, V> Clone for CarCore<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index.clone(),
+            slots: self.slots.clone(),
+            referenced: self.referenced.clone(),
+            ring_kind: self.ring_kind.clone(),
+            ring_next: self.ring_next.clone(),
+            ring_prev: self.ring_prev.clone(),
+            hand_recent: self.hand_recent,
+            hand_frequent: self.hand_frequent,
+            free: self.free.clone(),
+            ghost_recent: self.ghost_recent.clone(),
+            ghost_frequent: self.ghost_frequent.clone(),
+            target_recent_size: self.target_recent_size,
+            recent_len: self.recent_len,
+            frequent_len: self.frequent_len,
+            capacity: self.capacity,
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics,
+        }
+    }
+}
+
+impl<K, V> ReadOnlyCache<K, V> for CarCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -714,7 +829,7 @@ where
     }
 }
 
-impl<K, V> CoreCache<K, V> for CARCore<K, V>
+impl<K, V> CoreCache<K, V> for CarCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -820,7 +935,7 @@ where
     }
 }
 
-impl<K, V> MutableCache<K, V> for CARCore<K, V>
+impl<K, V> MutableCache<K, V> for CarCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -840,7 +955,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> CARCore<K, V>
+impl<K, V> CarCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -868,12 +983,133 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<K, V> MetricsSnapshotProvider<CarMetricsSnapshot> for CARCore<K, V>
+impl<K, V> MetricsSnapshotProvider<CarMetricsSnapshot> for CarCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
     fn snapshot(&self) -> CarMetricsSnapshot {
         self.metrics_snapshot()
+    }
+}
+
+// =============================================================================
+// Iterators
+// =============================================================================
+
+/// Iterator over shared references to cached key-value pairs.
+///
+/// Created by [`CarCore::iter`].
+pub struct Iter<'a, K, V> {
+    slots: std::slice::Iter<'a, Option<SlotPayload<K, V>>>,
+    remaining: usize,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(payload) = self.slots.by_ref().flatten().next() {
+            self.remaining -= 1;
+            return Some((&payload.key, &payload.value));
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {}
+impl<K, V> FusedIterator for Iter<'_, K, V> {}
+
+/// Iterator over cached keys (shared) and values (mutable).
+///
+/// Created by [`CarCore::iter_mut`].
+pub struct IterMut<'a, K, V> {
+    slots: std::slice::IterMut<'a, Option<SlotPayload<K, V>>>,
+    remaining: usize,
+}
+
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(payload) = self.slots.by_ref().flatten().next() {
+            self.remaining -= 1;
+            return Some((&payload.key, &mut payload.value));
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IterMut<'_, K, V> {}
+impl<K, V> FusedIterator for IterMut<'_, K, V> {}
+
+/// Owning iterator over cached key-value pairs.
+///
+/// Created by calling [`IntoIterator`] on a [`CarCore`].
+pub struct IntoIter<K, V> {
+    slots: std::vec::IntoIter<Option<SlotPayload<K, V>>>,
+    remaining: usize,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(payload) = self.slots.by_ref().flatten().next() {
+            self.remaining -= 1;
+            return Some((payload.key, payload.value));
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {}
+impl<K, V> FusedIterator for IntoIter<K, V> {}
+
+impl<K, V> IntoIterator for CarCore<K, V> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            remaining: self.recent_len + self.frequent_len,
+            slots: self.slots.into_iter(),
+        }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a CarCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut CarCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
     }
 }
 
@@ -887,7 +1123,7 @@ mod tests {
 
     #[test]
     fn car_new_cache() {
-        let cache: CARCore<String, i32> = CARCore::new(100);
+        let cache: CarCore<String, i32> = CarCore::new(100);
         assert_eq!(cache.capacity(), 100);
         assert_eq!(cache.len(), 0);
         assert!(cache.is_empty());
@@ -899,7 +1135,7 @@ mod tests {
 
     #[test]
     fn car_zero_capacity() {
-        let mut cache: CARCore<&str, i32> = CARCore::new(0);
+        let mut cache: CarCore<&str, i32> = CarCore::new(0);
         assert_eq!(cache.capacity(), 0);
         assert_eq!(cache.len(), 0);
         cache.insert("key", 1);
@@ -909,7 +1145,7 @@ mod tests {
 
     #[test]
     fn car_insert_and_get() {
-        let mut cache = CARCore::new(10);
+        let mut cache = CarCore::new(10);
         cache.insert("key1", "value1");
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.recent_len(), 1);
@@ -925,7 +1161,7 @@ mod tests {
 
     #[test]
     fn car_update_existing() {
-        let mut cache = CARCore::new(10);
+        let mut cache = CarCore::new(10);
         cache.insert("key1", "value1");
         let old = cache.insert("key1", "new_value");
         assert_eq!(old, Some("value1"));
@@ -936,7 +1172,7 @@ mod tests {
 
     #[test]
     fn car_eviction_fills_ghost() {
-        let mut cache = CARCore::new(2);
+        let mut cache = CarCore::new(2);
         cache.insert("a", 1);
         cache.insert("b", 2);
         assert_eq!(cache.len(), 2);
@@ -950,7 +1186,7 @@ mod tests {
 
     #[test]
     fn car_ghost_hit_ghost_recent() {
-        let mut cache = CARCore::new(2);
+        let mut cache = CarCore::new(2);
         cache.insert("a", 1);
         cache.insert("b", 2);
         cache.insert("c", 3); // Evicts "a" to ghost_recent
@@ -966,7 +1202,7 @@ mod tests {
 
     #[test]
     fn car_ghost_hit_ghost_frequent() {
-        let mut cache = CARCore::new(3);
+        let mut cache = CarCore::new(3);
         // Fill the recent ring.
         cache.insert("a", 1);
         cache.insert("b", 2);
@@ -995,7 +1231,7 @@ mod tests {
 
     #[test]
     fn car_remove() {
-        let mut cache = CARCore::new(10);
+        let mut cache = CarCore::new(10);
         cache.insert("key1", "value1");
         cache.insert("key2", "value2");
         assert_eq!(cache.remove(&"key1"), Some("value1"));
@@ -1007,7 +1243,7 @@ mod tests {
 
     #[test]
     fn car_remove_nonexistent() {
-        let mut cache = CARCore::new(10);
+        let mut cache = CarCore::new(10);
         cache.insert("key1", "value1");
         assert_eq!(cache.remove(&"missing"), None);
         assert_eq!(cache.len(), 1);
@@ -1016,7 +1252,7 @@ mod tests {
 
     #[test]
     fn car_clear() {
-        let mut cache = CARCore::new(10);
+        let mut cache = CarCore::new(10);
         cache.insert("key1", "value1");
         cache.insert("key2", "value2");
         cache.get(&"key1");
@@ -1034,7 +1270,7 @@ mod tests {
     fn car_ref_bit_protects_from_eviction() {
         // Capacity 3, target=1. a,b,c in recent ring. get(b), get(c) set ref bits.
         // Insert d: evict from recent ring (|recent|=3>target). Unreferenced "a" evicted first.
-        let mut cache = CARCore::new(3);
+        let mut cache = CarCore::new(3);
         cache.insert("a", 1);
         cache.insert("b", 2);
         cache.insert("c", 3);
@@ -1052,7 +1288,7 @@ mod tests {
     #[test]
     fn car_demotion_recent_to_frequent() {
         // Fill recent ring, set ref on all, then insert to trigger demotion.
-        let mut cache = CARCore::new(3);
+        let mut cache = CarCore::new(3);
         cache.insert("a", 1);
         cache.insert("b", 2);
         cache.insert("c", 3);
@@ -1070,7 +1306,7 @@ mod tests {
 
     #[test]
     fn car_adaptation_increases_target_on_ghost_recent_hit() {
-        let mut cache = CARCore::new(4);
+        let mut cache = CarCore::new(4);
         let initial_p = cache.target_recent_size();
 
         cache.insert("a", 1);
@@ -1093,7 +1329,7 @@ mod tests {
 
     #[test]
     fn car_multiple_entries() {
-        let mut cache = CARCore::new(5);
+        let mut cache = CarCore::new(5);
         for i in 0..5 {
             cache.insert(i, i * 10);
         }
@@ -1108,7 +1344,7 @@ mod tests {
 
     #[test]
     fn car_capacity_one() {
-        let mut cache = CARCore::new(1);
+        let mut cache = CarCore::new(1);
         cache.insert("a", 1);
         assert_eq!(cache.len(), 1);
         cache.debug_validate_invariants();
@@ -1122,7 +1358,7 @@ mod tests {
 
     #[test]
     fn car_heavy_churn() {
-        let mut cache = CARCore::new(10);
+        let mut cache = CarCore::new(10);
         for i in 0..1000 {
             cache.insert(i, i * 10);
             if i % 3 == 0 {
@@ -1138,7 +1374,7 @@ mod tests {
 
     #[test]
     fn car_contains_after_eviction() {
-        let mut cache = CARCore::new(2);
+        let mut cache = CarCore::new(2);
         cache.insert("a", 1);
         cache.insert("b", 2);
         assert!(cache.contains(&"a"));
@@ -1152,7 +1388,7 @@ mod tests {
 
     #[test]
     fn car_insert_after_remove_reuses_slot() {
-        let mut cache = CARCore::new(3);
+        let mut cache = CarCore::new(3);
         cache.insert("a", 1);
         cache.insert("b", 2);
         cache.insert("c", 3);
@@ -1170,7 +1406,7 @@ mod tests {
 
     #[test]
     fn car_clear_then_reuse() {
-        let mut cache = CARCore::new(5);
+        let mut cache = CarCore::new(5);
         for i in 0..5 {
             cache.insert(i, i);
         }
@@ -1201,7 +1437,7 @@ mod property_tests {
             capacity in 1usize..100,
             ops in prop::collection::vec((0u32..1000, 0u32..100), 0..200)
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
             for (key, value) in ops {
                 cache.insert(key, value);
                 prop_assert!(cache.len() <= cache.capacity());
@@ -1215,7 +1451,7 @@ mod property_tests {
             capacity in 1usize..50,
             ops in prop::collection::vec((0u32..100, 0u32..100), 0..100)
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
             for (key, value) in ops {
                 cache.insert(key, value);
                 cache.debug_validate_invariants();
@@ -1230,7 +1466,7 @@ mod property_tests {
             key in 0u32..100,
             value in 0u32..1000
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
             cache.insert(key, value);
             if cache.contains(&key) {
                 prop_assert_eq!(cache.get(&key), Some(&value));
@@ -1244,7 +1480,7 @@ mod property_tests {
             capacity in 1usize..50,
             keys in prop::collection::vec(0u32..100, 1..50)
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
             for &key in &keys {
                 cache.insert(key, key * 10);
             }
@@ -1267,7 +1503,7 @@ mod property_tests {
             capacity in 1usize..50,
             keys in prop::collection::vec(0u32..100, 1..50)
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
             for key in keys {
                 cache.insert(key, key * 10);
             }
@@ -1284,7 +1520,7 @@ mod property_tests {
         fn prop_second_chance_behavior(
             capacity in 3usize..10
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
             for i in 0..capacity {
                 cache.insert(i as u32, i as u32);
             }
@@ -1307,7 +1543,7 @@ mod property_tests {
             key in 0u32..50,
             values in prop::collection::vec(0u32..100, 1..50)
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
             cache.insert(key, 0);
             let len_after_first = cache.len();
             for value in values {
@@ -1345,7 +1581,7 @@ mod property_tests {
             capacity in 1usize..30,
             ops in prop::collection::vec(operation_strategy(), 0..200)
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
 
             for op in ops {
                 match op {
@@ -1365,7 +1601,7 @@ mod property_tests {
             capacity in 1usize..30,
             ops in prop::collection::vec((0u32..50, any::<bool>()), 0..200)
         ) {
-            let mut cache = CARCore::new(capacity);
+            let mut cache = CarCore::new(capacity);
 
             for (key, should_insert) in ops {
                 if should_insert {
@@ -1384,7 +1620,7 @@ mod property_tests {
         fn prop_zero_capacity_noop(
             ops in prop::collection::vec((0u32..100, 0u32..100), 0..50)
         ) {
-            let mut cache = CARCore::<u32, u32>::new(0);
+            let mut cache = CarCore::<u32, u32>::new(0);
             for (key, value) in ops {
                 cache.insert(key, value);
                 prop_assert!(cache.is_empty());
@@ -1399,7 +1635,7 @@ mod property_tests {
         fn prop_capacity_one_single_entry(
             keys in prop::collection::vec(0u32..100, 1..50)
         ) {
-            let mut cache = CARCore::new(1);
+            let mut cache = CarCore::new(1);
             for key in keys {
                 cache.insert(key, key * 10);
                 prop_assert!(cache.len() <= 1);
@@ -1419,7 +1655,7 @@ mod fuzz_tests {
         }
 
         let capacity = (data[0] as usize % 50).max(1);
-        let mut cache = CARCore::new(capacity);
+        let mut cache = CarCore::new(capacity);
 
         let mut idx = 1;
         while idx + 2 < data.len() {
