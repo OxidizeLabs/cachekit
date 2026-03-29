@@ -110,6 +110,7 @@
 use std::hash::Hash;
 
 use crate::ds::ClockRing;
+use crate::ds::clock_ring::{IntoIter, Iter, IterMut};
 use crate::traits::{CoreCache, MutableCache, ReadOnlyCache};
 
 #[cfg(feature = "metrics")]
@@ -143,10 +144,7 @@ use crate::metrics::traits::MetricsSnapshotProvider;
 /// assert_eq!(cache.get(&"key1"), Some(&"value1"));
 /// assert_eq!(cache.len(), 2);
 /// ```
-pub struct ClockCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct ClockCache<K, V> {
     ring: ClockRing<K, V>,
     #[cfg(feature = "metrics")]
     metrics: ClockMetrics,
@@ -157,6 +155,10 @@ where
     K: Clone + Eq + Hash,
 {
     /// Creates a new Clock cache with the specified capacity.
+    ///
+    /// A capacity of `0` is valid and produces a cache that accepts no entries;
+    /// all [`insert`](CoreCache::insert) calls will return `None` and the
+    /// value is silently dropped.
     ///
     /// # Example
     ///
@@ -178,21 +180,106 @@ where
     }
 
     /// Returns `true` if the cache is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = ClockCache::new(10);
+    /// assert!(cache.is_empty());
+    ///
+    /// cache.insert("a", 1);
+    /// assert!(!cache.is_empty());
+    /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.ring.is_empty()
     }
 
+    /// Returns an iterator over `(&K, &V)` pairs in slot order.
+    ///
+    /// Does **not** set reference bits.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let pairs: Vec<_> = cache.iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        self.ring.iter()
+    }
+
+    /// Returns an iterator over `(&K, &mut V)` pairs in slot order.
+    ///
+    /// Does **not** set reference bits.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// for (_key, value) in cache.iter_mut() {
+    ///     *value += 10;
+    /// }
+    /// ```
+    #[inline]
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        self.ring.iter_mut()
+    }
+
     /// Returns the underlying [`ClockRing`] for advanced operations.
     ///
-    /// This provides access to additional methods like `peek()`, `touch()`,
-    /// `peek_victim()`, and `pop_victim()`.
+    /// Provides access to additional methods like [`ClockRing::peek`],
+    /// [`ClockRing::touch`], [`ClockRing::peek_victim`], and
+    /// [`ClockRing::pop_victim`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockCache::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// // peek reads without setting the reference bit
+    /// assert_eq!(cache.as_ring().peek(&"a"), Some(&1));
+    /// ```
     #[inline]
     pub fn as_ring(&self) -> &ClockRing<K, V> {
         &self.ring
     }
 
     /// Returns a mutable reference to the underlying [`ClockRing`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockCache::new(10);
+    /// cache.insert("a", 1);
+    ///
+    /// // touch sets the reference bit without returning the value
+    /// assert!(cache.as_ring_mut().touch(&"a"));
+    /// ```
     #[inline]
     pub fn as_ring_mut(&mut self) -> &mut ClockRing<K, V> {
         &mut self.ring
@@ -317,6 +404,20 @@ where
     }
 
     /// Clears all entries from the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = ClockCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// ```
     fn clear(&mut self) {
         self.ring.clear();
         #[cfg(feature = "metrics")]
@@ -358,6 +459,20 @@ where
     K: Clone + Eq + Hash,
 {
     /// Returns a snapshot of cache metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::clock::ClockCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = ClockCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.get(&"a");
+    ///
+    /// let snap = cache.metrics_snapshot();
+    /// assert_eq!(snap.get_hits, 1);
+    /// ```
     pub fn metrics_snapshot(&self) -> ClockMetricsSnapshot {
         ClockMetricsSnapshot {
             get_calls: self.metrics.get_calls,
@@ -388,13 +503,78 @@ where
 
 impl<K, V> std::fmt::Debug for ClockCache<K, V>
 where
-    K: Clone + Eq + Hash + std::fmt::Debug,
+    K: Clone + Eq + Hash,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClockCache")
             .field("capacity", &self.ring.capacity())
             .field("len", &self.ring.len())
             .finish_non_exhaustive()
+    }
+}
+
+impl<K, V> Clone for ClockCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            ring: self.ring.clone(),
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics,
+        }
+    }
+}
+
+impl<K, V> AsRef<ClockRing<K, V>> for ClockCache<K, V> {
+    fn as_ref(&self) -> &ClockRing<K, V> {
+        &self.ring
+    }
+}
+
+impl<K, V> AsMut<ClockRing<K, V>> for ClockCache<K, V> {
+    fn as_mut(&mut self) -> &mut ClockRing<K, V> {
+        &mut self.ring
+    }
+}
+
+impl<K, V> IntoIterator for ClockCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ring.into_iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a ClockCache<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ring.iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut ClockCache<K, V> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ring.iter_mut()
+    }
+}
+
+impl<K, V> Extend<(K, V)> for ClockCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        self.ring.extend(iter);
     }
 }
 
