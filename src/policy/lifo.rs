@@ -72,13 +72,16 @@
 //!
 //! ## Operations
 //!
-//! | Operation   | Time   | Notes                                      |
-//! |-------------|--------|--------------------------------------------|
-//! | `get`       | O(1)   | HashMap lookup, no reordering              |
-//! | `insert`    | O(1)*  | *Amortized, may trigger eviction           |
-//! | `contains`  | O(1)   | HashMap lookup only                        |
-//! | `len`       | O(1)   | Returns total entries                      |
-//! | `clear`     | O(n)   | Clears all structures                      |
+//! | Operation      | Time   | Notes                                      |
+//! |----------------|--------|--------------------------------------------|
+//! | `get`          | O(1)   | HashMap lookup, records metrics             |
+//! | `peek`         | O(1)   | Immutable lookup, no side effects           |
+//! | `insert`       | O(1)*  | *Amortized, may trigger eviction            |
+//! | `contains`     | O(1)   | HashMap lookup only                         |
+//! | `len`          | O(1)   | Returns total entries                       |
+//! | `pop_newest`   | O(1)   | Remove most recently inserted               |
+//! | `peek_newest`  | O(1)   | Inspect most recently inserted              |
+//! | `clear`        | O(n)   | Clears all structures                       |
 //!
 //! ## Algorithm Properties
 //!
@@ -101,16 +104,20 @@
 //! // Create LIFO cache with capacity 10
 //! let mut cache = LifoCore::new(10);
 //!
-//! // Insert items (pushed to stack)
-//! cache.insert(1, 100);
-//! cache.insert(2, 200);
-//! cache.insert(3, 300);
+//! // Insert items (pushed to stack); returns None for new keys
+//! assert_eq!(cache.insert(1, 100), None);
+//! assert_eq!(cache.insert(2, 200), None);
+//! assert_eq!(cache.insert(3, 300), None);
 //!
-//! // Get doesn't affect eviction order (unlike LRU)
-//! assert_eq!(cache.get(&1), Some(&100));
+//! // peek provides immutable access without side effects
+//! assert_eq!(cache.peek(&1), Some(&100));
+//!
+//! // pop_newest removes the most recent entry
+//! assert_eq!(cache.pop_newest(), Some((3, 300)));
+//! assert_eq!(cache.len(), 2);
 //!
 //! // When cache is full, most recent insertion will be evicted!
-//! for i in 4..=15 {
+//! for i in 3..=15 {
 //!     cache.insert(i, i * 10);
 //! }
 //!
@@ -165,7 +172,7 @@ use std::hash::Hash;
 ///
 /// # Type Parameters
 ///
-/// - `K`: Key type, must be `Clone + Eq + Hash`
+/// - `K`: Key type, must be `Clone + Eq + Hash` on most operations
 /// - `V`: Value type
 ///
 /// # Example
@@ -175,16 +182,16 @@ use std::hash::Hash;
 ///
 /// let mut cache = LifoCore::new(100);
 ///
-/// // Insert items (pushed to stack)
-/// cache.insert("key1", "value1");
+/// // New insert returns None
+/// assert_eq!(cache.insert("key1", "value1"), None);
 /// assert!(cache.contains(&"key1"));
 ///
-/// // Get doesn't affect eviction (unlike LRU)
-/// cache.get(&"key1");
+/// // peek provides immutable access without metrics recording
+/// assert_eq!(cache.peek(&"key1"), Some(&"value1"));
 ///
-/// // Update existing key
-/// cache.insert("key1", "new_value");
-/// assert_eq!(cache.get(&"key1"), Some(&"new_value"));
+/// // Update returns the previous value
+/// assert_eq!(cache.insert("key1", "new_value"), Some("value1"));
+/// assert_eq!(cache.peek(&"key1"), Some(&"new_value"));
 /// ```
 ///
 /// # Eviction Behavior
@@ -194,15 +201,10 @@ use std::hash::Hash;
 /// # Implementation
 ///
 /// Uses Vec as stack + HashMap for O(1) operations.
-pub struct LifoCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Maps key to value
+#[must_use]
+pub struct LifoCore<K, V> {
     map: FxHashMap<K, V>,
-    /// Stack of keys in insertion order (top = most recent)
     stack: Vec<K>,
-    /// Maximum cache capacity
     capacity: usize,
     #[cfg(feature = "metrics")]
     metrics: CoreOnlyMetrics,
@@ -214,9 +216,8 @@ where
 {
     /// Creates a new LIFO cache with the specified capacity.
     ///
-    /// # Arguments
-    ///
-    /// - `capacity`: Maximum number of entries the cache can hold
+    /// A capacity of `0` creates a cache that accepts no entries;
+    /// all [`insert`](Self::insert) calls return `None` and are no-ops.
     ///
     /// # Example
     ///
@@ -241,7 +242,9 @@ where
     /// Retrieves a value by key without affecting eviction order.
     ///
     /// Unlike LRU, accessing an item in a LIFO cache doesn't change
-    /// its position in the stack.
+    /// its position in the stack. Records metrics when the `metrics`
+    /// feature is enabled; use [`peek`](Self::peek) for a side-effect-free
+    /// alternative.
     ///
     /// # Example
     ///
@@ -265,11 +268,34 @@ where
         self.map.get(key)
     }
 
-    /// Inserts or updates a key-value pair.
+    /// Looks up a value by key without requiring mutable access.
+    ///
+    /// Unlike [`get`](Self::get), this takes `&self` and never records
+    /// metrics. Useful when you only need to read without side effects.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lifo::LifoCore;
+    ///
+    /// let mut cache = LifoCore::new(100);
+    /// cache.insert("key", 42);
+    ///
+    /// assert_eq!(cache.peek(&"key"), Some(&42));
+    /// assert_eq!(cache.peek(&"missing"), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    /// Inserts or updates a key-value pair, returning the previous value.
     ///
     /// - If the key exists, updates the value in place (no stack change)
-    /// - If the key is new, pushes to top of stack
-    /// - May trigger eviction from top of stack (most recent) if capacity is exceeded
+    ///   and returns `Some(old_value)`
+    /// - If the key is new, pushes to top of stack and returns `None`
+    /// - May trigger eviction from top of stack (most recent) if at capacity
     ///
     /// # Example
     ///
@@ -278,29 +304,28 @@ where
     ///
     /// let mut cache = LifoCore::new(100);
     ///
-    /// // New insert pushes to stack
-    /// cache.insert("key", "initial");
+    /// // New insert returns None
+    /// assert_eq!(cache.insert("key", "initial"), None);
     /// assert_eq!(cache.len(), 1);
     ///
-    /// // Update existing key (no stack change)
-    /// cache.insert("key", "updated");
-    /// assert_eq!(cache.get(&"key"), Some(&"updated"));
+    /// // Update returns the previous value
+    /// assert_eq!(cache.insert("key", "updated"), Some("initial"));
+    /// assert_eq!(cache.peek(&"key"), Some(&"updated"));
     /// assert_eq!(cache.len(), 1);  // Still 1 entry
     /// ```
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
         if self.capacity == 0 {
-            return;
+            return None;
         }
 
         if let Some(v) = self.map.get_mut(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
-            *v = value;
-            return;
+            return Some(std::mem::replace(v, value));
         }
 
         #[cfg(feature = "metrics")]
@@ -310,6 +335,7 @@ where
 
         self.stack.push(key.clone());
         self.map.insert(key, value);
+        None
     }
 
     /// Evicts entries from top of stack until there is room.
@@ -351,6 +377,7 @@ where
     /// assert_eq!(cache.len(), 2);
     /// ```
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -369,6 +396,7 @@ where
     /// assert!(!cache.is_empty());
     /// ```
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -384,6 +412,7 @@ where
     /// assert_eq!(cache.capacity(), 500);
     /// ```
     #[inline]
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -402,6 +431,7 @@ where
     /// assert!(!cache.contains(&"missing"));
     /// ```
     #[inline]
+    #[must_use]
     pub fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
@@ -430,6 +460,82 @@ where
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
+    }
+
+    /// Removes and returns the most recently inserted entry (top of stack).
+    ///
+    /// Returns `None` if the cache is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lifo::LifoCore;
+    ///
+    /// let mut cache = LifoCore::new(10);
+    /// cache.insert(1, "first");
+    /// cache.insert(2, "second");
+    /// cache.insert(3, "third");
+    ///
+    /// assert_eq!(cache.pop_newest(), Some((3, "third")));
+    /// assert_eq!(cache.pop_newest(), Some((2, "second")));
+    /// assert_eq!(cache.len(), 1);
+    /// ```
+    #[must_use]
+    pub fn pop_newest(&mut self) -> Option<(K, V)> {
+        let key = self.stack.pop()?;
+        let value = self.map.remove(&key)?;
+        Some((key, value))
+    }
+
+    /// Peeks at the most recently inserted entry without removing it.
+    ///
+    /// Returns `None` if the cache is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lifo::LifoCore;
+    ///
+    /// let mut cache = LifoCore::new(10);
+    /// cache.insert(1, "first");
+    /// cache.insert(2, "second");
+    ///
+    /// assert_eq!(cache.peek_newest(), Some((&2, &"second")));
+    /// assert_eq!(cache.len(), 2); // Not removed
+    /// ```
+    #[must_use]
+    pub fn peek_newest(&self) -> Option<(&K, &V)> {
+        let key = self.stack.last()?;
+        let value = self.map.get(key)?;
+        Some((key, value))
+    }
+
+    /// Returns an iterator over all key-value pairs in arbitrary order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lifo::LifoCore;
+    ///
+    /// let mut cache = LifoCore::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let pairs: Vec<_> = cache.iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.map.iter()
+    }
+
+    /// Returns an iterator over all keys in arbitrary order.
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.map.keys()
+    }
+
+    /// Returns an iterator over all values in arbitrary order.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.map.values()
     }
 
     /// Validates internal data structure invariants.
@@ -470,11 +576,7 @@ where
     }
 }
 
-// Debug implementation
-impl<K, V> std::fmt::Debug for LifoCore<K, V>
-where
-    K: Clone + Eq + Hash + std::fmt::Debug,
-{
+impl<K, V> std::fmt::Debug for LifoCore<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LifoCore")
             .field("capacity", &self.capacity)
@@ -517,7 +619,7 @@ where
 /// let mut cache: LifoCore<&str, i32> = LifoCore::new(100);
 ///
 /// // Use via CoreCache trait
-/// cache.insert("key", 42);
+/// assert_eq!(cache.insert("key", 42), None);
 /// assert_eq!(cache.get(&"key"), Some(&42));
 /// assert!(cache.contains(&"key"));
 /// ```
@@ -527,17 +629,7 @@ where
 {
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        if let Some(v) = self.map.get_mut(&key) {
-            #[cfg(feature = "metrics")]
-            {
-                self.metrics.record_insert_call();
-                self.metrics.record_insert_update();
-            }
-            return Some(std::mem::replace(v, value));
-        }
-
-        LifoCore::insert(self, key, value);
-        None
+        LifoCore::insert(self, key, value)
     }
 
     #[inline]
@@ -579,6 +671,82 @@ where
 {
     fn snapshot(&self) -> CoreOnlyMetricsSnapshot {
         self.metrics_snapshot()
+    }
+}
+
+impl<K, V> Default for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a zero-capacity cache that rejects all insertions.
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl<K, V> Clone for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            stack: self.stack.clone(),
+            capacity: self.capacity,
+            #[cfg(feature = "metrics")]
+            metrics: CoreOnlyMetrics::default(),
+        }
+    }
+}
+
+impl<K, V> Extend<(K, V)> for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (k, v) in iter {
+            self.insert(k, v);
+        }
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut cache = Self::new(lower.max(16));
+        for (k, v) in iter {
+            cache.insert(k, v);
+        }
+        cache
+    }
+}
+
+impl<K, V> IntoIterator for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (K, V);
+    type IntoIter = std::collections::hash_map::IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.into_iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a V);
+    type IntoIter = std::collections::hash_map::Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.iter()
     }
 }
 
@@ -954,6 +1122,193 @@ mod tests {
     }
 
     // ==============================================
+    // New API: peek, pop_newest, peek_newest
+    // ==============================================
+
+    mod lifo_api {
+        use super::*;
+
+        #[test]
+        fn peek_returns_value_immutably() {
+            let mut cache = LifoCore::new(100);
+            cache.insert("key", 42);
+
+            assert_eq!(cache.peek(&"key"), Some(&42));
+            assert_eq!(cache.peek(&"missing"), None);
+        }
+
+        #[test]
+        fn peek_allows_multiple_borrows() {
+            let mut cache = LifoCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let a = cache.peek(&"a");
+            let b = cache.peek(&"b");
+            assert_eq!(a, Some(&1));
+            assert_eq!(b, Some(&2));
+        }
+
+        #[test]
+        fn pop_newest_returns_most_recent() {
+            let mut cache = LifoCore::new(10);
+            cache.insert(1, "first");
+            cache.insert(2, "second");
+            cache.insert(3, "third");
+
+            assert_eq!(cache.pop_newest(), Some((3, "third")));
+            assert_eq!(cache.pop_newest(), Some((2, "second")));
+            assert_eq!(cache.pop_newest(), Some((1, "first")));
+            assert_eq!(cache.pop_newest(), None);
+        }
+
+        #[test]
+        fn peek_newest_shows_top_of_stack() {
+            let mut cache = LifoCore::new(10);
+            assert_eq!(cache.peek_newest(), None);
+
+            cache.insert(1, "first");
+            assert_eq!(cache.peek_newest(), Some((&1, &"first")));
+
+            cache.insert(2, "second");
+            assert_eq!(cache.peek_newest(), Some((&2, &"second")));
+            assert_eq!(cache.len(), 2);
+        }
+
+        #[test]
+        fn insert_returns_previous_value() {
+            let mut cache = LifoCore::new(100);
+
+            assert_eq!(cache.insert("key", "v1"), None);
+            assert_eq!(cache.insert("key", "v2"), Some("v1"));
+            assert_eq!(cache.insert("key", "v3"), Some("v2"));
+            assert_eq!(cache.insert("new", "val"), None);
+        }
+    }
+
+    // ==============================================
+    // Iterator and Collection Traits
+    // ==============================================
+
+    mod collection_traits {
+        use super::*;
+
+        #[test]
+        fn iter_yields_all_entries() {
+            let mut cache = LifoCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let mut pairs: Vec<_> = cache.iter().collect();
+            pairs.sort_by_key(|(k, _)| *k);
+            assert_eq!(pairs, vec![(&"a", &1), (&"b", &2), (&"c", &3)]);
+        }
+
+        #[test]
+        fn keys_and_values() {
+            let mut cache = LifoCore::new(10);
+            cache.insert(1, "a");
+            cache.insert(2, "b");
+
+            let mut keys: Vec<_> = cache.keys().collect();
+            keys.sort();
+            assert_eq!(keys, vec![&1, &2]);
+
+            let mut values: Vec<_> = cache.values().collect();
+            values.sort();
+            assert_eq!(values, vec![&"a", &"b"]);
+        }
+
+        #[test]
+        fn extend_inserts_all() {
+            let mut cache = LifoCore::new(10);
+            cache.insert(1, "one");
+
+            cache.extend(vec![(2, "two"), (3, "three")]);
+
+            assert_eq!(cache.len(), 3);
+            assert_eq!(cache.peek(&2), Some(&"two"));
+            assert_eq!(cache.peek(&3), Some(&"three"));
+        }
+
+        #[test]
+        fn from_iterator() {
+            let cache: LifoCore<i32, &str> = vec![(1, "one"), (2, "two"), (3, "three")]
+                .into_iter()
+                .collect();
+
+            assert_eq!(cache.len(), 3);
+            assert!(cache.capacity() >= 3);
+            assert!(cache.contains(&1));
+            assert!(cache.contains(&2));
+            assert!(cache.contains(&3));
+        }
+
+        #[test]
+        fn into_iterator_owned() {
+            let mut cache = LifoCore::new(10);
+            cache.insert(1, "a");
+            cache.insert(2, "b");
+
+            let mut pairs: Vec<_> = cache.into_iter().collect();
+            pairs.sort_by_key(|(k, _)| *k);
+            assert_eq!(pairs, vec![(1, "a"), (2, "b")]);
+        }
+
+        #[test]
+        fn into_iterator_ref() {
+            let mut cache = LifoCore::new(10);
+            cache.insert(1, "a");
+            cache.insert(2, "b");
+
+            let mut pairs: Vec<_> = (&cache).into_iter().collect();
+            pairs.sort_by_key(|(k, _)| *k);
+            assert_eq!(pairs, vec![(&1, &"a"), (&2, &"b")]);
+        }
+    }
+
+    // ==============================================
+    // Default and Clone
+    // ==============================================
+
+    mod default_and_clone {
+        use super::*;
+
+        #[test]
+        fn default_creates_zero_capacity() {
+            let cache: LifoCore<String, i32> = LifoCore::default();
+            assert_eq!(cache.capacity(), 0);
+            assert!(cache.is_empty());
+        }
+
+        #[test]
+        fn clone_preserves_state() {
+            let mut original = LifoCore::new(10);
+            original.insert(1, "a");
+            original.insert(2, "b");
+
+            let cloned = original.clone();
+            assert_eq!(cloned.len(), 2);
+            assert_eq!(cloned.capacity(), 10);
+            assert_eq!(cloned.peek(&1), Some(&"a"));
+            assert_eq!(cloned.peek(&2), Some(&"b"));
+        }
+
+        #[test]
+        fn clone_is_independent() {
+            let mut original = LifoCore::new(10);
+            original.insert(1, "a");
+
+            let mut cloned = original.clone();
+            cloned.insert(2, "b");
+
+            assert_eq!(original.len(), 1);
+            assert_eq!(cloned.len(), 2);
+        }
+    }
+
+    // ==============================================
     // Validation Tests
     // ==============================================
 
@@ -962,30 +1317,25 @@ mod tests {
     fn validate_invariants_after_operations() {
         let mut cache = LifoCore::new(10);
 
-        // Insert items
         for i in 1..=10 {
             cache.insert(i, i * 100);
         }
         cache.validate_invariants();
 
-        // Access items (doesn't affect eviction in LIFO)
         for _ in 0..5 {
             cache.get(&5);
         }
         cache.validate_invariants();
 
-        // Trigger evictions (evicts most recent)
         cache.insert(11, 1100);
         cache.validate_invariants();
 
         cache.insert(12, 1200);
         cache.validate_invariants();
 
-        // Clear
         cache.clear();
         cache.validate_invariants();
 
-        // Verify empty state
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.stack.len(), 0);
     }
@@ -999,7 +1349,6 @@ mod tests {
         cache.insert(3, 300);
         cache.validate_invariants();
 
-        // Multiple inserts to trigger LIFO evictions
         for i in 4..=10 {
             cache.insert(i, i * 100);
             cache.validate_invariants();
@@ -1008,7 +1357,6 @@ mod tests {
         assert_eq!(cache.len(), 5);
         assert_eq!(cache.stack.len(), 5);
 
-        // Verify all stack keys exist in map
         for key in &cache.stack {
             assert!(cache.map.contains_key(key));
         }
