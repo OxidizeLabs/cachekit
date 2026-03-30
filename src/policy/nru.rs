@@ -120,9 +120,10 @@
 //! - Access patterns have temporal locality
 //!
 //! **Avoid NRU when:**
-//! - You need strict LRU ordering (use LRU)
-//! - You need O(1) eviction guarantees (use Clock with hand)
-//! - You need scan resistance (use S3-FIFO, LRU-K)
+//! - You need strict LRU ordering (use [`LruCache`](super::lru::LruCache))
+//! - You need O(1) eviction guarantees (use [`ClockCache`](super::clock::ClockCache))
+//! - You need scan resistance (use [`S3FifoCache`](super::s3_fifo::S3FifoCache),
+//!   [`LrukCache`](super::lru_k::LrukCache))
 //!
 //! ## Example Usage
 //!
@@ -225,10 +226,7 @@ struct Entry<V> {
 /// # Implementation
 ///
 /// Uses HashMap + Vec for O(1) access with swap-remove for eviction.
-pub struct NruCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct NruCache<K, V> {
     /// HashMap for O(1) key lookup
     map: FxHashMap<K, Entry<V>>,
     /// Dense array of keys for eviction scanning
@@ -267,9 +265,72 @@ where
     }
 
     /// Returns `true` if the cache is empty.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = NruCache::<&str, i32>::new(10);
+    /// assert!(cache.is_empty());
+    ///
+    /// cache.insert("a", 1);
+    /// assert!(!cache.is_empty());
+    /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// Returns an iterator over all key-value pairs in the cache.
+    ///
+    /// Iteration order is unspecified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = NruCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let pairs: Vec<_> = cache.iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            inner: self.map.iter(),
+        }
+    }
+
+    /// Returns a mutable iterator over all key-value pairs in the cache.
+    ///
+    /// Only values are mutable; keys and eviction metadata are not exposed.
+    /// Iteration order is unspecified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = NruCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// for (_key, value) in cache.iter_mut() {
+    ///     *value += 10;
+    /// }
+    /// ```
+    #[inline]
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            inner: self.map.iter_mut(),
+        }
     }
 
     /// Evicts an entry using NRU policy.
@@ -344,18 +405,54 @@ where
     /// Returns `true` if the cache contains the key.
     ///
     /// Does not affect the reference bit.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = NruCache::new(10);
+    /// cache.insert("key", 1);
+    ///
+    /// assert!(cache.contains(&"key"));
+    /// assert!(!cache.contains(&"missing"));
+    /// ```
     #[inline]
     fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
     /// Returns the number of entries in the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = NruCache::new(10);
+    /// assert_eq!(cache.len(), 0);
+    ///
+    /// cache.insert("a", 1);
+    /// assert_eq!(cache.len(), 1);
+    /// ```
     #[inline]
     fn len(&self) -> usize {
         self.map.len()
     }
 
     /// Returns the maximum capacity of the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::ReadOnlyCache;
+    ///
+    /// let cache = NruCache::<String, i32>::new(50);
+    /// assert_eq!(cache.capacity(), 50);
+    /// ```
     #[inline]
     fn capacity(&self) -> usize {
         self.capacity
@@ -474,6 +571,20 @@ where
     }
 
     /// Clears all entries from the cache.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let mut cache = NruCache::new(10);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// cache.clear();
+    /// assert!(cache.is_empty());
+    /// ```
     fn clear(&mut self) {
         self.map.clear();
         self.keys.clear();
@@ -530,6 +641,20 @@ where
     K: Clone + Eq + Hash,
 {
     /// Returns a snapshot of cache metrics.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::nru::NruCache;
+    /// use cachekit::traits::CoreCache;
+    ///
+    /// let mut cache = NruCache::new(10);
+    /// cache.insert("a", 1);
+    /// let _ = cache.get(&"a");
+    ///
+    /// let snap = cache.metrics_snapshot();
+    /// assert_eq!(snap.get_hits, 1);
+    /// ```
     pub fn metrics_snapshot(&self) -> NruMetricsSnapshot {
         NruMetricsSnapshot {
             get_calls: self.metrics.get_calls,
@@ -572,10 +697,173 @@ where
     }
 }
 
+impl<K, V> Clone for NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            keys: self.keys.clone(),
+            capacity: self.capacity,
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterators
+// ---------------------------------------------------------------------------
+
+/// Iterator over shared references to key-value pairs in an [`NruCache`].
+///
+/// Created by [`NruCache::iter`].
+pub struct Iter<'a, K, V> {
+    inner: std::collections::hash_map::Iter<'a, K, Entry<V>>,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, e)| (k, &e.value))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {}
+
+impl<K, V> std::iter::FusedIterator for Iter<'_, K, V> {}
+
+/// Iterator over mutable references to values (with shared key references)
+/// in an [`NruCache`].
+///
+/// Created by [`NruCache::iter_mut`].
+pub struct IterMut<'a, K, V> {
+    inner: std::collections::hash_map::IterMut<'a, K, Entry<V>>,
+}
+
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, e)| (k, &mut e.value))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, V> ExactSizeIterator for IterMut<'_, K, V> {}
+
+impl<K, V> std::iter::FusedIterator for IterMut<'_, K, V> {}
+
+/// Owning iterator over key-value pairs from an [`NruCache`].
+///
+/// Created by the `IntoIterator` implementation on `NruCache`.
+pub struct IntoIter<K, V> {
+    inner: std::collections::hash_map::IntoIter<K, Entry<V>>,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, e)| (k, e.value))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {}
+
+impl<K, V> std::iter::FusedIterator for IntoIter<K, V> {}
+
+// ---------------------------------------------------------------------------
+// IntoIterator
+// ---------------------------------------------------------------------------
+
+impl<K, V> IntoIterator for NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            inner: self.map.into_iter(),
+        }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extend
+// ---------------------------------------------------------------------------
+
+impl<K, V> Extend<(K, V)> for NruCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        for (k, v) in iter {
+            self.insert(k, v);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::traits::{CoreCache, MutableCache};
+
+    #[allow(dead_code)]
+    const _: () = {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        fn check() {
+            assert_send::<NruCache<String, i32>>();
+            assert_sync::<NruCache<String, i32>>();
+        }
+    };
 
     #[test]
     fn test_new() {
