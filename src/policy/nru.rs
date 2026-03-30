@@ -120,7 +120,7 @@
 //! - Access patterns have temporal locality
 //!
 //! **Avoid NRU when:**
-//! - You need strict LRU ordering (use [`LruCache`](super::lru::LruCache))
+//! - You need strict LRU ordering (use [`ConcurrentLruCache`](super::lru::ConcurrentLruCache))
 //! - You need O(1) eviction guarantees (use [`ClockCache`](super::clock::ClockCache))
 //! - You need scan resistance (use [`S3FifoCache`](super::s3_fifo::S3FifoCache),
 //!   [`LrukCache`](super::lru_k::LrukCache))
