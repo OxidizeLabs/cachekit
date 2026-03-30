@@ -1339,7 +1339,7 @@ impl ConcurrentS3FifoCacheBuilder {
     /// let cache = ConcurrentS3FifoCache::<String, i32>::builder(100)
     ///     .small_ratio(0.2)
     ///     .ghost_ratio(1.0)
-    ///     .try_build::<String, i32>();
+    ///     .try_build();
     /// assert!(cache.is_ok());
     /// ```
     pub fn try_build<K, V>(self) -> Result<ConcurrentS3FifoCache<K, V>, ConfigError>
