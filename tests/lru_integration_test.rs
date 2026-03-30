@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 #[cfg(test)]
 mod integration_tests {
-    use cachekit::policy::lru::{ConcurrentLruCache, LruCore};
+    #[cfg(feature = "concurrency")]
+    use cachekit::policy::lru::ConcurrentLruCache;
+    use cachekit::policy::lru::LruCore;
     use cachekit::traits::{CoreCache, LruCacheTrait, MutableCache};
 
     use super::*;
@@ -46,6 +48,7 @@ mod integration_tests {
         println!("✅ Zero-copy LRU core test passed!");
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn test_concurrent_lru_cache() {
         let cache = ConcurrentLruCache::new(3);
@@ -83,6 +86,7 @@ mod integration_tests {
         println!("✅ Concurrent LRU cache test passed!");
     }
 
+    #[cfg(feature = "concurrency")]
     #[test]
     fn test_database_workload_simulation() {
         // Simulate a database buffer pool workload
