@@ -162,7 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Complete documentation for `src/policy/lfu.rs`:
   - Architecture diagram showing frequency buckets and eviction flow.
   - LFU vs LRU comparison diagram.
-  - Docstrings with examples for `LfuCache`, `LFUHandleCache`, and all public methods.
+  - Docstrings with examples for `LfuCache`, `LfuHandleCache`, and all public methods.
   - Batch operation examples (`insert_batch`, `remove_batch`, `touch_batch`).
   - Metrics snapshot documentation.
 - Complete documentation for `src/policy/heap_lfu.rs`:

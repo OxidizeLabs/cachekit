@@ -267,12 +267,12 @@
 //!
 //! ```rust,ignore
 //! use crate::ds::KeyInterner;
-//! use crate::policy::lfu::LFUHandleCache;
+//! use crate::policy::lfu::LfuHandleCache;
 //! use crate::traits::{CoreCache, LfuCacheTrait};
 //! use std::sync::Arc;
 //!
 //! let mut interner = KeyInterner::new();
-//! let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(2);
+//! let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(2);
 //!
 //! let key_a = "page_a".to_string();
 //! let key_b = "page_b".to_string();
@@ -305,7 +305,7 @@
 //! ## Implementation Notes
 //!
 //! - **Key Clone Requirement**: Keys must be `Clone` for O(1) indexing
-//! - **Handle Variant**: `LFUHandleCache<H, V>` uses interned handles to avoid key clones
+//! - **Handle Variant**: `LfuHandleCache<H, V>` uses interned handles to avoid key clones
 //! - **Zero Capacity**: Supported - rejects all insertions
 //! - **Frequency Overflow**: Theoretically possible at `usize::MAX` accesses
 //! - **Store + Buckets**: Values live in the store; buckets track frequency and order
@@ -364,10 +364,7 @@ use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 /// assert!(cache.contains(&"a"));   // a survives (freq=3)
 /// ```
 #[derive(Debug)]
-pub struct LfuCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+pub struct LfuCache<K, V> {
     store: HashMapStore<K, Arc<V>>,
     buckets: FrequencyBuckets<K>,
     #[cfg(feature = "metrics")]
@@ -387,12 +384,12 @@ where
 /// # Example
 ///
 /// ```
-/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::policy::lfu::LfuHandleCache;
 /// use cachekit::traits::{CoreCache, LfuCacheTrait};
 /// use std::sync::Arc;
 ///
 /// // Using u64 handles (e.g., from a KeyInterner)
-/// let mut cache: LFUHandleCache<u64, String> = LFUHandleCache::new(100);
+/// let mut cache: LfuHandleCache<u64, String> = LfuHandleCache::new(100);
 ///
 /// let handle_a: u64 = 1;
 /// let handle_b: u64 = 2;
@@ -405,15 +402,16 @@ where
 /// assert_eq!(cache.frequency(&handle_a), Some(2));
 /// ```
 #[derive(Debug)]
-pub struct LFUHandleCache<H, V>
-where
-    H: Eq + Hash + Copy,
-{
+pub struct LfuHandleCache<H, V> {
     store: HashMapStore<H, Arc<V>>,
     buckets: FrequencyBucketsHandle<H>,
     #[cfg(feature = "metrics")]
     metrics: LfuMetrics,
 }
+
+/// Deprecated alias — use [`LfuHandleCache`] instead (RFC 430 naming).
+#[deprecated(since = "0.2.0", note = "renamed to LfuHandleCache per RFC 430")]
+pub type LFUHandleCache<H, V> = LfuHandleCache<H, V>;
 
 impl<K, V> LfuCache<K, V>
 where
@@ -470,7 +468,7 @@ where
         }
     }
 
-    /// Inserts a batch of entries; returns number of entries processed.
+    /// Inserts a batch of entries; returns number of *new* insertions (excludes updates).
     ///
     /// Each entry is inserted individually, potentially triggering evictions.
     ///
@@ -498,8 +496,9 @@ where
     {
         let mut count = 0;
         for (key, value) in entries {
-            let _ = self.insert(key, value);
-            count += 1;
+            if self.insert(key, value).is_none() {
+                count += 1;
+            }
         }
         count
     }
@@ -564,6 +563,30 @@ where
         touched
     }
 
+    /// Iterates over all entries as `(&K, &Arc<V>)` pairs.
+    ///
+    /// Iteration order is unspecified (depends on internal bucket layout).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
+    /// cache.insert("a", Arc::new(1));
+    /// cache.insert("b", Arc::new(2));
+    ///
+    /// let entries: Vec<_> = cache.iter().collect();
+    /// assert_eq!(entries.len(), 2);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &Arc<V>)> {
+        self.buckets
+            .iter()
+            .filter_map(|(_, meta)| self.store.peek(meta.key).map(|v| (meta.key, v)))
+    }
+
     /// Evicts the entry with minimum frequency.
     ///
     /// Uses `min_freq` bucket for O(1) selection. FIFO tie-breaking
@@ -578,7 +601,7 @@ where
     }
 }
 
-impl<H, V> LFUHandleCache<H, V>
+impl<H, V> LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
@@ -587,14 +610,14 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::policy::lfu::LfuHandleCache;
     /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     ///
-    /// let cache: LFUHandleCache<u64, String> = LFUHandleCache::new(100);
+    /// let cache: LfuHandleCache<u64, String> = LfuHandleCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
     /// ```
     pub fn new(capacity: usize) -> Self {
-        LFUHandleCache {
+        LfuHandleCache {
             store: HashMapStore::new(capacity),
             buckets: FrequencyBucketsHandle::with_capacity(capacity),
             #[cfg(feature = "metrics")]
@@ -602,16 +625,41 @@ where
         }
     }
 
-    /// Inserts a batch of entries; returns number of entries processed.
+    /// Creates a handle-based LFU cache with custom bucket pre-allocation.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - Maximum number of entries
+    /// * `bucket_hint` - Pre-allocated frequency buckets (number of distinct frequencies)
     ///
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::policy::lfu::LfuHandleCache;
+    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    ///
+    /// let cache: LfuHandleCache<u64, i32> = LfuHandleCache::with_bucket_hint(100, 64);
+    /// assert_eq!(cache.capacity(), 100);
+    /// ```
+    pub fn with_bucket_hint(capacity: usize, bucket_hint: usize) -> Self {
+        LfuHandleCache {
+            store: HashMapStore::new(capacity),
+            buckets: FrequencyBucketsHandle::with_capacity_and_bucket_hint(capacity, bucket_hint),
+            #[cfg(feature = "metrics")]
+            metrics: LfuMetrics::default(),
+        }
+    }
+
+    /// Inserts a batch of entries; returns number of *new* insertions (excludes updates).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuHandleCache;
     /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
-    /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+    /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
     /// let entries = vec![
     ///     (1u64, Arc::new(100)),
     ///     (2u64, Arc::new(200)),
@@ -626,8 +674,9 @@ where
     {
         let mut count = 0;
         for (handle, value) in entries {
-            let _ = self.insert(handle, value);
-            count += 1;
+            if self.insert(handle, value).is_none() {
+                count += 1;
+            }
         }
         count
     }
@@ -637,11 +686,11 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::policy::lfu::LfuHandleCache;
     /// use cachekit::traits::{CoreCache, ReadOnlyCache};
     /// use std::sync::Arc;
     ///
-    /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+    /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
     /// cache.insert(1u64, Arc::new(100));
     /// cache.insert(2u64, Arc::new(200));
     ///
@@ -666,11 +715,11 @@ where
     /// # Example
     ///
     /// ```
-    /// use cachekit::policy::lfu::LFUHandleCache;
+    /// use cachekit::policy::lfu::LfuHandleCache;
     /// use cachekit::traits::{CoreCache, LfuCacheTrait};
     /// use std::sync::Arc;
     ///
-    /// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+    /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
     /// cache.insert(1u64, Arc::new(100));
     ///
     /// let touched = cache.touch_batch([1u64, 999u64]);
@@ -688,6 +737,30 @@ where
             }
         }
         touched
+    }
+
+    /// Iterates over all entries as `(&H, &Arc<V>)` pairs.
+    ///
+    /// Iteration order is unspecified (depends on internal bucket layout).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lfu::LfuHandleCache;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
+    /// cache.insert(1u64, Arc::new(100));
+    /// cache.insert(2u64, Arc::new(200));
+    ///
+    /// let entries: Vec<_> = cache.iter().collect();
+    /// assert_eq!(entries.len(), 2);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&H, &Arc<V>)> {
+        self.buckets
+            .iter()
+            .filter_map(|(_, meta)| self.store.peek(meta.key).map(|v| (meta.key, v)))
     }
 
     /// Evicts the entry with minimum frequency.
@@ -817,7 +890,7 @@ where
     }
 }
 
-impl<H, V> ReadOnlyCache<H, Arc<V>> for LFUHandleCache<H, V>
+impl<H, V> ReadOnlyCache<H, Arc<V>> for LfuHandleCache<H, V>
 where
     H: Copy + Eq + Hash,
 {
@@ -839,11 +912,11 @@ where
 /// # Example
 ///
 /// ```
-/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::policy::lfu::LfuHandleCache;
 /// use cachekit::traits::{CoreCache, ReadOnlyCache};
 /// use std::sync::Arc;
 ///
-/// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(3);
+/// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(3);
 ///
 /// cache.insert(1u64, Arc::new(100));
 /// cache.insert(2u64, Arc::new(200));
@@ -852,7 +925,7 @@ where
 /// assert!(cache.contains(&1u64));
 /// assert_eq!(cache.len(), 2);
 /// ```
-impl<H, V> CoreCache<H, Arc<V>> for LFUHandleCache<H, V>
+impl<H, V> CoreCache<H, Arc<V>> for LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
@@ -948,17 +1021,17 @@ where
 /// # Example
 ///
 /// ```
-/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::policy::lfu::LfuHandleCache;
 /// use cachekit::traits::{CoreCache, MutableCache};
 /// use std::sync::Arc;
 ///
-/// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(10);
+/// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
 /// cache.insert(1u64, Arc::new(42));
 ///
 /// let removed = cache.remove(&1u64);
 /// assert_eq!(*removed.unwrap(), 42);
 /// ```
-impl<H, V> MutableCache<H, Arc<V>> for LFUHandleCache<H, V>
+impl<H, V> MutableCache<H, Arc<V>> for LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
@@ -1074,11 +1147,11 @@ where
 /// # Example
 ///
 /// ```
-/// use cachekit::policy::lfu::LFUHandleCache;
+/// use cachekit::policy::lfu::LfuHandleCache;
 /// use cachekit::traits::{CoreCache, LfuCacheTrait};
 /// use std::sync::Arc;
 ///
-/// let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(3);
+/// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(3);
 /// cache.insert(1u64, Arc::new(100));
 /// cache.insert(2u64, Arc::new(200));
 /// cache.get(&1u64);  // freq: 1 → 2
@@ -1090,7 +1163,7 @@ where
 /// let (handle, _) = cache.peek_lfu().unwrap();
 /// assert_eq!(*handle, 2u64);
 /// ```
-impl<H, V> LfuCacheTrait<H, Arc<V>> for LFUHandleCache<H, V>
+impl<H, V> LfuCacheTrait<H, Arc<V>> for LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
@@ -1224,7 +1297,7 @@ where
 
 /// Metrics functionality for handle-based cache (requires `metrics` feature).
 #[cfg(feature = "metrics")]
-impl<H, V> LFUHandleCache<H, V>
+impl<H, V> LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
@@ -1279,7 +1352,7 @@ where
 }
 
 #[cfg(all(test, not(feature = "metrics")))]
-impl<H, V> LFUHandleCache<H, V>
+impl<H, V> LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
@@ -1302,12 +1375,92 @@ where
 }
 
 #[cfg(feature = "metrics")]
-impl<H, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LFUHandleCache<H, V>
+impl<H, V> MetricsSnapshotProvider<LfuMetricsSnapshot> for LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
     fn snapshot(&self) -> LfuMetricsSnapshot {
         self.metrics_snapshot()
+    }
+}
+
+// SAFETY: All internal data structures (HashMapStore, FrequencyBuckets) are fully
+// owned. Raw pointers in SlotArena are exclusively accessed through &self/&mut self.
+unsafe impl<K: Send, V: Send> Send for LfuCache<K, V> {}
+unsafe impl<K: Sync, V: Sync> Sync for LfuCache<K, V> {}
+
+unsafe impl<H: Send, V: Send> Send for LfuHandleCache<H, V> {}
+unsafe impl<H: Sync, V: Sync> Sync for LfuHandleCache<H, V> {}
+
+impl<K, V> Extend<(K, Arc<V>)> for LfuCache<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    fn extend<I: IntoIterator<Item = (K, Arc<V>)>>(&mut self, iter: I) {
+        for (key, value) in iter {
+            self.insert(key, value);
+        }
+    }
+}
+
+impl<K, V> FromIterator<(K, Arc<V>)> for LfuCache<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    fn from_iter<I: IntoIterator<Item = (K, Arc<V>)>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut cache = LfuCache::new(lower);
+        cache.extend(iter);
+        cache
+    }
+}
+
+impl<H, V> Extend<(H, Arc<V>)> for LfuHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    fn extend<I: IntoIterator<Item = (H, Arc<V>)>>(&mut self, iter: I) {
+        for (handle, value) in iter {
+            self.insert(handle, value);
+        }
+    }
+}
+
+impl<H, V> FromIterator<(H, Arc<V>)> for LfuHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    fn from_iter<I: IntoIterator<Item = (H, Arc<V>)>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut cache = LfuHandleCache::new(lower);
+        cache.extend(iter);
+        cache
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a LfuCache<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    type Item = (&'a K, &'a Arc<V>);
+    type IntoIter = Box<dyn Iterator<Item = (&'a K, &'a Arc<V>)> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
+impl<'a, H, V> IntoIterator for &'a LfuHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    type Item = (&'a H, &'a Arc<V>);
+    type IntoIter = Box<dyn Iterator<Item = (&'a H, &'a Arc<V>)> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
     }
 }
 
@@ -1345,7 +1498,7 @@ mod tests {
 
         #[test]
         fn test_handle_lfu_basic_flow() {
-            let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(2);
+            let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(2);
             assert_eq!(cache.insert(1, Arc::new(10)), None);
             assert_eq!(cache.insert(2, Arc::new(20)), None);
             assert_eq!(cache.get(&1).map(Arc::as_ref), Some(&10));
@@ -1371,7 +1524,7 @@ mod tests {
 
         #[test]
         fn test_handle_lfu_batch_ops() {
-            let mut cache: LFUHandleCache<u64, i32> = LFUHandleCache::new(3);
+            let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(3);
             let inserted = cache.insert_batch([(1, Arc::new(1)), (2, Arc::new(2))]);
             assert_eq!(inserted, 2);
             assert_eq!(cache.touch_batch([1, 3]), 1);
