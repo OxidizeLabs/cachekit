@@ -158,6 +158,7 @@ use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 /// Node in the MRU linked list.
@@ -169,6 +170,44 @@ struct Node<K, V> {
     next: Option<NonNull<Node<K, V>>>,
     key: K,
     value: V,
+}
+
+/// Iterator over key-value pairs in MRU-to-LRU order.
+///
+/// Created by [`MruCore::iter`].
+pub struct Iter<'a, K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    remaining: usize,
+    _marker: PhantomData<&'a (K, V)>,
+}
+
+// SAFETY: Iter holds a shared borrow of MruCore (via PhantomData<&'a ...>).
+// The NonNull pointers are valid for 'a and only read through shared references.
+unsafe impl<K: Sync, V: Sync> Send for Iter<'_, K, V> {}
+unsafe impl<K: Sync, V: Sync> Sync for Iter<'_, K, V> {}
+
+impl<K, V> std::fmt::Debug for Iter<'_, K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Iter")
+            .field("remaining", &self.remaining)
+            .finish()
+    }
+}
+
+/// Owning iterator over key-value pairs in MRU-to-LRU order.
+///
+/// Created by [`MruCore::into_iter`](IntoIterator::into_iter).
+pub struct IntoIter<K, V> {
+    cache: MruCore<K, V>,
+    remaining: usize,
+}
+
+impl<K, V> std::fmt::Debug for IntoIter<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntoIter")
+            .field("remaining", &self.remaining)
+            .finish()
+    }
 }
 
 /// Core MRU (Most Recently Used) cache implementation.
@@ -209,10 +248,7 @@ struct Node<K, V> {
 /// # Implementation
 ///
 /// Uses raw pointer linked lists for O(1) operations with minimal overhead.
-pub struct MruCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct MruCore<K, V> {
     /// Direct key -> node pointer mapping
     map: FxHashMap<K, NonNull<Node<K, V>>>,
 
@@ -228,53 +264,18 @@ where
     metrics: CoreOnlyMetrics,
 }
 
-// SAFETY: MruCore can be sent between threads if K and V are Send.
-unsafe impl<K, V> Send for MruCore<K, V>
-where
-    K: Clone + Eq + Hash + Send,
-    V: Send,
-{
-}
+// SAFETY: All NonNull<Node> pointers are heap-allocated via Box and exclusively
+// owned by MruCore. No pointer aliasing occurs — each node has exactly one owner.
+// Drop correctly frees all nodes. No interior mutability is exposed through
+// &self methods, so sharing references across threads is safe when K and V allow it.
+unsafe impl<K: Send, V: Send> Send for MruCore<K, V> {}
 
-// SAFETY: MruCore can be shared between threads if K and V are Sync.
-unsafe impl<K, V> Sync for MruCore<K, V>
-where
-    K: Clone + Eq + Hash + Sync,
-    V: Sync,
-{
-}
+// SAFETY: &MruCore only exposes read-only methods (len, capacity, contains, is_empty,
+// iter) that do not mutate internal pointers. Mutable access requires &mut self,
+// which the borrow checker ensures is exclusive.
+unsafe impl<K: Sync, V: Sync> Sync for MruCore<K, V> {}
 
-impl<K, V> MruCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Creates a new MRU cache with the specified capacity.
-    ///
-    /// # Arguments
-    ///
-    /// - `capacity`: Maximum number of entries the cache can hold
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::mru::MruCore;
-    ///
-    /// let cache: MruCore<String, i32> = MruCore::new(100);
-    /// assert_eq!(cache.capacity(), 100);
-    /// assert!(cache.is_empty());
-    /// ```
-    #[inline]
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
-            head: None,
-            tail: None,
-            capacity,
-            #[cfg(feature = "metrics")]
-            metrics: CoreOnlyMetrics::default(),
-        }
-    }
-
+impl<K, V> MruCore<K, V> {
     /// Detach a node from its current position in the list.
     #[inline(always)]
     fn detach(&mut self, node_ptr: NonNull<Node<K, V>>) {
@@ -326,6 +327,59 @@ where
 
             node
         })
+    }
+
+    /// Returns an iterator over key-value pairs in MRU-to-LRU order.
+    ///
+    /// Entries are yielded from most recently used (head) to least recently used (tail).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::mru::MruCore;
+    ///
+    /// let mut cache = MruCore::new(100);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    /// cache.insert("c", 3);
+    ///
+    /// let pairs: Vec<_> = cache.iter().collect();
+    /// assert_eq!(pairs, vec![(&"c", &3), (&"b", &2), (&"a", &1)]);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            current: self.head,
+            remaining: self.map.len(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<K, V> MruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Creates a new MRU cache with the specified capacity.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::mru::MruCore;
+    ///
+    /// let cache: MruCore<String, i32> = MruCore::new(100);
+    /// assert_eq!(cache.capacity(), 100);
+    /// assert!(cache.is_empty());
+    /// ```
+    #[inline]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            head: None,
+            tail: None,
+            capacity,
+            #[cfg(feature = "metrics")]
+            metrics: CoreOnlyMetrics::default(),
+        }
     }
 
     /// Retrieves a value by key, moving it to the MRU position (head).
@@ -587,21 +641,13 @@ where
     }
 }
 
-// Proper cleanup when cache is dropped
-impl<K, V> Drop for MruCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+impl<K, V> Drop for MruCore<K, V> {
     fn drop(&mut self) {
         while self.pop_head().is_some() {}
     }
 }
 
-// Debug implementation
-impl<K, V> std::fmt::Debug for MruCore<K, V>
-where
-    K: Clone + Eq + Hash + std::fmt::Debug,
-{
+impl<K, V> std::fmt::Debug for MruCore<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MruCore")
             .field("capacity", &self.capacity)
@@ -663,6 +709,115 @@ where
 
     fn clear(&mut self) {
         MruCore::clear(self);
+    }
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.current.map(|ptr| {
+            self.remaining -= 1;
+            unsafe {
+                let node = ptr.as_ref();
+                self.current = node.next;
+                (&node.key, &node.value)
+            }
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {}
+impl<K, V> std::iter::FusedIterator for Iter<'_, K, V> {}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cache.pop_head().map(|node| {
+            self.remaining -= 1;
+            (node.key, node.value)
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {}
+impl<K, V> std::iter::FusedIterator for IntoIter<K, V> {}
+
+impl<K, V> IntoIterator for MruCore<K, V> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let remaining = self.map.len();
+        IntoIter {
+            cache: self,
+            remaining,
+        }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a MruCore<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<K, V> Clone for MruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut map = FxHashMap::with_capacity_and_hasher(self.capacity, Default::default());
+        let mut new_head: Option<NonNull<Node<K, V>>> = None;
+        let mut new_tail: Option<NonNull<Node<K, V>>> = None;
+        let mut prev_new: Option<NonNull<Node<K, V>>> = None;
+
+        let mut current = self.head;
+        while let Some(ptr) = current {
+            let node = unsafe { ptr.as_ref() };
+            let new_node = Box::new(Node {
+                prev: prev_new,
+                next: None,
+                key: node.key.clone(),
+                value: node.value.clone(),
+            });
+            let new_ptr = NonNull::new(Box::into_raw(new_node)).unwrap();
+
+            if let Some(mut prev) = prev_new {
+                unsafe {
+                    prev.as_mut().next = Some(new_ptr);
+                }
+            } else {
+                new_head = Some(new_ptr);
+            }
+
+            map.insert(node.key.clone(), new_ptr);
+            prev_new = Some(new_ptr);
+            new_tail = Some(new_ptr);
+            current = node.next;
+        }
+
+        MruCore {
+            map,
+            head: new_head,
+            tail: new_tail,
+            capacity: self.capacity,
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics,
+        }
     }
 }
 
@@ -1103,5 +1258,131 @@ mod tests {
         cache.insert("key", 2);
 
         assert_eq!(cache.get(&"key"), Some(&2));
+    }
+
+    // ==============================================
+    // Iterator Tests
+    // ==============================================
+
+    mod iterator_tests {
+        use super::*;
+
+        #[test]
+        fn iter_mru_to_lru_order() {
+            let mut cache = MruCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let pairs: Vec<_> = cache.iter().collect();
+            assert_eq!(pairs, vec![(&"c", &3), (&"b", &2), (&"a", &1)]);
+        }
+
+        #[test]
+        fn iter_empty_cache() {
+            let cache: MruCore<&str, i32> = MruCore::new(10);
+            assert_eq!(cache.iter().count(), 0);
+        }
+
+        #[test]
+        fn iter_reflects_access_order() {
+            let mut cache = MruCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            cache.get(&"a");
+
+            let keys: Vec<_> = cache.iter().map(|(k, _)| *k).collect();
+            assert_eq!(keys, vec!["a", "c", "b"]);
+        }
+
+        #[test]
+        fn iter_exact_size() {
+            let mut cache = MruCore::new(10);
+            cache.insert(1, 10);
+            cache.insert(2, 20);
+            cache.insert(3, 30);
+
+            let iter = cache.iter();
+            assert_eq!(iter.len(), 3);
+        }
+
+        #[test]
+        fn into_iter_consumes_cache() {
+            let mut cache = MruCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let pairs: Vec<_> = cache.into_iter().collect();
+            assert_eq!(pairs, vec![("c", 3), ("b", 2), ("a", 1)]);
+        }
+
+        #[test]
+        fn into_iter_ref() {
+            let mut cache = MruCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let pairs: Vec<_> = (&cache).into_iter().collect();
+            assert_eq!(pairs, vec![(&"b", &2), (&"a", &1)]);
+        }
+    }
+
+    // ==============================================
+    // Clone Tests
+    // ==============================================
+
+    mod clone_tests {
+        use super::*;
+
+        #[test]
+        fn clone_preserves_entries() {
+            let mut cache = MruCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let cloned = cache.clone();
+            assert_eq!(cloned.len(), 3);
+            assert_eq!(cloned.capacity(), 10);
+        }
+
+        #[test]
+        fn clone_is_independent() {
+            let mut cache = MruCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let mut cloned = cache.clone();
+            cloned.insert("c", 3);
+
+            assert_eq!(cache.len(), 2);
+            assert_eq!(cloned.len(), 3);
+            assert!(!cache.contains(&"c"));
+        }
+
+        #[test]
+        fn clone_preserves_order() {
+            let mut cache = MruCore::new(10);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+            cache.get(&"a");
+
+            let cloned = cache.clone();
+            let original_order: Vec<_> = cache.iter().map(|(k, _)| *k).collect();
+            let cloned_order: Vec<_> = cloned.iter().map(|(k, _)| *k).collect();
+            assert_eq!(original_order, cloned_order);
+        }
+
+        #[test]
+        fn clone_empty_cache() {
+            let cache: MruCore<&str, i32> = MruCore::new(100);
+            let cloned = cache.clone();
+            assert!(cloned.is_empty());
+            assert_eq!(cloned.capacity(), 100);
+        }
     }
 }
