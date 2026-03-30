@@ -613,10 +613,6 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        if self.protected_cap == 0 {
-            return None;
-        }
-
         if let Some(&node_ptr) = self.map.get(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
