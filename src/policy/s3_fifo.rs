@@ -125,6 +125,19 @@ struct Node<K, V> {
     value: V,
 }
 
+impl<K: Clone, V: Clone> Clone for Node<K, V> {
+    fn clone(&self) -> Self {
+        Node {
+            prev: self.prev,
+            next: self.next,
+            queue: self.queue,
+            freq: AtomicU8::new(self.freq.load(Ordering::Relaxed)),
+            key: self.key.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Iterators
 // ---------------------------------------------------------------------------
@@ -183,6 +196,18 @@ impl<K, V> ExactSizeIterator for Iter<'_, K, V> {
 
 impl<K, V> std::iter::FusedIterator for Iter<'_, K, V> {}
 
+impl<K, V> Clone for Iter<'_, K, V> {
+    fn clone(&self) -> Self {
+        Iter {
+            arena: self.arena,
+            current: self.current,
+            queue: self.queue,
+            main_head: self.main_head,
+            remaining: self.remaining,
+        }
+    }
+}
+
 impl<K, V> Debug for Iter<'_, K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Iter")
@@ -216,6 +241,14 @@ impl<K, V> ExactSizeIterator for Keys<'_, K, V> {
 
 impl<K, V> std::iter::FusedIterator for Keys<'_, K, V> {}
 
+impl<K, V> Clone for Keys<'_, K, V> {
+    fn clone(&self) -> Self {
+        Keys {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<K, V> Debug for Keys<'_, K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Keys")
@@ -248,6 +281,14 @@ impl<K, V> ExactSizeIterator for Values<'_, K, V> {
 }
 
 impl<K, V> std::iter::FusedIterator for Values<'_, K, V> {}
+
+impl<K, V> Clone for Values<'_, K, V> {
+    fn clone(&self) -> Self {
+        Values {
+            inner: self.inner.clone(),
+        }
+    }
+}
 
 impl<K, V> Debug for Values<'_, K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -409,6 +450,17 @@ where
     ///
     /// Returns [`ConfigError`] if capacity is zero, `small_ratio` is not in
     /// `[0.0, 1.0]`, or `ghost_ratio` is negative/non-finite.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::s3_fifo::S3FifoCache;
+    ///
+    /// fn setup() -> Result<S3FifoCache<String, i32>, cachekit::error::ConfigError> {
+    ///     let cache = S3FifoCache::try_with_ratios(100, 0.2, 0.9)?;
+    ///     Ok(cache)
+    /// }
+    /// ```
     pub fn try_with_ratios(
         capacity: usize,
         small_ratio: f64,
@@ -689,6 +741,10 @@ where
     }
 
     /// Returns an iterator over all key-value pairs.
+    ///
+    /// No `iter_mut` is provided because the arena-based storage cannot
+    /// yield multiple `&mut V` references while following index links.
+    /// Use [`get_mut`](Self::get_mut) for single-key mutation instead.
     pub fn iter(&self) -> Iter<'_, K, V> {
         Iter {
             arena: &self.arena,
@@ -1115,6 +1171,30 @@ where
     }
 }
 
+impl<K, V> Clone for S3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            arena: self.arena.clone(),
+            map: self.map.clone(),
+            small_head: self.small_head,
+            small_tail: self.small_tail,
+            small_len: self.small_len,
+            small_cap: self.small_cap,
+            main_head: self.main_head,
+            main_tail: self.main_tail,
+            main_len: self.main_len,
+            ghost: self.ghost.clone(),
+            capacity: self.capacity,
+            #[cfg(feature = "metrics")]
+            metrics: S3FifoMetrics::default(),
+        }
+    }
+}
+
 impl<K, V> Debug for S3FifoCache<K, V>
 where
     K: Clone + Eq + Hash + Debug,
@@ -1195,6 +1275,13 @@ pub struct ConcurrentS3FifoCacheBuilder {
     capacity: usize,
     small_ratio: f64,
     ghost_ratio: f64,
+}
+
+#[cfg(feature = "concurrency")]
+impl Default for ConcurrentS3FifoCacheBuilder {
+    fn default() -> Self {
+        Self::new(128)
+    }
 }
 
 #[cfg(feature = "concurrency")]
@@ -1286,11 +1373,7 @@ impl ConcurrentS3FifoCacheBuilder {
 /// }
 /// ```
 #[cfg(feature = "concurrency")]
-#[derive(Debug)]
-pub struct ConcurrentS3FifoCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct ConcurrentS3FifoCache<K, V> {
     inner: Arc<RwLock<S3FifoCache<K, V>>>,
 
     /// Hit counter for read-lock `get`/`get_with` path (not visible to inner cache).
@@ -1300,6 +1383,20 @@ where
     /// Miss counter for read-lock `get`/`get_with` path (not visible to inner cache).
     #[cfg(feature = "metrics")]
     read_misses: AtomicU64,
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V> Debug for ConcurrentS3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash + Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.inner.read();
+        f.debug_struct("ConcurrentS3FifoCache")
+            .field("capacity", &inner.capacity())
+            .field("len", &inner.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "concurrency")]
@@ -1315,6 +1412,16 @@ where
             #[cfg(feature = "metrics")]
             read_misses: AtomicU64::new(self.read_misses.load(Ordering::Relaxed)),
         }
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V> Default for ConcurrentS3FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn default() -> Self {
+        Self::new(128)
     }
 }
 
