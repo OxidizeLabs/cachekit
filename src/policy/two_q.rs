@@ -75,8 +75,6 @@
 //! ## Key Components
 //!
 //! - [`TwoQCore`]: Main 2Q cache implementation
-//! - [`TwoQWithGhost`]: 2Q with ghost list for tracking evicted keys
-//! - [`LruQueue`]: LRU queue wrapper around [`IntrusiveList`]
 //!
 //! ## Operations
 //!
@@ -177,33 +175,9 @@ struct Node<K, V> {
 ///
 /// Provides O(1) insert, touch (move to front), and evict (pop back) operations.
 /// Used for the protected queue in 2Q where access frequency matters.
-///
-/// # Type Parameters
-///
-/// - `T`: Element type stored in the queue
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::two_q::LruQueue;
-///
-/// let mut lru = LruQueue::new();
-///
-/// // Insert items (most recent at front)
-/// let id1 = lru.insert("page1");
-/// let id2 = lru.insert("page2");
-///
-/// assert_eq!(lru.len(), 2);
-///
-/// // Touch moves to MRU position
-/// lru.touch(id1);
-///
-/// // Evict LRU (page2, since page1 was touched)
-/// let evicted = lru.evict();
-/// assert_eq!(evicted, Some("page2"));
-/// ```
 #[derive(Debug)]
-pub struct LruQueue<T> {
+#[allow(dead_code)]
+pub(crate) struct LruQueue<T> {
     list: IntrusiveList<T>,
 }
 
@@ -218,10 +192,7 @@ pub struct LruQueue<T> {
 /// - `K`: Key type, must be `Clone + Eq + Hash`
 /// - `V`: Value type
 #[allow(dead_code)]
-pub struct TwoQWithGhost<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub(crate) struct TwoQWithGhost<K, V> {
     core: TwoQCore<K, V>,
     ghost_list: VecDeque<K>,
     ghost_list_cap: usize,
@@ -229,7 +200,7 @@ where
 
 impl<K, V> std::fmt::Debug for TwoQWithGhost<K, V>
 where
-    K: Clone + Eq + Hash + std::fmt::Debug,
+    K: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TwoQWithGhost")
@@ -284,10 +255,7 @@ where
 /// # Implementation
 ///
 /// Uses raw pointer linked lists for O(1) operations with minimal overhead.
-pub struct TwoQCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+pub struct TwoQCore<K, V> {
     /// Direct key -> node pointer mapping
     map: FxHashMap<K, NonNull<Node<K, V>>>,
 
@@ -310,18 +278,18 @@ where
     metrics: TwoQMetrics,
 }
 
-// SAFETY: TwoQCore can be sent between threads if K and V are Send.
+// SAFETY: The raw pointers in the linked list are owned exclusively by TwoQCore.
 unsafe impl<K, V> Send for TwoQCore<K, V>
 where
-    K: Clone + Eq + Hash + Send,
+    K: Send,
     V: Send,
 {
 }
 
-// SAFETY: TwoQCore can be shared between threads if K and V are Sync.
+// SAFETY: The raw pointers in the linked list are owned exclusively by TwoQCore.
 unsafe impl<K, V> Sync for TwoQCore<K, V>
 where
-    K: Clone + Eq + Hash + Sync,
+    K: Sync,
     V: Sync,
 {
 }
@@ -332,17 +300,10 @@ impl<T> Default for LruQueue<T> {
     }
 }
 
+#[allow(dead_code)]
 impl<T> LruQueue<T> {
     /// Creates an empty LRU queue.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let lru: LruQueue<i32> = LruQueue::new();
-    /// assert!(lru.is_empty());
-    /// ```
+    #[must_use]
     pub fn new() -> Self {
         Self {
             list: IntrusiveList::new(),
@@ -350,17 +311,7 @@ impl<T> LruQueue<T> {
     }
 
     /// Creates an LRU queue with pre-allocated capacity.
-    ///
-    /// Pre-allocates space to avoid reallocation during growth.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let lru: LruQueue<i32> = LruQueue::with_capacity(1000);
-    /// assert!(lru.is_empty());
-    /// ```
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             list: IntrusiveList::with_capacity(capacity),
@@ -368,35 +319,11 @@ impl<T> LruQueue<T> {
     }
 
     /// Returns `true` if the queue is empty.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let mut lru = LruQueue::new();
-    /// assert!(lru.is_empty());
-    ///
-    /// lru.insert(42);
-    /// assert!(!lru.is_empty());
-    /// ```
     pub fn is_empty(&self) -> bool {
         self.list.len() == 0
     }
 
-    /// Inserts an item at the MRU position (front).
-    ///
-    /// Returns the `SlotId` that can be used for future `touch` or `remove` calls.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let mut lru = LruQueue::new();
-    /// let id = lru.insert("page");
-    /// assert_eq!(lru.len(), 1);
-    /// ```
+    /// Inserts an item at the MRU position (front), returning its [`SlotId`].
     pub fn insert(&mut self, id: T) -> SlotId {
         // new item is most-recently-used
         self.list.push_front(id)
@@ -404,103 +331,78 @@ impl<T> LruQueue<T> {
 
     /// Moves an item to the MRU position (front).
     ///
-    /// Returns `true` if the item was found and moved, `false` otherwise.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let mut lru = LruQueue::new();
-    /// let id1 = lru.insert("old");
-    /// let id2 = lru.insert("new");
-    ///
-    /// // Touch makes "old" the MRU
-    /// assert!(lru.touch(id1));
-    ///
-    /// // Now "new" is LRU and will be evicted first
-    /// assert_eq!(lru.evict(), Some("new"));
-    /// ```
+    /// Returns `true` if the item was found and moved.
     pub fn touch(&mut self, id: SlotId) -> bool {
         // move accessed item to MRU position
         self.list.move_to_front(id)
     }
 
     /// Removes and returns the LRU item (from back).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let mut lru = LruQueue::new();
-    /// lru.insert("first");
-    /// lru.insert("second");
-    ///
-    /// // "first" is LRU (inserted first, never touched)
-    /// assert_eq!(lru.evict(), Some("first"));
-    /// assert_eq!(lru.evict(), Some("second"));
-    /// assert_eq!(lru.evict(), None);
-    /// ```
     pub fn evict(&mut self) -> Option<T> {
         // remove least-recently-used
         self.list.pop_back()
     }
 
-    /// Removes an item by its `SlotId`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let mut lru = LruQueue::new();
-    /// let id = lru.insert("page");
-    ///
-    /// assert_eq!(lru.remove(id), Some("page"));
-    /// assert!(lru.is_empty());
-    /// ```
+    /// Removes an item by its [`SlotId`].
     pub fn remove(&mut self, id: SlotId) -> Option<T> {
         self.list.remove(id)
     }
 
     /// Returns the number of items in the queue.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::two_q::LruQueue;
-    ///
-    /// let mut lru = LruQueue::new();
-    /// assert_eq!(lru.len(), 0);
-    ///
-    /// lru.insert(1);
-    /// lru.insert(2);
-    /// assert_eq!(lru.len(), 2);
-    /// ```
     pub fn len(&self) -> usize {
         self.list.len()
     }
 
-    /// Pushes an item to the front (MRU position).
-    ///
     /// Alias for [`insert`](Self::insert).
     pub fn push_front(&mut self, id: T) -> SlotId {
         self.list.push_front(id)
     }
 
-    /// Moves an item to the front (MRU position).
-    ///
     /// Alias for [`touch`](Self::touch).
     pub fn move_to_front(&mut self, id: SlotId) -> bool {
         self.list.move_to_front(id)
     }
 
-    /// Removes and returns the item from the back (LRU position).
-    ///
     /// Alias for [`evict`](Self::evict).
     pub fn pop_back(&mut self) -> Option<T> {
         self.list.pop_back()
+    }
+}
+
+/// Linked-list cleanup helpers — no key trait bounds needed.
+/// Kept in an unbounded block so `Drop` can call them without
+/// requiring `K: Clone + Eq + Hash` on the struct definition.
+impl<K, V> TwoQCore<K, V> {
+    #[inline(always)]
+    fn pop_probation_tail(&mut self) -> Option<Box<Node<K, V>>> {
+        self.probation_tail.map(|tail_ptr| unsafe {
+            let node = Box::from_raw(tail_ptr.as_ptr());
+
+            self.probation_tail = node.prev;
+            match self.probation_tail {
+                Some(mut t) => t.as_mut().next = None,
+                None => self.probation_head = None,
+            }
+            self.probation_len -= 1;
+
+            node
+        })
+    }
+
+    #[inline(always)]
+    fn pop_protected_tail(&mut self) -> Option<Box<Node<K, V>>> {
+        self.protected_tail.map(|tail_ptr| unsafe {
+            let node = Box::from_raw(tail_ptr.as_ptr());
+
+            self.protected_tail = node.prev;
+            match self.protected_tail {
+                Some(mut t) => t.as_mut().next = None,
+                None => self.protected_head = None,
+            }
+            self.protected_len -= 1;
+
+            node
+        })
     }
 }
 
@@ -510,12 +412,14 @@ where
 {
     /// Creates a new 2Q cache with the specified capacity and probation fraction.
     ///
-    /// # Arguments
-    ///
     /// - `protected_cap`: Total cache capacity (maximum number of entries)
     /// - `a1_frac`: Fraction of capacity allocated to probation queue (0.0 to 1.0)
     ///
     /// A typical value for `a1_frac` is 0.25 (25% for probation).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `a1_frac` is negative, NaN, or greater than 1.0.
     ///
     /// # Example
     ///
@@ -528,7 +432,12 @@ where
     /// assert!(cache.is_empty());
     /// ```
     #[inline]
+    #[must_use]
     pub fn new(protected_cap: usize, a1_frac: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&a1_frac),
+            "a1_frac must be between 0.0 and 1.0, got {a1_frac}"
+        );
         let probation_cap = (protected_cap as f64 * a1_frac) as usize;
         let total_cap = protected_cap + probation_cap;
 
@@ -619,40 +528,6 @@ where
             self.protected_head = Some(node_ptr);
             self.protected_len += 1;
         }
-    }
-
-    /// Pop from probation tail (FIFO: oldest at tail).
-    #[inline(always)]
-    fn pop_probation_tail(&mut self) -> Option<Box<Node<K, V>>> {
-        self.probation_tail.map(|tail_ptr| unsafe {
-            let node = Box::from_raw(tail_ptr.as_ptr());
-
-            self.probation_tail = node.prev;
-            match self.probation_tail {
-                Some(mut t) => t.as_mut().next = None,
-                None => self.probation_head = None,
-            }
-            self.probation_len -= 1;
-
-            node
-        })
-    }
-
-    /// Pop from protected tail (LRU: LRU at tail).
-    #[inline(always)]
-    fn pop_protected_tail(&mut self) -> Option<Box<Node<K, V>>> {
-        self.protected_tail.map(|tail_ptr| unsafe {
-            let node = Box::from_raw(tail_ptr.as_ptr());
-
-            self.protected_tail = node.prev;
-            match self.protected_tail {
-                Some(mut t) => t.as_mut().next = None,
-                None => self.protected_head = None,
-            }
-            self.protected_len -= 1;
-
-            node
-        })
     }
 
     /// Retrieves a value by key, promoting from probation to protected if needed.
@@ -899,21 +774,16 @@ where
     }
 }
 
-// Proper cleanup when cache is dropped
-impl<K, V> Drop for TwoQCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+impl<K, V> Drop for TwoQCore<K, V> {
     fn drop(&mut self) {
         while self.pop_probation_tail().is_some() {}
         while self.pop_protected_tail().is_some() {}
     }
 }
 
-// Debug implementation
 impl<K, V> std::fmt::Debug for TwoQCore<K, V>
 where
-    K: Clone + Eq + Hash + std::fmt::Debug,
+    K: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TwoQCore")

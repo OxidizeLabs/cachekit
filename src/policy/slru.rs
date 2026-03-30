@@ -65,7 +65,7 @@
 //! ─────────────
 //!
 //!   evict_if_needed():
-//!     while len > protected_cap:
+//!     while len > capacity:
 //!       if probationary.len > probationary_cap:
 //!         evict from probationary LRU
 //!       else:
@@ -81,6 +81,7 @@
 //! | Operation   | Time   | Notes                                      |
 //! |-------------|--------|--------------------------------------------|
 //! | `get`       | O(1)   | May promote from probationary to protected |
+//! | `peek`      | O(1)   | Read without promotion                     |
 //! | `insert`    | O(1)*  | *Amortized, may trigger evictions          |
 //! | `contains`  | O(1)   | Index lookup only                          |
 //! | `len`       | O(1)   | Returns total entries                      |
@@ -119,6 +120,14 @@
 //! assert_eq!(cache.len(), 2);
 //! ```
 //!
+//! ## Removal Policy
+//!
+//! `SlruCore` intentionally does not support arbitrary key removal
+//! ([`MutableCache`](crate::traits::MutableCache)). Allowing `remove(&K)` would
+//! break the probationary/protected segment accounting — the segment a removed
+//! entry belonged to cannot be reliably adjusted without re-scanning the lists.
+//! Entries leave the cache only via the SLRU eviction policy or [`clear`](SlruCore::clear).
+//!
 //! ## Thread Safety
 //!
 //! - [`SlruCore`]: Not thread-safe, designed for single-threaded use
@@ -146,6 +155,8 @@ use crate::prelude::ReadOnlyCache;
 use crate::traits::CoreCache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
+use std::iter::FusedIterator;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 /// Indicates which segment an entry resides in.
@@ -178,6 +189,10 @@ struct Node<K, V> {
 /// New items enter probationary. Re-accessing an item in probationary promotes it
 /// to protected. This provides scan resistance by keeping one-time accesses
 /// from polluting the main cache.
+///
+/// `SlruCore` does not support arbitrary key removal (no
+/// [`MutableCache`](crate::traits::MutableCache)). Entries leave only via the
+/// SLRU eviction policy or [`clear`](SlruCore::clear).
 ///
 /// # Type Parameters
 ///
@@ -213,11 +228,7 @@ struct Node<K, V> {
 /// # Implementation
 ///
 /// Uses raw pointer linked lists for O(1) operations with minimal overhead.
-pub struct SlruCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Direct key -> node pointer mapping
+pub struct SlruCore<K, V> {
     map: FxHashMap<K, NonNull<Node<K, V>>>,
 
     /// Probationary segment (LRU): head=MRU, tail=LRU
@@ -230,30 +241,24 @@ where
     protected_tail: Option<NonNull<Node<K, V>>>,
     protected_len: usize,
 
-    /// Maximum size of the probationary segment.
     probationary_cap: usize,
-    /// Maximum total cache capacity.
-    protected_cap: usize,
+    capacity: usize,
 
     #[cfg(feature = "metrics")]
     metrics: SlruMetrics,
 }
 
-// SAFETY: SlruCore can be sent between threads if K and V are Send.
-unsafe impl<K, V> Send for SlruCore<K, V>
-where
-    K: Clone + Eq + Hash + Send,
-    V: Send,
-{
-}
+// SAFETY: SlruCore exclusively owns all heap-allocated Node<K, V> via NonNull
+// pointers. No aliasing occurs — each node is reachable only through the map
+// or the linked lists, both owned by this struct. Sending the entire structure
+// is safe when K and V are Send because ownership transfers atomically.
+unsafe impl<K: Send, V: Send> Send for SlruCore<K, V> {}
 
-// SAFETY: SlruCore can be shared between threads if K and V are Sync.
-unsafe impl<K, V> Sync for SlruCore<K, V>
-where
-    K: Clone + Eq + Hash + Sync,
-    V: Sync,
-{
-}
+// SAFETY: A shared &SlruCore only permits read-only operations (len, capacity,
+// contains, peek, Debug). These access only the FxHashMap (Sync when K: Sync)
+// and primitive counters. The &mut self requirement on get/insert/clear prevents
+// data races on the linked-list pointers.
+unsafe impl<K: Sync, V: Sync> Sync for SlruCore<K, V> {}
 
 impl<K, V> SlruCore<K, V>
 where
@@ -261,12 +266,11 @@ where
 {
     /// Creates a new SLRU cache with the specified capacity and probationary fraction.
     ///
-    /// # Arguments
-    ///
-    /// - `protected_cap`: Total cache capacity (maximum number of entries)
-    /// - `probationary_frac`: Fraction of capacity allocated to probationary segment (0.0 to 1.0)
-    ///
     /// A typical value for `probationary_frac` is 0.25 (25% for probationary).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `probationary_frac` is not in `0.0..=1.0` or is NaN.
     ///
     /// # Example
     ///
@@ -279,9 +283,15 @@ where
     /// assert!(cache.is_empty());
     /// ```
     #[inline]
-    pub fn new(protected_cap: usize, probationary_frac: f64) -> Self {
-        let probationary_cap = (protected_cap as f64 * probationary_frac) as usize;
-        let total_cap = protected_cap + probationary_cap;
+    #[must_use]
+    pub fn new(capacity: usize, probationary_frac: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&probationary_frac),
+            "probationary_frac must be in 0.0..=1.0, got {probationary_frac}"
+        );
+
+        let probationary_cap = (capacity as f64 * probationary_frac) as usize;
+        let total_cap = capacity + probationary_cap;
 
         Self {
             map: FxHashMap::with_capacity_and_hasher(total_cap, Default::default()),
@@ -292,7 +302,7 @@ where
             protected_tail: None,
             protected_len: 0,
             probationary_cap,
-            protected_cap,
+            capacity,
             #[cfg(feature = "metrics")]
             metrics: SlruMetrics::default(),
         }
@@ -406,6 +416,28 @@ where
         })
     }
 
+    /// Returns a reference to the value without affecting segment position.
+    ///
+    /// Unlike [`get`](Self::get), this does not promote entries from probationary
+    /// to protected and does not update MRU position.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::slru::SlruCore;
+    ///
+    /// let mut cache = SlruCore::new(100, 0.25);
+    /// cache.insert("key", 42);
+    ///
+    /// // Peek does not trigger promotion
+    /// assert_eq!(cache.peek(&"key"), Some(&42));
+    /// assert_eq!(cache.peek(&"missing"), None);
+    /// ```
+    #[inline]
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key).map(|&ptr| unsafe { &ptr.as_ref().value })
+    }
+
     /// Retrieves a value by key, promoting from probationary to protected if needed.
     ///
     /// If the key is in probationary, accessing it promotes the entry to the
@@ -489,7 +521,7 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
-        if self.protected_cap == 0 {
+        if self.capacity == 0 {
             return None;
         }
 
@@ -526,7 +558,7 @@ where
     /// Evicts entries until there is room for a new entry.
     #[inline]
     fn evict_if_needed(&mut self) {
-        while self.len() >= self.protected_cap {
+        while self.len() >= self.capacity {
             #[cfg(feature = "metrics")]
             self.metrics.record_evict_call();
 
@@ -606,7 +638,7 @@ where
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.protected_cap
+        self.capacity
     }
 
     /// Returns `true` if the key exists in the cache.
@@ -627,6 +659,18 @@ where
     #[inline]
     pub fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
+    }
+
+    /// Returns the number of entries in the probationary segment.
+    #[inline]
+    pub fn probationary_len(&self) -> usize {
+        self.probationary_len
+    }
+
+    /// Returns the number of entries in the protected segment.
+    #[inline]
+    pub fn protected_len(&self) -> usize {
+        self.protected_len
     }
 
     /// Clears all entries from the cache.
@@ -656,6 +700,33 @@ where
         self.validate_invariants();
     }
 
+    /// Returns an iterator over shared references to cached key-value pairs.
+    ///
+    /// Visits probationary entries (MRU to LRU) then protected entries.
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            current: self.probationary_head,
+            protected_head: self.protected_head,
+            in_protected: false,
+            remaining: self.probationary_len + self.protected_len,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns a mutable iterator over cached key-value pairs.
+    ///
+    /// Keys are yielded as shared references; values as mutable references.
+    /// Modifying values does not affect eviction ordering.
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            current: self.probationary_head,
+            protected_head: self.protected_head,
+            in_protected: false,
+            remaining: self.probationary_len + self.protected_len,
+            _marker: PhantomData,
+        }
+    }
+
     /// Validates internal data structure invariants.
     ///
     /// This method checks that:
@@ -667,7 +738,6 @@ where
     /// Only runs when debug assertions are enabled.
     #[cfg(debug_assertions)]
     fn validate_invariants(&self) {
-        // Count nodes in probationary list
         let mut prob_count = 0;
         let mut current = self.probationary_head;
         let mut visited = std::collections::HashSet::new();
@@ -695,7 +765,6 @@ where
             "Probationary count mismatch"
         );
 
-        // Count nodes in protected list
         let mut prot_count = 0;
         let mut current = self.protected_head;
         visited.clear();
@@ -720,18 +789,15 @@ where
 
         debug_assert_eq!(prot_count, self.protected_len, "Protected count mismatch");
 
-        // Total nodes in lists should equal map size
         debug_assert_eq!(
             prob_count + prot_count,
             self.map.len(),
             "List counts don't match map size"
         );
 
-        // Verify all map entries are in a list
         for &node_ptr in self.map.values() {
             unsafe {
                 let node = node_ptr.as_ref();
-                // Each node should be in the correct list
                 match node.segment {
                     Segment::Probationary => {
                         debug_assert!(prob_count > 0, "Node marked probationary but list empty");
@@ -778,30 +844,117 @@ where
     }
 }
 
-// Proper cleanup when cache is dropped
-impl<K, V> Drop for SlruCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+impl<K, V> Drop for SlruCore<K, V> {
     fn drop(&mut self) {
-        while self.pop_probationary_tail().is_some() {}
-        while self.pop_protected_tail().is_some() {}
+        unsafe {
+            let mut current = self.probationary_head.take();
+            while let Some(ptr) = current {
+                current = ptr.as_ref().next;
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+            let mut current = self.protected_head.take();
+            while let Some(ptr) = current {
+                current = ptr.as_ref().next;
+                drop(Box::from_raw(ptr.as_ptr()));
+            }
+        }
     }
 }
 
-// Debug implementation
 impl<K, V> std::fmt::Debug for SlruCore<K, V>
 where
-    K: Clone + Eq + Hash + std::fmt::Debug,
+    K: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SlruCore")
-            .field("capacity", &self.protected_cap)
+            .field("capacity", &self.capacity)
             .field("probationary_cap", &self.probationary_cap)
             .field("len", &self.map.len())
             .field("probationary_len", &self.probationary_len)
             .field("protected_len", &self.protected_len)
             .finish_non_exhaustive()
+    }
+}
+
+impl<K, V> Default for SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns an empty `SlruCore` with capacity 0.
+    ///
+    /// Use [`SlruCore::new`] to specify a capacity.
+    fn default() -> Self {
+        Self::new(0, 0.25)
+    }
+}
+
+impl<K, V> Clone for SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut new_cache = SlruCore::new(
+            self.capacity,
+            if self.capacity > 0 {
+                self.probationary_cap as f64 / self.capacity as f64
+            } else {
+                0.25
+            },
+        );
+
+        // Rebuild probationary from tail (LRU) to head (MRU) so attach_head
+        // reproduces the original ordering.
+        let mut prob_entries = Vec::with_capacity(self.probationary_len);
+        let mut current = self.probationary_tail;
+        while let Some(ptr) = current {
+            unsafe {
+                let node = ptr.as_ref();
+                prob_entries.push((node.key.clone(), node.value.clone()));
+                current = node.prev;
+            }
+        }
+        for (key, value) in prob_entries {
+            let node = Box::new(Node {
+                prev: None,
+                next: None,
+                segment: Segment::Probationary,
+                key: key.clone(),
+                value,
+            });
+            let ptr = NonNull::new(Box::into_raw(node)).unwrap();
+            new_cache.map.insert(key, ptr);
+            new_cache.attach_probationary_head(ptr);
+        }
+
+        let mut prot_entries = Vec::with_capacity(self.protected_len);
+        let mut current = self.protected_tail;
+        while let Some(ptr) = current {
+            unsafe {
+                let node = ptr.as_ref();
+                prot_entries.push((node.key.clone(), node.value.clone()));
+                current = node.prev;
+            }
+        }
+        for (key, value) in prot_entries {
+            let node = Box::new(Node {
+                prev: None,
+                next: None,
+                segment: Segment::Protected,
+                key: key.clone(),
+                value,
+            });
+            let ptr = NonNull::new(Box::into_raw(node)).unwrap();
+            new_cache.map.insert(key, ptr);
+            new_cache.attach_protected_head(ptr);
+        }
+
+        #[cfg(feature = "metrics")]
+        {
+            new_cache.metrics = self.metrics;
+        }
+
+        new_cache
     }
 }
 
@@ -821,7 +974,7 @@ where
 
     #[inline]
     fn capacity(&self) -> usize {
-        self.protected_cap
+        self.capacity
     }
 }
 
@@ -858,6 +1011,210 @@ where
 
     fn clear(&mut self) {
         SlruCore::clear(self);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterators
+// ---------------------------------------------------------------------------
+
+/// Iterator over shared references to cached key-value pairs.
+///
+/// Created by [`SlruCore::iter`]. Visits probationary entries (MRU to LRU)
+/// then protected entries.
+pub struct Iter<'a, K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    protected_head: Option<NonNull<Node<K, V>>>,
+    in_protected: bool,
+    remaining: usize,
+    _marker: PhantomData<&'a (K, V)>,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(node_ptr) = self.current {
+                unsafe {
+                    let node = node_ptr.as_ref();
+                    self.current = node.next;
+                    self.remaining -= 1;
+                    return Some((&node.key, &node.value));
+                }
+            } else if !self.in_protected {
+                self.in_protected = true;
+                self.current = self.protected_head;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {}
+impl<K, V> FusedIterator for Iter<'_, K, V> {}
+
+/// Iterator over mutable references to cached values.
+///
+/// Created by [`SlruCore::iter_mut`]. Keys are shared; values are mutable.
+pub struct IterMut<'a, K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    protected_head: Option<NonNull<Node<K, V>>>,
+    in_protected: bool,
+    remaining: usize,
+    _marker: PhantomData<&'a mut (K, V)>,
+}
+
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(mut node_ptr) = self.current {
+                unsafe {
+                    let node = node_ptr.as_mut();
+                    self.current = node.next;
+                    self.remaining -= 1;
+                    return Some((&node.key, &mut node.value));
+                }
+            } else if !self.in_protected {
+                self.in_protected = true;
+                self.current = self.protected_head;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IterMut<'_, K, V> {}
+impl<K, V> FusedIterator for IterMut<'_, K, V> {}
+
+/// Owning iterator over cached key-value pairs.
+///
+/// Created by calling [`IntoIterator`] on an `SlruCore`.
+pub struct IntoIter<K, V> {
+    current: Option<NonNull<Node<K, V>>>,
+    protected_head: Option<NonNull<Node<K, V>>>,
+    in_protected: bool,
+    remaining: usize,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(node_ptr) = self.current {
+                unsafe {
+                    let node = Box::from_raw(node_ptr.as_ptr());
+                    self.current = node.next;
+                    self.remaining -= 1;
+                    return Some((node.key, node.value));
+                }
+            } else if !self.in_protected {
+                self.in_protected = true;
+                self.current = self.protected_head;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {}
+impl<K, V> FusedIterator for IntoIter<K, V> {}
+
+impl<K, V> Drop for IntoIter<K, V> {
+    fn drop(&mut self) {
+        while self.next().is_some() {}
+    }
+}
+
+// SAFETY: IntoIter exclusively owns its nodes (moved out of SlruCore).
+unsafe impl<K: Send, V: Send> Send for IntoIter<K, V> {}
+unsafe impl<K: Sync, V: Sync> Sync for IntoIter<K, V> {}
+
+impl<K, V> IntoIterator for SlruCore<K, V> {
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(mut self) -> IntoIter<K, V> {
+        let iter = IntoIter {
+            current: self.probationary_head,
+            protected_head: self.protected_head,
+            in_protected: false,
+            remaining: self.probationary_len + self.protected_len,
+        };
+        // Prevent Drop from double-freeing nodes the iterator now owns.
+        self.probationary_head = None;
+        self.probationary_tail = None;
+        self.probationary_len = 0;
+        self.protected_head = None;
+        self.protected_tail = None;
+        self.protected_len = 0;
+        iter
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Iter<'a, K, V> {
+        self.iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> IterMut<'a, K, V> {
+        self.iter_mut()
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut cache = SlruCore::new(lower.max(16), 0.25);
+        cache.extend(iter);
+        cache
+    }
+}
+
+impl<K, V> Extend<(K, V)> for SlruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        for (k, v) in iter {
+            self.insert(k, v);
+        }
     }
 }
 
@@ -936,17 +1293,14 @@ mod tests {
             cache.insert("b".to_string(), 2);
             cache.insert("c".to_string(), 3);
 
-            // Contains check should not promote
             assert!(cache.contains(&"a".to_string()));
             assert!(cache.contains(&"b".to_string()));
             assert!(cache.contains(&"c".to_string()));
 
-            // Fill up to trigger eviction
             for i in 0..10 {
                 cache.insert(format!("new{}", i), i);
             }
 
-            // Original items should be evicted (they were only in probationary)
             assert!(!cache.contains(&"a".to_string()));
             assert!(!cache.contains(&"b".to_string()));
             assert!(!cache.contains(&"c".to_string()));
@@ -957,7 +1311,7 @@ mod tests {
             let mut cache = SlruCore::new(100, 0.25);
             cache.insert("a", 1);
             cache.insert("b", 2);
-            cache.get(&"a"); // Promote "a" to protected
+            cache.get(&"a");
 
             cache.clear();
 
@@ -975,6 +1329,41 @@ mod tests {
     }
 
     // ==============================================
+    // Peek
+    // ==============================================
+
+    mod peek_tests {
+        use super::*;
+
+        #[test]
+        fn peek_returns_value_without_promotion() {
+            let mut cache = SlruCore::new(100, 0.25);
+            cache.insert("key", 42);
+
+            assert_eq!(cache.peek(&"key"), Some(&42));
+            assert_eq!(cache.peek(&"missing"), None);
+        }
+
+        #[test]
+        fn peek_does_not_promote_to_protected() {
+            let mut cache: SlruCore<String, i32> = SlruCore::new(10, 0.3);
+            cache.insert("key".to_string(), 1);
+
+            // Peek many times — should NOT promote
+            for _ in 0..10 {
+                assert_eq!(cache.peek(&"key".to_string()), Some(&1));
+            }
+
+            // Fill up to trigger eviction — "key" should be evicted from probationary
+            for i in 0..12 {
+                cache.insert(format!("filler{}", i), i);
+            }
+
+            assert!(!cache.contains(&"key".to_string()));
+        }
+    }
+
+    // ==============================================
     // Segment Behavior (Probationary vs Protected)
     // ==============================================
 
@@ -988,6 +1377,8 @@ mod tests {
 
             assert!(cache.contains(&"key"));
             assert_eq!(cache.len(), 1);
+            assert_eq!(cache.probationary_len(), 1);
+            assert_eq!(cache.protected_len(), 0);
         }
 
         #[test]
@@ -995,15 +1386,12 @@ mod tests {
             let mut cache: SlruCore<String, i32> = SlruCore::new(10, 0.3);
             cache.insert("key".to_string(), 0);
 
-            // First get promotes to protected
             let _ = cache.get(&"key".to_string());
 
-            // Insert enough items to fill probationary and exceed capacity
             for i in 0..12 {
                 cache.insert(format!("new{}", i), i);
             }
 
-            // "key" should still exist because it was promoted to protected
             assert!(cache.contains(&"key".to_string()));
         }
 
@@ -1012,10 +1400,7 @@ mod tests {
             let mut cache = SlruCore::new(10, 0.3);
             cache.insert("key", "value");
 
-            // Promote to protected
             cache.get(&"key");
-
-            // Access again - should stay in protected, move to MRU
             cache.get(&"key");
             cache.get(&"key");
 
@@ -1035,6 +1420,19 @@ mod tests {
             }
 
             assert!(cache.contains(&"hot".to_string()));
+        }
+
+        #[test]
+        fn segment_len_accessors() {
+            let mut cache = SlruCore::new(100, 0.25);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            assert_eq!(cache.probationary_len(), 2);
+            assert_eq!(cache.protected_len(), 0);
+
+            cache.get(&"a");
+            assert_eq!(cache.probationary_len(), 1);
+            assert_eq!(cache.protected_len(), 1);
         }
     }
 
@@ -1337,6 +1735,24 @@ mod tests {
             assert_eq!(cache.get(&25), Some(&String::from("value_25")));
             assert_eq!(cache.get(&49), Some(&String::from("value_49")));
         }
+
+        #[test]
+        #[should_panic(expected = "probationary_frac must be in 0.0..=1.0")]
+        fn negative_fraction_panics() {
+            let _cache: SlruCore<i32, i32> = SlruCore::new(100, -0.5);
+        }
+
+        #[test]
+        #[should_panic(expected = "probationary_frac must be in 0.0..=1.0")]
+        fn fraction_above_one_panics() {
+            let _cache: SlruCore<i32, i32> = SlruCore::new(100, 1.5);
+        }
+
+        #[test]
+        #[should_panic(expected = "probationary_frac must be in 0.0..=1.0")]
+        fn nan_fraction_panics() {
+            let _cache: SlruCore<i32, i32> = SlruCore::new(100, f64::NAN);
+        }
     }
 
     // ==============================================
@@ -1581,31 +1997,26 @@ mod tests {
     fn validate_invariants_after_operations() {
         let mut cache = SlruCore::new(10, 0.3);
 
-        // Insert items
         for i in 1..=10 {
             cache.insert(i, i * 100);
         }
         cache.validate_invariants();
 
-        // Access items to trigger promotions
         for _ in 0..3 {
             cache.get(&1);
             cache.get(&2);
         }
         cache.validate_invariants();
 
-        // Trigger evictions
         cache.insert(11, 1100);
         cache.validate_invariants();
 
         cache.insert(12, 1200);
         cache.validate_invariants();
 
-        // Clear
         cache.clear();
         cache.validate_invariants();
 
-        // Verify empty state
         assert_eq!(cache.len(), 0);
     }
 
@@ -1617,19 +2028,16 @@ mod tests {
         cache.insert(2, 200);
         cache.insert(3, 300);
 
-        // Access to promote from probationary to protected
         cache.get(&1);
         cache.validate_invariants();
 
         cache.get(&2);
         cache.validate_invariants();
 
-        // Fill cache
         cache.insert(4, 400);
         cache.insert(5, 500);
         cache.validate_invariants();
 
-        // Trigger evictions
         cache.insert(6, 600);
         cache.validate_invariants();
 
@@ -1637,7 +2045,7 @@ mod tests {
     }
 
     // ==============================================
-    // Regression Tests
+    // Standard Trait Tests
     // ==============================================
 
     #[test]
@@ -1677,5 +2085,104 @@ mod tests {
         cache.insert("key", 2);
 
         assert_eq!(cache.get(&"key"), Some(&2));
+    }
+
+    #[test]
+    fn default_creates_zero_capacity() {
+        let cache: SlruCore<String, i32> = SlruCore::default();
+        assert_eq!(cache.capacity(), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn clone_preserves_entries() {
+        let mut cache = SlruCore::new(100, 0.25);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.get(&"a");
+
+        let cloned = cache.clone();
+        assert_eq!(cloned.len(), 2);
+        assert_eq!(cloned.peek(&"a"), Some(&1));
+        assert_eq!(cloned.peek(&"b"), Some(&2));
+        assert_eq!(cloned.capacity(), 100);
+    }
+
+    #[test]
+    fn clone_is_independent() {
+        let mut cache = SlruCore::new(100, 0.25);
+        cache.insert("a", 1);
+
+        let mut cloned = cache.clone();
+        cloned.insert("a", 999);
+        cloned.insert("b", 2);
+
+        assert_eq!(cache.peek(&"a"), Some(&1));
+        assert!(!cache.contains(&"b"));
+    }
+
+    #[test]
+    fn from_iterator() {
+        let data = vec![("a", 1), ("b", 2), ("c", 3)];
+        let cache: SlruCore<&str, i32> = data.into_iter().collect();
+
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.peek(&"a"), Some(&1));
+        assert_eq!(cache.peek(&"b"), Some(&2));
+        assert_eq!(cache.peek(&"c"), Some(&3));
+    }
+
+    #[test]
+    fn into_iterator_owned() {
+        let mut cache = SlruCore::new(100, 0.25);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.insert("c", 3);
+
+        let mut items: Vec<_> = cache.into_iter().collect();
+        items.sort_by_key(|(k, _)| *k);
+        assert_eq!(items, vec![("a", 1), ("b", 2), ("c", 3)]);
+    }
+
+    #[test]
+    fn into_iterator_ref() {
+        let mut cache = SlruCore::new(100, 0.25);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+
+        let mut items: Vec<_> = (&cache).into_iter().collect();
+        items.sort_by_key(|(k, _)| **k);
+        assert_eq!(items, vec![(&"a", &1), (&"b", &2)]);
+    }
+
+    #[test]
+    fn iter_exact_size() {
+        let mut cache = SlruCore::new(100, 0.25);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.get(&"a");
+
+        let iter = cache.iter();
+        assert_eq!(iter.len(), 2);
+    }
+
+    #[test]
+    fn extend_adds_entries() {
+        let mut cache = SlruCore::new(100, 0.25);
+        cache.insert("a", 1);
+
+        cache.extend(vec![("b", 2), ("c", 3)]);
+
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.peek(&"b"), Some(&2));
+    }
+
+    #[test]
+    fn debug_impl_works() {
+        let mut cache = SlruCore::new(100, 0.25);
+        cache.insert("a", 1);
+        let debug = format!("{:?}", cache);
+        assert!(debug.contains("SlruCore"));
+        assert!(debug.contains("capacity"));
     }
 }
