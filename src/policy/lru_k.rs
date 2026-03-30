@@ -116,7 +116,7 @@
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!
-//! ## Core Operations (CoreCache + MutableCache + LrukCacheTrait)
+//! ## Core Operations ([`CoreCache`] + [`MutableCache`] + [`LrukCacheTrait`])
 //!
 //! | Method              | Complexity | Description                              |
 //! |---------------------|------------|------------------------------------------|
@@ -130,7 +130,7 @@
 //! | `capacity()`        | O(1)       | Maximum capacity                         |
 //! | `clear()`           | O(N)       | Remove all entries                       |
 //!
-//! ## LRU-K Specific Operations (LrukCacheTrait)
+//! ## LRU-K Specific Operations ([`LrukCacheTrait`])
 //!
 //! | Method               | Complexity | Description                             |
 //! |----------------------|------------|-----------------------------------------|
@@ -185,16 +185,14 @@
 //!
 //! ## Example Usage
 //!
-//! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::lru_k::LrukCache;
-//! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, MutableCache, LrukCacheTrait,
-//! };
+//! ```
+//! use cachekit::policy::lru_k::LrukCache;
+//! use cachekit::traits::{CoreCache, LrukCacheTrait};
 //!
 //! // Create LRU-2 cache (default K=2)
-//! let mut cache: LrukCache<u32, String> = LrukCache::new(100);
+//! let _cache: LrukCache<u32, String> = LrukCache::new(100);
 //!
-//! // Or with custom K value
+//! // Or with custom K value (K=3)
 //! let mut cache: LrukCache<u32, String> = LrukCache::with_k(100, 3);
 //!
 //! // Insert items
@@ -215,12 +213,17 @@
 //!
 //! // Check K-distance (None if < K accesses)
 //! if let Some(k_dist) = cache.k_distance(&1) {
-//!     println!("K-distance: {} microseconds", k_dist);
+//!     println!("K-distance: {}", k_dist);
 //! }
 //!
 //! // Get access history (most recent first)
 //! if let Some(history) = cache.access_history(&1) {
 //!     println!("Access times: {:?}", history);
+//! }
+//!
+//! // Check eviction priority rank (0 = first to be evicted)
+//! if let Some(rank) = cache.k_distance_rank(&2) {
+//!     println!("Eviction rank: {}", rank);
 //! }
 //!
 //! // Peek at eviction victim without removing
@@ -231,11 +234,6 @@
 //! // Manually evict
 //! if let Some((key, value)) = cache.pop_lru_k() {
 //!     println!("Evicted: key={}, value={}", key, value);
-//! }
-//!
-//! // Check eviction priority rank (0 = first to be evicted)
-//! if let Some(rank) = cache.k_distance_rank(&2) {
-//!     println!("Eviction rank: {}", rank);
 //! }
 //! ```
 //!
@@ -356,13 +354,7 @@ struct Node<K, V> {
 /// let victim = cache.peek_lru_k();
 /// assert_eq!(victim.unwrap().0, &100);
 /// ```
-/// LRU-K cache with raw pointer linked lists for maximum performance.
-///
-/// Uses two segments (cold/hot) with embedded linked list pointers.
-pub struct LrukCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+pub struct LrukCache<K, V> {
     k: usize,
     capacity: usize,
     map: FxHashMap<K, NonNull<Node<K, V>>>,
@@ -379,27 +371,17 @@ where
     metrics: LruKMetrics,
 }
 
-// SAFETY: LrukCache can be sent between threads if K and V are Send.
-unsafe impl<K, V> Send for LrukCache<K, V>
-where
-    K: Eq + Hash + Clone + Send,
-    V: Send,
-{
-}
+// SAFETY: LrukCache owns all Node heap allocations exclusively via NonNull
+// pointers. No aliasing or shared mutable state exists outside the cache.
+// Transferring ownership between threads is safe when K and V are Send.
+unsafe impl<K: Send, V: Send> Send for LrukCache<K, V> {}
 
-// SAFETY: LrukCache can be shared between threads if K and V are Sync.
-unsafe impl<K, V> Sync for LrukCache<K, V>
-where
-    K: Eq + Hash + Clone + Sync,
-    V: Sync,
-{
-}
+// SAFETY: All mutation requires &mut self so &LrukCache cannot cause data
+// races. The NonNull pointers are only dereferenced behind &mut self.
+// Sharing &LrukCache between threads is safe when K and V are Sync.
+unsafe impl<K: Sync, V: Sync> Sync for LrukCache<K, V> {}
 
-// Methods that don't require V: Clone
-impl<K, V> LrukCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+impl<K, V> LrukCache<K, V> {
     /// Pop the tail node from the cold segment.
     #[inline(always)]
     fn pop_cold_tail_inner(&mut self) -> Option<Box<Node<K, V>>> {
@@ -456,6 +438,7 @@ where
     /// assert_eq!(cache.k_value(), 2);
     /// assert_eq!(cache.capacity(), 100);
     /// ```
+    #[must_use]
     #[inline]
     pub fn new(capacity: usize) -> Self {
         Self::with_k(capacity, 2)
@@ -490,6 +473,7 @@ where
     /// let cache2: LrukCache<u32, String> = LrukCache::with_k(100, 0);
     /// assert_eq!(cache2.k_value(), 1);
     /// ```
+    #[must_use]
     #[inline]
     pub fn with_k(capacity: usize, k: usize) -> Self {
         let k = k.max(1);
@@ -662,7 +646,7 @@ where
     }
 }
 
-/// Core cache operations for LRU-K.
+/// [`CoreCache`] implementation for LRU-K.
 ///
 /// # Example
 ///
@@ -792,7 +776,7 @@ where
     }
 }
 
-/// Mutable cache operations for LRU-K.
+/// [`MutableCache`] implementation for LRU-K.
 ///
 /// # Example
 ///
@@ -827,10 +811,9 @@ where
     }
 }
 
-/// LRU-K specific operations.
+/// [`LrukCacheTrait`] implementation for LRU-K.
 ///
-/// These methods provide LRU-K specific functionality like eviction,
-/// access history inspection, and K-distance queries.
+/// Provides eviction, access history inspection, and K-distance queries.
 ///
 /// # Example
 ///
@@ -1045,10 +1028,7 @@ where
 }
 
 // Proper cleanup when cache is dropped - free all heap-allocated nodes
-impl<K, V> Drop for LrukCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+impl<K, V> Drop for LrukCache<K, V> {
     fn drop(&mut self) {
         // Free all nodes by traversing both lists
         while self.pop_cold_tail_inner().is_some() {}
@@ -1057,10 +1037,7 @@ where
 }
 
 // Debug implementation
-impl<K, V> std::fmt::Debug for LrukCache<K, V>
-where
-    K: Eq + Hash + Clone + std::fmt::Debug,
-{
+impl<K, V> std::fmt::Debug for LrukCache<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LrukCache")
             .field("k", &self.k)
@@ -1069,6 +1046,99 @@ where
             .field("cold_len", &self.cold_len)
             .field("hot_len", &self.hot_len)
             .finish_non_exhaustive()
+    }
+}
+
+/// Creates an empty LRU-2 cache with zero capacity.
+impl<K, V> Default for LrukCache<K, V> {
+    fn default() -> Self {
+        LrukCache {
+            k: 2,
+            capacity: 0,
+            map: FxHashMap::default(),
+            cold_head: None,
+            cold_tail: None,
+            cold_len: 0,
+            hot_head: None,
+            hot_tail: None,
+            hot_len: 0,
+            tick: 0,
+            #[cfg(feature = "metrics")]
+            metrics: LruKMetrics::default(),
+        }
+    }
+}
+
+impl<K, V> Clone for LrukCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut new = LrukCache {
+            k: self.k,
+            capacity: self.capacity,
+            map: FxHashMap::with_capacity_and_hasher(self.map.len(), Default::default()),
+            cold_head: None,
+            cold_tail: None,
+            cold_len: 0,
+            hot_head: None,
+            hot_tail: None,
+            hot_len: 0,
+            tick: self.tick,
+            #[cfg(feature = "metrics")]
+            metrics: LruKMetrics::default(),
+        };
+
+        let mut current = self.cold_head;
+        while let Some(ptr) = current {
+            unsafe {
+                let src = ptr.as_ref();
+                let node = Box::new(Node {
+                    prev: new.cold_tail,
+                    next: None,
+                    segment: Segment::Cold,
+                    history: src.history.clone(),
+                    key: src.key.clone(),
+                    value: Arc::clone(&src.value),
+                });
+                let np = NonNull::new_unchecked(Box::into_raw(node));
+                match new.cold_tail {
+                    Some(mut t) => t.as_mut().next = Some(np),
+                    None => new.cold_head = Some(np),
+                }
+                new.cold_tail = Some(np);
+                new.cold_len += 1;
+                new.map.insert(src.key.clone(), np);
+                current = src.next;
+            }
+        }
+
+        let mut current = self.hot_head;
+        while let Some(ptr) = current {
+            unsafe {
+                let src = ptr.as_ref();
+                let node = Box::new(Node {
+                    prev: new.hot_tail,
+                    next: None,
+                    segment: Segment::Hot,
+                    history: src.history.clone(),
+                    key: src.key.clone(),
+                    value: Arc::clone(&src.value),
+                });
+                let np = NonNull::new_unchecked(Box::into_raw(node));
+                match new.hot_tail {
+                    Some(mut t) => t.as_mut().next = Some(np),
+                    None => new.hot_head = Some(np),
+                }
+                new.hot_tail = Some(np);
+                new.hot_len += 1;
+                new.map.insert(src.key.clone(), np);
+                current = src.next;
+            }
+        }
+
+        new
     }
 }
 
