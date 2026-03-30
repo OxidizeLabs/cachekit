@@ -161,7 +161,7 @@ use crate::metrics::snapshot::CoreOnlyMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
 use crate::prelude::ReadOnlyCache;
-use crate::traits::CoreCache;
+use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
@@ -203,17 +203,10 @@ use std::hash::Hash;
 ///
 /// Uses Vec + HashMap for O(1) random eviction via swap-remove.
 /// RNG state uses XorShift64 for deterministic testing and Miri compatibility.
-pub struct RandomCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Maps key to (index in keys vec, value)
+pub struct RandomCore<K, V> {
     map: FxHashMap<K, (usize, V)>,
-    /// Dense array of keys for O(1) random access
     keys: Vec<K>,
-    /// Maximum cache capacity
     capacity: usize,
-    /// Internal PRNG state for random eviction (XorShift)
     rng_state: u64,
     #[cfg(feature = "metrics")]
     metrics: CoreOnlyMetrics,
@@ -277,10 +270,31 @@ where
         self.map.get(key).map(|(_, v)| v)
     }
 
-    /// Inserts or updates a key-value pair.
+    /// Returns a reference to the value without requiring a mutable borrow.
     ///
-    /// - If the key exists, updates the value in place (no index change)
-    /// - If the key is new, inserts at end of keys vec
+    /// Since random eviction does not track access patterns, this is equivalent
+    /// to [`get`](Self::get) but only requires `&self`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::random::RandomCore;
+    ///
+    /// let mut cache = RandomCore::new(100);
+    /// cache.insert("key", 42);
+    ///
+    /// assert_eq!(cache.peek(&"key"), Some(&42));
+    /// assert_eq!(cache.peek(&"missing"), None);
+    /// ```
+    #[inline]
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key).map(|(_, v)| v)
+    }
+
+    /// Inserts or updates a key-value pair, returning the previous value if any.
+    ///
+    /// - If the key exists, updates the value in place and returns the old value
+    /// - If the key is new, inserts at end of keys vec and returns `None`
     /// - May trigger random eviction if capacity is exceeded
     ///
     /// # Example
@@ -291,28 +305,27 @@ where
     /// let mut cache = RandomCore::new(100);
     ///
     /// // New insert
-    /// cache.insert("key", "initial");
+    /// assert_eq!(cache.insert("key", "initial"), None);
     /// assert_eq!(cache.len(), 1);
     ///
     /// // Update existing key
-    /// cache.insert("key", "updated");
+    /// assert_eq!(cache.insert("key", "updated"), Some("initial"));
     /// assert_eq!(cache.get(&"key"), Some(&"updated"));
-    /// assert_eq!(cache.len(), 1);  // Still 1 entry
+    /// assert_eq!(cache.len(), 1);
     /// ```
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
 
         if self.capacity == 0 {
-            return;
+            return None;
         }
 
         if let Some((_, v)) = self.map.get_mut(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
-            *v = value;
-            return;
+            return Some(std::mem::replace(v, value));
         }
 
         #[cfg(feature = "metrics")]
@@ -323,6 +336,7 @@ where
         let idx = self.keys.len();
         self.keys.push(key.clone());
         self.map.insert(key, (idx, value));
+        None
     }
 
     /// Evicts a random entry if cache is at capacity.
@@ -486,6 +500,87 @@ where
         self.validate_invariants();
     }
 
+    /// Removes a key from the cache, returning its value if present.
+    ///
+    /// Uses swap-remove on the keys vector for O(1) removal.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::random::RandomCore;
+    ///
+    /// let mut cache = RandomCore::new(100);
+    /// cache.insert("key", 42);
+    ///
+    /// assert_eq!(cache.remove(&"key"), Some(42));
+    /// assert_eq!(cache.remove(&"key"), None);
+    /// assert!(!cache.contains(&"key"));
+    /// ```
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let (idx, value) = self.map.remove(key)?;
+
+        let last_idx = self.keys.len() - 1;
+        if idx != last_idx {
+            self.keys.swap(idx, last_idx);
+            let swapped_key = &self.keys[idx];
+            if let Some((stored_idx, _)) = self.map.get_mut(swapped_key) {
+                *stored_idx = idx;
+            }
+        }
+        self.keys.pop();
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+
+        Some(value)
+    }
+
+    /// Returns an iterator over shared references to key-value pairs.
+    ///
+    /// Iteration order is unspecified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::random::RandomCore;
+    ///
+    /// let mut cache = RandomCore::new(100);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// let pairs: Vec<_> = cache.iter().collect();
+    /// assert_eq!(pairs.len(), 2);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            inner: self.map.iter(),
+        }
+    }
+
+    /// Returns an iterator over keys with shared references and mutable value references.
+    ///
+    /// Iteration order is unspecified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::random::RandomCore;
+    ///
+    /// let mut cache = RandomCore::new(100);
+    /// cache.insert("a", 1);
+    /// cache.insert("b", 2);
+    ///
+    /// for (_key, value) in cache.iter_mut() {
+    ///     *value *= 10;
+    /// }
+    /// assert_eq!(cache.peek(&"a"), Some(&10));
+    /// ```
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            inner: self.map.iter_mut(),
+        }
+    }
+
     /// Validates internal data structure invariants.
     ///
     /// This method checks that:
@@ -531,11 +626,7 @@ where
     }
 }
 
-// Debug implementation
-impl<K, V> std::fmt::Debug for RandomCore<K, V>
-where
-    K: Clone + Eq + Hash + std::fmt::Debug,
-{
+impl<K: std::fmt::Debug, V> std::fmt::Debug for RandomCore<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RandomCore")
             .field("capacity", &self.capacity)
@@ -587,17 +678,7 @@ where
 {
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        if let Some((_, v)) = self.map.get_mut(&key) {
-            #[cfg(feature = "metrics")]
-            {
-                self.metrics.record_insert_call();
-                self.metrics.record_insert_update();
-            }
-            return Some(std::mem::replace(v, value));
-        }
-
-        RandomCore::insert(self, key, value);
-        None
+        RandomCore::insert(self, key, value)
     }
 
     #[inline]
@@ -639,6 +720,202 @@ where
 {
     fn snapshot(&self) -> CoreOnlyMetricsSnapshot {
         self.metrics_snapshot()
+    }
+}
+
+impl<K, V> MutableCache<K, V> for RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Removes a specific key-value pair.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::random::RandomCore;
+    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
+    ///
+    /// let mut cache = RandomCore::new(10);
+    /// cache.insert("key", 42);
+    ///
+    /// assert_eq!(cache.remove(&"key"), Some(42));
+    /// assert!(!cache.contains(&"key"));
+    /// ```
+    #[inline]
+    fn remove(&mut self, key: &K) -> Option<V> {
+        RandomCore::remove(self, key)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clone
+// ---------------------------------------------------------------------------
+
+impl<K, V> Clone for RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            keys: self.keys.clone(),
+            capacity: self.capacity,
+            rng_state: self.rng_state,
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Default
+// ---------------------------------------------------------------------------
+
+impl<K, V> Default for RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Creates a `RandomCore` with a default capacity of 16.
+    fn default() -> Self {
+        Self::new(16)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterators
+// ---------------------------------------------------------------------------
+
+/// Iterator over shared references to key-value pairs in a [`RandomCore`].
+///
+/// Created by [`RandomCore::iter`].
+pub struct Iter<'a, K, V> {
+    inner: std::collections::hash_map::Iter<'a, K, (usize, V)>,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, (_, v))| (k, v))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {}
+
+impl<K, V> std::iter::FusedIterator for Iter<'_, K, V> {}
+
+/// Iterator over mutable references to values (with shared key references)
+/// in a [`RandomCore`].
+///
+/// Created by [`RandomCore::iter_mut`].
+pub struct IterMut<'a, K, V> {
+    inner: std::collections::hash_map::IterMut<'a, K, (usize, V)>,
+}
+
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, (_, v))| (k, v))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, V> ExactSizeIterator for IterMut<'_, K, V> {}
+
+impl<K, V> std::iter::FusedIterator for IterMut<'_, K, V> {}
+
+/// Owning iterator over key-value pairs from a [`RandomCore`].
+///
+/// Created by the `IntoIterator` implementation on `RandomCore`.
+pub struct IntoIter<K, V> {
+    inner: std::collections::hash_map::IntoIter<K, (usize, V)>,
+}
+
+impl<K, V> Iterator for IntoIter<K, V> {
+    type Item = (K, V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, (_, v))| (k, v))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> {}
+
+impl<K, V> std::iter::FusedIterator for IntoIter<K, V> {}
+
+// ---------------------------------------------------------------------------
+// IntoIterator
+// ---------------------------------------------------------------------------
+
+impl<K, V> IntoIterator for RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            inner: self.map.into_iter(),
+        }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extend
+// ---------------------------------------------------------------------------
+
+impl<K, V> Extend<(K, V)> for RandomCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        for (k, v) in iter {
+            self.insert(k, v);
+        }
     }
 }
 
@@ -1050,6 +1327,293 @@ mod tests {
         // Verify all indices are correct
         for (key, &(idx, _)) in &cache.map {
             assert_eq!(&cache.keys[idx], key);
+        }
+    }
+
+    // ==============================================
+    // Insert return value
+    // ==============================================
+
+    mod insert_return_value {
+        use super::*;
+
+        #[test]
+        fn insert_new_returns_none() {
+            let mut cache = RandomCore::new(100);
+            assert_eq!(cache.insert("key", 1), None);
+        }
+
+        #[test]
+        fn insert_update_returns_old_value() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("key", 1);
+            assert_eq!(cache.insert("key", 2), Some(1));
+            assert_eq!(cache.insert("key", 3), Some(2));
+        }
+
+        #[test]
+        fn insert_zero_capacity_returns_none() {
+            let mut cache = RandomCore::new(0);
+            assert_eq!(cache.insert("key", 1), None);
+        }
+
+        #[test]
+        fn trait_insert_matches_inherent() {
+            use crate::traits::CoreCache;
+
+            let mut cache = RandomCore::new(100);
+            assert_eq!(CoreCache::insert(&mut cache, "a", 1), None);
+            assert_eq!(CoreCache::insert(&mut cache, "a", 2), Some(1));
+        }
+    }
+
+    // ==============================================
+    // Peek
+    // ==============================================
+
+    mod peek_tests {
+        use super::*;
+
+        #[test]
+        fn peek_returns_value() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("key", 42);
+            assert_eq!(cache.peek(&"key"), Some(&42));
+        }
+
+        #[test]
+        fn peek_missing_returns_none() {
+            let cache: RandomCore<&str, i32> = RandomCore::new(100);
+            assert_eq!(cache.peek(&"missing"), None);
+        }
+
+        #[test]
+        fn peek_does_not_require_mut() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("key", 42);
+            let cache_ref: &RandomCore<&str, i32> = &cache;
+            assert_eq!(cache_ref.peek(&"key"), Some(&42));
+        }
+    }
+
+    // ==============================================
+    // Remove
+    // ==============================================
+
+    mod remove_tests {
+        use super::*;
+
+        #[test]
+        fn remove_existing_key() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("key", 42);
+
+            assert_eq!(cache.remove(&"key"), Some(42));
+            assert!(!cache.contains(&"key"));
+            assert_eq!(cache.len(), 0);
+        }
+
+        #[test]
+        fn remove_missing_key() {
+            let mut cache: RandomCore<&str, i32> = RandomCore::new(100);
+            assert_eq!(cache.remove(&"missing"), None);
+        }
+
+        #[test]
+        fn remove_maintains_consistency() {
+            let mut cache = RandomCore::new(100);
+            for i in 0..10 {
+                cache.insert(i, i * 10);
+            }
+
+            cache.remove(&5);
+            assert_eq!(cache.len(), 9);
+            assert!(!cache.contains(&5));
+
+            for i in 0..10 {
+                if i != 5 {
+                    assert_eq!(cache.peek(&i), Some(&(i * 10)));
+                }
+            }
+        }
+
+        #[test]
+        fn remove_via_mutable_cache_trait() {
+            use crate::traits::MutableCache;
+
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            assert_eq!(MutableCache::remove(&mut cache, &"a"), Some(1));
+            assert!(!cache.contains(&"a"));
+            assert!(cache.contains(&"b"));
+        }
+
+        #[test]
+        #[cfg(debug_assertions)]
+        fn remove_validates_invariants() {
+            let mut cache = RandomCore::new(10);
+            for i in 0..10 {
+                cache.insert(i, i);
+            }
+            for i in (0..10).rev() {
+                cache.remove(&i);
+                cache.validate_invariants();
+            }
+            assert!(cache.is_empty());
+        }
+    }
+
+    // ==============================================
+    // Clone / Default
+    // ==============================================
+
+    mod clone_default_tests {
+        use super::*;
+
+        #[test]
+        fn clone_preserves_contents() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let cloned = cache.clone();
+            assert_eq!(cloned.len(), 2);
+            assert_eq!(cloned.peek(&"a"), Some(&1));
+            assert_eq!(cloned.peek(&"b"), Some(&2));
+            assert_eq!(cloned.capacity(), 100);
+        }
+
+        #[test]
+        fn clone_is_independent() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+
+            let mut cloned = cache.clone();
+            cloned.insert("b", 2);
+
+            assert_eq!(cache.len(), 1);
+            assert_eq!(cloned.len(), 2);
+        }
+
+        #[test]
+        fn default_creates_cache() {
+            let cache: RandomCore<String, i32> = RandomCore::default();
+            assert_eq!(cache.capacity(), 16);
+            assert!(cache.is_empty());
+        }
+    }
+
+    // ==============================================
+    // Iterators
+    // ==============================================
+
+    mod iterator_tests {
+        use super::*;
+
+        #[test]
+        fn iter_visits_all_entries() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            cache.insert("c", 3);
+
+            let mut pairs: Vec<_> = cache.iter().collect();
+            pairs.sort_by_key(|&(k, _)| *k);
+            assert_eq!(pairs, vec![(&"a", &1), (&"b", &2), (&"c", &3)]);
+        }
+
+        #[test]
+        fn iter_mut_modifies_values() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            for (_, v) in cache.iter_mut() {
+                *v *= 10;
+            }
+
+            assert_eq!(cache.peek(&"a"), Some(&10));
+            assert_eq!(cache.peek(&"b"), Some(&20));
+        }
+
+        #[test]
+        fn iter_exact_size() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let iter = cache.iter();
+            assert_eq!(iter.len(), 2);
+        }
+
+        #[test]
+        fn into_iter_owned() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let mut pairs: Vec<_> = cache.into_iter().collect();
+            pairs.sort_by_key(|&(k, _)| k);
+            assert_eq!(pairs, vec![("a", 1), ("b", 2)]);
+        }
+
+        #[test]
+        fn into_iter_ref() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            let mut pairs: Vec<_> = (&cache).into_iter().collect();
+            pairs.sort_by_key(|&(k, _)| *k);
+            assert_eq!(pairs, vec![(&"a", &1), (&"b", &2)]);
+        }
+
+        #[test]
+        fn into_iter_mut() {
+            let mut cache = RandomCore::new(100);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+
+            for (_, v) in &mut cache {
+                *v += 100;
+            }
+
+            assert_eq!(cache.peek(&"a"), Some(&101));
+            assert_eq!(cache.peek(&"b"), Some(&102));
+        }
+
+        #[test]
+        fn empty_iter() {
+            let cache: RandomCore<&str, i32> = RandomCore::new(100);
+            assert_eq!(cache.iter().count(), 0);
+        }
+    }
+
+    // ==============================================
+    // Extend
+    // ==============================================
+
+    mod extend_tests {
+        use super::*;
+
+        #[test]
+        fn extend_inserts_all() {
+            let mut cache = RandomCore::new(100);
+            cache.extend(vec![("a", 1), ("b", 2), ("c", 3)]);
+
+            assert_eq!(cache.len(), 3);
+            assert_eq!(cache.peek(&"a"), Some(&1));
+            assert_eq!(cache.peek(&"b"), Some(&2));
+            assert_eq!(cache.peek(&"c"), Some(&3));
+        }
+
+        #[test]
+        fn extend_respects_capacity() {
+            let mut cache = RandomCore::new(3);
+            cache.extend(vec![(1, 10), (2, 20), (3, 30), (4, 40), (5, 50)]);
+            assert_eq!(cache.len(), 3);
         }
     }
 }
