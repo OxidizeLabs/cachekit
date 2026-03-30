@@ -243,7 +243,7 @@
 //! - **[`peek_lfu()`](LfuCacheTrait::peek_lfu)**: Falls back to O(n) scan
 //!   (avoiding heap borrow issues)
 //! - **Memory overhead**: ~3× standard LFU due to three data structures
-//! - **[`Reverse`](std::cmp::Reverse) wrapper**: Converts max-heap to
+//! - **[`Reverse`] wrapper**: Converts max-heap to
 //!   min-heap for LFU semantics
 
 use crate::prelude::ReadOnlyCache;
