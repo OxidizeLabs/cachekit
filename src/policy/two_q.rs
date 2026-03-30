@@ -653,7 +653,7 @@ where
         }
 
         while self.len() >= self.protected_cap {
-            if self.probation_len > self.probation_cap {
+            if self.probation_len > 0 && self.probation_len > self.probation_cap {
                 if let Some(node) = self.pop_probation_tail() {
                     self.map.remove(&node.key);
                     #[cfg(feature = "metrics")]
