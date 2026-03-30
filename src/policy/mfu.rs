@@ -145,7 +145,7 @@
 //!
 //! ## Implementation Notes
 //!
-//! - Uses max-heap via [`HeapEntry`] (orders by frequency, then sequence number)
+//! - Uses max-heap via `HeapEntry` (orders by frequency, then sequence number)
 //! - Lazy stale entry cleanup during eviction
 //! - Periodic heap rebuild to drop stale entries
 //! - O(log n) insert/get, amortized O(log n) eviction
@@ -214,7 +214,7 @@ impl<K> Ord for HeapEntry<K> {
 /// MFU cache core that evicts the most frequently used entry.
 ///
 /// Implements [`CoreCache`], [`ReadOnlyCache`], and [`MutableCache`] for
-/// generic cache access. Uses a [`BinaryHeap`] with [`HeapEntry`] wrappers
+/// generic cache access. Uses a [`BinaryHeap`] with `HeapEntry` wrappers
 /// for O(log n) eviction of the highest-frequency entry.
 pub struct MfuCore<K, V> {
     map: FxHashMap<K, V>,
