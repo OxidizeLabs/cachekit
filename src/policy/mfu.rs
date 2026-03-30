@@ -34,7 +34,7 @@
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  freq_heap: BinaryHeap<(u64, K)>  (Max-Heap)                       │ │
+//!   │   │  freq_heap: BinaryHeap<HeapEntry<K>>  (Max-Heap by frequency)      │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────────────────────────────────────────────────────────┐   │ │
 //!   │   │  │                        (15, page_1)  ← top (max freq)       │   │ │
@@ -141,11 +141,11 @@
 //! ## Thread Safety
 //!
 //! - [`MfuCore`]: Not thread-safe, designed for single-threaded use
-//! - For concurrent access, wrap in external synchronization
+//! - For concurrent access, wrap in external synchronization (e.g., `Arc<RwLock<MfuCore>>`)
 //!
 //! ## Implementation Notes
 //!
-//! - Uses max-heap (BinaryHeap without Reverse wrapper)
+//! - Uses max-heap via `HeapEntry` (orders by frequency, then sequence number)
 //! - Lazy stale entry cleanup during eviction
 //! - Periodic heap rebuild to drop stale entries
 //! - O(log n) insert/get, amortized O(log n) eviction
@@ -170,8 +170,9 @@ use crate::metrics::traits::{
     CoreMetricsRecorder, MetricsSnapshotProvider, MfuMetricsReadRecorder, MfuMetricsRecorder,
 };
 use crate::prelude::ReadOnlyCache;
-use crate::traits::CoreCache;
+use crate::traits::{CoreCache, MutableCache};
 use rustc_hash::FxHashMap;
+use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fmt;
 use std::hash::Hash;
@@ -179,27 +180,65 @@ use std::hash::Hash;
 /// Max-heap rebuilds when stale entries exceed this factor times live entries.
 const HEAP_REBUILD_FACTOR: usize = 3;
 
+/// Heap entry that orders by frequency (descending), breaking ties by insertion
+/// sequence. Avoids requiring `K: Ord`.
+#[derive(Clone)]
+struct HeapEntry<K> {
+    freq: u64,
+    seq: u64,
+    key: K,
+}
+
+impl<K> PartialEq for HeapEntry<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.freq == other.freq && self.seq == other.seq
+    }
+}
+
+impl<K> Eq for HeapEntry<K> {}
+
+impl<K> PartialOrd for HeapEntry<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K> Ord for HeapEntry<K> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.freq
+            .cmp(&other.freq)
+            .then_with(|| self.seq.cmp(&other.seq))
+    }
+}
+
 /// MFU cache core that evicts the most frequently used entry.
+///
+/// Implements [`CoreCache`], [`ReadOnlyCache`], and [`MutableCache`] for
+/// generic cache access. Uses a [`BinaryHeap`] with `HeapEntry` wrappers
+/// for O(log n) eviction of the highest-frequency entry.
 pub struct MfuCore<K, V> {
     map: FxHashMap<K, V>,
     frequencies: FxHashMap<K, u64>,
-    freq_heap: BinaryHeap<(u64, K)>, // Max-heap (no Reverse wrapper)
+    freq_heap: BinaryHeap<HeapEntry<K>>,
     capacity: usize,
+    seq: u64,
     #[cfg(feature = "metrics")]
     metrics: MfuMetrics,
 }
 
 impl<K, V> MfuCore<K, V>
 where
-    K: Clone + Eq + Hash + Ord,
+    K: Clone + Eq + Hash,
 {
     /// Creates a new MFU cache with the specified capacity.
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             frequencies: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             freq_heap: BinaryHeap::with_capacity(capacity),
             capacity,
+            seq: 0,
             #[cfg(feature = "metrics")]
             metrics: MfuMetrics::default(),
         }
@@ -214,7 +253,12 @@ where
             let freq = self.frequencies.entry(key.clone()).or_insert(0);
             *freq += 1;
 
-            self.freq_heap.push((*freq, key.clone()));
+            self.seq += 1;
+            self.freq_heap.push(HeapEntry {
+                freq: *freq,
+                seq: self.seq,
+                key: key.clone(),
+            });
 
             if self.freq_heap.len() > self.map.len() * HEAP_REBUILD_FACTOR {
                 self.rebuild_heap();
@@ -244,7 +288,12 @@ where
             let old_value = self.map.insert(key.clone(), value);
             let freq = self.frequencies.entry(key.clone()).or_insert(0);
             *freq += 1;
-            self.freq_heap.push((*freq, key));
+            self.seq += 1;
+            self.freq_heap.push(HeapEntry {
+                freq: *freq,
+                seq: self.seq,
+                key,
+            });
             old_value
         } else {
             #[cfg(feature = "metrics")]
@@ -263,7 +312,12 @@ where
 
             self.map.insert(key.clone(), value);
             self.frequencies.insert(key.clone(), 1);
-            self.freq_heap.push((1, key));
+            self.seq += 1;
+            self.freq_heap.push(HeapEntry {
+                freq: 1,
+                seq: self.seq,
+                key,
+            });
             None
         };
 
@@ -275,29 +329,25 @@ where
 
     /// Evicts the entry with the highest frequency (MFU).
     fn evict_mfu(&mut self) {
-        while let Some((heap_freq, key)) = self.freq_heap.pop() {
-            // Check if this heap entry is stale
-            if let Some(&current_freq) = self.frequencies.get(&key) {
-                if current_freq == heap_freq {
-                    // Valid entry, evict it
-                    self.map.remove(&key);
-                    self.frequencies.remove(&key);
+        while let Some(entry) = self.freq_heap.pop() {
+            if let Some(&current_freq) = self.frequencies.get(&entry.key) {
+                if current_freq == entry.freq {
+                    self.map.remove(&entry.key);
+                    self.frequencies.remove(&entry.key);
 
                     #[cfg(debug_assertions)]
                     self.validate_invariants();
 
                     return;
                 }
-                // Stale entry, continue to next
             }
         }
 
-        // Heap empty but map not empty? Rebuild and try again
         if !self.map.is_empty() {
             self.rebuild_heap();
-            if let Some((_, key)) = self.freq_heap.pop() {
-                self.map.remove(&key);
-                self.frequencies.remove(&key);
+            if let Some(entry) = self.freq_heap.pop() {
+                self.map.remove(&entry.key);
+                self.frequencies.remove(&entry.key);
 
                 #[cfg(debug_assertions)]
                 self.validate_invariants();
@@ -309,7 +359,12 @@ where
     fn rebuild_heap(&mut self) {
         self.freq_heap.clear();
         for (key, &freq) in &self.frequencies {
-            self.freq_heap.push((freq, key.clone()));
+            self.seq += 1;
+            self.freq_heap.push(HeapEntry {
+                freq,
+                seq: self.seq,
+                key: key.clone(),
+            });
         }
     }
 
@@ -326,6 +381,21 @@ where
     /// Returns the cache capacity.
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Returns an iterator over all key-value pairs.
+    pub fn iter(&self) -> std::collections::hash_map::Iter<'_, K, V> {
+        self.map.iter()
+    }
+
+    /// Returns an iterator over all keys.
+    pub fn keys(&self) -> std::collections::hash_map::Keys<'_, K, V> {
+        self.map.keys()
+    }
+
+    /// Returns an iterator over all values.
+    pub fn values(&self) -> std::collections::hash_map::Values<'_, K, V> {
+        self.map.values()
     }
 
     /// Checks if a key exists in the cache without updating frequency.
@@ -346,6 +416,22 @@ where
         self.validate_invariants();
     }
 
+    /// Removes a key from the cache, returning its value if present.
+    ///
+    /// Stale heap entries for the removed key are cleaned up lazily
+    /// during subsequent evictions or heap rebuilds.
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.frequencies.remove(key);
+        let result = self.map.remove(key);
+
+        #[cfg(debug_assertions)]
+        if result.is_some() {
+            self.validate_invariants();
+        }
+
+        result
+    }
+
     /// Gets the current frequency count for a key.
     pub fn frequency(&self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
@@ -362,15 +448,16 @@ where
     }
 
     /// Removes and returns the entry with the highest frequency.
+    #[must_use]
     pub fn pop_mfu(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_mfu_call();
 
-        while let Some((heap_freq, key)) = self.freq_heap.pop() {
-            if let Some(&current_freq) = self.frequencies.get(&key) {
-                if current_freq == heap_freq {
-                    if let Some(value) = self.map.remove(&key) {
-                        self.frequencies.remove(&key);
+        while let Some(entry) = self.freq_heap.pop() {
+            if let Some(&current_freq) = self.frequencies.get(&entry.key) {
+                if current_freq == entry.freq {
+                    if let Some(value) = self.map.remove(&entry.key) {
+                        self.frequencies.remove(&entry.key);
 
                         #[cfg(feature = "metrics")]
                         self.metrics.record_pop_mfu_found();
@@ -378,7 +465,7 @@ where
                         #[cfg(debug_assertions)]
                         self.validate_invariants();
 
-                        return Some((key, value));
+                        return Some((entry.key, value));
                     }
                 }
             }
@@ -387,6 +474,7 @@ where
     }
 
     /// Peeks at the entry with highest frequency without removing it.
+    #[must_use]
     pub fn peek_mfu(&self) -> Option<(&K, &V)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_mfu_call();
@@ -421,7 +509,6 @@ where
     /// Only runs when debug assertions are enabled.
     #[cfg(debug_assertions)]
     fn validate_invariants(&self) {
-        // Map and frequencies should have same size
         debug_assert_eq!(
             self.map.len(),
             self.frequencies.len(),
@@ -430,7 +517,6 @@ where
             self.frequencies.len()
         );
 
-        // All keys in map must have frequency entries
         for key in self.map.keys() {
             debug_assert!(
                 self.frequencies.contains_key(key),
@@ -438,7 +524,6 @@ where
             );
         }
 
-        // All keys in frequencies must exist in map
         for key in self.frequencies.keys() {
             debug_assert!(
                 self.map.contains_key(key),
@@ -446,12 +531,10 @@ where
             );
         }
 
-        // Verify all frequencies are at least 1
         for &freq in self.frequencies.values() {
             debug_assert!(freq >= 1, "Invalid frequency found: {}", freq);
         }
 
-        // Heap can contain stale entries, so we just verify it's bounded
         debug_assert!(
             self.freq_heap.len() <= self.map.len() * (HEAP_REBUILD_FACTOR + 1),
             "Heap size {} exceeds reasonable bounds for map size {}",
@@ -463,113 +546,113 @@ where
 
 impl<K, V> ReadOnlyCache<K, V> for MfuCore<K, V>
 where
-    K: Clone + Eq + Hash + Ord,
+    K: Clone + Eq + Hash,
 {
     fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
+        MfuCore::contains(self, key)
     }
 
     fn len(&self) -> usize {
-        self.map.len()
+        MfuCore::len(self)
     }
 
     fn capacity(&self) -> usize {
-        self.capacity
+        MfuCore::capacity(self)
     }
 }
 
 impl<K, V> CoreCache<K, V> for MfuCore<K, V>
 where
-    K: Clone + Eq + Hash + Ord,
+    K: Clone + Eq + Hash,
 {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_insert_call();
-
-        if self.capacity == 0 {
-            return None;
-        }
-
-        if self.map.contains_key(&key) {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_insert_update();
-
-            let old_value = self.map.insert(key.clone(), value);
-            let freq = self.frequencies.entry(key.clone()).or_insert(0);
-            *freq += 1;
-            self.freq_heap.push((*freq, key));
-            old_value
-        } else {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_insert_new();
-
-            #[cfg(feature = "metrics")]
-            if self.map.len() >= self.capacity {
-                self.metrics.record_evict_call();
-            }
-
-            while self.map.len() >= self.capacity {
-                self.evict_mfu();
-                #[cfg(feature = "metrics")]
-                self.metrics.record_evicted_entry();
-            }
-
-            self.map.insert(key.clone(), value);
-            self.frequencies.insert(key.clone(), 1);
-            self.freq_heap.push((1, key));
-            None
-        }
+        MfuCore::insert(self, key, value)
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        if self.map.contains_key(key) {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_hit();
-
-            let freq = self.frequencies.entry(key.clone()).or_insert(0);
-            *freq += 1;
-
-            self.freq_heap.push((*freq, key.clone()));
-
-            if self.freq_heap.len() > self.map.len() * HEAP_REBUILD_FACTOR {
-                self.rebuild_heap();
-            }
-
-            self.map.get(key)
-        } else {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_miss();
-            None
-        }
+        MfuCore::get(self, key)
     }
 
     fn clear(&mut self) {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_clear();
-
-        self.map.clear();
-        self.frequencies.clear();
-        self.freq_heap.clear();
+        MfuCore::clear(self)
     }
 }
 
-impl<K, V> fmt::Debug for MfuCore<K, V>
+impl<K, V> MutableCache<K, V> for MfuCore<K, V>
 where
-    K: fmt::Debug + Eq + Hash,
+    K: Clone + Eq + Hash,
 {
+    fn remove(&mut self, key: &K) -> Option<V> {
+        MfuCore::remove(self, key)
+    }
+}
+
+impl<K, V> fmt::Debug for MfuCore<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MfuCore")
             .field("len", &self.map.len())
             .field("capacity", &self.capacity)
-            .field("frequencies", &self.frequencies)
+            .field("heap_entries", &self.freq_heap.len())
             .finish()
+    }
+}
+
+impl<K, V> Clone for MfuCore<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            frequencies: self.frequencies.clone(),
+            freq_heap: self.freq_heap.clone(),
+            capacity: self.capacity,
+            seq: self.seq,
+            #[cfg(feature = "metrics")]
+            metrics: MfuMetrics::default(),
+        }
+    }
+}
+
+impl<K, V> Default for MfuCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    /// Returns a zero-capacity cache that rejects all insertions.
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl<K, V> IntoIterator for MfuCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (K, V);
+    type IntoIter = std::collections::hash_map::IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.into_iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a MfuCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    type Item = (&'a K, &'a V);
+    type IntoIter = std::collections::hash_map::Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.iter()
     }
 }
 
 #[cfg(feature = "metrics")]
 impl<K, V> MfuCore<K, V>
 where
-    K: Clone + Eq + Hash + Ord,
+    K: Clone + Eq + Hash,
 {
     /// Returns a snapshot of cache metrics.
     pub fn metrics_snapshot(&self) -> MfuMetricsSnapshot {
@@ -597,7 +680,7 @@ where
 #[cfg(feature = "metrics")]
 impl<K, V> MetricsSnapshotProvider<MfuMetricsSnapshot> for MfuCore<K, V>
 where
-    K: Clone + Eq + Hash + Ord,
+    K: Clone + Eq + Hash,
 {
     fn snapshot(&self) -> MfuMetricsSnapshot {
         self.metrics_snapshot()
@@ -607,6 +690,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const _: () = {
+        fn _assert_send_sync<T: Send + Sync>() {}
+        fn _check() {
+            _assert_send_sync::<MfuCore<String, String>>();
+        }
+    };
 
     #[test]
     fn new_cache_is_empty() {
@@ -630,29 +720,24 @@ mod tests {
     fn mfu_eviction() {
         let mut cache = MfuCore::new(3);
 
-        // Insert 3 items
         cache.insert(1, 100);
         cache.insert(2, 200);
         cache.insert(3, 300);
 
-        // Access item 1 many times (highest frequency)
         for _ in 0..10 {
             cache.get(&1);
         }
 
-        // Access item 2 a few times
         cache.get(&2);
         cache.get(&2);
 
-        // Item 3 has frequency 1, item 2 has frequency 3, item 1 has frequency 11
         assert_eq!(cache.frequency(&1), Some(11));
         assert_eq!(cache.frequency(&2), Some(3));
         assert_eq!(cache.frequency(&3), Some(1));
 
-        // Insert new item, should evict item 1 (highest frequency)
         cache.insert(4, 400);
 
-        assert!(!cache.contains(&1)); // Evicted (most frequently used)
+        assert!(!cache.contains(&1));
         assert!(cache.contains(&2));
         assert!(cache.contains(&3));
         assert!(cache.contains(&4));
@@ -680,7 +765,6 @@ mod tests {
         cache.insert(2, 200);
         cache.insert(3, 300);
 
-        // Access to create different frequencies
         cache.get(&1); // freq 2
         cache.get(&1); // freq 3
         cache.get(&2); // freq 2
@@ -689,7 +773,6 @@ mod tests {
         assert_eq!(cache.frequency(&2), Some(2));
         assert_eq!(cache.frequency(&3), Some(1));
 
-        // Pop MFU (item 1 with freq 3)
         let (key, value) = cache.pop_mfu().unwrap();
         assert_eq!(key, 1);
         assert_eq!(value, 100);
@@ -711,7 +794,6 @@ mod tests {
         assert_eq!(*key, 2);
         assert_eq!(*value, 200);
 
-        // Peek doesn't remove
         assert!(cache.contains(&2));
         assert_eq!(cache.len(), 3);
     }
@@ -720,7 +802,7 @@ mod tests {
     fn update_existing_key() {
         let mut cache = MfuCore::new(3);
         cache.insert(1, 100);
-        let old_value = cache.insert(1, 999); // Update
+        let old_value = cache.insert(1, 999);
 
         assert_eq!(old_value, Some(100));
         assert_eq!(cache.get(&1), Some(&999));
@@ -756,12 +838,10 @@ mod tests {
         cache.insert(1, 100);
         cache.insert(2, 200);
 
-        // Access item 1 many times to accumulate stale entries
         for _ in 0..20 {
             cache.get(&1);
         }
 
-        // Heap should eventually rebuild
         assert_eq!(cache.len(), 2);
         assert!(cache.contains(&1));
         assert!(cache.contains(&2));
@@ -773,11 +853,9 @@ mod tests {
         cache.insert(1, 100);
         cache.insert(2, 200);
 
-        // Both have freq 1
         assert_eq!(cache.frequency(&1), Some(1));
         assert_eq!(cache.frequency(&2), Some(1));
 
-        // Insert should evict one of them (heap order dependent)
         cache.insert(3, 300);
         assert_eq!(cache.len(), 2);
         assert!(cache.contains(&3));
@@ -795,53 +873,43 @@ mod tests {
 
     #[test]
     fn mfu_vs_lfu_behavior() {
-        // Demonstrate difference between MFU and LFU
         let mut cache = MfuCore::new(3);
 
         cache.insert(1, 100);
         cache.insert(2, 200);
         cache.insert(3, 300);
 
-        // Make item 1 very frequent
         for _ in 0..100 {
             cache.get(&1);
         }
 
-        // Make item 2 moderately frequent
         for _ in 0..10 {
             cache.get(&2);
         }
 
-        // Item 3 accessed least (freq 1)
-        // MFU will evict item 1 (freq 101), opposite of LFU
         cache.insert(4, 400);
 
-        assert!(!cache.contains(&1)); // Item 1 evicted (most frequent!)
+        assert!(!cache.contains(&1));
         assert!(cache.contains(&2));
-        assert!(cache.contains(&3)); // Item 3 kept (least frequent)
+        assert!(cache.contains(&3));
         assert!(cache.contains(&4));
     }
 
     #[test]
     fn burst_workload() {
-        // Simulate burst where MFU might be useful
         let mut cache = MfuCore::new(3);
 
-        // Initial state
         cache.insert(1, 100);
         cache.insert(2, 200);
         cache.insert(3, 300);
 
-        // Burst on item 1 (temporary high frequency)
         for _ in 0..50 {
             cache.get(&1);
         }
 
-        // Now item 1 is "hot" from burst, MFU will evict it
         cache.insert(4, 400);
 
-        // MFU evicted the burst item, keeping lower frequency items
-        assert!(!cache.contains(&1)); // Burst item evicted
+        assert!(!cache.contains(&1));
         assert!(cache.contains(&2));
         assert!(cache.contains(&3));
         assert!(cache.contains(&4));
@@ -861,7 +929,7 @@ mod tests {
         assert_eq!(cache.frequency(&"a".to_string()), Some(4));
 
         cache.insert("d".to_string(), "delta");
-        assert!(!cache.contains(&"a".to_string())); // Most frequent, evicted
+        assert!(!cache.contains(&"a".to_string()));
     }
 
     #[test]
@@ -874,6 +942,7 @@ mod tests {
         assert!(debug_str.contains("MfuCore"));
         assert!(debug_str.contains("len"));
         assert!(debug_str.contains("capacity"));
+        assert!(debug_str.contains("heap_entries"));
     }
 
     #[test]
@@ -881,13 +950,11 @@ mod tests {
     fn validate_invariants_after_operations() {
         let mut cache = MfuCore::new(5);
 
-        // Insert items
         for i in 1..=5 {
             cache.insert(i, i * 100);
         }
         cache.validate_invariants();
 
-        // Access items to create different frequencies
         for _ in 0..10 {
             cache.get(&1);
         }
@@ -896,22 +963,18 @@ mod tests {
         }
         cache.validate_invariants();
 
-        // Trigger evictions
         cache.insert(6, 600);
         cache.validate_invariants();
 
         cache.insert(7, 700);
         cache.validate_invariants();
 
-        // Pop MFU
-        cache.pop_mfu();
+        let _ = cache.pop_mfu();
         cache.validate_invariants();
 
-        // Clear
         cache.clear();
         cache.validate_invariants();
 
-        // Verify empty state
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.frequencies.len(), 0);
     }
@@ -924,13 +987,11 @@ mod tests {
         cache.insert(2, 200);
         cache.insert(3, 300);
 
-        // Access many times to accumulate stale heap entries
         for _ in 0..50 {
             cache.get(&1);
         }
         cache.validate_invariants();
 
-        // Should trigger heap rebuild
         assert_eq!(cache.len(), 3);
         assert_eq!(cache.frequencies.len(), 3);
     }
@@ -949,5 +1010,138 @@ mod tests {
             result, None,
             "MfuCore::insert at capacity=0 should return None for a new key"
         );
+    }
+
+    // ==============================================
+    // New: remove, Clone, Default, IntoIterator
+    // ==============================================
+
+    #[test]
+    fn remove_existing_key() {
+        let mut cache = MfuCore::new(5);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+
+        assert_eq!(cache.remove(&2), Some(200));
+        assert_eq!(cache.len(), 2);
+        assert!(!cache.contains(&2));
+        assert_eq!(cache.frequency(&2), None);
+    }
+
+    #[test]
+    fn remove_nonexistent_key() {
+        let mut cache = MfuCore::new(5);
+        cache.insert(1, 100);
+
+        assert_eq!(cache.remove(&99), None);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn remove_then_insert() {
+        let mut cache = MfuCore::new(3);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+
+        cache.remove(&2);
+        assert_eq!(cache.len(), 2);
+
+        cache.insert(4, 400);
+        assert_eq!(cache.len(), 3);
+        assert!(cache.contains(&1));
+        assert!(cache.contains(&3));
+        assert!(cache.contains(&4));
+    }
+
+    #[test]
+    fn mutable_cache_trait() {
+        let mut cache = MfuCore::new(5);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+
+        assert_eq!(MutableCache::remove(&mut cache, &1), Some(100));
+        assert!(!cache.contains(&1));
+    }
+
+    #[test]
+    fn clone_cache() {
+        let mut cache = MfuCore::new(3);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.get(&1);
+
+        let cloned = cache.clone();
+        assert_eq!(cloned.len(), 2);
+        assert_eq!(cloned.capacity(), 3);
+        assert!(cloned.contains(&1));
+        assert!(cloned.contains(&2));
+        assert_eq!(cloned.frequency(&1), Some(2));
+    }
+
+    #[test]
+    fn clone_independence() {
+        let mut cache = MfuCore::new(3);
+        cache.insert(1, 100);
+
+        let mut cloned = cache.clone();
+        cloned.insert(2, 200);
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cloned.len(), 2);
+    }
+
+    #[test]
+    fn default_cache() {
+        let cache: MfuCore<i32, i32> = MfuCore::default();
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.capacity(), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn into_iterator_owned() {
+        let mut cache = MfuCore::new(3);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+
+        let mut entries: Vec<_> = cache.into_iter().collect();
+        entries.sort_by_key(|(k, _)| *k);
+        assert_eq!(entries, vec![(1, 100), (2, 200)]);
+    }
+
+    #[test]
+    fn into_iterator_borrowed() {
+        let mut cache = MfuCore::new(3);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+
+        let mut entries: Vec<_> = (&cache).into_iter().map(|(&k, &v)| (k, v)).collect();
+        entries.sort_by_key(|(k, _)| *k);
+        assert_eq!(entries, vec![(1, 100), (2, 200)]);
+    }
+
+    #[test]
+    fn iter_keys_values() {
+        let mut cache = MfuCore::new(3);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+
+        assert_eq!(cache.iter().count(), 2);
+        assert_eq!(cache.keys().count(), 2);
+        assert_eq!(cache.values().count(), 2);
+    }
+
+    #[test]
+    fn non_ord_key_compiles() {
+        #[derive(Clone, Eq, PartialEq, Hash, Debug)]
+        struct MyKey(Vec<u8>);
+
+        let mut cache: MfuCore<MyKey, i32> = MfuCore::new(3);
+        cache.insert(MyKey(vec![1, 2]), 100);
+        cache.insert(MyKey(vec![3, 4]), 200);
+        assert_eq!(cache.get(&MyKey(vec![1, 2])), Some(&100));
+        assert_eq!(cache.len(), 2);
     }
 }
