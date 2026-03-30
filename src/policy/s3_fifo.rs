@@ -2288,7 +2288,8 @@ mod tests {
             cache.insert("b".to_string(), 2);
             cache.insert("c".to_string(), 3);
 
-            let removed = cache.remove_batch(&["a".to_string(), "z".to_string(), "c".to_string()]);
+            let keys = vec!["a".to_string(), "z".to_string(), "c".to_string()];
+            let removed = cache.remove_batch(keys.as_slice());
             assert_eq!(removed, vec![Some(1), None, Some(3)]);
             assert_eq!(cache.len(), 1);
         }
