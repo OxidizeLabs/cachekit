@@ -398,17 +398,17 @@ mod thread_safe_wrapper {
         let final_cache = cache.lock().unwrap();
         let cache_len = final_cache.len();
         let capacity = final_cache.capacity();
-        let insertion_order_len = final_cache.insertion_order_len();
+        let queue_len = final_cache.queue_len();
 
         assert!(cache_len <= capacity, "Cache should not exceed capacity");
         assert!(
-            insertion_order_len >= cache_len,
+            queue_len >= cache_len,
             "Insertion order should track at least current entries"
         );
 
         println!(
             "Final state: {} items, {} in insertion order, capacity {}",
-            cache_len, insertion_order_len, capacity
+            cache_len, queue_len, capacity
         );
     }
 
@@ -771,13 +771,10 @@ mod stress_testing {
                 if let Ok(cache_guard) = cache_checker.try_lock() {
                     let len = cache_guard.len();
                     let capacity = cache_guard.capacity();
-                    let insertion_order_len = cache_guard.insertion_order_len();
+                    let queue_len = cache_guard.queue_len();
 
                     // Check consistency invariants
-                    if len > capacity
-                        || (len > 0 && insertion_order_len == 0)
-                        || insertion_order_len > capacity * 3
-                    {
+                    if len > capacity || (len > 0 && queue_len == 0) || queue_len > capacity * 3 {
                         // Allow for stale entries
                         consistency_violations_checker.fetch_add(1, Ordering::SeqCst);
                     }
