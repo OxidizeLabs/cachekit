@@ -222,53 +222,45 @@
 //!
 //! ## Example Usage
 //!
-//! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::lru::{
-//!     ConcurrentLruCache, LruCore,
-//! };
+//! ```
+//! use cachekit::policy::lru::LruCore;
+//! use cachekit::traits::{CoreCache, LruCacheTrait, ReadOnlyCache};
 //! use std::sync::Arc;
 //!
-//! // Single-threaded usage
 //! let mut cache: LruCore<u32, String> = LruCore::new(100);
 //! cache.insert(1, Arc::new("page_data".to_string()));
 //!
 //! if let Some(value) = cache.get(&1) {
-//!     println!("Got: {}", value);  // value is &Arc<String>
+//!     assert_eq!(**value, "page_data");
 //! }
 //!
 //! // Peek without affecting LRU order
 //! if let Some(value) = cache.peek(&1) {
-//!     println!("Peeked: {}", value);  // returns Arc<String>
+//!     assert_eq!(*value, "page_data");
 //! }
 //!
 //! // Evict least recently used
-//! if let Some((key, value)) = cache.pop_lru() {
-//!     println!("Evicted key={}, value={}", key, value);
-//! }
+//! let (key, value) = cache.pop_lru().unwrap();
+//! assert_eq!(key, 1);
+//! ```
 //!
-//! // Concurrent usage
-//! let concurrent_cache: ConcurrentLruCache<u32, String> =
-//!     ConcurrentLruCache::new(1000);
+//! ### Concurrent usage (requires `concurrency` feature)
 //!
-//! // Insert (wraps in Arc internally)
-//! concurrent_cache.insert(1, "data".to_string());
+//! ```rust,ignore
+//! use cachekit::policy::lru::ConcurrentLruCache;
+//! use std::sync::Arc;
 //!
-//! // Or insert pre-wrapped Arc
+//! let cache: ConcurrentLruCache<u32, String> = ConcurrentLruCache::new(1000);
+//! cache.insert(1, "data".to_string());
+//!
 //! let shared = Arc::new("shared_data".to_string());
-//! concurrent_cache.insert_arc(2, shared.clone());
+//! cache.insert_arc(2, shared.clone());
 //!
-//! // Get returns Arc<V> for safe sharing
-//! if let Some(arc_value) = concurrent_cache.get(&1) {
-//!     // arc_value can be held across await points
+//! if let Some(arc_value) = cache.get(&1) {
 //!     println!("Value: {}", arc_value);
 //! }
 //!
-//! // Touch to mark as recently used without retrieving
-//! concurrent_cache.touch(&2);
-//!
-//! // Type alias for a concurrent page cache using this policy
-//! type BufferPoolCache<V> = ConcurrentLruCache<u64, V>;
-//! let page_cache: BufferPoolCache<Vec<u8>> = BufferPoolCache::new(256);
+//! cache.touch(&2);
 //! ```
 //!
 //! ## Comparison with Other Cache Policies
@@ -328,6 +320,17 @@ struct Node<K, V> {
     value: Arc<V>,
 }
 
+impl<K: Clone, V> Clone for Node<K, V> {
+    fn clone(&self) -> Self {
+        Node {
+            prev: self.prev,
+            next: self.next,
+            key: self.key.clone(),
+            value: Arc::clone(&self.value),
+        }
+    }
+}
+
 /// High-performance LRU cache core using `SlotArena` + `FxHashMap`.
 ///
 /// Nodes live in a pre-allocated `SlotArena` with a free-list for O(1) slot
@@ -336,10 +339,7 @@ struct Node<K, V> {
 /// no raw pointers, no `unsafe`.
 ///
 /// Values are stored as `Arc<V>` for zero-copy sharing after eviction.
-pub struct LruCore<K, V>
-where
-    K: Copy + Eq + Hash,
-{
+pub struct LruCore<K, V> {
     arena: SlotArena<Node<K, V>>,
     map: FxHashMap<K, SlotId>,
     head: Option<SlotId>,
@@ -359,6 +359,8 @@ where
     /// Creates a new LRU cache core with the given capacity.
     ///
     /// Pre-allocates the arena and map so the warm-up phase is allocation-free.
+    /// A capacity of 0 creates a cache that accepts no items — all inserts are
+    /// silently dropped.
     ///
     /// # Example
     /// ```
@@ -741,6 +743,7 @@ impl<K, V> LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
+    /// Returns a point-in-time snapshot of all cache metrics counters.
     pub fn metrics_snapshot(&self) -> LruMetricsSnapshot {
         LruMetricsSnapshot {
             get_calls: self.metrics.get_calls,
@@ -801,18 +804,196 @@ where
     }
 }
 
+impl<K, V> FromIterator<(K, Arc<V>)> for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    fn from_iter<T: IntoIterator<Item = (K, Arc<V>)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let (lower, upper) = iter.size_hint();
+        let capacity = upper.unwrap_or(lower);
+        let mut cache = Self::new(capacity);
+        cache.extend(iter);
+        cache
+    }
+}
+
+impl<K, V> Clone for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    fn clone(&self) -> Self {
+        LruCore {
+            arena: self.arena.clone(),
+            map: self.map.clone(),
+            head: self.head,
+            tail: self.tail,
+            capacity: self.capacity,
+            #[cfg(feature = "metrics")]
+            metrics: LruMetrics::default(),
+        }
+    }
+}
+
+/// Iterator over `LruCore` entries in MRU-to-LRU order.
+pub struct Iter<'a, K, V> {
+    arena: &'a SlotArena<Node<K, V>>,
+    current: Option<SlotId>,
+    remaining: usize,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a Arc<V>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.current?;
+        let node = self.arena.get(id)?;
+        self.current = node.next;
+        self.remaining -= 1;
+        Some((&node.key, &node.value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {}
+
+impl<K, V> fmt::Debug for Iter<'_, K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Iter")
+            .field("remaining", &self.remaining)
+            .finish()
+    }
+}
+
+/// Consuming iterator over `LruCore` entries in MRU-to-LRU order.
+pub struct IntoIter<K, V> {
+    cache: LruCore<K, V>,
+}
+
+impl<K, V> Iterator for IntoIter<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    type Item = (K, Arc<V>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let head_id = self.cache.head?;
+        let next = self
+            .cache
+            .arena
+            .get(head_id)
+            .expect("IntoIter: stale head")
+            .next;
+
+        let node = self
+            .cache
+            .arena
+            .remove(head_id)
+            .expect("IntoIter: stale head");
+
+        self.cache.head = next;
+        match next {
+            Some(next_id) => {
+                self.cache
+                    .arena
+                    .get_mut(next_id)
+                    .expect("IntoIter: stale next")
+                    .prev = None;
+            },
+            None => self.cache.tail = None,
+        }
+
+        Some((node.key, node.value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.cache.map.len();
+        (len, Some(len))
+    }
+}
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> where K: Copy + Eq + Hash {}
+
+impl<K, V> fmt::Debug for IntoIter<K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IntoIter").finish_non_exhaustive()
+    }
+}
+
+impl<K, V> LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    /// Returns an iterator over entries in MRU-to-LRU order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::lru::LruCore;
+    /// use cachekit::traits::CoreCache;
+    /// use std::sync::Arc;
+    ///
+    /// let mut cache: LruCore<u32, String> = LruCore::new(3);
+    /// cache.insert(1, Arc::new("a".to_string()));
+    /// cache.insert(2, Arc::new("b".to_string()));
+    /// cache.insert(3, Arc::new("c".to_string()));
+    ///
+    /// let keys: Vec<u32> = cache.iter().map(|(&k, _)| k).collect();
+    /// assert_eq!(keys, vec![3, 2, 1]); // MRU first
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            arena: &self.arena,
+            current: self.head,
+            remaining: self.map.len(),
+        }
+    }
+}
+
+impl<K, V> IntoIterator for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    type Item = (K, Arc<V>);
+    type IntoIter = IntoIter<K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter { cache: self }
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    type Item = (&'a K, &'a Arc<V>);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 // LruCore auto-derives Send/Sync from its fields (SlotArena, FxHashMap, SlotId).
 // Thread-safety for concurrent use is provided by ConcurrentLruCache.
 
 /// Thread-safe concurrent LRU cache wrapper using RwLock
 /// Optimized for read-heavy database workloads (buffer pools)
 #[cfg(feature = "concurrency")]
-#[derive(Clone)]
-pub struct ConcurrentLruCache<K, V>
-where
-    K: Copy + Eq + Hash,
-{
+pub struct ConcurrentLruCache<K, V> {
     inner: Arc<RwLock<LruCore<K, V>>>,
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V> Clone for ConcurrentLruCache<K, V> {
+    fn clone(&self) -> Self {
+        ConcurrentLruCache {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 #[cfg(feature = "concurrency")]
@@ -1161,9 +1342,39 @@ where
     K: Copy + Eq + Hash + Send + Sync,
     V: Send + Sync,
 {
+    /// Returns a point-in-time snapshot of all cache metrics counters.
     pub fn metrics_snapshot(&self) -> LruMetricsSnapshot {
         let cache = self.inner.read();
         cache.metrics_snapshot()
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V> Extend<(K, V)> for ConcurrentLruCache<K, V>
+where
+    K: Copy + Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (key, value) in iter {
+            self.insert(key, value);
+        }
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V> FromIterator<(K, V)> for ConcurrentLruCache<K, V>
+where
+    K: Copy + Eq + Hash + Send + Sync,
+    V: Send + Sync,
+{
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let items: Vec<_> = iter.into_iter().collect();
+        let cache = Self::new(items.len());
+        for (key, value) in items {
+            cache.insert(key, value);
+        }
+        cache
     }
 }
 
