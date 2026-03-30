@@ -180,11 +180,9 @@
 //! ## Example Usage
 //!
 //! ```rust,ignore
-//! use crate::storage::disk::async_disk::cache::heap_lfu::HeapLfuCache;
+//! use cachekit::policy::heap_lfu::HeapLfuCache;
 //! use std::sync::Arc;
-//! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, MutableCache, LfuCacheTrait,
-//! };
+//! use cachekit::traits::{CoreCache, MutableCache, LfuCacheTrait};
 //!
 //! // Create cache
 //! let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(100);
