@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use cachekit::ds::FrequencyBucketsHandle;
 use cachekit::policy::lfu::LfuCache;
-use cachekit::traits::{CoreCache, LfuCacheTrait};
+use cachekit::traits::Cache;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
 // ============================================================================

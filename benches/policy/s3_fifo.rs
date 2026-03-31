@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use cachekit::policy::s3_fifo::S3FifoCache;
 #[allow(unused_imports)]
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
 // ============================================================================

@@ -118,7 +118,7 @@
 //!     • No raw pointers — all links are SlotId indices
 //! ```
 //!
-//! ## LruCore Methods (CoreCache + MutableCache + LruCacheTrait)
+//! ## LruCore Methods (Cache + capability traits)
 //!
 //! | Method           | Complexity | Description                               |
 //! |------------------|------------|-------------------------------------------|
@@ -224,7 +224,7 @@
 //!
 //! ```
 //! use cachekit::policy::lru::LruCore;
-//! use cachekit::traits::{CoreCache, LruCacheTrait, ReadOnlyCache};
+//! use cachekit::traits::{Cache, RecencyTracking};
 //! use std::sync::Arc;
 //!
 //! let mut cache: LruCore<u32, String> = LruCore::new(100);
@@ -306,8 +306,7 @@ use crate::metrics::snapshot::LruMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, LruMetricsReadRecorder, LruMetricsRecorder, MetricsSnapshotProvider,
 };
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, LruCacheTrait, MutableCache};
+use crate::traits::{Cache, EvictingCache, RecencyTracking, VictimInspectable};
 
 /// Node in the LRU linked list, stored in a `SlotArena`.
 ///
@@ -481,7 +480,7 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, Arc<V>> for LruCore<K, V>
+impl<K, V> Cache<K, Arc<V>> for LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
@@ -499,12 +498,36 @@ where
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-impl<K, V> CoreCache<K, Arc<V>> for LruCore<K, V>
-where
-    K: Copy + Eq + Hash,
-{
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&Arc<V>> {
+        let &id = self.map.get(key)?;
+        self.arena.get(id).map(|node| &node.value)
+    }
+
+    #[inline]
+    fn get(&mut self, key: &K) -> Option<&Arc<V>> {
+        let &id = match self.map.get(key) {
+            Some(id) => id,
+            None => {
+                #[cfg(feature = "metrics")]
+                self.metrics.record_get_miss();
+                return None;
+            },
+        };
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_get_hit();
+
+        self.detach(id);
+        self.attach_front(id);
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+
+        self.arena.get(id).map(|node| &node.value)
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
@@ -561,26 +584,16 @@ where
     }
 
     #[inline]
-    fn get(&mut self, key: &K) -> Option<&Arc<V>> {
-        let &id = match self.map.get(key) {
-            Some(id) => id,
-            None => {
-                #[cfg(feature = "metrics")]
-                self.metrics.record_get_miss();
-                return None;
-            },
-        };
-
-        #[cfg(feature = "metrics")]
-        self.metrics.record_get_hit();
+    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
+        let id = self.map.remove(key)?;
 
         self.detach(id);
-        self.attach_front(id);
+        let node = self.arena.remove(id).expect("remove: stale SlotId");
 
         #[cfg(debug_assertions)]
         self.validate_invariants();
 
-        self.arena.get(id).map(|node| &node.value)
+        Some(node.value)
     }
 
     fn clear(&mut self) {
@@ -600,23 +613,23 @@ impl<K, V> LruCore<K, V>
 where
     K: Copy + Eq + Hash,
 {
-    /// Zero-copy peek: read-only lookup without LRU update.
+    /// Returns an `Arc<V>` clone without updating LRU order.
     ///
-    /// Returns `Arc<V>` clone for zero-copy sharing. Unlike [`get`](CoreCache::get),
-    /// this does not move the item to the MRU position.
+    /// This inherent method clones the Arc for zero-copy sharing across
+    /// threads. Calling `cache.peek(key)` resolves here (inherent methods
+    /// shadow trait methods); trait-generic code uses [`Cache::peek`].
     ///
     /// # Example
     ///
     /// ```
     /// use cachekit::policy::lru::LruCore;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LruCore<u32, String> = LruCore::new(3);
     /// cache.insert(1, Arc::new("first".to_string()));
     /// cache.insert(2, Arc::new("second".to_string()));
     ///
-    /// // Peek doesn't affect LRU order
     /// let value = cache.peek(&1);
     /// assert_eq!(*value.unwrap(), "first");
     ///
@@ -638,32 +651,10 @@ where
         }
         None
     }
-}
 
-impl<K, V> MutableCache<K, Arc<V>> for LruCore<K, V>
-where
-    K: Copy + Eq + Hash,
-{
+    /// Removes and returns the least recently used entry.
     #[inline]
-    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
-        let id = self.map.remove(key)?;
-
-        self.detach(id);
-        let node = self.arena.remove(id).expect("remove: stale SlotId");
-
-        #[cfg(debug_assertions)]
-        self.validate_invariants();
-
-        Some(node.value)
-    }
-}
-
-impl<K, V> LruCacheTrait<K, Arc<V>> for LruCore<K, V>
-where
-    K: Copy + Eq + Hash,
-{
-    #[inline]
-    fn pop_lru(&mut self) -> Option<(K, Arc<V>)> {
+    pub fn pop_lru(&mut self) -> Option<(K, Arc<V>)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_call();
 
@@ -679,8 +670,9 @@ where
         Some((key, value))
     }
 
+    /// Peeks at the least recently used entry without removing it.
     #[inline]
-    fn peek_lru(&self) -> Option<(&K, &Arc<V>)> {
+    pub fn peek_lru(&self) -> Option<(&K, &Arc<V>)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_call();
 
@@ -693,8 +685,11 @@ where
         Some((&node.key, &node.value))
     }
 
+    /// Moves a key to MRU position without returning its value.
+    ///
+    /// Returns `true` if the key was found and touched.
     #[inline]
-    fn touch(&mut self, key: &K) -> bool {
+    pub fn touch(&mut self, key: &K) -> bool {
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_call();
 
@@ -714,7 +709,8 @@ where
         }
     }
 
-    fn recency_rank(&self, key: &K) -> Option<usize> {
+    /// Returns the recency rank (0 = most recent) for a key.
+    pub fn recency_rank(&self, key: &K) -> Option<usize> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_recency_rank_call();
 
@@ -735,6 +731,40 @@ where
             current = self.arena.get(id).expect("recency_rank: stale SlotId").next;
         }
         None
+    }
+}
+
+impl<K, V> EvictingCache<K, Arc<V>> for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    #[inline]
+    fn evict_one(&mut self) -> Option<(K, Arc<V>)> {
+        self.pop_lru()
+    }
+}
+
+impl<K, V> VictimInspectable<K, Arc<V>> for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    #[inline]
+    fn peek_victim(&self) -> Option<(&K, &Arc<V>)> {
+        self.peek_lru()
+    }
+}
+
+impl<K, V> RecencyTracking<K, Arc<V>> for LruCore<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    #[inline]
+    fn touch(&mut self, key: &K) -> bool {
+        LruCore::touch(self, key)
+    }
+
+    fn recency_rank(&self, key: &K) -> Option<usize> {
+        LruCore::recency_rank(self, key)
     }
 }
 
@@ -933,7 +963,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lru::LruCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LruCore<u32, String> = LruCore::new(3);
@@ -1402,7 +1432,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::CoreCache;
+    use crate::traits::Cache;
 
     // ==============================================
     // CORRECTNESS TESTS MODULE

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
@@ -87,7 +87,7 @@ pub fn run_operations<C, V, F, M>(
     value_for_key: F,
 ) -> OpCounts
 where
-    C: CoreCache<u64, Arc<V>>,
+    C: Cache<u64, Arc<V>>,
     F: Fn(u64) -> Arc<V>,
     M: OpModel,
 {
@@ -110,7 +110,7 @@ fn apply_op<C, V, F, M>(
     counts: &mut OpCounts,
     op: Operation,
 ) where
-    C: CoreCache<u64, Arc<V>>,
+    C: Cache<u64, Arc<V>>,
     F: Fn(u64) -> Arc<V>,
     M: OpModel,
 {

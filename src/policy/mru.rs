@@ -154,8 +154,7 @@ use crate::metrics::metrics_impl::CoreOnlyMetrics;
 use crate::metrics::snapshot::CoreOnlyMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
-use crate::prelude::ReadOnlyCache;
-use crate::traits::CoreCache;
+use crate::traits::{Cache, EvictingCache};
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -600,6 +599,37 @@ where
         self.validate_invariants();
     }
 
+    /// Peeks at a value without updating MRU order.
+    #[inline]
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map
+            .get(key)
+            .map(|&node_ptr| unsafe { &(*node_ptr.as_ptr()).value })
+    }
+
+    /// Removes a key from the cache, returning its value.
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let node_ptr = self.map.remove(key)?;
+        self.detach(node_ptr);
+        let node = unsafe { Box::from_raw(node_ptr.as_ptr()) };
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+
+        Some(node.value)
+    }
+
+    /// Removes and returns the most recently used entry.
+    pub fn pop_mru(&mut self) -> Option<(K, V)> {
+        let head_node = self.pop_head()?;
+        self.map.remove(&head_node.key);
+
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+
+        Some((head_node.key, head_node.value))
+    }
+
     /// Validates internal data structure invariants.
     ///
     /// This method checks that:
@@ -656,50 +686,28 @@ impl<K, V> std::fmt::Debug for MruCore<K, V> {
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for MruCore<K, V>
+impl<K, V> Cache<K, V> for MruCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
     #[inline]
     fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
+        MruCore::contains(self, key)
     }
 
     #[inline]
     fn len(&self) -> usize {
-        self.map.len()
+        MruCore::len(self)
     }
 
     #[inline]
     fn capacity(&self) -> usize {
-        self.capacity
+        MruCore::capacity(self)
     }
-}
 
-/// Implementation of the [`CoreCache`] trait for MRU.
-///
-/// Allows `MruCore` to be used through the unified cache interface.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
-/// use cachekit::policy::mru::MruCore;
-///
-/// let mut cache: MruCore<&str, i32> = MruCore::new(100);
-///
-/// // Use via CoreCache trait
-/// cache.insert("key", 42);
-/// assert_eq!(cache.get(&"key"), Some(&42));
-/// assert!(cache.contains(&"key"));
-/// ```
-impl<K, V> CoreCache<K, V> for MruCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
     #[inline]
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
-        MruCore::insert(self, key, value)
+    fn peek(&self, key: &K) -> Option<&V> {
+        MruCore::peek(self, key)
     }
 
     #[inline]
@@ -707,8 +715,28 @@ where
         MruCore::get(self, key)
     }
 
+    #[inline]
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        MruCore::insert(self, key, value)
+    }
+
+    #[inline]
+    fn remove(&mut self, key: &K) -> Option<V> {
+        MruCore::remove(self, key)
+    }
+
     fn clear(&mut self) {
         MruCore::clear(self);
+    }
+}
+
+impl<K, V> EvictingCache<K, V> for MruCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    #[inline]
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.pop_mru()
     }
 }
 
@@ -1239,10 +1267,10 @@ mod tests {
     fn trait_insert_returns_old_value() {
         let mut cache: MruCore<&str, i32> = MruCore::new(10);
 
-        let first = CoreCache::insert(&mut cache, "key", 1);
+        let first = Cache::insert(&mut cache, "key", 1);
         assert_eq!(first, None);
 
-        let second = CoreCache::insert(&mut cache, "key", 2);
+        let second = Cache::insert(&mut cache, "key", 2);
         assert_eq!(
             second,
             Some(1),

@@ -143,7 +143,7 @@ fn verify_get_complexity<K, V, C, F>(mut create_cache: F, policy_name: &str)
 where
     K: std::hash::Hash + Eq + Clone + From<i32>,
     V: Clone + From<i32>,
-    C: cachekit::traits::CoreCache<K, V>,
+    C: cachekit::traits::Cache<K, V>,
     F: FnMut(usize) -> C,
 {
     let sizes = vec![1000, 2000, 4000, 8000];
@@ -217,7 +217,7 @@ fn verify_insert_complexity<K, V, C, F>(mut create_cache: F, policy_name: &str)
 where
     K: std::hash::Hash + Eq + Clone + From<i32>,
     V: Clone + From<i32>,
-    C: cachekit::traits::CoreCache<K, V>,
+    C: cachekit::traits::Cache<K, V>,
     F: FnMut(usize) -> C,
 {
     let sizes = vec![1000, 2000, 4000, 8000];
@@ -272,7 +272,7 @@ fn verify_eviction_complexity<K, V, C, F>(mut create_cache: F, policy_name: &str
 where
     K: std::hash::Hash + Eq + Clone + From<i32>,
     V: Clone + From<i32>,
-    C: cachekit::traits::CoreCache<K, V>,
+    C: cachekit::traits::Cache<K, V>,
     F: FnMut(usize) -> C,
 {
     let sizes = vec![1000, 2000, 4000, 8000];
@@ -336,7 +336,7 @@ where
 mod regression_guards {
     use super::*;
     use cachekit::policy::lru::LruCore;
-    use cachekit::traits::{CoreCache, ReadOnlyCache};
+    use cachekit::traits::Cache;
 
     /// Ensure basic operations complete in reasonable time
     /// This catches catastrophic regressions (e.g., accidentally O(n) operations)

@@ -96,7 +96,7 @@
 //!
 //! ```
 //! use cachekit::policy::clock_pro::ClockProCache;
-//! use cachekit::traits::{CoreCache, ReadOnlyCache};
+//! use cachekit::traits::Cache;
 //!
 //! let mut cache: ClockProCache<String, String> = ClockProCache::new(100);
 //!
@@ -125,8 +125,7 @@ use crate::metrics::snapshot::ClockProMetricsSnapshot;
 use crate::metrics::traits::{
     ClockProMetricsRecorder, CoreMetricsRecorder, MetricsSnapshotProvider,
 };
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, MutableCache};
+use crate::traits::Cache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
@@ -160,13 +159,13 @@ struct GhostEntry<K> {
 /// (candidates for eviction) pages, plus tracking ghost entries for recently
 /// evicted cold pages.
 ///
-/// Implements [`CoreCache`], [`ReadOnlyCache`], and [`MutableCache`].
+/// Implements [`Cache`].
 ///
 /// # Example
 ///
 /// ```
 /// use cachekit::policy::clock_pro::ClockProCache;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 ///
 /// let mut cache = ClockProCache::new(100);
 /// cache.insert("key", 42);
@@ -213,7 +212,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: ClockProCache<String, i32> = ClockProCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -235,7 +234,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::ReadOnlyCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: ClockProCache<String, i32> = ClockProCache::with_ghost_capacity(100, 200);
     /// assert_eq!(cache.capacity(), 100);
@@ -273,7 +272,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockProCache::new(10);
     /// assert!(cache.is_empty());
@@ -294,7 +293,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockProCache::new(10);
     /// cache.insert("a", 1);
@@ -311,7 +310,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockProCache::new(10);
     /// cache.insert("a", 1);
@@ -328,7 +327,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockProCache::new(2);
     /// cache.insert("a", 1);
@@ -480,35 +479,30 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for ClockProCache<K, V>
+impl<K, V> Cache<K, V> for ClockProCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    /// Returns `true` if the cache contains the key.
-    ///
-    /// Does not affect the reference bit or page status.
     #[inline]
     fn contains(&self, key: &K) -> bool {
         self.index.contains_key(key)
     }
 
-    /// Returns the number of resident entries in the cache.
     #[inline]
     fn len(&self) -> usize {
         self.len
     }
 
-    /// Returns the maximum capacity of the cache.
     #[inline]
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-impl<K, V> CoreCache<K, V> for ClockProCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+    fn peek(&self, key: &K) -> Option<&V> {
+        let &slot = self.index.get(key)?;
+        self.entries[slot].as_ref().map(|e| &e.value)
+    }
+
     /// Inserts a key-value pair into the cache.
     ///
     /// New entries start as cold unless the key was recently evicted (ghost hit),
@@ -518,7 +512,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockProCache::new(2);
     /// cache.insert("a", 1);  // Inserted as cold
@@ -591,7 +585,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockProCache::new(10);
     /// cache.insert("key", 42);
@@ -625,7 +619,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockProCache::new(10);
     /// cache.insert("a", 1);
@@ -654,27 +648,7 @@ where
         self.ghost_hand = 0;
         self.target_hot_ratio = 0.5;
     }
-}
 
-impl<K, V> MutableCache<K, V> for ClockProCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Removes a key from the cache.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::clock_pro::ClockProCache;
-    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
-    ///
-    /// let mut cache = ClockProCache::new(10);
-    /// cache.insert("key", 42);
-    ///
-    /// let removed = cache.remove(&"key");
-    /// assert_eq!(removed, Some(42));
-    /// assert!(!cache.contains(&"key"));
-    /// ```
     #[inline]
     fn remove(&mut self, key: &K) -> Option<V> {
         let slot = self.index.remove(key)?;
@@ -776,7 +750,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::MutableCache;
 
     #[test]
     fn test_basic_operations() {

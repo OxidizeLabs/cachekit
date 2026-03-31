@@ -143,8 +143,7 @@ use crate::metrics::metrics_impl::TwoQMetrics;
 use crate::metrics::snapshot::TwoQMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider, TwoQMetricsRecorder};
-use crate::prelude::ReadOnlyCache;
-use crate::traits::CoreCache;
+use crate::traits::Cache;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::hash::Hash;
@@ -772,6 +771,49 @@ where
         while self.pop_protected_tail().is_some() {}
         self.map.clear();
     }
+
+    /// Side-effect-free lookup by key.
+    ///
+    /// Does not promote entries between queues or update MRU position.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::two_q::TwoQCore;
+    ///
+    /// let mut cache = TwoQCore::new(100, 0.25);
+    /// cache.insert("key", 42);
+    /// assert_eq!(cache.peek(&"key"), Some(&42));
+    /// assert_eq!(cache.peek(&"missing"), None);
+    /// ```
+    #[inline]
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key).map(|&ptr| unsafe { &ptr.as_ref().value })
+    }
+
+    /// Removes a specific key-value pair, returning the value if it existed.
+    ///
+    /// Detaches the entry from its queue (probation or protected) and
+    /// adjusts the queue counters.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::two_q::TwoQCore;
+    ///
+    /// let mut cache = TwoQCore::new(100, 0.25);
+    /// cache.insert("key", 42);
+    /// assert_eq!(cache.remove(&"key"), Some(42));
+    /// assert!(!cache.contains(&"key"));
+    /// ```
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let node_ptr = self.map.remove(key)?;
+        self.detach(node_ptr);
+        unsafe {
+            let node = Box::from_raw(node_ptr.as_ptr());
+            Some(node.value)
+        }
+    }
 }
 
 impl<K, V> Drop for TwoQCore<K, V> {
@@ -796,55 +838,60 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for TwoQCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.protected_cap
-    }
-}
-
-/// Implementation of the [`CoreCache`] trait for 2Q.
+/// Implementation of the [`Cache`] trait for 2Q.
 ///
 /// Allows `TwoQCore` to be used through the unified cache interface.
 ///
 /// # Example
 ///
 /// ```
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 /// use cachekit::policy::two_q::TwoQCore;
 ///
 /// let mut cache: TwoQCore<&str, i32> = TwoQCore::new(100, 0.25);
 ///
-/// // Use via CoreCache trait
+/// // Use via Cache trait
 /// cache.insert("key", 42);
 /// assert_eq!(cache.get(&"key"), Some(&42));
 /// assert!(cache.contains(&"key"));
 /// ```
-impl<K, V> CoreCache<K, V> for TwoQCore<K, V>
+impl<K, V> Cache<K, V> for TwoQCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        TwoQCore::contains(self, key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        TwoQCore::len(self)
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        TwoQCore::capacity(self)
+    }
+
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&V> {
+        TwoQCore::peek(self, key)
+    }
+
+    #[inline]
+    fn get(&mut self, key: &K) -> Option<&V> {
+        TwoQCore::get(self, key)
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         TwoQCore::insert(self, key, value)
     }
 
     #[inline]
-    fn get(&mut self, key: &K) -> Option<&V> {
-        TwoQCore::get(self, key)
+    fn remove(&mut self, key: &K) -> Option<V> {
+        TwoQCore::remove(self, key)
     }
 
     fn clear(&mut self) {
@@ -1734,10 +1781,10 @@ mod tests {
     fn trait_insert_returns_old_value() {
         let mut cache: TwoQCore<&str, i32> = TwoQCore::new(10, 0.25);
 
-        let first = CoreCache::insert(&mut cache, "key", 1);
+        let first = Cache::insert(&mut cache, "key", 1);
         assert_eq!(first, None, "First insert of new key should return None");
 
-        let second = CoreCache::insert(&mut cache, "key", 2);
+        let second = Cache::insert(&mut cache, "key", 2);
         assert_eq!(second, Some(1), "Second insert should return old value");
     }
 

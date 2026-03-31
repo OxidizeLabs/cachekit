@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 mod thread_safe_wrapper {
     use cachekit::policy::fifo::FifoCache;
-    use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
+    use cachekit::traits::Cache;
 
     use super::*;
 
@@ -568,7 +568,7 @@ mod thread_safe_wrapper {
 // Stress Testing
 mod stress_testing {
     use cachekit::policy::fifo::FifoCache;
-    use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
+    use cachekit::traits::Cache;
 
     use super::*;
 

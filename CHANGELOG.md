@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- Replace `ReadOnlyCache`, `CoreCache`, `MutableCache`, `FifoCacheTrait`, `LruCacheTrait`, `LfuCacheTrait`, `LrukCacheTrait` with a single unified `Cache<K, V>` trait.
+- Add five optional capability traits: `EvictingCache`, `VictimInspectable`, `RecencyTracking`, `FrequencyTracking`, `HistoryTracking`.
+- Policy-specific methods (`pop_oldest`, `pop_lru`, `pop_lfu`, `pop_lru_k`, `age_rank`, etc.) are now inherent methods, not trait methods.
+- Rename `builder::Cache` to `builder::DynCache` to avoid collision with the new `traits::Cache` trait.
+- Remove `CacheTierManager` and `CacheTier` traits (no existing implementations).
+- All 18 policies now implement `Cache<K, V>` with universal `peek` and `remove` support.
+
 ## [0.6.0] - 2026-03-31
 
 ### Breaking

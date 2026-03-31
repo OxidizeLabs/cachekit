@@ -129,7 +129,7 @@
 //!
 //! ```
 //! use cachekit::policy::nru::NruCache;
-//! use cachekit::traits::{CoreCache, ReadOnlyCache};
+//! use cachekit::traits::Cache;
 //!
 //! let mut cache = NruCache::new(100);
 //!
@@ -161,8 +161,7 @@
 //!
 //! - Wikipedia: Cache replacement policies
 
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, MutableCache};
+use crate::traits::Cache;
 use rustc_hash::FxHashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::Hash;
@@ -199,7 +198,7 @@ struct Entry<V> {
 ///
 /// ```
 /// use cachekit::policy::nru::NruCache;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 ///
 /// let mut cache = NruCache::new(100);
 ///
@@ -247,7 +246,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: NruCache<String, i32> = NruCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -270,7 +269,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = NruCache::<&str, i32>::new(10);
     /// assert!(cache.is_empty());
@@ -291,7 +290,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = NruCache::new(10);
     /// cache.insert("a", 1);
@@ -316,7 +315,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = NruCache::new(10);
     /// cache.insert("a", 1);
@@ -398,90 +397,50 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for NruCache<K, V>
+impl<K, V> Cache<K, V> for NruCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    /// Returns `true` if the cache contains the key.
-    ///
-    /// Does not affect the reference bit.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = NruCache::new(10);
-    /// cache.insert("key", 1);
-    ///
-    /// assert!(cache.contains(&"key"));
-    /// assert!(!cache.contains(&"missing"));
-    /// ```
     #[inline]
     fn contains(&self, key: &K) -> bool {
         self.map.contains_key(key)
     }
 
-    /// Returns the number of entries in the cache.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = NruCache::new(10);
-    /// assert_eq!(cache.len(), 0);
-    ///
-    /// cache.insert("a", 1);
-    /// assert_eq!(cache.len(), 1);
-    /// ```
     #[inline]
     fn len(&self) -> usize {
         self.map.len()
     }
 
-    /// Returns the maximum capacity of the cache.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::ReadOnlyCache;
-    ///
-    /// let cache = NruCache::<String, i32>::new(50);
-    /// assert_eq!(cache.capacity(), 50);
-    /// ```
     #[inline]
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-impl<K, V> CoreCache<K, V> for NruCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Inserts a key-value pair into the cache.
-    ///
-    /// If the key exists, updates the value and sets the reference bit.
-    /// If at capacity, evicts using the NRU algorithm.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = NruCache::new(2);
-    /// cache.insert("a", 1);
-    /// cache.insert("b", 2);
-    ///
-    /// // Update existing
-    /// let old = cache.insert("a", 10);
-    /// assert_eq!(old, Some(1));
-    /// ```
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key).map(|e| &e.value)
+    }
+
+    #[inline]
+    fn get(&mut self, key: &K) -> Option<&V> {
+        if let Some(entry) = self.map.get_mut(key) {
+            entry.referenced = true;
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.get_calls += 1;
+                self.metrics.get_hits += 1;
+            }
+            Some(&entry.value)
+        } else {
+            #[cfg(feature = "metrics")]
+            {
+                self.metrics.get_calls += 1;
+                self.metrics.get_misses += 1;
+            }
+            None
+        }
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
@@ -534,96 +493,13 @@ where
         None
     }
 
-    /// Gets a reference to the value for a key.
-    ///
-    /// Sets the reference bit on access.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = NruCache::new(10);
-    /// cache.insert("key", 42);
-    ///
-    /// // Access sets reference bit - this entry gets protection
-    /// assert_eq!(cache.get(&"key"), Some(&42));
-    /// ```
-    #[inline]
-    fn get(&mut self, key: &K) -> Option<&V> {
-        if let Some(entry) = self.map.get_mut(key) {
-            entry.referenced = true;
-            #[cfg(feature = "metrics")]
-            {
-                self.metrics.get_calls += 1;
-                self.metrics.get_hits += 1;
-            }
-            Some(&entry.value)
-        } else {
-            #[cfg(feature = "metrics")]
-            {
-                self.metrics.get_calls += 1;
-                self.metrics.get_misses += 1;
-            }
-            None
-        }
-    }
-
-    /// Clears all entries from the cache.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = NruCache::new(10);
-    /// cache.insert("a", 1);
-    /// cache.insert("b", 2);
-    ///
-    /// cache.clear();
-    /// assert!(cache.is_empty());
-    /// ```
-    fn clear(&mut self) {
-        self.map.clear();
-        self.keys.clear();
-        #[cfg(feature = "metrics")]
-        {
-            use crate::metrics::traits::CoreMetricsRecorder;
-            self.metrics.record_clear();
-        }
-    }
-}
-
-impl<K, V> MutableCache<K, V> for NruCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Removes a key from the cache.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
-    ///
-    /// let mut cache = NruCache::new(10);
-    /// cache.insert("key", 42);
-    ///
-    /// let removed = cache.remove(&"key");
-    /// assert_eq!(removed, Some(42));
-    /// assert!(!cache.contains(&"key"));
-    /// ```
     #[inline]
     fn remove(&mut self, key: &K) -> Option<V> {
         let entry = self.map.remove(key)?;
         let idx = entry.index;
 
-        // Swap-remove from keys vec
         self.keys.swap_remove(idx);
 
-        // Update index of swapped key if we didn't remove the last element
         if idx < self.keys.len() {
             let swapped_key = &self.keys[idx];
             if let Some(swapped_entry) = self.map.get_mut(swapped_key) {
@@ -632,6 +508,16 @@ where
         }
 
         Some(entry.value)
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.keys.clear();
+        #[cfg(feature = "metrics")]
+        {
+            use crate::metrics::traits::CoreMetricsRecorder;
+            self.metrics.record_clear();
+        }
     }
 }
 
@@ -646,7 +532,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::nru::NruCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = NruCache::new(10);
     /// cache.insert("a", 1);
@@ -853,7 +739,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{CoreCache, MutableCache};
+    use crate::traits::Cache;
 
     #[allow(dead_code)]
     const _: () = {

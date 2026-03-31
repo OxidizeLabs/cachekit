@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cachekit::policy::heap_lfu::HeapLfuCache;
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 
 fn main() {
     let mut cache: HeapLfuCache<&str, String> = HeapLfuCache::new(2);

@@ -14,7 +14,7 @@ use cachekit::policy::lfu::LfuCache;
 use cachekit::policy::lru::LruCore;
 use cachekit::policy::lru_k::LrukCache;
 use cachekit::policy::two_q::TwoQCore;
-use cachekit::traits::{CoreCache, ReadOnlyCache};
+use cachekit::traits::Cache;
 
 /// Simple XorShift64 RNG for deterministic workloads.
 struct XorShift64 {
@@ -42,7 +42,7 @@ impl XorShift64 {
 }
 
 /// Run a hotset workload: 90% of accesses hit 10% of keys.
-fn hotset_workload<C: CoreCache<u64, Arc<u64>>>(
+fn hotset_workload<C: Cache<u64, Arc<u64>>>(
     cache: &mut C,
     operations: usize,
     universe: u64,
@@ -67,7 +67,7 @@ fn hotset_workload<C: CoreCache<u64, Arc<u64>>>(
 }
 
 /// Run a scan workload: sequential access pattern.
-fn scan_workload<C: CoreCache<u64, Arc<u64>>>(cache: &mut C, operations: usize, universe: u64) {
+fn scan_workload<C: Cache<u64, Arc<u64>>>(cache: &mut C, operations: usize, universe: u64) {
     for i in 0..operations {
         let key = (i as u64) % universe;
         if cache.get(&key).is_none() {
@@ -77,7 +77,7 @@ fn scan_workload<C: CoreCache<u64, Arc<u64>>>(cache: &mut C, operations: usize, 
 }
 
 /// Run eviction churn: insert more items than capacity.
-fn eviction_churn<C: CoreCache<u64, Arc<u64>>>(cache: &mut C, operations: usize) {
+fn eviction_churn<C: Cache<u64, Arc<u64>>>(cache: &mut C, operations: usize) {
     for i in 0..operations {
         let _ = cache.insert(i as u64, Arc::new(i as u64));
     }

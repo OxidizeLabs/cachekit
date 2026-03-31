@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use cachekit::policy::lru::LruCore;
-use cachekit::traits::{CoreCache, LruCacheTrait};
+use cachekit::traits::Cache;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
 // ============================================================================

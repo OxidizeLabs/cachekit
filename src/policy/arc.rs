@@ -121,7 +121,7 @@
 //!
 //! ```
 //! use cachekit::policy::arc::ArcCore;
-//! use cachekit::traits::{CoreCache, ReadOnlyCache};
+//! use cachekit::traits::Cache;
 //!
 //! // Create ARC cache with 100 entry capacity
 //! let mut cache = ArcCore::new(100);
@@ -173,8 +173,7 @@ use crate::metrics::metrics_impl::ArcMetrics;
 use crate::metrics::snapshot::ArcMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{ArcMetricsRecorder, CoreMetricsRecorder, MetricsSnapshotProvider};
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, MutableCache};
+use crate::traits::Cache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::iter::FusedIterator;
@@ -223,7 +222,7 @@ struct Node<K, V> {
 ///
 /// ```
 /// use cachekit::policy::arc::ArcCore;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 ///
 /// // 100 capacity ARC cache
 /// let mut cache = ArcCore::new(100);
@@ -291,8 +290,8 @@ where
 {
 }
 
-// SAFETY: Shared references (`&ArcCore`) only expose `ReadOnlyCache` methods
-// (`contains`, `len`, `capacity`), none of which dereference the internal
+// SAFETY: Shared references (`&ArcCore`) only expose `Cache` read-only methods
+// (`contains`, `len`, `capacity`, `peek`), none of which dereference the internal
 // `NonNull` pointers through interior mutability. Sharing `&ArcCore` across
 // threads is safe when K and V are Sync.
 unsafe impl<K, V> Sync for ArcCore<K, V>
@@ -330,7 +329,7 @@ impl<K, V> ArcCore<K, V> {
     ///
     /// ```
     /// use cachekit::policy::arc::ArcCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ArcCore::new(10);
     /// cache.insert("a", 1);
@@ -358,7 +357,7 @@ impl<K, V> ArcCore<K, V> {
     ///
     /// ```
     /// use cachekit::policy::arc::ArcCore;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ArcCore::new(10);
     /// cache.insert("a", 1);
@@ -397,7 +396,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ArcCore;
-    /// use cachekit::traits::ReadOnlyCache;
+    /// use cachekit::traits::Cache;
     ///
     /// // 100 capacity ARC cache
     /// let cache: ArcCore<String, i32> = ArcCore::new(100);
@@ -596,7 +595,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ArcCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ArcCore::new(100);
     /// cache.insert("key", "value");
@@ -612,7 +611,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ArcCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ArcCore::new(100);
     /// cache.insert("key", "value");
@@ -629,7 +628,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ArcCore;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ArcCore::new(2);
     /// cache.insert("a", 1);
@@ -647,7 +646,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::arc::ArcCore;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ArcCore::new(2);
     /// cache.insert("a", 1);
@@ -824,7 +823,7 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for ArcCore<K, V>
+impl<K, V> Cache<K, V> for ArcCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -839,12 +838,13 @@ where
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-impl<K, V> CoreCache<K, V> for ArcCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+    fn peek(&self, key: &K) -> Option<&V> {
+        self.map
+            .get(key)
+            .map(|&node_ptr| unsafe { &(*node_ptr.as_ptr()).value })
+    }
+
     fn get(&mut self, key: &K) -> Option<&V> {
         let node_ptr = match self.map.get(key) {
             Some(&ptr) => ptr,
@@ -1009,6 +1009,17 @@ where
         None
     }
 
+    fn remove(&mut self, key: &K) -> Option<V> {
+        let node_ptr = self.map.remove(key)?;
+
+        self.detach(node_ptr);
+
+        unsafe {
+            let node = Box::from_raw(node_ptr.as_ptr());
+            Some(node.value)
+        }
+    }
+
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -1024,22 +1035,6 @@ where
         self.b1.clear();
         self.b2.clear();
         self.p = self.capacity / 2;
-    }
-}
-
-impl<K, V> MutableCache<K, V> for ArcCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    fn remove(&mut self, key: &K) -> Option<V> {
-        let node_ptr = self.map.remove(key)?;
-
-        self.detach(node_ptr);
-
-        unsafe {
-            let node = Box::from_raw(node_ptr.as_ptr());
-            Some(node.value)
-        }
     }
 }
 

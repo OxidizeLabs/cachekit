@@ -9,7 +9,7 @@
 
 use std::time::{Duration, Instant};
 
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 use rand::SeedableRng;
 
 use crate::workload::WorkloadSpec;
@@ -279,7 +279,7 @@ pub fn run_benchmark<C, V, F>(
     value_for_key: F,
 ) -> BenchmarkResult
 where
-    C: CoreCache<u64, V>,
+    C: Cache<u64, V>,
     F: Fn(u64) -> V,
 {
     let mut generator = config.workload.generator();
@@ -386,7 +386,7 @@ pub fn measure_scan_resistance<C, V, F>(
     value_for_key: F,
 ) -> ScanResistanceResult
 where
-    C: CoreCache<u64, V>,
+    C: Cache<u64, V>,
     F: Fn(u64) -> V,
 {
     let warmup_ops = capacity * 2;
@@ -496,7 +496,7 @@ pub fn measure_adaptation_speed<C, V, F>(
     value_for_key: F,
 ) -> AdaptationResult
 where
-    C: CoreCache<u64, V>,
+    C: Cache<u64, V>,
     F: Fn(u64) -> V,
 {
     let warmup_ops = capacity * 2;

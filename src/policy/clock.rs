@@ -85,7 +85,7 @@
 //!
 //! ```
 //! use cachekit::policy::clock::ClockCache;
-//! use cachekit::traits::{CoreCache, ReadOnlyCache};
+//! use cachekit::traits::Cache;
 //!
 //! let mut cache = ClockCache::new(100);
 //!
@@ -111,7 +111,7 @@ use std::hash::Hash;
 
 use crate::ds::ClockRing;
 use crate::ds::clock_ring::{IntoIter, Iter, IterMut};
-use crate::traits::{CoreCache, MutableCache, ReadOnlyCache};
+use crate::traits::{Cache, EvictingCache};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::ClockMetrics;
@@ -134,7 +134,7 @@ use crate::metrics::traits::MetricsSnapshotProvider;
 ///
 /// ```
 /// use cachekit::policy::clock::ClockCache;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 ///
 /// let mut cache = ClockCache::new(100);
 ///
@@ -157,14 +157,14 @@ where
     /// Creates a new Clock cache with the specified capacity.
     ///
     /// A capacity of `0` is valid and produces a cache that accepts no entries;
-    /// all [`insert`](CoreCache::insert) calls will return `None` and the
+    /// all [`insert`](Cache::insert) calls will return `None` and the
     /// value is silently dropped.
     ///
     /// # Example
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: ClockCache<String, i32> = ClockCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -185,7 +185,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockCache::new(10);
     /// assert!(cache.is_empty());
@@ -206,7 +206,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockCache::new(10);
     /// cache.insert("a", 1);
@@ -228,7 +228,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockCache::new(10);
     /// cache.insert("a", 1);
@@ -253,7 +253,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockCache::new(10);
     /// cache.insert("a", 1);
@@ -272,7 +272,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockCache::new(10);
     /// cache.insert("a", 1);
@@ -286,7 +286,7 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for ClockCache<K, V>
+impl<K, V> Cache<K, V> for ClockCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -301,31 +301,25 @@ where
     fn capacity(&self) -> usize {
         self.ring.capacity()
     }
-}
 
-impl<K, V> CoreCache<K, V> for ClockCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Inserts a key-value pair into the cache.
-    ///
-    /// If the key exists, updates the value and sets the reference bit.
-    /// If at capacity, evicts using the clock algorithm.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = ClockCache::new(2);
-    /// cache.insert("a", 1);
-    /// cache.insert("b", 2);
-    ///
-    /// // Update existing
-    /// let old = cache.insert("a", 10);
-    /// assert_eq!(old, Some(1));
-    /// ```
+    fn peek(&self, key: &K) -> Option<&V> {
+        self.ring.peek(key)
+    }
+
+    #[inline]
+    fn get(&mut self, key: &K) -> Option<&V> {
+        let result = self.ring.get(key);
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            self.metrics.get_calls += 1;
+            self.metrics.get_hits += 1;
+        } else {
+            self.metrics.get_calls += 1;
+            self.metrics.get_misses += 1;
+        }
+        result
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
@@ -373,51 +367,11 @@ where
         None
     }
 
-    /// Gets a reference to the value for a key.
-    ///
-    /// Sets the reference bit on access (O(1) - no list operations!).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = ClockCache::new(10);
-    /// cache.insert("key", 42);
-    ///
-    /// // Access sets reference bit - this entry gets "second chance"
-    /// assert_eq!(cache.get(&"key"), Some(&42));
-    /// ```
     #[inline]
-    fn get(&mut self, key: &K) -> Option<&V> {
-        let result = self.ring.get(key);
-        #[cfg(feature = "metrics")]
-        if result.is_some() {
-            self.metrics.get_calls += 1;
-            self.metrics.get_hits += 1;
-        } else {
-            self.metrics.get_calls += 1;
-            self.metrics.get_misses += 1;
-        }
-        result
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.ring.remove(key)
     }
 
-    /// Clears all entries from the cache.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
-    ///
-    /// let mut cache = ClockCache::new(10);
-    /// cache.insert("a", 1);
-    /// cache.insert("b", 2);
-    ///
-    /// cache.clear();
-    /// assert!(cache.is_empty());
-    /// ```
     fn clear(&mut self) {
         self.ring.clear();
         #[cfg(feature = "metrics")]
@@ -428,28 +382,12 @@ where
     }
 }
 
-impl<K, V> MutableCache<K, V> for ClockCache<K, V>
+impl<K, V> EvictingCache<K, V> for ClockCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    /// Removes a key from the cache.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
-    ///
-    /// let mut cache = ClockCache::new(10);
-    /// cache.insert("key", 42);
-    ///
-    /// let removed = cache.remove(&"key");
-    /// assert_eq!(removed, Some(42));
-    /// assert!(!cache.contains(&"key"));
-    /// ```
-    #[inline]
-    fn remove(&mut self, key: &K) -> Option<V> {
-        self.ring.remove(key)
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.ring.pop_victim()
     }
 }
 
@@ -464,7 +402,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::clock::ClockCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = ClockCache::new(10);
     /// cache.insert("a", 1);
@@ -581,7 +519,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::MutableCache;
+    use crate::traits::Cache;
 
     #[allow(dead_code)]
     const _: () = {

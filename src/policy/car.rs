@@ -65,7 +65,7 @@
 //!
 //! ```
 //! use cachekit::policy::car::CarCore;
-//! use cachekit::traits::{CoreCache, ReadOnlyCache};
+//! use cachekit::traits::Cache;
 //!
 //! let mut cache = CarCore::new(100);
 //! cache.insert("key1", "value1");
@@ -102,8 +102,7 @@ use crate::metrics::metrics_impl::CarMetrics;
 use crate::metrics::snapshot::CarMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CarMetricsRecorder, CoreMetricsRecorder, MetricsSnapshotProvider};
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, MutableCache};
+use crate::traits::Cache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::iter::FusedIterator;
@@ -152,7 +151,7 @@ impl<K: Clone, V: Clone> Clone for SlotPayload<K, V> {
 ///
 /// ```
 /// use cachekit::policy::car::CarCore;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 ///
 /// let mut cache = CarCore::new(100);
 /// cache.insert("key1", "value1");
@@ -234,7 +233,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::car::CarCore;
-    /// use cachekit::traits::ReadOnlyCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: CarCore<String, i32> = CarCore::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -500,7 +499,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::car::CarCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = CarCore::new(100);
     /// cache.insert("key", "value");
@@ -516,7 +515,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::car::CarCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = CarCore::new(3);
     /// cache.insert("a", 1);
@@ -539,7 +538,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::car::CarCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = CarCore::new(2);
     /// cache.insert("a", 1);
@@ -557,7 +556,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::car::CarCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: CarCore<String, i32> = CarCore::new(10);
     /// assert_eq!(cache.ghost_frequent_len(), 0);
@@ -574,7 +573,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::car::CarCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = CarCore::new(10);
     /// cache.insert("a", 1);
@@ -598,7 +597,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::car::CarCore;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = CarCore::new(10);
     /// cache.insert("a", 1);
@@ -812,7 +811,7 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for CarCore<K, V>
+impl<K, V> Cache<K, V> for CarCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -827,12 +826,12 @@ where
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-impl<K, V> CoreCache<K, V> for CarCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+    fn peek(&self, key: &K) -> Option<&V> {
+        let &idx = self.index.get(key)?;
+        self.slots[idx].as_ref().map(|s| &s.value)
+    }
+
     fn get(&mut self, key: &K) -> Option<&V> {
         let &idx = match self.index.get(key) {
             Some(idx) => {
@@ -912,6 +911,20 @@ where
         None
     }
 
+    fn remove(&mut self, key: &K) -> Option<V> {
+        let idx = self.index.remove(key)?;
+        let list = self.ring_kind[idx];
+        self.unlink(idx);
+        match list {
+            Ring::Recent => self.recent_len -= 1,
+            Ring::Frequent => self.frequent_len -= 1,
+        }
+        let slot = self.slots[idx].take()?;
+        self.referenced[idx] = false;
+        self.free.push(idx);
+        Some(slot.value)
+    }
+
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -932,25 +945,6 @@ where
         self.target_recent_size = self.capacity / 2;
         self.recent_len = 0;
         self.frequent_len = 0;
-    }
-}
-
-impl<K, V> MutableCache<K, V> for CarCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    fn remove(&mut self, key: &K) -> Option<V> {
-        let idx = self.index.remove(key)?;
-        let list = self.ring_kind[idx];
-        self.unlink(idx);
-        match list {
-            Ring::Recent => self.recent_len -= 1,
-            Ring::Frequent => self.frequent_len -= 1,
-        }
-        let slot = self.slots[idx].take()?;
-        self.referenced[idx] = false;
-        self.free.push(idx);
-        Some(slot.value)
     }
 }
 
