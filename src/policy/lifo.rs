@@ -160,8 +160,7 @@ use crate::metrics::metrics_impl::CoreOnlyMetrics;
 use crate::metrics::snapshot::CoreOnlyMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
-use crate::prelude::ReadOnlyCache;
-use crate::traits::CoreCache;
+use crate::traits::{Cache, EvictingCache, VictimInspectable};
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
@@ -586,7 +585,7 @@ impl<K, V> std::fmt::Debug for LifoCore<K, V> {
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for LifoCore<K, V>
+impl<K, V> Cache<K, V> for LifoCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -604,32 +603,10 @@ where
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-/// Implementation of the [`CoreCache`] trait for LIFO.
-///
-/// Allows `LifoCore` to be used through the unified cache interface.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
-/// use cachekit::policy::lifo::LifoCore;
-///
-/// let mut cache: LifoCore<&str, i32> = LifoCore::new(100);
-///
-/// // Use via CoreCache trait
-/// assert_eq!(cache.insert("key", 42), None);
-/// assert_eq!(cache.get(&"key"), Some(&42));
-/// assert!(cache.contains(&"key"));
-/// ```
-impl<K, V> CoreCache<K, V> for LifoCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
     #[inline]
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
-        LifoCore::insert(self, key, value)
+    fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
     }
 
     #[inline]
@@ -637,8 +614,41 @@ where
         LifoCore::get(self, key)
     }
 
+    #[inline]
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        LifoCore::insert(self, key, value)
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        let value = self.map.remove(key)?;
+        if let Some(pos) = self.stack.iter().position(|k| k == key) {
+            self.stack.remove(pos);
+        }
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
+        Some(value)
+    }
+
     fn clear(&mut self) {
         LifoCore::clear(self);
+    }
+}
+
+impl<K, V> EvictingCache<K, V> for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.pop_newest()
+    }
+}
+
+impl<K, V> VictimInspectable<K, V> for LifoCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn peek_victim(&self) -> Option<(&K, &V)> {
+        self.peek_newest()
     }
 }
 

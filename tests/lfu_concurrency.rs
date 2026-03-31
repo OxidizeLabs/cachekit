@@ -12,7 +12,7 @@ type ThreadSafeLfuCache<K, V> = Arc<Mutex<LfuCache<K, V>>>;
 
 // Thread Safety Tests
 mod thread_safety {
-    use cachekit::traits::{CoreCache, LfuCacheTrait, MutableCache, ReadOnlyCache};
+    use cachekit::traits::Cache;
 
     use super::*;
 
@@ -719,7 +719,7 @@ mod stress_testing {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use cachekit::traits::{CoreCache, LfuCacheTrait, ReadOnlyCache};
+    use cachekit::traits::Cache;
 
     use super::*;
 

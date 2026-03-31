@@ -8,7 +8,7 @@ use bench_support::for_each_policy;
 
 use std::sync::Arc;
 
-use cachekit::traits::{CoreCache, ReadOnlyCache};
+use cachekit::traits::Cache;
 use common::metrics::{
     BenchmarkConfig, PolicyComparison, estimate_entry_overhead, measure_adaptation_speed,
     measure_scan_resistance, run_benchmark, standard_workload_suite,
@@ -70,7 +70,7 @@ fn main() {
 // Helper functions
 // ============================================================================
 
-fn run_workload<C: CoreCache<u64, Arc<u64>>>(
+fn run_workload<C: Cache<u64, Arc<u64>>>(
     cache: &mut C,
     workload_case: &common::registry::WorkloadCase,
 ) -> f64 {

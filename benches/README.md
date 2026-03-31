@@ -176,7 +176,7 @@ To add a new workload:
 
 ### Adding new policies fails
 - Check `for_each_policy!` macro syntax
-- Verify policy implements `CoreCache<K, V>` trait
+- Verify policy implements `Cache<K, V>` trait
 - Ensure type parameters match (some policies use `Arc<V>`, others use `V`)
 
 ## See Also

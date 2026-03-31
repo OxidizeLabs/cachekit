@@ -1,5 +1,5 @@
 use cachekit::policy::lru_k::LrukCache;
-use cachekit::traits::{CoreCache, ReadOnlyCache};
+use cachekit::traits::Cache;
 
 fn main() {
     let mut cache: LrukCache<&str, i32> = LrukCache::with_k(2, 2);

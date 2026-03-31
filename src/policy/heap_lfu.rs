@@ -182,7 +182,7 @@
 //! ```rust,ignore
 //! use cachekit::policy::heap_lfu::HeapLfuCache;
 //! use std::sync::Arc;
-//! use cachekit::traits::{CoreCache, MutableCache, LfuCacheTrait};
+//! use cachekit::traits::{Cache, EvictingCache, FrequencyTracking};
 //!
 //! // Create cache
 //! let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(100);
@@ -235,19 +235,18 @@
 //! ## Implementation Notes
 //!
 //! - **Stale entries**: Accumulate in heap, cleaned lazily during
-//!   [`pop_lfu()`](LfuCacheTrait::pop_lfu)
+//!   [`pop_lfu()`](HeapLfuCache::pop_lfu)
 //! - **Bounded rebuilds**: Heap is rebuilt when size exceeds
 //!   `MAX_HEAP_FACTOR × live_entries`
-//! - **[`peek_lfu()`](LfuCacheTrait::peek_lfu)**: Falls back to O(n) scan
+//! - **[`peek_lfu()`](HeapLfuCache::peek_lfu)**: Falls back to O(n) scan
 //!   (avoiding heap borrow issues)
 //! - **Memory overhead**: ~3× standard LFU due to three data structures
 //! - **[`Reverse`] wrapper**: Converts max-heap to
 //!   min-heap for LFU semantics
 
-use crate::prelude::ReadOnlyCache;
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
+use crate::traits::{Cache, EvictingCache, FrequencyTracking, VictimInspectable};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
@@ -266,8 +265,8 @@ use crate::metrics::traits::{
 ///
 /// Uses a binary min-heap for efficient least-frequently-used item
 /// identification. Values are stored as [`Arc<V>`] to avoid cloning on
-/// eviction. Implements [`CoreCache`], [`MutableCache`], and
-/// [`LfuCacheTrait`].
+/// eviction. Implements [`Cache`], [`EvictingCache`],
+/// [`VictimInspectable`], and [`FrequencyTracking`].
 ///
 /// # Type Parameters
 ///
@@ -278,7 +277,7 @@ use crate::metrics::traits::{
 ///
 /// ```
 /// use cachekit::policy::heap_lfu::HeapLfuCache;
-/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use cachekit::traits::{Cache, FrequencyTracking};
 /// use std::sync::Arc;
 ///
 /// let mut cache: HeapLfuCache<String, i32> = HeapLfuCache::new(3);
@@ -303,7 +302,7 @@ use crate::metrics::traits::{
 /// # Stale Entry Handling
 ///
 /// The heap may contain stale entries with outdated frequencies. These are
-/// lazily cleaned during [`pop_lfu()`](LfuCacheTrait::pop_lfu) operations.
+/// lazily cleaned during [`pop_lfu()`](HeapLfuCache::pop_lfu) operations.
 /// Periodic heap rebuilds bound memory growth.
 #[derive(Debug)]
 pub struct HeapLfuCache<K, V> {
@@ -383,7 +382,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::heap_lfu::HeapLfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
@@ -403,7 +402,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::heap_lfu::HeapLfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
@@ -425,7 +424,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::heap_lfu::HeapLfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
@@ -445,7 +444,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::heap_lfu::HeapLfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
@@ -478,7 +477,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::heap_lfu::HeapLfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
@@ -572,213 +571,14 @@ where
             None
         }
     }
-}
 
-impl<K, V> ReadOnlyCache<K, Arc<V>> for HeapLfuCache<K, V>
-where
-    K: Clone + Eq + Hash + Ord,
-{
-    fn contains(&self, key: &K) -> bool {
-        self.store.contains(key)
-    }
-
-    fn len(&self) -> usize {
-        self.store.len()
-    }
-
-    fn capacity(&self) -> usize {
-        self.store.capacity()
-    }
-}
-
-/// [`CoreCache`] operations for heap-based LFU.
-///
-/// # Insert behaviour
-///
-/// When the key already exists, the value is replaced and the previous value
-/// is returned. When the key is new and the cache is at capacity, the least
-/// frequently used entry is evicted first.
-///
-/// If the underlying store rejects a new-key insertion (store full after
-/// eviction), `insert` returns `None` *without* adding the entry. This is
-/// indistinguishable from a successful new-key insert via the return value
-/// alone; use [`len`](HeapLfuCache::len) to confirm the entry was stored.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::heap_lfu::HeapLfuCache;
-/// use cachekit::traits::CoreCache;
-/// use std::sync::Arc;
-///
-/// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(3);
-///
-/// // Insert items
-/// cache.insert("a", Arc::new(1));
-/// cache.insert("b", Arc::new(2));
-///
-/// // Get returns reference
-/// assert_eq!(**cache.get(&"a").unwrap(), 1);
-///
-/// // Contains check
-/// assert!(cache.contains(&"a"));
-/// assert!(!cache.contains(&"z"));
-///
-/// // Length and capacity
-/// assert_eq!(cache.len(), 2);
-/// assert_eq!(cache.capacity(), 3);
-/// ```
-impl<K, V> CoreCache<K, Arc<V>> for HeapLfuCache<K, V>
-where
-    K: Eq + Hash + Clone + Ord,
-{
-    fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_insert_call();
-
-        // If key already exists, just update the value (don't change frequency)
-        if self.store.contains(&key) {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_insert_update();
-
-            return self.store.try_insert(key, value).ok().flatten();
-        }
-
-        // Evict if at capacity
-        #[cfg(feature = "metrics")]
-        if self.store.len() >= self.store.capacity() {
-            self.metrics.record_evict_call();
-        }
-
-        let _evicted = self.ensure_capacity();
-
-        #[cfg(feature = "metrics")]
-        if _evicted.is_some() {
-            self.metrics.record_evicted_entry();
-        }
-
-        #[cfg(feature = "metrics")]
-        self.metrics.record_insert_new();
-
-        // Insert new item with frequency 1
-        if self.store.try_insert(key.clone(), value).is_err() {
-            return None;
-        }
-        self.frequencies.insert(key.clone(), 1);
-        self.add_to_heap(&key, 1);
-
-        None
-    }
-
-    fn get(&mut self, key: &K) -> Option<&Arc<V>> {
-        if self.store.contains(key) {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_hit();
-
-            // Increment frequency
-            let new_freq = self.frequencies.get_mut(key).map(|f| {
-                *f += 1;
-                *f
-            })?;
-
-            // Add new frequency entry to heap (old entry becomes stale)
-            self.add_to_heap(key, new_freq);
-
-            self.store.get(key)
-        } else {
-            #[cfg(feature = "metrics")]
-            self.metrics.record_get_miss();
-
-            None
-        }
-    }
-
-    fn clear(&mut self) {
-        HeapLfuCache::clear(self);
-    }
-}
-
-/// [`MutableCache`] operations for heap-based LFU.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::heap_lfu::HeapLfuCache;
-/// use cachekit::traits::{CoreCache, MutableCache};
-/// use std::sync::Arc;
-///
-/// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);
-/// cache.insert("key", Arc::new(42));
-///
-/// let removed = cache.remove(&"key");
-/// assert_eq!(*removed.unwrap(), 42);
-/// assert!(!cache.contains(&"key"));
-/// ```
-impl<K, V> MutableCache<K, Arc<V>> for HeapLfuCache<K, V>
-where
-    K: Eq + Hash + Clone + Ord,
-{
-    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
-        // Remove from store and frequencies maps
-        let value = self.store.remove(key);
-        let had_frequency = self.frequencies.remove(key).is_some();
-
-        // Note: We don't remove from heap immediately (lazy removal)
-        // Stale entries will be filtered out during pop_lfu operations
-
-        if value.is_some() || had_frequency {
-            self.maybe_rebuild_heap();
-        }
-
-        value
-    }
-}
-
-/// [`LfuCacheTrait`] operations for heap-based cache.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::heap_lfu::HeapLfuCache;
-/// use cachekit::traits::{CoreCache, LfuCacheTrait};
-/// use std::sync::Arc;
-///
-/// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(3);
-/// cache.insert("a", Arc::new(1));
-/// cache.insert("b", Arc::new(2));
-/// cache.get(&"a");  // freq: 1 → 2
-///
-/// // Check frequencies
-/// assert_eq!(cache.frequency(&"a"), Some(2));
-/// assert_eq!(cache.frequency(&"b"), Some(1));
-///
-/// // Peek at LFU victim (O(n) scan)
-/// let (key, _) = cache.peek_lfu().unwrap();
-/// assert_eq!(*key, "b");  // lowest frequency
-///
-/// // Pop LFU (O(log n) amortized)
-/// let (key, value) = cache.pop_lfu().unwrap();
-/// assert_eq!(key, "b");
-/// assert_eq!(*value, 2);
-///
-/// // Manual frequency control
-/// cache.insert("c", Arc::new(3));
-/// cache.increment_frequency(&"c");  // freq: 1 → 2
-/// cache.reset_frequency(&"a");      // freq: 2 → 1
-/// assert_eq!(cache.frequency(&"a"), Some(1));
-/// ```
-impl<K, V> LfuCacheTrait<K, Arc<V>> for HeapLfuCache<K, V>
-where
-    K: Eq + Hash + Clone + Ord,
-{
-    fn pop_lfu(&mut self) -> Option<(K, Arc<V>)> {
+    /// Removes and returns the least frequently used entry.
+    pub fn pop_lfu(&mut self) -> Option<(K, Arc<V>)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lfu_call();
 
-        // Find the key with minimum frequency (handling stale entries)
         let (lfu_key, _freq) = self.pop_lfu_internal()?;
 
-        // Remove from all data structures
         let value = self.store.remove(&lfu_key)?;
         self.frequencies.remove(&lfu_key);
         self.store.record_eviction();
@@ -789,7 +589,8 @@ where
         Some((lfu_key, value))
     }
 
-    fn peek_lfu(&self) -> Option<(&K, &Arc<V>)> {
+    /// Peeks at the least frequently used entry without removing it.
+    pub fn peek_lfu(&self) -> Option<(&K, &Arc<V>)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lfu_call();
 
@@ -815,11 +616,8 @@ where
         None
     }
 
-    fn frequency(&self, key: &K) -> Option<u64> {
-        HeapLfuCache::frequency(self, key)
-    }
-
-    fn increment_frequency(&mut self, key: &K) -> Option<u64> {
+    /// Manually increments the frequency of a key.
+    pub fn increment_frequency(&mut self, key: &K) -> Option<u64> {
         if let Some(freq) = self.frequencies.get_mut(key) {
             *freq += 1;
             let new_freq = *freq;
@@ -830,7 +628,8 @@ where
         }
     }
 
-    fn reset_frequency(&mut self, key: &K) -> Option<u64> {
+    /// Resets the frequency of a key to 1.
+    pub fn reset_frequency(&mut self, key: &K) -> Option<u64> {
         if let Some(freq) = self.frequencies.get_mut(key) {
             let old_freq = *freq;
             *freq = 1;
@@ -839,6 +638,147 @@ where
         } else {
             None
         }
+    }
+}
+
+/// [`Cache`] implementation for heap-based LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::heap_lfu::HeapLfuCache;
+/// use cachekit::traits::Cache;
+/// use std::sync::Arc;
+///
+/// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(3);
+///
+/// cache.insert("a", Arc::new(1));
+/// cache.insert("b", Arc::new(2));
+///
+/// assert_eq!(**cache.get(&"a").unwrap(), 1);
+///
+/// assert!(cache.contains(&"a"));
+/// assert!(!cache.contains(&"z"));
+///
+/// assert_eq!(cache.len(), 2);
+/// assert_eq!(cache.capacity(), 3);
+/// ```
+impl<K, V> Cache<K, Arc<V>> for HeapLfuCache<K, V>
+where
+    K: Eq + Hash + Clone + Ord,
+{
+    fn contains(&self, key: &K) -> bool {
+        self.store.contains(key)
+    }
+
+    fn len(&self) -> usize {
+        self.store.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.store.capacity()
+    }
+
+    fn peek(&self, key: &K) -> Option<&Arc<V>> {
+        self.store.peek(key)
+    }
+
+    fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_call();
+
+        if self.store.contains(&key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_insert_update();
+
+            return self.store.try_insert(key, value).ok().flatten();
+        }
+
+        #[cfg(feature = "metrics")]
+        if self.store.len() >= self.store.capacity() {
+            self.metrics.record_evict_call();
+        }
+
+        let _evicted = self.ensure_capacity();
+
+        #[cfg(feature = "metrics")]
+        if _evicted.is_some() {
+            self.metrics.record_evicted_entry();
+        }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_insert_new();
+
+        if self.store.try_insert(key.clone(), value).is_err() {
+            return None;
+        }
+        self.frequencies.insert(key.clone(), 1);
+        self.add_to_heap(&key, 1);
+
+        None
+    }
+
+    fn get(&mut self, key: &K) -> Option<&Arc<V>> {
+        if self.store.contains(key) {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_hit();
+
+            let new_freq = self.frequencies.get_mut(key).map(|f| {
+                *f += 1;
+                *f
+            })?;
+
+            self.add_to_heap(key, new_freq);
+
+            self.store.get(key)
+        } else {
+            #[cfg(feature = "metrics")]
+            self.metrics.record_get_miss();
+
+            None
+        }
+    }
+
+    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
+        let value = self.store.remove(key);
+        let had_frequency = self.frequencies.remove(key).is_some();
+
+        if value.is_some() || had_frequency {
+            self.maybe_rebuild_heap();
+        }
+
+        value
+    }
+
+    fn clear(&mut self) {
+        HeapLfuCache::clear(self);
+    }
+}
+
+impl<K, V> EvictingCache<K, Arc<V>> for HeapLfuCache<K, V>
+where
+    K: Eq + Hash + Clone + Ord,
+{
+    fn evict_one(&mut self) -> Option<(K, Arc<V>)> {
+        self.pop_lfu()
+    }
+}
+
+impl<K, V> VictimInspectable<K, Arc<V>> for HeapLfuCache<K, V>
+where
+    K: Eq + Hash + Clone + Ord,
+{
+    fn peek_victim(&self) -> Option<(&K, &Arc<V>)> {
+        self.peek_lfu()
+    }
+}
+
+impl<K, V> FrequencyTracking<K, Arc<V>> for HeapLfuCache<K, V>
+where
+    K: Eq + Hash + Clone + Ord,
+{
+    fn frequency(&self, key: &K) -> Option<u64> {
+        HeapLfuCache::frequency(self, key)
     }
 }
 
@@ -853,7 +793,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::heap_lfu::HeapLfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: HeapLfuCache<&str, i32> = HeapLfuCache::new(10);

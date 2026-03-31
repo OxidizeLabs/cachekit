@@ -28,6 +28,8 @@ use std::hash::Hash;
 use std::mem;
 use std::ptr::NonNull;
 
+use crate::traits::{Cache, EvictingCache, RecencyTracking, VictimInspectable};
+
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LruMetrics;
 #[cfg(feature = "metrics")]
@@ -376,6 +378,36 @@ where
         }
     }
 
+    /// Returns the recency rank (0 = most recent) for a key.
+    ///
+    /// Walks the linked list from head (MRU) to tail counting position.
+    /// Returns `None` if the key is not found.
+    pub fn recency_rank(&self, key: &K) -> Option<usize> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_recency_rank_call();
+
+        if !self.map.contains_key(key) {
+            return None;
+        }
+
+        let mut rank = 0usize;
+        let mut current = self.head;
+        while let Some(node_ptr) = current {
+            #[cfg(feature = "metrics")]
+            (&self.metrics).record_recency_rank_scan_step();
+
+            let node = unsafe { &*node_ptr.as_ptr() };
+            if &node.key == key {
+                #[cfg(feature = "metrics")]
+                (&self.metrics).record_recency_rank_found();
+                return Some(rank);
+            }
+            rank += 1;
+            current = node.next;
+        }
+        None
+    }
+
     // =========================================================================
     // Internal linked-list operations
     // =========================================================================
@@ -458,6 +490,84 @@ where
 {
     fn snapshot(&self) -> LruMetricsSnapshot {
         self.metrics_snapshot()
+    }
+}
+
+impl<K, V> Cache<K, V> for FastLru<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        FastLru::contains(self, key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        FastLru::len(self)
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        FastLru::capacity(self)
+    }
+
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&V> {
+        FastLru::peek(self, key)
+    }
+
+    #[inline]
+    fn get(&mut self, key: &K) -> Option<&V> {
+        FastLru::get(self, key)
+    }
+
+    #[inline]
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        FastLru::insert(self, key, value)
+    }
+
+    #[inline]
+    fn remove(&mut self, key: &K) -> Option<V> {
+        FastLru::remove(self, key)
+    }
+
+    fn clear(&mut self) {
+        FastLru::clear(self);
+    }
+}
+
+impl<K, V> EvictingCache<K, V> for FastLru<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    #[inline]
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.pop_lru()
+    }
+}
+
+impl<K, V> VictimInspectable<K, V> for FastLru<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    #[inline]
+    fn peek_victim(&self) -> Option<(&K, &V)> {
+        self.peek_lru()
+    }
+}
+
+impl<K, V> RecencyTracking<K, V> for FastLru<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    #[inline]
+    fn touch(&mut self, key: &K) -> bool {
+        FastLru::touch(self, key)
+    }
+
+    fn recency_rank(&self, key: &K) -> Option<usize> {
+        FastLru::recency_rank(self, key)
     }
 }
 

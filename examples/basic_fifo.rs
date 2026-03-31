@@ -1,5 +1,5 @@
 use cachekit::policy::fifo::FifoCache;
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 
 fn main() {
     // Create a FIFO cache with a capacity of 100 entries
