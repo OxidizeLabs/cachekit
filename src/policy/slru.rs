@@ -122,7 +122,7 @@
 //!
 //! ## Removal Policy
 //!
-//! `SlruCore` supports key removal via [`Cache::remove`](crate::traits::Cache::remove).
+//! `SlruCore` supports key removal via [`Cache::remove`].
 //! Removing an entry detaches it from its segment and adjusts the segment counters.
 //!
 //! ## Thread Safety
@@ -186,7 +186,7 @@ struct Node<K, V> {
 /// to protected. This provides scan resistance by keeping one-time accesses
 /// from polluting the main cache.
 ///
-/// `SlruCore` supports key removal via [`Cache::remove`](crate::traits::Cache::remove).
+/// `SlruCore` supports key removal via [`Cache::remove`].
 /// Removing an entry detaches it from its segment and adjusts the segment counters.
 ///
 /// # Type Parameters
