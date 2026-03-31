@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-31
+
+### Breaking
+- Rename `LFUHandleCache` to `LfuHandleCache` for Rust naming consistency.
+- Rename `ARCCore` to `ArcCore` for Rust naming consistency.
+
+### Added
+- `Clone` / `Default` and iterators where applicable across FIFO, LRU, LRU-K, LIFO, Clock, MRU, NRU, Heap LFU, S3 FIFO, Random, and related types.
+- Expanded error-handling documentation with conversion helpers and examples.
+
+### Fixed
+- CAR policy correctness and related fixes (#64).
+- Store, metrics, and data-structure API guideline alignments (#54, #55, #56, #57).
+- FIFO policy module documentation (#52).
+
+### Changed
+- MFU policy simplification and documentation refresh.
+- SLRU capacity handling and documentation updates.
+- Random core API and documentation improvements.
+- Dependency and CI workflow maintenance (including GitHub Pages action updates).
+
 ## [0.5.0] - 2026-03-02
 
 ### Fixed
