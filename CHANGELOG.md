@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-09
+
 ### Breaking
 - Replace `ReadOnlyCache`, `CoreCache`, `MutableCache`, `FifoCacheTrait`, `LruCacheTrait`, `LfuCacheTrait`, `LrukCacheTrait` with a single unified `Cache<K, V>` trait.
 - Add five optional capability traits: `EvictingCache`, `VictimInspectable`, `RecencyTracking`, `FrequencyTracking`, `HistoryTracking`.
