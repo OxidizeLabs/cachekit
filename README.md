@@ -31,7 +31,7 @@
 
 CacheKit is a Rust library that provides:
 
-- High-performance cache replacement policies (e.g., **FIFO**, **LRU**, **LRU-K**, **Clock**, **NRU**, **S3-FIFO**, **SLRU**, **2Q**, and more).
+- High-performance cache replacement policies (e.g., **FIFO**, **LRU**, **Fast LRU**, **LRU-K**, **ARC**, **CAR**, **Clock**, **NRU**, **S3-FIFO**, **SLRU**, **2Q**, and more).
 - Supporting data structures and policy primitives for building caches.
 - Optional metrics and benchmark harnesses.
 - A modular API suitable for embedding in systems where control over caching behavior is critical.
@@ -50,7 +50,7 @@ Add `cachekit` as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachekit = "0.3.0"
+cachekit = "0.7.0"
 ```
 
 From source:
@@ -112,6 +112,7 @@ Each eviction policy is gated behind a feature flag. Use `default-features = fal
 | `policy-two-q` | 2Q | Two-Queue |
 | `policy-s3-fifo` | S3-FIFO | Scan-resistant three-queue FIFO |
 | `policy-arc` | ARC | Adaptive Replacement Cache |
+| `policy-car` | CAR | Clock with Adaptive Replacement |
 | `policy-lifo` | LIFO | Last In, First Out |
 | `policy-mfu` | MFU | Most Frequently Used |
 | `policy-mru` | MRU | Most Recently Used |
@@ -125,7 +126,7 @@ Each eviction policy is gated behind a feature flag. Use `default-features = fal
 
 ```toml
 # Minimal build: only LRU and S3-FIFO
-cachekit = { version = "0.3", default-features = false, features = ["policy-lru", "policy-s3-fifo"] }
+cachekit = { version = "0.6", default-features = false, features = ["policy-lru", "policy-s3-fifo"] }
 ```
 
 ### Available Policies
@@ -140,6 +141,9 @@ let fifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Fifo);
 
 // LRU - Least Recently Used
 let lru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lru);
+
+// Fast LRU - single-threaded optimized LRU (no Arc on values)
+let fast_lru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::FastLru);
 
 // LRU-K - Scan-resistant LRU (K=2 is common)
 let lru_k = CacheBuilder::new(100).build::<u64, String>(CachePolicy::LruK { k: 2 });
@@ -161,6 +165,9 @@ let two_q = CacheBuilder::new(100).build::<u64, String>(
 let s3_fifo = CacheBuilder::new(100).build::<u64, String>(
     CachePolicy::S3Fifo { small_ratio: 0.1, ghost_ratio: 0.9 }
 );
+
+// ARC - Adaptive Replacement Cache (recency vs frequency)
+let arc = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Arc);
 
 // LIFO - Last In, First Out (stack-like eviction)
 let lifo = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Lifo);
@@ -195,11 +202,14 @@ let nru = CacheBuilder::new(100).build::<u64, String>(CachePolicy::Nru);
 |---------|----------|----------------|
 | FIFO    | Simple, predictable workloads | Insertion order |
 | LRU     | Temporal locality | Recency |
+| Fast LRU| Single-threaded hot paths | Recency (lower overhead) |
 | LRU-K   | Scan-resistant workloads | K-th access time |
 | LFU     | Stable access patterns | Frequency (O(1)) |
 | HeapLFU | Large caches, frequent evictions | Frequency (O(log n)) |
 | 2Q      | Mixed workloads | Two-queue promotion |
 | S3-FIFO | Scan-heavy workloads | FIFO + ghost history |
+| ARC     | Mixed / unknown workloads | Adaptive recency + frequency |
+| CAR     | Adaptive caching with Clock-style scanning | Clock + ARC-like segments |
 | LIFO    | Stack-like caching | Reverse insertion order |
 | MFU     | Inverse frequency patterns | Highest frequency |
 | MRU     | Anti-recency patterns | Most recent access |

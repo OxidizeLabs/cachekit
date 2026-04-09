@@ -123,6 +123,11 @@ harness = false
 name = "runner"
 harness = false
 
+# DHAT heap profiling (writes dhat-heap.json in cwd)
+[[bench]]
+name = "dhat_profile"
+harness = false
+
 # Policy-specific unique operations
 [[bench]]
 name = "policy_lru"
