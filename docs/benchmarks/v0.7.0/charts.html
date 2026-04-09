@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cachekit Benchmark Charts</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+
+        .metadata {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+        }
+
+        .metadata-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+        }
+
+        .metadata-item {
+            display: flex;
+            gap: 5px;
+        }
+
+        .metadata-label {
+            font-weight: 600;
+            color: #555;
+        }
+
+        .chart-section {
+            margin-bottom: 40px;
+        }
+
+        .chart-section h2 {
+            color: #34495e;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #3498db;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 20px;
+        }
+
+        .chart-description {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 15px;
+            font-style: italic;
+        }
+
+        .links {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .links a {
+            color: #3498db;
+            text-decoration: none;
+            padding: 8px 16px;
+            border: 1px solid #3498db;
+            border-radius: 4px;
+            transition: all 0.3s;
+        }
+
+        .links a:hover {
+            background: #3498db;
+            color: white;
+        }
+
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 20px;
+            border-radius: 4px;
+            border-left: 4px solid #c33;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+
+            h1 {
+                font-size: 1.5em;
+            }
+
+            .chart-container {
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Cachekit Benchmark Charts</h1>
+
+        <div id="loading" class="loading">
+            Loading benchmark data...
+        </div>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <div id="content" style="display: none;">
+            <div class="metadata" id="metadata"></div>
+
+            <div class="chart-section">
+                <h2>Hit Rate Comparison</h2>
+                <p class="chart-description">Higher is better. Shows cache effectiveness across different workload patterns.</p>
+                <div class="chart-container">
+                    <canvas id="hitRateChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-section">
+                <h2>Throughput (Million ops/sec)</h2>
+                <p class="chart-description">Higher is better. Measures operations per second performance.</p>
+                <div class="chart-container">
+                    <canvas id="throughputChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-section">
+                <h2>Latency P99 (nanoseconds)</h2>
+                <p class="chart-description">Lower is better. 99th percentile tail latency.</p>
+                <div class="chart-container">
+                    <canvas id="latencyChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-section">
+                <h2>Scan Resistance Score</h2>
+                <p class="chart-description">Higher is better. Ratio of recovery to baseline (1.0 = perfect recovery).</p>
+                <div class="chart-container">
+                    <canvas id="scanResistanceChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-section">
+                <h2>Adaptation Speed (Ops to 80%)</h2>
+                <p class="chart-description">Lower is better. Fewer operations means faster adaptation to workload changes.</p>
+                <div class="chart-container">
+                    <canvas id="adaptationChart"></canvas>
+                </div>
+            </div>
+
+            <div class="links">
+                <a href="index.html">📄 Markdown Report</a>
+                <a href="results.json">📁 Raw JSON Data</a>
+                <a href="../../benchmarking-plan.html">📖 Methodology</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart.js configuration
+        Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        Chart.defaults.plugins.legend.position = 'bottom';
+        Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+
+        // Color palette for policies
+        const policyColors = {
+            'LRU': '#3498db',
+            'LRU-K': '#2ecc71',
+            'LFU': '#e74c3c',
+            'Heap-LFU': '#f39c12',
+            'Clock': '#9b59b6',
+            'S3-FIFO': '#1abc9c',
+            '2Q': '#e67e22'
+        };
+
+        // Fetch and render data
+        fetch('results.json')
+            .then(response => {
+                if (!response.ok) throw new Error('Failed to load results.json');
+                return response.json();
+            })
+            .then(data => {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+
+                renderMetadata(data.metadata);
+                renderCharts(data.results);
+            })
+            .catch(error => {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('error').style.display = 'block';
+                document.getElementById('error').textContent =
+                    'Error loading benchmark data: ' + error.message +
+                    '\n\nMake sure results.json exists in the same directory.';
+            });
+
+        function renderMetadata(metadata) {
+            const metadataDiv = document.getElementById('metadata');
+            const items = [
+                ['Date', metadata.timestamp],
+                ['Commit', metadata.git_commit || 'unknown'],
+                ['Branch', metadata.git_branch || 'unknown'],
+                ['Dirty', metadata.git_dirty ? 'Yes' : 'No'],
+                ['Rustc', metadata.rustc_version],
+                ['CPU', metadata.cpu_model || 'unknown'],
+                ['Capacity', metadata.config.capacity.toLocaleString()],
+                ['Operations', metadata.config.operations.toLocaleString()]
+            ];
+
+            metadataDiv.innerHTML = '<div class="metadata-grid">' +
+                items.map(([label, value]) =>
+                    `<div class="metadata-item">
+                        <span class="metadata-label">${label}:</span>
+                        <span>${value}</span>
+                    </div>`
+                ).join('') +
+                '</div>';
+        }
+
+        function renderCharts(results) {
+            // Group results by case type
+            const byCase = {};
+            results.forEach(result => {
+                if (!byCase[result.case_id]) byCase[result.case_id] = [];
+                byCase[result.case_id].push(result);
+            });
+
+            // Hit Rate Chart
+            if (byCase['hit_rate']) {
+                renderHitRateChart(byCase['hit_rate']);
+            }
+
+            // Throughput Chart
+            if (byCase['comprehensive']) {
+                renderThroughputChart(byCase['comprehensive']);
+                renderLatencyChart(byCase['comprehensive']);
+            }
+
+            // Scan Resistance Chart
+            if (byCase['scan_resistance']) {
+                renderScanResistanceChart(byCase['scan_resistance']);
+            }
+
+            // Adaptation Chart
+            if (byCase['adaptation']) {
+                renderAdaptationChart(byCase['adaptation']);
+            }
+        }
+
+        function renderHitRateChart(results) {
+            const byPolicy = {};
+            const workloads = new Set();
+
+            results.forEach(result => {
+                if (result.metrics.hit_stats) {
+                    if (!byPolicy[result.policy_name]) byPolicy[result.policy_name] = {};
+                    byPolicy[result.policy_name][result.workload_name] =
+                        result.metrics.hit_stats.hit_rate * 100;
+                    workloads.add(result.workload_name);
+                }
+            });
+
+            const workloadArray = Array.from(workloads).sort();
+            const datasets = Object.entries(byPolicy).map(([policy, data]) => ({
+                label: policy,
+                data: workloadArray.map(w => data[w] || 0),
+                backgroundColor: policyColors[policy] || '#95a5a6',
+                borderColor: policyColors[policy] || '#7f8c8d',
+                borderWidth: 1
+            }));
+
+            new Chart(document.getElementById('hitRateChart'), {
+                type: 'bar',
+                data: {
+                    labels: workloadArray,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: value => value + '%'
+                            },
+                            title: {
+                                display: true,
+                                text: 'Hit Rate (%)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Workload'
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: context => {
+                                    return context.dataset.label + ': ' +
+                                           context.parsed.y.toFixed(2) + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderThroughputChart(results) {
+            const byPolicy = {};
+            const workloads = new Set();
+
+            results.forEach(result => {
+                if (result.metrics.throughput) {
+                    if (!byPolicy[result.policy_name]) byPolicy[result.policy_name] = {};
+                    byPolicy[result.policy_name][result.workload_name] =
+                        result.metrics.throughput.ops_per_sec / 1_000_000;
+                    workloads.add(result.workload_name);
+                }
+            });
+
+            const workloadArray = Array.from(workloads).sort();
+            const datasets = Object.entries(byPolicy).map(([policy, data]) => ({
+                label: policy,
+                data: workloadArray.map(w => data[w] || 0),
+                backgroundColor: policyColors[policy] || '#95a5a6',
+                borderColor: policyColors[policy] || '#7f8c8d',
+                borderWidth: 1
+            }));
+
+            new Chart(document.getElementById('throughputChart'), {
+                type: 'bar',
+                data: {
+                    labels: workloadArray,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Million ops/sec'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Workload'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderLatencyChart(results) {
+            const byPolicy = {};
+            const workloads = new Set();
+
+            results.forEach(result => {
+                if (result.metrics.latency) {
+                    if (!byPolicy[result.policy_name]) byPolicy[result.policy_name] = {};
+                    byPolicy[result.policy_name][result.workload_name] =
+                        result.metrics.latency.p99_ns;
+                    workloads.add(result.workload_name);
+                }
+            });
+
+            const workloadArray = Array.from(workloads).sort();
+            const datasets = Object.entries(byPolicy).map(([policy, data]) => ({
+                label: policy,
+                data: workloadArray.map(w => data[w] || 0),
+                backgroundColor: policyColors[policy] || '#95a5a6',
+                borderColor: policyColors[policy] || '#7f8c8d',
+                borderWidth: 1
+            }));
+
+            new Chart(document.getElementById('latencyChart'), {
+                type: 'bar',
+                data: {
+                    labels: workloadArray,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'P99 Latency (ns)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Workload'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderScanResistanceChart(results) {
+            const policies = [];
+            const scores = [];
+
+            results.forEach(result => {
+                if (result.metrics.scan_resistance) {
+                    policies.push(result.policy_name);
+                    scores.push(result.metrics.scan_resistance.resistance_score);
+                }
+            });
+
+            new Chart(document.getElementById('scanResistanceChart'), {
+                type: 'bar',
+                data: {
+                    labels: policies,
+                    datasets: [{
+                        label: 'Resistance Score',
+                        data: scores,
+                        backgroundColor: policies.map(p => policyColors[p] || '#95a5a6'),
+                        borderColor: policies.map(p => policyColors[p] || '#7f8c8d'),
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            max: 1.0,
+                            title: {
+                                display: true,
+                                text: 'Score (1.0 = perfect)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderAdaptationChart(results) {
+            const policies = [];
+            const opsTo80 = [];
+
+            results.forEach(result => {
+                if (result.metrics.adaptation) {
+                    policies.push(result.policy_name);
+                    opsTo80.push(result.metrics.adaptation.ops_to_80_percent);
+                }
+            });
+
+            new Chart(document.getElementById('adaptationChart'), {
+                type: 'bar',
+                data: {
+                    labels: policies,
+                    datasets: [{
+                        label: 'Operations to 80%',
+                        data: opsTo80,
+                        backgroundColor: policies.map(p => policyColors[p] || '#95a5a6'),
+                        borderColor: policies.map(p => policyColors[p] || '#7f8c8d'),
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Operations (lower is better)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
