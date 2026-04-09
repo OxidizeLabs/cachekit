@@ -6,7 +6,7 @@
 //! Run with: cargo run --example basic_car --features policy-car
 
 use cachekit::policy::car::CarCore;
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 
 fn main() {
     let mut ghost_demo: CarCore<&str, &str> = CarCore::new(2);

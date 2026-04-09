@@ -116,7 +116,7 @@
 //! | `store`          | Stores key -> `Arc<V>` ownership                   |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!
-//! ## Core Operations ([`CoreCache`] + [`MutableCache`] + [`LrukCacheTrait`])
+//! ## Core Operations ([`Cache`] + capability traits)
 //!
 //! | Method              | Complexity | Description                              |
 //! |---------------------|------------|------------------------------------------|
@@ -130,7 +130,7 @@
 //! | `capacity()`        | O(1)       | Maximum capacity                         |
 //! | `clear()`           | O(N)       | Remove all entries                       |
 //!
-//! ## LRU-K Specific Operations ([`LrukCacheTrait`])
+//! ## LRU-K Specific Operations (capability traits)
 //!
 //! | Method               | Complexity | Description                             |
 //! |----------------------|------------|-----------------------------------------|
@@ -187,7 +187,7 @@
 //!
 //! ```
 //! use cachekit::policy::lru_k::LrukCache;
-//! use cachekit::traits::{CoreCache, LrukCacheTrait};
+//! use cachekit::traits::{Cache, HistoryTracking};
 //!
 //! // Create LRU-2 cache (default K=2)
 //! let _cache: LrukCache<u32, String> = LrukCache::new(100);
@@ -274,8 +274,9 @@ use crate::metrics::traits::{
     CoreMetricsRecorder, LruKMetricsReadRecorder, LruKMetricsRecorder, LruMetricsRecorder,
     MetricsSnapshotProvider,
 };
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, LrukCacheTrait, MutableCache};
+use crate::traits::{
+    Cache, EvictingCache, FrequencyTracking, HistoryTracking, RecencyTracking, VictimInspectable,
+};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Segment {
@@ -315,7 +316,7 @@ struct Node<K, V> {
 ///
 /// ```
 /// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 ///
 /// // Create LRU-2 cache (default K=2)
 /// let mut cache: LrukCache<u32, String> = LrukCache::new(100);
@@ -336,7 +337,7 @@ struct Node<K, V> {
 ///
 /// ```
 /// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::{CoreCache, LrukCacheTrait};
+/// use cachekit::traits::Cache;
 ///
 /// let mut cache: LrukCache<u32, &str> = LrukCache::with_k(3, 2);
 ///
@@ -431,7 +432,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lru_k::LrukCache;
-    /// use cachekit::traits::{CoreCache, LrukCacheTrait, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: LrukCache<u32, String> = LrukCache::new(100);
     ///
@@ -461,7 +462,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lru_k::LrukCache;
-    /// use cachekit::traits::{CoreCache, LrukCacheTrait, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// // LRU-3: requires 3 accesses to be considered "hot"
     /// let cache: LrukCache<u32, String> = LrukCache::with_k(100, 3);
@@ -625,9 +626,33 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for LrukCache<K, V>
+/// [`Cache`] implementation for LRU-K.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lru_k::LrukCache;
+/// use cachekit::traits::Cache;
+///
+/// let mut cache: LrukCache<u32, String> = LrukCache::new(3);
+///
+/// cache.insert(1, "one".to_string());
+/// cache.insert(2, "two".to_string());
+///
+/// assert_eq!(cache.get(&1).map(|s| s.as_str()), Some("one"));
+///
+/// assert!(cache.contains(&1));
+/// assert!(!cache.contains(&999));
+///
+/// assert_eq!(cache.len(), 2);
+/// assert_eq!(cache.capacity(), 3);
+///
+/// cache.clear();
+/// assert_eq!(cache.len(), 0);
+/// ```
+impl<K, V> Cache<K, V> for LrukCache<K, V>
 where
-    K: Clone + Eq + Hash,
+    K: Eq + Hash + Clone,
     V: Clone,
 {
     #[inline]
@@ -644,42 +669,13 @@ where
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-/// [`CoreCache`] implementation for LRU-K.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
-///
-/// let mut cache: LrukCache<u32, String> = LrukCache::new(3);
-///
-/// // Insert items
-/// cache.insert(1, "one".to_string());
-/// cache.insert(2, "two".to_string());
-///
-/// // Get with access history update
-/// assert_eq!(cache.get(&1).map(|s| s.as_str()), Some("one"));
-///
-/// // Contains check
-/// assert!(cache.contains(&1));
-/// assert!(!cache.contains(&999));
-///
-/// // Length and capacity
-/// assert_eq!(cache.len(), 2);
-/// assert_eq!(cache.capacity(), 3);
-///
-/// // Clear all entries
-/// cache.clear();
-/// assert_eq!(cache.len(), 0);
-/// ```
-impl<K, V> CoreCache<K, V> for LrukCache<K, V>
-where
-    K: Eq + Hash + Clone,
-    V: Clone,
-{
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&V> {
+        let &node_ptr = self.map.get(key)?;
+        unsafe { Some((*node_ptr.as_ptr()).value.as_ref()) }
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
@@ -694,7 +690,6 @@ where
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            // Update value and record access
             let old_value = unsafe {
                 let node = &mut *node_ptr.as_ptr();
                 let old = std::mem::replace(&mut node.value, Arc::new(value));
@@ -764,42 +759,6 @@ where
         unsafe { Some((*node_ptr.as_ptr()).value.as_ref()) }
     }
 
-    fn clear(&mut self) {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_clear();
-
-        // Free all nodes
-        while self.pop_cold_tail_inner().is_some() {}
-        while self.pop_hot_tail_inner().is_some() {}
-        self.map.clear();
-        self.tick = 0;
-    }
-}
-
-/// [`MutableCache`] implementation for LRU-K.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
-///
-/// let mut cache: LrukCache<u32, String> = LrukCache::new(10);
-/// cache.insert(1, "value".to_string());
-///
-/// // Remove an entry
-/// let removed = cache.remove(&1);
-/// assert_eq!(removed.as_deref(), Some("value"));
-/// assert!(!cache.contains(&1));
-///
-/// // Remove non-existent key
-/// assert!(cache.remove(&999).is_none());
-/// ```
-impl<K, V> MutableCache<K, V> for LrukCache<K, V>
-where
-    K: Eq + Hash + Clone,
-    V: Clone,
-{
     #[inline]
     fn remove(&mut self, key: &K) -> Option<V> {
         let node_ptr = self.map.remove(key)?;
@@ -809,55 +768,27 @@ where
 
         Some((*node.value).clone())
     }
+
+    fn clear(&mut self) {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_clear();
+
+        while self.pop_cold_tail_inner().is_some() {}
+        while self.pop_hot_tail_inner().is_some() {}
+        self.map.clear();
+        self.tick = 0;
+    }
 }
 
-/// [`LrukCacheTrait`] implementation for LRU-K.
-///
-/// Provides eviction, access history inspection, and K-distance queries.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lru_k::LrukCache;
-/// use cachekit::traits::{CoreCache, LrukCacheTrait};
-///
-/// let mut cache: LrukCache<u32, &str> = LrukCache::with_k(10, 2);
-///
-/// // Insert and access items
-/// cache.insert(1, "one");
-/// cache.get(&1);  // Now has 2 accesses
-///
-/// cache.insert(2, "two");  // Only 1 access
-///
-/// // Check access counts
-/// assert_eq!(cache.access_count(&1), Some(2));
-/// assert_eq!(cache.access_count(&2), Some(1));
-///
-/// // K-distance is only available for items with >= K accesses
-/// assert!(cache.k_distance(&1).is_some());  // Has 2 accesses
-/// assert!(cache.k_distance(&2).is_none());   // Only 1 access
-///
-/// // Peek at eviction victim (item 2 has < K accesses)
-/// let (key, _) = cache.peek_lru_k().unwrap();
-/// assert_eq!(*key, 2);
-///
-/// // Pop eviction victim
-/// let (key, value) = cache.pop_lru_k().unwrap();
-/// assert_eq!(key, 2);
-/// assert_eq!(value, "two");
-/// ```
-impl<K, V> LrukCacheTrait<K, V> for LrukCache<K, V>
+/// LRU-K specific inherent methods.
+impl<K, V> LrukCache<K, V>
 where
     K: Eq + Hash + Clone,
     V: Clone,
 {
     /// Removes and returns the LRU-K eviction victim.
-    ///
-    /// Eviction priority:
-    /// 1. Items with fewer than K accesses (evicts oldest first)
-    /// 2. Items with K+ accesses (evicts oldest K-distance first)
     #[inline]
-    fn pop_lru_k(&mut self) -> Option<(K, V)> {
+    pub fn pop_lru_k(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
         self.metrics.record_pop_lru_k_call();
 
@@ -870,11 +801,8 @@ where
     }
 
     /// Peeks at the LRU-K eviction victim without removing it.
-    ///
-    /// Returns references to the key and value that would be evicted
-    /// by the next `pop_lru_k()` call.
     #[inline]
-    fn peek_lru_k(&self) -> Option<(&K, &V)> {
+    pub fn peek_lru_k(&self) -> Option<(&K, &V)> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_k_call();
 
@@ -891,37 +819,29 @@ where
 
     /// Returns the K value used by this cache.
     #[inline]
-    fn k_value(&self) -> usize {
+    pub fn k_value(&self) -> usize {
         self.k
     }
 
     /// Returns the access history for a key (most recent first).
-    ///
-    /// The history is capped at K entries. Timestamps are monotonic
-    /// logical ticks, not wall-clock time.
-    fn access_history(&self, key: &K) -> Option<Vec<u64>> {
+    pub fn access_history(&self, key: &K) -> Option<Vec<u64>> {
         let node_ptr = self.map.get(key)?;
         unsafe {
             let node = node_ptr.as_ref();
-            Some(node.history.iter().rev().copied().collect()) // Most recent first
+            Some(node.history.iter().rev().copied().collect())
         }
     }
 
     /// Returns the number of accesses recorded for a key.
-    ///
-    /// The count is capped at K (the history size limit).
     #[inline]
-    fn access_count(&self, key: &K) -> Option<usize> {
+    pub fn access_count(&self, key: &K) -> Option<usize> {
         let node_ptr = self.map.get(key)?;
         unsafe { Some(node_ptr.as_ref().history.len()) }
     }
 
     /// Returns the K-distance for a key.
-    ///
-    /// K-distance is the timestamp of the K-th most recent access.
-    /// Only available for items with at least K accesses.
     #[inline]
-    fn k_distance(&self, key: &K) -> Option<u64> {
+    pub fn k_distance(&self, key: &K) -> Option<u64> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_k_distance_call();
 
@@ -943,11 +863,8 @@ where
     }
 
     /// Updates the access time for a key without retrieving its value.
-    ///
-    /// Useful for scenarios like pinned pages where you want to update
-    /// access history without reading the value.
     #[inline]
-    fn touch(&mut self, key: &K) -> bool {
+    pub fn touch(&mut self, key: &K) -> bool {
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_call();
 
@@ -966,9 +883,8 @@ where
 
     /// Returns the eviction priority rank for a key.
     ///
-    /// Rank 0 means the key would be evicted first. Higher ranks mean
-    /// the key is safer from eviction.
-    fn k_distance_rank(&self, key: &K) -> Option<usize> {
+    /// Rank 0 means the key would be evicted first.
+    pub fn k_distance_rank(&self, key: &K) -> Option<usize> {
         #[cfg(feature = "metrics")]
         (&self.metrics).record_k_distance_rank_call();
 
@@ -986,28 +902,21 @@ where
             let num_accesses = history.len();
 
             if num_accesses < self.k {
-                // Items with fewer than K accesses use their earliest access time
                 let earliest = history.front().copied().unwrap_or(u64::MAX);
-                items_with_distances.push((false, earliest)); // false = not full K accesses
+                items_with_distances.push((false, earliest));
             } else {
-                // Items with K or more accesses use their K-distance
                 let k_distance = history.front().copied().unwrap_or(u64::MAX);
-                items_with_distances.push((true, k_distance)); // true = has full K accesses
+                items_with_distances.push((true, k_distance));
             }
         }
 
-        // Sort by priority: items with fewer than K accesses first (by earliest access),
-        // then items with K+ accesses (by K-distance)
-        items_with_distances.sort_by(|a, b| {
-            match (a.0, b.0) {
-                (false, false) => a.1.cmp(&b.1), // Both have < K accesses, sort by earliest
-                (true, true) => a.1.cmp(&b.1),   // Both have >= K accesses, sort by K-distance
-                (false, true) => std::cmp::Ordering::Less, // < K accesses comes first
-                (true, false) => std::cmp::Ordering::Greater, // >= K accesses comes second
-            }
+        items_with_distances.sort_by(|a, b| match (a.0, b.0) {
+            (false, false) => a.1.cmp(&b.1),
+            (true, true) => a.1.cmp(&b.1),
+            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
         });
 
-        // Find the rank of the target key
         let target_node = self.map.get(key)?;
         let target_history = unsafe { &target_node.as_ref().history };
         let target_num_accesses = target_history.len();
@@ -1024,6 +933,99 @@ where
                 #[cfg(feature = "metrics")]
                 (&self.metrics).record_k_distance_rank_found();
             })
+    }
+}
+
+impl<K, V> EvictingCache<K, V> for LrukCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.pop_lru_k()
+    }
+}
+
+impl<K, V> VictimInspectable<K, V> for LrukCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn peek_victim(&self) -> Option<(&K, &V)> {
+        self.peek_lru_k()
+    }
+}
+
+impl<K, V> RecencyTracking<K, V> for LrukCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn touch(&mut self, key: &K) -> bool {
+        LrukCache::touch(self, key)
+    }
+
+    fn recency_rank(&self, key: &K) -> Option<usize> {
+        if !self.map.contains_key(key) {
+            return None;
+        }
+
+        let target_ptr = *self.map.get(key)?;
+        let mut rank = 0;
+
+        // Walk hot list head (MRU) to tail
+        let mut current = self.hot_head;
+        while let Some(ptr) = current {
+            if ptr == target_ptr {
+                return Some(rank);
+            }
+            rank += 1;
+            current = unsafe { ptr.as_ref().next };
+        }
+
+        // Walk cold list head to tail
+        let mut current = self.cold_head;
+        while let Some(ptr) = current {
+            if ptr == target_ptr {
+                return Some(rank);
+            }
+            rank += 1;
+            current = unsafe { ptr.as_ref().next };
+        }
+
+        None
+    }
+}
+
+impl<K, V> FrequencyTracking<K, V> for LrukCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn frequency(&self, key: &K) -> Option<u64> {
+        self.access_count(key).map(|c| c as u64)
+    }
+}
+
+impl<K, V> HistoryTracking<K, V> for LrukCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn access_count(&self, key: &K) -> Option<usize> {
+        LrukCache::access_count(self, key)
+    }
+
+    fn k_distance(&self, key: &K) -> Option<u64> {
+        LrukCache::k_distance(self, key)
+    }
+
+    fn access_history(&self, key: &K) -> Option<Vec<u64>> {
+        LrukCache::access_history(self, key)
+    }
+
+    fn k_value(&self) -> usize {
+        LrukCache::k_value(self)
     }
 }
 
@@ -1160,7 +1162,7 @@ where
     ///
     /// ```ignore
     /// use cachekit::policy::lru_k::LrukCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache: LrukCache<u32, &str> = LrukCache::new(100);
     /// cache.insert(1, "one");

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rand_distr::{Distribution, Exp, Pareto as ParetoDistr, Zipf};
@@ -495,7 +495,7 @@ pub fn run_hit_rate<C, V, F>(
     value_for_key: F,
 ) -> HitRate
 where
-    C: CoreCache<u64, Arc<V>>,
+    C: Cache<u64, Arc<V>>,
     F: Fn(u64) -> Arc<V>,
 {
     let mut op_model = ReadThrough::new(1.0, 0);

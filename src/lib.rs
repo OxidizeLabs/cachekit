@@ -20,7 +20,7 @@
 //!
 //! ```
 //! use cachekit::policy::lru_k::LrukCache;
-//! use cachekit::traits::{CoreCache, LrukCacheTrait};
+//! use cachekit::traits::Cache;
 //!
 //! let mut cache = LrukCache::with_k(1000, 2);
 //! cache.insert(42, "value");
@@ -34,8 +34,8 @@
 //! ┌──────────────────────────────────────────────────────────────────────┐
 //! │                          cachekit                                    │
 //! │                                                                      │
-//! │   traits        Trait hierarchy (ReadOnlyCache → CoreCache → …)      │
-//! │   builder       Unified CacheBuilder + Cache<K,V> wrapper            │
+//! │   traits        Cache<K,V> trait + capability traits                  │
+//! │   builder       CacheBuilder + DynCache<K,V> runtime wrapper         │
 //! │   policy        18 eviction policies behind feature flags            │
 //! │   ds            Arena, ring buffer, intrusive list, ghost list, …    │
 //! │   store         Storage backends (HashMap, slab, weighted)           │
@@ -51,26 +51,26 @@
 //!
 //! # Trait Hierarchy
 //!
-//! All caches implement [`traits::CoreCache`], which extends
-//! [`traits::ReadOnlyCache`]. Policy-specific behaviour is expressed through
-//! additional traits:
+//! All 18 caches implement [`traits::Cache`], which provides the full
+//! CRUD surface (`contains`, `len`, `capacity`, `peek`, `get`, `insert`,
+//! `remove`, `clear`). Optional capabilities are expressed as extension
+//! traits:
 //!
 //! | Trait | Extends | Purpose |
 //! |---|---|---|
-//! | [`ReadOnlyCache`](traits::ReadOnlyCache) | — | `contains`, `len`, `capacity` (no side effects) |
-//! | [`CoreCache`](traits::CoreCache) | `ReadOnlyCache` | `insert`, `get`, `clear` |
-//! | [`MutableCache`](traits::MutableCache) | `CoreCache` | `remove` (not available on FIFO) |
-//! | [`FifoCacheTrait`](traits::FifoCacheTrait) | `CoreCache` | `pop_oldest`, `age_rank` |
-//! | [`LruCacheTrait`](traits::LruCacheTrait) | `MutableCache` | `pop_lru`, `touch`, `recency_rank` |
-//! | [`LfuCacheTrait`](traits::LfuCacheTrait) | `MutableCache` | `pop_lfu`, `frequency` |
-//! | [`LrukCacheTrait`](traits::LrukCacheTrait) | `MutableCache` | `pop_lru_k`, `k_distance` |
+//! | [`Cache`](traits::Cache) | — | Core CRUD: `peek`, `get`, `insert`, `remove`, `clear`, `len`, `capacity` |
+//! | [`EvictingCache`](traits::EvictingCache) | `Cache` | `evict_one` — explicit single-item eviction |
+//! | [`VictimInspectable`](traits::VictimInspectable) | `Cache` | `peek_victim` — inspect next eviction candidate |
+//! | [`RecencyTracking`](traits::RecencyTracking) | `Cache` | `touch`, `recency_rank` |
+//! | [`FrequencyTracking`](traits::FrequencyTracking) | `Cache` | `frequency` |
+//! | [`HistoryTracking`](traits::HistoryTracking) | `Cache` | `access_count`, `k_distance`, `access_history`, `k_value` |
 //!
 //! Write generic code against the trait you need:
 //!
 //! ```
-//! use cachekit::traits::{CoreCache, ReadOnlyCache};
+//! use cachekit::traits::Cache;
 //!
-//! fn utilization<K, V, C: ReadOnlyCache<K, V>>(cache: &C) -> f64 {
+//! fn utilization<K, V, C: Cache<K, V>>(cache: &C) -> f64 {
 //!     cache.len() as f64 / cache.capacity() as f64
 //! }
 //! ```

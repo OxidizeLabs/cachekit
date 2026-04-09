@@ -7,7 +7,7 @@
 //! Run with: cargo run --example basic_arc --features policy-arc
 
 use cachekit::policy::arc::ArcCore;
-use cachekit::traits::{CoreCache, ReadOnlyCache};
+use cachekit::traits::Cache;
 
 fn main() {
     let mut cache: ArcCore<&str, &str> = ArcCore::new(2);

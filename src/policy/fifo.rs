@@ -127,7 +127,7 @@
 //! | `insertion_order` | `VecDeque<K>`            | Tracks insertion order        |
 //! | `capacity`        | `usize`                  | Maximum entries               |
 //!
-//! ## Core Operations (CoreCache)
+//! ## Core Operations (Cache)
 //!
 //! | Method           | Complexity | Description                              |
 //! |------------------|------------|------------------------------------------|
@@ -142,7 +142,7 @@
 //!
 //! \* Amortized, may skip stale entries during eviction
 //!
-//! ## FIFO-Specific Operations (FifoCacheTrait)
+//! ## FIFO-Specific Operations
 //!
 //! | Method                | Complexity | Description                          |
 //! |-----------------------|------------|--------------------------------------|
@@ -193,7 +193,7 @@
 //!
 //! ```
 //! use cachekit::policy::fifo::FifoCache;
-//! use cachekit::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
+//! use cachekit::traits::Cache;
 //!
 //! let mut cache: FifoCache<String, i32> = FifoCache::new(100);
 //!
@@ -254,12 +254,11 @@ use std::hash::Hash;
 #[cfg(feature = "concurrency")]
 use std::sync::Arc;
 
-use crate::prelude::ReadOnlyCache;
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
 #[cfg(feature = "concurrency")]
 use crate::traits::ConcurrentCache;
-use crate::traits::{CoreCache, FifoCacheTrait};
+use crate::traits::{Cache, EvictingCache, VictimInspectable};
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
@@ -352,7 +351,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::fifo::FifoCache;
-    /// use cachekit::traits::ReadOnlyCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: FifoCache<String, i32> = FifoCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -392,14 +391,14 @@ where
 
     /// Returns the internal queue length (may include stale entries).
     ///
-    /// This count may exceed [`len`](ReadOnlyCache::len) when stale
+    /// This count may exceed [`len`](Cache::len) when stale
     /// entries are present. Primarily useful for diagnostics.
     ///
     /// # Example
     ///
     /// ```
     /// use cachekit::policy::fifo::FifoCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = FifoCache::new(10);
     /// cache.insert("a", 1);
@@ -418,7 +417,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::fifo::FifoCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = FifoCache::new(10);
     /// cache.insert("a", 1);
@@ -443,7 +442,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::fifo::FifoCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = FifoCache::new(10);
     /// cache.insert("a", 1);
@@ -550,7 +549,7 @@ where
 
     /// Returns a clone of the value for the given key.
     ///
-    /// Because the underlying [`CoreCache::get`] takes `&mut self` (some
+    /// Because the underlying [`Cache::get`] takes `&mut self` (some
     /// policies update access metadata), this acquires a **write lock**.
     /// For FIFO, where `get` is side-effect-free, prefer [`peek`](Self::peek)
     /// which only takes a read lock.
@@ -785,9 +784,9 @@ where
 {
 }
 
-impl<K, V> ReadOnlyCache<K, V> for FifoCache<K, V>
+impl<K, V> Cache<K, V> for FifoCache<K, V>
 where
-    K: Eq + Hash,
+    K: Clone + Eq + Hash,
 {
     fn contains(&self, key: &K) -> bool {
         self.inner.store.contains(key)
@@ -800,12 +799,26 @@ where
     fn capacity(&self) -> usize {
         self.inner.store.capacity()
     }
-}
 
-impl<K, V> CoreCache<K, V> for FifoCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+    fn peek(&self, key: &K) -> Option<&V> {
+        self.inner.store.peek(key)
+    }
+
+    fn get(&mut self, key: &K) -> Option<&V> {
+        match self.inner.store.get(key) {
+            Some(value) => {
+                #[cfg(feature = "metrics")]
+                self.inner.metrics.record_get_hit();
+                Some(value)
+            },
+            None => {
+                #[cfg(feature = "metrics")]
+                self.inner.metrics.record_get_miss();
+                None
+            },
+        }
+    }
+
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         #[cfg(feature = "metrics")]
         self.inner.metrics.record_insert_call();
@@ -841,19 +854,8 @@ where
         None
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
-        match self.inner.store.get(key) {
-            Some(value) => {
-                #[cfg(feature = "metrics")]
-                self.inner.metrics.record_get_hit();
-                Some(value)
-            },
-            None => {
-                #[cfg(feature = "metrics")]
-                self.inner.metrics.record_get_miss();
-                None
-            },
-        }
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.inner.store.remove(key)
     }
 
     fn clear(&mut self) {
@@ -865,11 +867,16 @@ where
     }
 }
 
-impl<K, V> FifoCacheTrait<K, V> for FifoCache<K, V>
+// FIFO-specific inherent methods (eviction order inspection and manipulation).
+impl<K, V> FifoCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    fn pop_oldest(&mut self) -> Option<(K, V)> {
+    /// Removes and returns the oldest entry.
+    ///
+    /// Skips stale entries (keys present in the queue but not the store).
+    /// Returns `None` if the cache is empty.
+    pub fn pop_oldest(&mut self) -> Option<(K, V)> {
         #[cfg(feature = "metrics")]
         self.inner.metrics.record_pop_oldest_call();
 
@@ -887,7 +894,10 @@ where
         None
     }
 
-    fn peek_oldest(&self) -> Option<(&K, &V)> {
+    /// Peeks at the oldest entry without removing it.
+    ///
+    /// Scans past stale entries. Returns `None` if the cache is empty.
+    pub fn peek_oldest(&self) -> Option<(&K, &V)> {
         #[cfg(feature = "metrics")]
         (&self.inner.metrics).record_peek_oldest_call();
 
@@ -901,7 +911,8 @@ where
         None
     }
 
-    fn pop_oldest_batch_into(&mut self, count: usize, out: &mut Vec<(K, V)>) {
+    /// Removes up to `count` oldest entries into the provided buffer.
+    pub fn pop_oldest_batch_into(&mut self, count: usize, out: &mut Vec<(K, V)>) {
         out.reserve(count.min(self.len()));
         for _ in 0..count {
             match self.pop_oldest() {
@@ -911,7 +922,17 @@ where
         }
     }
 
-    fn age_rank(&self, key: &K) -> Option<usize> {
+    /// Removes up to `count` oldest entries.
+    pub fn pop_oldest_batch(&mut self, count: usize) -> Vec<(K, V)> {
+        let mut out = Vec::new();
+        self.pop_oldest_batch_into(count, &mut out);
+        out
+    }
+
+    /// Returns the age rank of a key (0 = oldest).
+    ///
+    /// Returns `None` if the key is not in the cache.
+    pub fn age_rank(&self, key: &K) -> Option<usize> {
         #[cfg(feature = "metrics")]
         (&self.inner.metrics).record_age_rank_call();
 
@@ -933,6 +954,24 @@ where
     }
 }
 
+impl<K, V> EvictingCache<K, V> for FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.pop_oldest()
+    }
+}
+
+impl<K, V> VictimInspectable<K, V> for FifoCache<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn peek_victim(&self) -> Option<(&K, &V)> {
+        self.peek_oldest()
+    }
+}
+
 #[cfg(feature = "metrics")]
 impl<K, V> FifoCache<K, V>
 where
@@ -944,7 +983,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::fifo::FifoCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     ///
     /// let mut cache = FifoCache::new(10);
     /// cache.insert("key", 42);
@@ -1034,7 +1073,7 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::policy::fifo::FifoCache;
-    use crate::traits::{CoreCache, FifoCacheTrait, ReadOnlyCache};
+    use crate::traits::Cache;
 
     // C-SEND-SYNC: Verify auto-trait derivation is not accidentally broken.
     fn _assert_send<T: Send>() {}

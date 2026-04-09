@@ -18,7 +18,7 @@ use cachekit::policy::lru::LruCore;
 use cachekit::policy::lru_k::LrukCache;
 use cachekit::policy::s3_fifo::S3FifoCache;
 use cachekit::policy::two_q::TwoQCore;
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 const CAPACITY: usize = 16_384;

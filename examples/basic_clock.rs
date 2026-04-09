@@ -6,7 +6,7 @@
 //! Run with: cargo run --example basic_clock
 
 use cachekit::policy::clock::ClockCache;
-use cachekit::traits::{CoreCache, ReadOnlyCache};
+use cachekit::traits::Cache;
 
 fn main() {
     let mut cache: ClockCache<u32, &str> = ClockCache::new(3);

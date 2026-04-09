@@ -122,11 +122,8 @@
 //!
 //! ## Removal Policy
 //!
-//! `SlruCore` intentionally does not support arbitrary key removal
-//! ([`MutableCache`](crate::traits::MutableCache)). Allowing `remove(&K)` would
-//! break the probationary/protected segment accounting — the segment a removed
-//! entry belonged to cannot be reliably adjusted without re-scanning the lists.
-//! Entries leave the cache only via the SLRU eviction policy or [`clear`](SlruCore::clear).
+//! `SlruCore` supports key removal via [`Cache::remove`].
+//! Removing an entry detaches it from its segment and adjusts the segment counters.
 //!
 //! ## Thread Safety
 //!
@@ -151,8 +148,7 @@ use crate::metrics::metrics_impl::SlruMetrics;
 use crate::metrics::snapshot::SlruMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider, SlruMetricsRecorder};
-use crate::prelude::ReadOnlyCache;
-use crate::traits::CoreCache;
+use crate::traits::Cache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::iter::FusedIterator;
@@ -190,9 +186,8 @@ struct Node<K, V> {
 /// to protected. This provides scan resistance by keeping one-time accesses
 /// from polluting the main cache.
 ///
-/// `SlruCore` does not support arbitrary key removal (no
-/// [`MutableCache`](crate::traits::MutableCache)). Entries leave only via the
-/// SLRU eviction policy or [`clear`](SlruCore::clear).
+/// `SlruCore` supports key removal via [`Cache::remove`].
+/// Removing an entry detaches it from its segment and adjusts the segment counters.
 ///
 /// # Type Parameters
 ///
@@ -700,6 +695,30 @@ where
         self.validate_invariants();
     }
 
+    /// Removes a specific key-value pair, returning the value if it existed.
+    ///
+    /// Detaches the entry from its segment (probationary or protected) and
+    /// adjusts the segment counters.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::policy::slru::SlruCore;
+    ///
+    /// let mut cache = SlruCore::new(100, 0.25);
+    /// cache.insert("key", 42);
+    /// assert_eq!(cache.remove(&"key"), Some(42));
+    /// assert!(!cache.contains(&"key"));
+    /// ```
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let node_ptr = self.map.remove(key)?;
+        self.detach(node_ptr);
+        unsafe {
+            let node = Box::from_raw(node_ptr.as_ptr());
+            Some(node.value)
+        }
+    }
+
     /// Returns an iterator over shared references to cached key-value pairs.
     ///
     /// Visits probationary entries (MRU to LRU) then protected entries.
@@ -958,55 +977,60 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for SlruCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    #[inline]
-    fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-}
-
-/// Implementation of the [`CoreCache`] trait for SLRU.
+/// Implementation of the [`Cache`] trait for SLRU.
 ///
 /// Allows `SlruCore` to be used through the unified cache interface.
 ///
 /// # Example
 ///
 /// ```
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
+/// use cachekit::traits::Cache;
 /// use cachekit::policy::slru::SlruCore;
 ///
 /// let mut cache: SlruCore<&str, i32> = SlruCore::new(100, 0.25);
 ///
-/// // Use via CoreCache trait
+/// // Use via Cache trait
 /// cache.insert("key", 42);
 /// assert_eq!(cache.get(&"key"), Some(&42));
 /// assert!(cache.contains(&"key"));
 /// ```
-impl<K, V> CoreCache<K, V> for SlruCore<K, V>
+impl<K, V> Cache<K, V> for SlruCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        SlruCore::contains(self, key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        SlruCore::len(self)
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        SlruCore::capacity(self)
+    }
+
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&V> {
+        SlruCore::peek(self, key)
+    }
+
+    #[inline]
+    fn get(&mut self, key: &K) -> Option<&V> {
+        SlruCore::get(self, key)
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         SlruCore::insert(self, key, value)
     }
 
     #[inline]
-    fn get(&mut self, key: &K) -> Option<&V> {
-        SlruCore::get(self, key)
+    fn remove(&mut self, key: &K) -> Option<V> {
+        SlruCore::remove(self, key)
     }
 
     fn clear(&mut self) {
@@ -2066,10 +2090,10 @@ mod tests {
     fn trait_insert_returns_old_value() {
         let mut cache: SlruCore<&str, i32> = SlruCore::new(10, 0.25);
 
-        let first = CoreCache::insert(&mut cache, "key", 1);
+        let first = Cache::insert(&mut cache, "key", 1);
         assert_eq!(first, None);
 
-        let second = CoreCache::insert(&mut cache, "key", 2);
+        let second = Cache::insert(&mut cache, "key", 2);
         assert_eq!(
             second,
             Some(1),

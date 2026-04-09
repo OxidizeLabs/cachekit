@@ -48,7 +48,7 @@
 //!
 //! ```
 //! use cachekit::policy::s3_fifo::S3FifoCache;
-//! use cachekit::traits::CoreCache;
+//! use cachekit::traits::Cache;
 //!
 //! let mut cache: S3FifoCache<String, String> = S3FifoCache::new(100);
 //!
@@ -88,9 +88,7 @@ use crate::metrics::snapshot::S3FifoMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider, S3FifoMetricsRecorder};
 
-use crate::traits::CoreCache;
-use crate::traits::MutableCache;
-use crate::traits::ReadOnlyCache;
+use crate::traits::{Cache, EvictingCache};
 
 /// Maximum frequency value (2 bits = 0-3).
 const MAX_FREQ: u8 = 3;
@@ -363,7 +361,7 @@ impl<K, V> Debug for IntoIter<K, V> {
 ///
 /// ```
 /// use cachekit::policy::s3_fifo::S3FifoCache;
-/// use cachekit::traits::CoreCache;
+/// use cachekit::traits::Cache;
 ///
 /// let mut cache: S3FifoCache<String, String> = S3FifoCache::new(100);
 ///
@@ -1215,7 +1213,7 @@ where
 // Cache trait implementations
 // ---------------------------------------------------------------------------
 
-impl<K, V> ReadOnlyCache<K, V> for S3FifoCache<K, V>
+impl<K, V> Cache<K, V> for S3FifoCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -1233,12 +1231,12 @@ where
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-impl<K, V> CoreCache<K, V> for S3FifoCache<K, V>
-where
-    K: Clone + Eq + Hash,
-{
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&V> {
+        S3FifoCache::peek(self, key)
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         S3FifoCache::insert(self, key, value)
@@ -1249,18 +1247,63 @@ where
         S3FifoCache::get(self, key)
     }
 
+    #[inline]
+    fn remove(&mut self, key: &K) -> Option<V> {
+        S3FifoCache::remove(self, key)
+    }
+
     fn clear(&mut self) {
         S3FifoCache::clear(self);
     }
 }
 
-impl<K, V> MutableCache<K, V> for S3FifoCache<K, V>
+impl<K, V> EvictingCache<K, V> for S3FifoCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    #[inline]
-    fn remove(&mut self, key: &K) -> Option<V> {
-        S3FifoCache::remove(self, key)
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.evict_if_needed();
+        // S3-FIFO eviction is integrated into insert; explicit eviction
+        // pops from Small (freq==0) then Main (freq==0).
+        let (id, freq) = if self.small_tail.is_some() {
+            self.pop_small_tail()?
+        } else {
+            self.pop_main_tail()?
+        };
+
+        if freq > 0 {
+            // Re-insert promoted entry, then try again from the other queue
+            let queue = self.arena.get(id).expect("arena/map out of sync").queue;
+            match queue {
+                QueueKind::Small => {
+                    *self.arena.get_mut(id).unwrap().freq.get_mut() = 0;
+                    self.attach_main_head(id);
+                },
+                QueueKind::Main => {
+                    *self.arena.get_mut(id).unwrap().freq.get_mut() = freq - 1;
+                    self.attach_main_head(id);
+                },
+            }
+            // Retry - pop from the queue we didn't just try
+            let (id2, freq2) = if self.main_tail.is_some() {
+                self.pop_main_tail()?
+            } else {
+                self.pop_small_tail()?
+            };
+            if freq2 > 0 {
+                // Re-insert again; give up on explicit eviction
+                *self.arena.get_mut(id2).unwrap().freq.get_mut() = freq2.saturating_sub(1);
+                self.attach_main_head(id2);
+                return None;
+            }
+            let node = self.arena.remove(id2).expect("arena/map out of sync");
+            self.map.remove(&node.key);
+            Some((node.key, node.value))
+        } else {
+            let node = self.arena.remove(id).expect("arena/map out of sync");
+            self.map.remove(&node.key);
+            Some((node.key, node.value))
+        }
     }
 }
 
@@ -2181,20 +2224,13 @@ mod tests {
 
     mod trait_impls {
         use super::*;
-        use crate::traits::{CoreCache, MutableCache};
+        use crate::traits::Cache;
 
         #[test]
-        fn implements_core_cache() {
-            fn assert_core_cache<T: CoreCache<K, V>, K, V>(_: &T) {}
+        fn implements_cache() {
+            fn assert_cache<T: Cache<K, V>, K, V>(_: &T) {}
             let cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
-            assert_core_cache(&cache);
-        }
-
-        #[test]
-        fn implements_mutable_cache() {
-            fn assert_mutable_cache<T: MutableCache<K, V>, K, V>(_: &T) {}
-            let cache: S3FifoCache<&str, i32> = S3FifoCache::new(10);
-            assert_mutable_cache(&cache);
+            assert_cache(&cache);
         }
 
         #[test]

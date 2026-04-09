@@ -6,7 +6,7 @@
 //! Run with: cargo run --example basic_nru
 
 use cachekit::policy::nru::NruCache;
-use cachekit::traits::{CoreCache, ReadOnlyCache};
+use cachekit::traits::Cache;
 
 fn main() {
     println!("=== NRU (Not Recently Used) Cache Example ===\n");

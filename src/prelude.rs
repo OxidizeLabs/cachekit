@@ -6,16 +6,14 @@
 //! use cachekit::prelude::*;
 //! ```
 //!
-//! This gives you the core traits ([`CoreCache`], [`ReadOnlyCache`],
-//! [`MutableCache`]), the policy-specific traits, and the [`CacheBuilder`]
-//! entry point. Internal data structures and concrete policy types are
-//! available from their respective modules ([`ds`](crate::ds),
-//! [`policy`](crate::policy)).
+//! This gives you the main [`Cache`] trait, the optional capability traits,
+//! and the [`CacheBuilder`] entry point. Concrete policy types are available
+//! from their respective modules ([`policy`](crate::policy)).
 
-pub use crate::builder::{Cache, CacheBuilder, CachePolicy};
+pub use crate::builder::{CacheBuilder, CachePolicy, DynCache};
 pub use crate::traits::{
-    ConcurrentCache, CoreCache, FifoCacheTrait, LfuCacheTrait, LruCacheTrait, LrukCacheTrait,
-    MutableCache, ReadOnlyCache,
+    Cache, ConcurrentCache, EvictingCache, FrequencyTracking, HistoryTracking, RecencyTracking,
+    VictimInspectable,
 };
 
 #[cfg(feature = "metrics")]

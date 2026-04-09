@@ -5,7 +5,7 @@ mod integration_tests {
     #[cfg(feature = "concurrency")]
     use cachekit::policy::lru::ConcurrentLruCache;
     use cachekit::policy::lru::LruCore;
-    use cachekit::traits::{CoreCache, LruCacheTrait, MutableCache};
+    use cachekit::traits::Cache;
 
     use super::*;
 

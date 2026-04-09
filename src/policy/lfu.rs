@@ -149,7 +149,7 @@
 //! | `Entry<K>`       | SlotArena entry with key + freq + bucket links     |
 //! | `Bucket`         | Per-frequency list with head/tail SlotId           |
 //!
-//! ## Core Operations (CoreCache + MutableCache)
+//! ## Core Operations (Cache)
 //!
 //! | Method           | Complexity | Description                                |
 //! |------------------|------------|--------------------------------------------|
@@ -162,7 +162,7 @@
 //! | `capacity()`     | O(1)       | Maximum capacity                           |
 //! | `clear()`        | O(n)       | Remove all entries                         |
 //!
-//! ## LFU-Specific Operations (LfuCacheTrait)
+//! ## LFU-Specific Operations (capability traits)
 //!
 //! | Method                   | Complexity | Description                       |
 //! |--------------------------|------------|-----------------------------------|
@@ -221,7 +221,7 @@
 //! use crate::storage::disk::async_disk::cache::lfu::LfuCache;
 //! use std::sync::Arc;
 //! use crate::storage::disk::async_disk::cache::cache_traits::{
-//!     CoreCache, MutableCache, LfuCacheTrait,
+//!     Cache, EvictingCache, FrequencyTracking, VictimInspectable,
 //! };
 //!
 //! // Create cache
@@ -268,7 +268,7 @@
 //! ```rust,ignore
 //! use crate::ds::KeyInterner;
 //! use crate::policy::lfu::LfuHandleCache;
-//! use crate::traits::{CoreCache, LfuCacheTrait};
+//! use cachekit::traits::{Cache, FrequencyTracking};
 //! use std::sync::Arc;
 //!
 //! let mut interner = KeyInterner::new();
@@ -322,10 +322,9 @@ use crate::metrics::snapshot::LfuMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, LfuMetricsReadRecorder, LfuMetricsRecorder, MetricsSnapshotProvider,
 };
-use crate::prelude::ReadOnlyCache;
 use crate::store::hashmap::HashMapStore;
 use crate::store::traits::{StoreCore, StoreMut};
-use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
+use crate::traits::{Cache, EvictingCache, FrequencyTracking, VictimInspectable};
 
 /// LFU (Least Frequently Used) Cache.
 ///
@@ -341,7 +340,7 @@ use crate::traits::{CoreCache, LfuCacheTrait, MutableCache};
 ///
 /// ```
 /// use cachekit::policy::lfu::LfuCache;
-/// use cachekit::traits::{CoreCache, LfuCacheTrait, ReadOnlyCache};
+/// use cachekit::traits::{Cache, FrequencyTracking};
 /// use std::sync::Arc;
 ///
 /// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
@@ -385,7 +384,7 @@ pub struct LfuCache<K, V> {
 ///
 /// ```
 /// use cachekit::policy::lfu::LfuHandleCache;
-/// use cachekit::traits::{CoreCache, LfuCacheTrait};
+/// use cachekit::traits::{Cache, FrequencyTracking};
 /// use std::sync::Arc;
 ///
 /// // Using u64 handles (e.g., from a KeyInterner)
@@ -423,7 +422,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: LfuCache<String, i32> = LfuCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -453,7 +452,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// // Expect many distinct frequencies (long-running cache)
     /// let cache: LfuCache<String, i32> = LfuCache::with_bucket_hint(100, 64);
@@ -476,7 +475,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
@@ -509,7 +508,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
@@ -539,7 +538,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::{CoreCache, LfuCacheTrait};
+    /// use cachekit::traits::{Cache, FrequencyTracking};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
@@ -571,7 +570,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
@@ -599,6 +598,77 @@ where
         let value = self.store.remove(&key)?;
         Some((key, value))
     }
+
+    /// Removes and returns the least frequently used entry.
+    pub fn pop_lfu(&mut self) -> Option<(K, Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lfu_call();
+
+        let result = self.evict_min_freq();
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            self.metrics.record_pop_lfu_found();
+        }
+
+        result
+    }
+
+    /// Peeks at the least frequently used entry without removing it.
+    pub fn peek_lfu(&self) -> Option<(&K, &Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_call();
+
+        let (key, _freq) = self.buckets.peek_min()?;
+        let value = self.store.peek(key)?;
+
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_found();
+
+        Some((key, value))
+    }
+
+    /// Returns the access frequency for a key.
+    pub fn frequency(&self, key: &K) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_frequency_call();
+
+        let result = self.buckets.frequency(key);
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_frequency_found();
+        }
+
+        result
+    }
+
+    /// Resets the frequency of a key to 1.
+    pub fn reset_frequency(&mut self, key: &K) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_call();
+
+        let previous_freq = self.buckets.remove(key)?;
+        self.buckets.insert(key.clone());
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_found();
+
+        Some(previous_freq)
+    }
+
+    /// Manually increments the frequency of a key.
+    pub fn increment_frequency(&mut self, key: &K) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_call();
+
+        let new_freq = self.buckets.touch(key)?;
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_found();
+
+        Some(new_freq)
+    }
 }
 
 impl<H, V> LfuHandleCache<H, V>
@@ -611,7 +681,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuHandleCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: LfuHandleCache<u64, String> = LfuHandleCache::new(100);
     /// assert_eq!(cache.capacity(), 100);
@@ -636,7 +706,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuHandleCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     ///
     /// let cache: LfuHandleCache<u64, i32> = LfuHandleCache::with_bucket_hint(100, 64);
     /// assert_eq!(cache.capacity(), 100);
@@ -656,7 +726,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuHandleCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
@@ -687,7 +757,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuHandleCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
@@ -716,7 +786,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuHandleCache;
-    /// use cachekit::traits::{CoreCache, LfuCacheTrait};
+    /// use cachekit::traits::{Cache, FrequencyTracking};
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
@@ -747,7 +817,7 @@ where
     ///
     /// ```
     /// use cachekit::policy::lfu::LfuHandleCache;
-    /// use cachekit::traits::CoreCache;
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
@@ -775,11 +845,107 @@ where
         let value = self.store.remove(&handle)?;
         Some((handle, value))
     }
+
+    /// Removes and returns the least frequently used entry.
+    pub fn pop_lfu(&mut self) -> Option<(H, Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_pop_lfu_call();
+
+        let result = self.evict_min_freq();
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            self.metrics.record_pop_lfu_found();
+        }
+
+        result
+    }
+
+    /// Peeks at the least frequently used entry without removing it.
+    pub fn peek_lfu(&self) -> Option<(&H, &Arc<V>)> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_call();
+
+        let (handle, _freq) = self.buckets.peek_min_ref()?;
+        let value = self.store.peek(handle)?;
+
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_peek_lfu_found();
+
+        Some((handle, value))
+    }
+
+    /// Returns the access frequency for a handle.
+    pub fn frequency(&self, handle: &H) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        (&self.metrics).record_frequency_call();
+
+        let result = self.buckets.frequency(handle);
+
+        #[cfg(feature = "metrics")]
+        if result.is_some() {
+            (&self.metrics).record_frequency_found();
+        }
+
+        result
+    }
+
+    /// Resets the frequency of a handle to 1.
+    pub fn reset_frequency(&mut self, handle: &H) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_call();
+
+        let previous_freq = self.buckets.remove(handle)?;
+        self.buckets.insert(*handle);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_reset_frequency_found();
+
+        Some(previous_freq)
+    }
+
+    /// Manually increments the frequency of a handle.
+    pub fn increment_frequency(&mut self, handle: &H) -> Option<u64> {
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_call();
+
+        let new_freq = self.buckets.touch(handle)?;
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_increment_frequency_found();
+
+        Some(new_freq)
+    }
 }
 
-impl<K, V> ReadOnlyCache<K, Arc<V>> for LfuCache<K, V>
+/// [`Cache`] implementation for LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LfuCache;
+/// use cachekit::traits::Cache;
+/// use std::sync::Arc;
+///
+/// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
+///
+/// cache.insert("a", Arc::new(1));
+/// cache.insert("b", Arc::new(2));
+///
+/// assert_eq!(**cache.get(&"a").unwrap(), 1);
+///
+/// assert!(cache.contains(&"a"));
+/// assert!(!cache.contains(&"z"));
+///
+/// assert_eq!(cache.len(), 2);
+/// assert_eq!(cache.capacity(), 3);
+///
+/// cache.clear();
+/// assert_eq!(cache.len(), 0);
+/// ```
+impl<K, V> Cache<K, Arc<V>> for LfuCache<K, V>
 where
-    K: Clone + Eq + Hash,
+    K: Eq + Hash + Clone,
 {
     fn contains(&self, key: &K) -> bool {
         self.store.contains(key)
@@ -792,42 +958,11 @@ where
     fn capacity(&self) -> usize {
         self.store.capacity()
     }
-}
 
-/// Core cache operations for LFU.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lfu::LfuCache;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
-/// use std::sync::Arc;
-///
-/// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
-///
-/// // Insert items
-/// cache.insert("a", Arc::new(1));
-/// cache.insert("b", Arc::new(2));
-///
-/// // Get returns reference
-/// assert_eq!(**cache.get(&"a").unwrap(), 1);
-///
-/// // Check existence
-/// assert!(cache.contains(&"a"));
-/// assert!(!cache.contains(&"z"));
-///
-/// // Length and capacity
-/// assert_eq!(cache.len(), 2);
-/// assert_eq!(cache.capacity(), 3);
-///
-/// // Clear
-/// cache.clear();
-/// assert_eq!(cache.len(), 0);
-/// ```
-impl<K, V> CoreCache<K, Arc<V>> for LfuCache<K, V>
-where
-    K: Eq + Hash + Clone,
-{
+    fn peek(&self, key: &K) -> Option<&Arc<V>> {
+        self.store.peek(key)
+    }
+
     fn insert(&mut self, key: K, value: Arc<V>) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
@@ -882,6 +1017,11 @@ where
         self.store.get(key)
     }
 
+    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
+        let _ = self.buckets.remove(key)?;
+        self.store.remove(key)
+    }
+
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -890,9 +1030,27 @@ where
     }
 }
 
-impl<H, V> ReadOnlyCache<H, Arc<V>> for LfuHandleCache<H, V>
+/// [`Cache`] implementation for handle-based LFU.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::policy::lfu::LfuHandleCache;
+/// use cachekit::traits::Cache;
+/// use std::sync::Arc;
+///
+/// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(3);
+///
+/// cache.insert(1u64, Arc::new(100));
+/// cache.insert(2u64, Arc::new(200));
+///
+/// assert_eq!(**cache.get(&1u64).unwrap(), 100);
+/// assert!(cache.contains(&1u64));
+/// assert_eq!(cache.len(), 2);
+/// ```
+impl<H, V> Cache<H, Arc<V>> for LfuHandleCache<H, V>
 where
-    H: Copy + Eq + Hash,
+    H: Eq + Hash + Copy,
 {
     fn contains(&self, handle: &H) -> bool {
         self.store.contains(handle)
@@ -905,30 +1063,11 @@ where
     fn capacity(&self) -> usize {
         self.store.capacity()
     }
-}
 
-/// Core cache operations for handle-based LFU.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lfu::LfuHandleCache;
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
-/// use std::sync::Arc;
-///
-/// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(3);
-///
-/// cache.insert(1u64, Arc::new(100));
-/// cache.insert(2u64, Arc::new(200));
-///
-/// assert_eq!(**cache.get(&1u64).unwrap(), 100);
-/// assert!(cache.contains(&1u64));
-/// assert_eq!(cache.len(), 2);
-/// ```
-impl<H, V> CoreCache<H, Arc<V>> for LfuHandleCache<H, V>
-where
-    H: Eq + Hash + Copy,
-{
+    fn peek(&self, handle: &H) -> Option<&Arc<V>> {
+        self.store.peek(handle)
+    }
+
     fn insert(&mut self, handle: H, value: Arc<V>) -> Option<Arc<V>> {
         #[cfg(feature = "metrics")]
         self.metrics.record_insert_call();
@@ -982,6 +1121,11 @@ where
         self.store.get(handle)
     }
 
+    fn remove(&mut self, handle: &H) -> Option<Arc<V>> {
+        let _ = self.buckets.remove(handle)?;
+        self.store.remove(handle)
+    }
+
     fn clear(&mut self) {
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
@@ -990,247 +1134,57 @@ where
     }
 }
 
-/// Mutable cache operations for LFU.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lfu::LfuCache;
-/// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
-/// use std::sync::Arc;
-///
-/// let mut cache: LfuCache<&str, i32> = LfuCache::new(10);
-/// cache.insert("key", Arc::new(42));
-///
-/// let removed = cache.remove(&"key");
-/// assert_eq!(*removed.unwrap(), 42);
-/// assert!(!cache.contains(&"key"));
-/// ```
-impl<K, V> MutableCache<K, Arc<V>> for LfuCache<K, V>
+impl<K, V> EvictingCache<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    fn remove(&mut self, key: &K) -> Option<Arc<V>> {
-        let _ = self.buckets.remove(key)?;
-        self.store.remove(key)
+    fn evict_one(&mut self) -> Option<(K, Arc<V>)> {
+        self.pop_lfu()
     }
 }
 
-/// Mutable cache operations for handle-based LFU.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lfu::LfuHandleCache;
-/// use cachekit::traits::{CoreCache, MutableCache};
-/// use std::sync::Arc;
-///
-/// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(10);
-/// cache.insert(1u64, Arc::new(42));
-///
-/// let removed = cache.remove(&1u64);
-/// assert_eq!(*removed.unwrap(), 42);
-/// ```
-impl<H, V> MutableCache<H, Arc<V>> for LfuHandleCache<H, V>
-where
-    H: Eq + Hash + Copy,
-{
-    fn remove(&mut self, handle: &H) -> Option<Arc<V>> {
-        let _ = self.buckets.remove(handle)?;
-        self.store.remove(handle)
-    }
-}
-
-/// LFU-specific operations.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lfu::LfuCache;
-/// use cachekit::traits::{CoreCache, LfuCacheTrait};
-/// use std::sync::Arc;
-///
-/// let mut cache: LfuCache<&str, i32> = LfuCache::new(3);
-/// cache.insert("a", Arc::new(1));
-/// cache.insert("b", Arc::new(2));
-/// cache.get(&"a");  // freq: 1 → 2
-///
-/// // Check frequencies
-/// assert_eq!(cache.frequency(&"a"), Some(2));
-/// assert_eq!(cache.frequency(&"b"), Some(1));
-///
-/// // Peek at LFU victim
-/// let (key, _) = cache.peek_lfu().unwrap();
-/// assert_eq!(*key, "b");  // lowest frequency
-///
-/// // Manual frequency control
-/// cache.increment_frequency(&"b");  // freq: 1 → 2
-/// cache.reset_frequency(&"a");      // freq: 2 → 1
-///
-/// // Pop LFU
-/// let (key, value) = cache.pop_lfu().unwrap();
-/// assert_eq!(key, "a");  // now has lowest freq
-/// ```
-impl<K, V> LfuCacheTrait<K, Arc<V>> for LfuCache<K, V>
+impl<K, V> VictimInspectable<K, Arc<V>> for LfuCache<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    fn pop_lfu(&mut self) -> Option<(K, Arc<V>)> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_pop_lfu_call();
-
-        let result = self.evict_min_freq();
-
-        #[cfg(feature = "metrics")]
-        if result.is_some() {
-            self.metrics.record_pop_lfu_found();
-        }
-
-        result
+    fn peek_victim(&self) -> Option<(&K, &Arc<V>)> {
+        self.peek_lfu()
     }
+}
 
-    fn peek_lfu(&self) -> Option<(&K, &Arc<V>)> {
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lfu_call();
-
-        let (key, _freq) = self.buckets.peek_min()?;
-        let value = self.store.peek(key)?;
-
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lfu_found();
-
-        Some((key, value))
-    }
-
+impl<K, V> FrequencyTracking<K, Arc<V>> for LfuCache<K, V>
+where
+    K: Eq + Hash + Clone,
+{
     fn frequency(&self, key: &K) -> Option<u64> {
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_frequency_call();
-
-        let result = self.buckets.frequency(key);
-
-        #[cfg(feature = "metrics")]
-        if result.is_some() {
-            (&self.metrics).record_frequency_found();
-        }
-
-        result
-    }
-
-    fn reset_frequency(&mut self, key: &K) -> Option<u64> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_reset_frequency_call();
-
-        let previous_freq = self.buckets.remove(key)?;
-        self.buckets.insert(key.clone());
-
-        #[cfg(feature = "metrics")]
-        self.metrics.record_reset_frequency_found();
-
-        Some(previous_freq)
-    }
-
-    fn increment_frequency(&mut self, key: &K) -> Option<u64> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_increment_frequency_call();
-
-        let new_freq = self.buckets.touch(key)?;
-
-        #[cfg(feature = "metrics")]
-        self.metrics.record_increment_frequency_found();
-
-        Some(new_freq)
+        LfuCache::frequency(self, key)
     }
 }
 
-/// LFU-specific operations for handle-based cache.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::policy::lfu::LfuHandleCache;
-/// use cachekit::traits::{CoreCache, LfuCacheTrait};
-/// use std::sync::Arc;
-///
-/// let mut cache: LfuHandleCache<u64, i32> = LfuHandleCache::new(3);
-/// cache.insert(1u64, Arc::new(100));
-/// cache.insert(2u64, Arc::new(200));
-/// cache.get(&1u64);  // freq: 1 → 2
-///
-/// assert_eq!(cache.frequency(&1u64), Some(2));
-/// assert_eq!(cache.frequency(&2u64), Some(1));
-///
-/// // Peek at LFU victim
-/// let (handle, _) = cache.peek_lfu().unwrap();
-/// assert_eq!(*handle, 2u64);
-/// ```
-impl<H, V> LfuCacheTrait<H, Arc<V>> for LfuHandleCache<H, V>
+impl<H, V> EvictingCache<H, Arc<V>> for LfuHandleCache<H, V>
 where
     H: Eq + Hash + Copy,
 {
-    fn pop_lfu(&mut self) -> Option<(H, Arc<V>)> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_pop_lfu_call();
-
-        let result = self.evict_min_freq();
-
-        #[cfg(feature = "metrics")]
-        if result.is_some() {
-            self.metrics.record_pop_lfu_found();
-        }
-
-        result
+    fn evict_one(&mut self) -> Option<(H, Arc<V>)> {
+        self.pop_lfu()
     }
+}
 
-    fn peek_lfu(&self) -> Option<(&H, &Arc<V>)> {
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lfu_call();
-
-        let (handle, _freq) = self.buckets.peek_min_ref()?;
-        let value = self.store.peek(handle)?;
-
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_peek_lfu_found();
-
-        Some((handle, value))
+impl<H, V> VictimInspectable<H, Arc<V>> for LfuHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
+    fn peek_victim(&self) -> Option<(&H, &Arc<V>)> {
+        self.peek_lfu()
     }
+}
 
+impl<H, V> FrequencyTracking<H, Arc<V>> for LfuHandleCache<H, V>
+where
+    H: Eq + Hash + Copy,
+{
     fn frequency(&self, handle: &H) -> Option<u64> {
-        #[cfg(feature = "metrics")]
-        (&self.metrics).record_frequency_call();
-
-        let result = self.buckets.frequency(handle);
-
-        #[cfg(feature = "metrics")]
-        if result.is_some() {
-            (&self.metrics).record_frequency_found();
-        }
-
-        result
-    }
-
-    fn reset_frequency(&mut self, handle: &H) -> Option<u64> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_reset_frequency_call();
-
-        let previous_freq = self.buckets.remove(handle)?;
-        self.buckets.insert(*handle);
-
-        #[cfg(feature = "metrics")]
-        self.metrics.record_reset_frequency_found();
-
-        Some(previous_freq)
-    }
-
-    fn increment_frequency(&mut self, handle: &H) -> Option<u64> {
-        #[cfg(feature = "metrics")]
-        self.metrics.record_increment_frequency_call();
-
-        let new_freq = self.buckets.touch(handle)?;
-
-        #[cfg(feature = "metrics")]
-        self.metrics.record_increment_frequency_found();
-
-        Some(new_freq)
+        LfuHandleCache::frequency(self, handle)
     }
 }
 
@@ -1249,7 +1203,7 @@ where
     ///
     /// ```ignore
     /// use cachekit::policy::lfu::LfuCache;
-    /// use cachekit::traits::{CoreCache, ReadOnlyCache};
+    /// use cachekit::traits::Cache;
     /// use std::sync::Arc;
     ///
     /// let mut cache: LfuCache<&str, i32> = LfuCache::new(100);
@@ -1467,7 +1421,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::CoreCache;
+    use crate::traits::Cache;
 
     // Basic LFU Behavior Tests
     mod basic_behavior {

@@ -160,8 +160,7 @@ use crate::metrics::metrics_impl::CoreOnlyMetrics;
 use crate::metrics::snapshot::CoreOnlyMetricsSnapshot;
 #[cfg(feature = "metrics")]
 use crate::metrics::traits::{CoreMetricsRecorder, MetricsSnapshotProvider};
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, MutableCache};
+use crate::traits::Cache;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
@@ -635,7 +634,7 @@ impl<K: std::fmt::Debug, V> std::fmt::Debug for RandomCore<K, V> {
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for RandomCore<K, V>
+impl<K, V> Cache<K, V> for RandomCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -653,37 +652,24 @@ where
     fn capacity(&self) -> usize {
         self.capacity
     }
-}
 
-/// Implementation of the [`CoreCache`] trait for Random.
-///
-/// Allows `RandomCore` to be used through the unified cache interface.
-///
-/// # Example
-///
-/// ```
-/// use cachekit::traits::{CoreCache, ReadOnlyCache};
-/// use cachekit::policy::random::RandomCore;
-///
-/// let mut cache: RandomCore<&str, i32> = RandomCore::new(100);
-///
-/// // Use via CoreCache trait
-/// cache.insert("key", 42);
-/// assert_eq!(cache.get(&"key"), Some(&42));
-/// assert!(cache.contains(&"key"));
-/// ```
-impl<K, V> CoreCache<K, V> for RandomCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
     #[inline]
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
-        RandomCore::insert(self, key, value)
+    fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key).map(|(_, v)| v)
     }
 
     #[inline]
     fn get(&mut self, key: &K) -> Option<&V> {
         RandomCore::get(self, key)
+    }
+
+    #[inline]
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        RandomCore::insert(self, key, value)
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        RandomCore::remove(self, key)
     }
 
     fn clear(&mut self) {
@@ -720,30 +706,6 @@ where
 {
     fn snapshot(&self) -> CoreOnlyMetricsSnapshot {
         self.metrics_snapshot()
-    }
-}
-
-impl<K, V> MutableCache<K, V> for RandomCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    /// Removes a specific key-value pair.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cachekit::policy::random::RandomCore;
-    /// use cachekit::traits::{CoreCache, MutableCache, ReadOnlyCache};
-    ///
-    /// let mut cache = RandomCore::new(10);
-    /// cache.insert("key", 42);
-    ///
-    /// assert_eq!(cache.remove(&"key"), Some(42));
-    /// assert!(!cache.contains(&"key"));
-    /// ```
-    #[inline]
-    fn remove(&mut self, key: &K) -> Option<V> {
-        RandomCore::remove(self, key)
     }
 }
 
@@ -1359,11 +1321,11 @@ mod tests {
 
         #[test]
         fn trait_insert_matches_inherent() {
-            use crate::traits::CoreCache;
+            use crate::traits::Cache;
 
             let mut cache = RandomCore::new(100);
-            assert_eq!(CoreCache::insert(&mut cache, "a", 1), None);
-            assert_eq!(CoreCache::insert(&mut cache, "a", 2), Some(1));
+            assert_eq!(Cache::insert(&mut cache, "a", 1), None);
+            assert_eq!(Cache::insert(&mut cache, "a", 2), Some(1));
         }
     }
 
@@ -1439,13 +1401,13 @@ mod tests {
 
         #[test]
         fn remove_via_mutable_cache_trait() {
-            use crate::traits::MutableCache;
+            use crate::traits::Cache;
 
             let mut cache = RandomCore::new(100);
             cache.insert("a", 1);
             cache.insert("b", 2);
 
-            assert_eq!(MutableCache::remove(&mut cache, &"a"), Some(1));
+            assert_eq!(Cache::remove(&mut cache, &"a"), Some(1));
             assert!(!cache.contains(&"a"));
             assert!(cache.contains(&"b"));
         }

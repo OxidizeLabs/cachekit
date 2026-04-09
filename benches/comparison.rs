@@ -18,7 +18,7 @@ use cachekit::policy::lru::LruCore;
 use cachekit::policy::lru_k::LrukCache;
 use cachekit::policy::s3_fifo::S3FifoCache;
 use cachekit::policy::two_q::TwoQCore;
-use cachekit::traits::CoreCache;
+use cachekit::traits::Cache;
 
 const CAPACITY: usize = 4096;
 const OPS: u64 = 100_000;

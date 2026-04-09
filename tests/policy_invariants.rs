@@ -16,7 +16,7 @@
 #[cfg(feature = "policy-clock")]
 mod clock_zero_capacity {
     use cachekit::policy::clock::ClockCache;
-    use cachekit::traits::ReadOnlyCache;
+    use cachekit::traits::Cache;
 
     #[test]
     fn capacity_zero_is_honored() {
@@ -34,7 +34,7 @@ mod clock_zero_capacity {
 #[cfg(feature = "policy-clock-pro")]
 mod clock_pro_zero_capacity {
     use cachekit::policy::clock_pro::ClockProCache;
-    use cachekit::traits::ReadOnlyCache;
+    use cachekit::traits::Cache;
 
     #[test]
     fn capacity_zero_is_honored() {
@@ -50,7 +50,7 @@ mod clock_pro_zero_capacity {
 
     #[test]
     fn capacity_zero_rejects_inserts() {
-        use cachekit::traits::CoreCache;
+        use cachekit::traits::Cache;
 
         let mut cache: ClockProCache<&str, i32> = ClockProCache::new(0);
         cache.insert("key", 42);
@@ -66,7 +66,7 @@ mod clock_pro_zero_capacity {
 #[cfg(feature = "policy-nru")]
 mod nru_zero_capacity {
     use cachekit::policy::nru::NruCache;
-    use cachekit::traits::ReadOnlyCache;
+    use cachekit::traits::Cache;
 
     #[test]
     fn capacity_zero_is_honored() {

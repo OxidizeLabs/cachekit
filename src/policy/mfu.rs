@@ -169,8 +169,7 @@ use crate::metrics::snapshot::MfuMetricsSnapshot;
 use crate::metrics::traits::{
     CoreMetricsRecorder, MetricsSnapshotProvider, MfuMetricsReadRecorder, MfuMetricsRecorder,
 };
-use crate::prelude::ReadOnlyCache;
-use crate::traits::{CoreCache, MutableCache};
+use crate::traits::{Cache, EvictingCache, FrequencyTracking, VictimInspectable};
 use rustc_hash::FxHashMap;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -213,8 +212,9 @@ impl<K> Ord for HeapEntry<K> {
 
 /// MFU cache core that evicts the most frequently used entry.
 ///
-/// Implements [`CoreCache`], [`ReadOnlyCache`], and [`MutableCache`] for
-/// generic cache access. Uses a [`BinaryHeap`] with `HeapEntry` wrappers
+/// Implements [`Cache`] for generic cache access, plus
+/// [`EvictingCache`], [`VictimInspectable`], and [`FrequencyTracking`]
+/// capability traits. Uses a [`BinaryHeap`] with `HeapEntry` wrappers
 /// for O(log n) eviction of the highest-frequency entry.
 pub struct MfuCore<K, V> {
     map: FxHashMap<K, V>,
@@ -403,6 +403,11 @@ where
         self.map.contains_key(key)
     }
 
+    /// Peeks at a value without updating frequency.
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
     /// Removes all entries from the cache.
     pub fn clear(&mut self) {
         #[cfg(feature = "metrics")]
@@ -544,7 +549,7 @@ where
     }
 }
 
-impl<K, V> ReadOnlyCache<K, V> for MfuCore<K, V>
+impl<K, V> Cache<K, V> for MfuCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
@@ -559,18 +564,21 @@ where
     fn capacity(&self) -> usize {
         MfuCore::capacity(self)
     }
-}
 
-impl<K, V> CoreCache<K, V> for MfuCore<K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    fn insert(&mut self, key: K, value: V) -> Option<V> {
-        MfuCore::insert(self, key, value)
+    fn peek(&self, key: &K) -> Option<&V> {
+        MfuCore::peek(self, key)
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
         MfuCore::get(self, key)
+    }
+
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        MfuCore::insert(self, key, value)
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        MfuCore::remove(self, key)
     }
 
     fn clear(&mut self) {
@@ -578,12 +586,30 @@ where
     }
 }
 
-impl<K, V> MutableCache<K, V> for MfuCore<K, V>
+impl<K, V> EvictingCache<K, V> for MfuCore<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    fn remove(&mut self, key: &K) -> Option<V> {
-        MfuCore::remove(self, key)
+    fn evict_one(&mut self) -> Option<(K, V)> {
+        self.pop_mfu()
+    }
+}
+
+impl<K, V> VictimInspectable<K, V> for MfuCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn peek_victim(&self) -> Option<(&K, &V)> {
+        self.peek_mfu()
+    }
+}
+
+impl<K, V> FrequencyTracking<K, V> for MfuCore<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn frequency(&self, key: &K) -> Option<u64> {
+        MfuCore::frequency(self, key)
     }
 }
 
@@ -1056,12 +1082,12 @@ mod tests {
     }
 
     #[test]
-    fn mutable_cache_trait() {
+    fn cache_trait_remove() {
         let mut cache = MfuCore::new(5);
         cache.insert(1, 100);
         cache.insert(2, 200);
 
-        assert_eq!(MutableCache::remove(&mut cache, &1), Some(100));
+        assert_eq!(Cache::remove(&mut cache, &1), Some(100));
         assert!(!cache.contains(&1));
     }
 

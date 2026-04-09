@@ -228,7 +228,7 @@ For advanced use cases requiring policy-specific operations, use the underlying 
 ```rust
 use std::sync::Arc;
 use cachekit::policy::lru::LruCore;
-use cachekit::traits::{CoreCache, LruCacheTrait};
+use cachekit::traits::Cache;
 
 fn main() {
     // LRU with policy-specific operations

@@ -6,7 +6,7 @@
 //! Run with: cargo run --example basic_clock_pro --features policy-clock-pro
 
 use cachekit::policy::clock_pro::ClockProCache;
-use cachekit::traits::{CoreCache, ReadOnlyCache};
+use cachekit::traits::Cache;
 
 fn main() {
     let mut cache: ClockProCache<&str, &str> = ClockProCache::with_ghost_capacity(2, 4);
