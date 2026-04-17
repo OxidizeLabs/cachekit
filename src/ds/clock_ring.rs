@@ -430,7 +430,6 @@ struct Entry<K, V> {
 /// assert_eq!(eviction_count, 7);  // 10 inserts - 3 capacity = 7 evictions
 /// ```
 #[must_use]
-#[derive(Debug)]
 pub struct ClockRing<K, V, S = RandomState> {
     slots: Vec<Option<Entry<K, V>>>,
     referenced: Vec<bool>,
@@ -441,6 +440,28 @@ pub struct ClockRing<K, V, S = RandomState> {
     sweep_hand_advances: u64,
     #[cfg(feature = "metrics")]
     sweep_ref_bit_resets: u64,
+}
+
+/// Hand-written so stored keys and values never appear in debug
+/// output. A derived `Debug` would recurse through every `Entry<K,
+/// V>` and `HashMap<K, usize, S>` entry, making `tracing::debug!`,
+/// `dbg!`, and panic-unwind backtraces into a secret-exposure channel
+/// for caches that hold session tokens, API keys, or any other
+/// sensitive material. Callers that need full contents can iterate
+/// via [`ClockRing::iter`] and print entries they've vetted.
+impl<K, V, S> std::fmt::Debug for ClockRing<K, V, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dbg = f.debug_struct("ClockRing");
+        dbg.field("len", &self.len)
+            .field("capacity", &self.slots.len())
+            .field("hand", &self.hand);
+        #[cfg(feature = "metrics")]
+        {
+            dbg.field("sweep_hand_advances", &self.sweep_hand_advances)
+                .field("sweep_ref_bit_resets", &self.sweep_ref_bit_resets);
+        }
+        dbg.finish_non_exhaustive()
+    }
 }
 
 /// Thread-safe wrapper around [`ClockRing`] using `parking_lot::RwLock`.
@@ -535,9 +556,30 @@ pub struct ClockRing<K, V, S = RandomState> {
 /// caller's side of the lock.
 #[cfg(feature = "concurrency")]
 #[must_use]
-#[derive(Debug)]
 pub struct ConcurrentClockRing<K, V, S = RandomState> {
     inner: RwLock<ClockRing<K, V, S>>,
+}
+
+/// See the [`ClockRing`] `Debug` impl for the rationale: stored keys
+/// and values are redacted. Acquires the inner read lock, so calling
+/// `{:?}` under a held write guard will deadlock on the same thread
+/// that holds the guard — matching the behavior of
+/// `RwLock::read()` elsewhere in this module.
+#[cfg(feature = "concurrency")]
+impl<K, V, S> std::fmt::Debug for ConcurrentClockRing<K, V, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.inner.read();
+        let mut dbg = f.debug_struct("ConcurrentClockRing");
+        dbg.field("len", &inner.len)
+            .field("capacity", &inner.slots.len())
+            .field("hand", &inner.hand);
+        #[cfg(feature = "metrics")]
+        {
+            dbg.field("sweep_hand_advances", &inner.sweep_hand_advances)
+                .field("sweep_ref_bit_resets", &inner.sweep_ref_bit_resets);
+        }
+        dbg.finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "concurrency")]
@@ -1899,6 +1941,13 @@ where
     /// - **Insert into an empty slot**: returns `(None, None)`.
     /// - **Insert into a full ring**: returns
     ///   `(None, Some((evicted_key, evicted_value)))`.
+    /// - **Invariant violation** (the index maps `key` to a slot index
+    ///   that is out of bounds for `slots`; reachable only via state
+    ///   corruption, never from safe use of this module): returns
+    ///   `(Some(value), None)` handing the caller's value back
+    ///   untouched rather than silently dropping it. A
+    ///   `debug_assert!` in the same branch surfaces the root-cause
+    ///   corruption in debug/test/fuzz builds.
     ///
     /// This method is useful when the caller wants to control *when*
     /// the dropped value is destroyed — notably
@@ -1941,7 +1990,19 @@ where
                 self.hand = step(idx, cap);
                 return (None, None);
             }
-            return (None, None);
+            // Deeper corruption: the index maps `key` to an out-of-bounds
+            // slot index. No valid slot exists to install the value in,
+            // so we hand it back via the `replaced` position rather than
+            // silently dropping it. For `V` owning a file descriptor,
+            // lock, `Arc<_>`, or any resource with observable Drop, a
+            // silent drop would leak a resource across a single
+            // corruption event without surfacing any error. Surfacing it
+            // through the return keeps `insert_swap`'s
+            // no-silent-value-loss contract intact; `ClockRing::insert`
+            // will still drop it at the caller boundary (matching the
+            // update path), and `ConcurrentClockRing::insert` will drop
+            // it after releasing the write lock.
+            return (Some(value), None);
         }
 
         if self.len < self.capacity() {
@@ -2690,6 +2751,91 @@ mod tests {
         // The value we passed in must not have been silently dropped.
         assert_eq!(ring.peek(&"a"), Some(&99));
         ring.debug_validate_invariants();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn insert_swap_returns_value_when_index_points_out_of_bounds() {
+        // Security hardening regression: if the index maps a key to an
+        // out-of-bounds slot idx (state corruption reachable only via a
+        // malformed `Hash`/`Eq`/`Clone` impl on `K` or unsafe code —
+        // never from safe use of this module), the previous
+        // implementation silently dropped the caller's value. With `V`
+        // owning a file descriptor, lock, or `Arc<_>`, that would leak
+        // the resource without surfacing any error. The hardened path
+        // now returns `(Some(value), None)` so the caller receives
+        // their value back via the replaced-value position.
+        //
+        // Gated on release builds because the fallthrough path is
+        // preceded by a `debug_assert!(false, ...)` that fires in debug
+        // to surface the root-cause corruption during testing.
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("a", 1);
+
+        // Manually corrupt state: rewrite the index entry to point past
+        // the end of `slots`, simulating an invariant violation. The
+        // slot-side entry is cleared so slot occupancy still matches
+        // `len == 0` post-remove, keeping the rest of the ring
+        // internally consistent.
+        ring.index.insert("a", ring.slots.len() + 5);
+        ring.slots[0] = None;
+        ring.len = 0;
+
+        let (replaced, evicted) = ring.insert_swap("a", 99);
+        assert_eq!(
+            replaced,
+            Some(99),
+            "value must be handed back via the replaced position \
+             rather than silently dropped on invariant violation",
+        );
+        assert_eq!(evicted, None);
+        // The corruption itself isn't fully repaired (no valid slot to
+        // install into), but `insert_swap` removed the stale index
+        // entry so subsequent operations don't observe the OOB mapping.
+        assert!(!ring.contains(&"a"));
+    }
+
+    #[test]
+    fn debug_impl_does_not_leak_keys_or_values() {
+        // Security hardening: the derived `Debug` for `ClockRing`
+        // recursed through every stored `Entry<K, V>` and
+        // `HashMap<K, usize, S>` entry, turning `tracing::debug!`,
+        // `dbg!`, and panic backtraces into a secret-exposure channel
+        // for caches keyed on session tokens / API keys or holding
+        // sensitive values. The hand-written `Debug` redacts contents.
+        let mut ring: ClockRing<&str, &str> = ClockRing::new(4);
+        ring.insert("session-token-key-do-not-leak", "bearer-secret-do-not-leak");
+        ring.insert("api-key-do-not-leak", "plaintext-password-do-not-leak");
+
+        let rendered = format!("{ring:?}");
+        assert!(
+            !rendered.contains("do-not-leak"),
+            "Debug impl leaked key or value into output: {rendered}",
+        );
+
+        // Safety: still expose aggregate shape for ops dashboards /
+        // snapshot tests.
+        assert!(rendered.contains("ClockRing"));
+        assert!(rendered.contains("len"));
+        assert!(rendered.contains("capacity"));
+        assert!(rendered.contains("hand"));
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_debug_impl_does_not_leak_keys_or_values() {
+        let cache: ConcurrentClockRing<&str, &str> = ConcurrentClockRing::new(4);
+        cache.insert("session-token-key-do-not-leak", "bearer-secret-do-not-leak");
+        cache.insert("api-key-do-not-leak", "plaintext-password-do-not-leak");
+
+        let rendered = format!("{cache:?}");
+        assert!(
+            !rendered.contains("do-not-leak"),
+            "Debug impl leaked key or value into output: {rendered}",
+        );
+        assert!(rendered.contains("ConcurrentClockRing"));
+        assert!(rendered.contains("len"));
+        assert!(rendered.contains("capacity"));
     }
 
     #[test]
