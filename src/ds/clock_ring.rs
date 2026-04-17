@@ -179,7 +179,42 @@
 //!   total clearing work across N inserts is bounded by N
 //! - `debug_validate_invariants()` available in debug/test builds
 //!
+//! ## Memory Budgeting
+//!
+//! `ClockRing` bounds the *number* of entries (`capacity`), not the
+//! aggregate byte footprint of stored values. [`ClockRing::approx_bytes`]
+//! reports only the in-line cost of `Option<Entry<K, V>>` slots plus
+//! the index map; it counts `size_of::<V>()` and **does not follow
+//! heap pointers owned by `V`**. A ring of `Vec<u8>` or `String` values
+//! can therefore consume orders of magnitude more memory than
+//! `approx_bytes` suggests.
+//!
+//! For workloads with variable-sized values, enforce a byte budget
+//! at the call site (e.g. track `value.len()` on insert and evict via
+//! [`ClockRing::pop_victim`] until under budget) rather than relying
+//! on slot count alone.
+//!
+//! ## Timing Side Channels
+//!
+//! Lookup methods ([`contains`](ClockRing::contains),
+//! [`peek`](ClockRing::peek), [`get`](ClockRing::get),
+//! [`touch`](ClockRing::touch), …) take time that depends on whether
+//! the key is present and on the hasher's probe chain length. This is
+//! standard for any [`HashMap`]-backed cache and is **not** mitigated
+//! here — the default [`RandomState`] randomizes the probe chain
+//! across processes (defeating cross-process collision attacks) but
+//! does not produce constant-time lookups.
+//!
+//! Do not use `ClockRing` as the backing store for data structures
+//! whose key set must remain confidential against a co-located
+//! attacker that can measure operation latency (e.g. session-token
+//! caches in a multi-tenant process where the tenant boundary is the
+//! key space). For such use cases, gate access behind an explicit
+//! constant-time membership check or use a constant-time data
+//! structure.
+//!
 //! [`RandomState`]: std::collections::hash_map::RandomState
+//! [`HashMap`]: std::collections::HashMap
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -243,6 +278,53 @@ impl std::fmt::Display for ClockRingError {
 
 impl std::error::Error for ClockRingError {}
 
+/// Acknowledges that the caller is supplying a hasher to
+/// [`ClockRing::with_hasher`] / [`ClockRing::try_with_hasher`] (and
+/// the [`ConcurrentClockRing`] equivalents) under the assumption that
+/// keys are **not attacker-controlled**.
+///
+/// Required at every call site as a deliberate, code-reviewable
+/// signal: a non-randomized hasher (e.g. `rustc_hash::FxBuildHasher`,
+/// unseeded `ahash::AHasher`, FNV) reintroduces hash-collision DoS —
+/// adversarial keys can degrade [`HashMap`]-backed lookups to O(n)
+/// regardless of the CLOCK sweep cost.
+///
+/// Acceptable inputs to a `KeysAreTrusted`-tagged ring include:
+/// authenticated user/row IDs, opaque handles minted internally,
+/// values already passed through a keyed hash (HMAC), or any source
+/// the application's threat model treats as integrity-protected.
+/// For attacker-controlled keys, use [`ClockRing::new`] /
+/// [`ClockRing::try_new`], which default to the DoS-resistant
+/// [`RandomState`] hasher.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::{ClockRing, KeysAreTrusted};
+/// use std::collections::hash_map::RandomState;
+///
+/// let ring: ClockRing<u64, &str> =
+///     ClockRing::with_hasher(64, RandomState::new(), KeysAreTrusted::new());
+/// assert_eq!(ring.capacity(), 64);
+/// ```
+///
+/// [`HashMap`]: std::collections::HashMap
+/// [`RandomState`]: std::collections::hash_map::RandomState
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeysAreTrusted(());
+
+impl KeysAreTrusted {
+    /// Constructs the acknowledgement.
+    ///
+    /// See the [type-level docs](KeysAreTrusted) for the security
+    /// implications of passing this to a hasher-configurable
+    /// constructor.
+    #[inline]
+    pub const fn new() -> Self {
+        Self(())
+    }
+}
+
 /// Advance an index by one position modulo `cap`, overflow-safe.
 ///
 /// Using `checked_add` + fallback to `wrapping_add % cap` avoids the
@@ -304,7 +386,9 @@ struct Entry<K, V> {
 /// without worrying about adversarial hash collisions degrading lookups
 /// to O(n). Callers that fully trust their key source can opt into a
 /// faster non-randomized hasher (e.g. `rustc_hash::FxBuildHasher`) via
-/// [`ClockRing::with_hasher`] / [`ClockRing::try_with_hasher`].
+/// [`ClockRing::with_hasher`] / [`ClockRing::try_with_hasher`], which
+/// require a [`KeysAreTrusted`] acknowledgement to make the trade-off
+/// visible at every call site.
 ///
 /// # Example
 ///
@@ -504,20 +588,34 @@ where
     /// Creates a new ring with `capacity` slots using the provided
     /// `hash_builder`.
     ///
+    /// The [`KeysAreTrusted`] argument is a deliberate acknowledgement
+    /// that a non-randomized hasher is safe for this workload — see
+    /// its type-level docs for the DoS trade-off. Use
+    /// [`new`](Self::new) / [`try_new`](Self::try_new) for the default
+    /// DoS-resistant [`RandomState`] hasher.
+    ///
     /// # Panics
     ///
     /// Panics if `capacity > MAX_CAPACITY`. Use
     /// [`try_with_hasher`](Self::try_with_hasher) for a fallible version.
-    pub fn with_hasher(capacity: usize, hash_builder: S) -> Self {
+    pub fn with_hasher(capacity: usize, hash_builder: S, ack: KeysAreTrusted) -> Self {
         Self {
-            inner: RwLock::new(ClockRing::with_hasher(capacity, hash_builder)),
+            inner: RwLock::new(ClockRing::with_hasher(capacity, hash_builder, ack)),
         }
     }
 
     /// Fallible version of [`with_hasher`](Self::with_hasher).
-    pub fn try_with_hasher(capacity: usize, hash_builder: S) -> Result<Self, ClockRingError> {
+    ///
+    /// The [`KeysAreTrusted`] argument is a deliberate acknowledgement
+    /// that a non-randomized hasher is safe for this workload — see
+    /// its type-level docs for the DoS trade-off.
+    pub fn try_with_hasher(
+        capacity: usize,
+        hash_builder: S,
+        ack: KeysAreTrusted,
+    ) -> Result<Self, ClockRingError> {
         Ok(Self {
-            inner: RwLock::new(ClockRing::try_with_hasher(capacity, hash_builder)?),
+            inner: RwLock::new(ClockRing::try_with_hasher(capacity, hash_builder, ack)?),
         })
     }
 
@@ -1304,7 +1402,10 @@ where
     /// assert!(ClockRing::<u32, u32>::try_new(MAX_CAPACITY + 1).is_err());
     /// ```
     pub fn try_new(capacity: usize) -> Result<Self, ClockRingError> {
-        Self::try_with_hasher(capacity, RandomState::default())
+        // `RandomState` *is* DoS-resistant, so the acknowledgement
+        // constructed here is truthful — it's the marker that the
+        // caller has chosen a hasher appropriate for untrusted keys.
+        Self::try_with_hasher(capacity, RandomState::default(), KeysAreTrusted::new())
     }
 }
 
@@ -1321,16 +1422,36 @@ where
     /// trusted**. With attacker-controlled keys, a non-randomized hasher
     /// enables hash-collision DoS.
     ///
+    /// The [`KeysAreTrusted`] argument is a deliberate, greppable
+    /// acknowledgement of that trade-off; see its type-level docs for
+    /// guidance on when it's appropriate.
+    ///
     /// # Panics
     ///
     /// Panics if `capacity > MAX_CAPACITY`. Use
     /// [`try_with_hasher`](Self::try_with_hasher) for a fallible version.
-    pub fn with_hasher(capacity: usize, hash_builder: S) -> Self {
-        Self::try_with_hasher(capacity, hash_builder)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::{ClockRing, KeysAreTrusted};
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let ring: ClockRing<u64, &str> =
+    ///     ClockRing::with_hasher(64, RandomState::new(), KeysAreTrusted::new());
+    /// assert_eq!(ring.capacity(), 64);
+    /// ```
+    #[track_caller]
+    pub fn with_hasher(capacity: usize, hash_builder: S, ack: KeysAreTrusted) -> Self {
+        Self::try_with_hasher(capacity, hash_builder, ack)
             .expect("ClockRing::with_hasher: capacity exceeds MAX_CAPACITY")
     }
 
     /// Fallible version of [`with_hasher`](Self::with_hasher).
+    ///
+    /// The [`KeysAreTrusted`] argument is a deliberate, greppable
+    /// acknowledgement that a non-randomized hasher is safe for this
+    /// workload; see its type-level docs for guidance.
     ///
     /// Returns [`ClockRingError::CapacityTooLarge`] when `capacity`
     /// exceeds [`MAX_CAPACITY`], or [`ClockRingError::AllocationFailed`]
@@ -1338,7 +1459,11 @@ where
     /// for `capacity`. This never aborts the process on hostile
     /// capacity values, even when `capacity * size_of::<Option<Entry<K,
     /// V>>>()` would overflow `isize::MAX`.
-    pub fn try_with_hasher(capacity: usize, hash_builder: S) -> Result<Self, ClockRingError> {
+    pub fn try_with_hasher(
+        capacity: usize,
+        hash_builder: S,
+        _ack: KeysAreTrusted,
+    ) -> Result<Self, ClockRingError> {
         if capacity > MAX_CAPACITY {
             return Err(ClockRingError::CapacityTooLarge {
                 requested: capacity,
@@ -2422,13 +2547,30 @@ mod tests {
     fn with_hasher_uses_custom_hasher() {
         use std::collections::hash_map::RandomState;
         // Build with an explicit RandomState instance. Exercises the
-        // generic `with_hasher` path end-to-end.
+        // generic `with_hasher` path end-to-end, including the
+        // `KeysAreTrusted` acknowledgement.
         let mut ring: ClockRing<&str, i32, RandomState> =
-            ClockRing::with_hasher(4, RandomState::new());
+            ClockRing::with_hasher(4, RandomState::new(), KeysAreTrusted::new());
         assert_eq!(ring.insert("a", 1), None);
         assert_eq!(ring.insert("b", 2), None);
         assert_eq!(ring.peek(&"a"), Some(&1));
         assert_eq!(ring.peek(&"b"), Some(&2));
+    }
+
+    #[test]
+    fn try_with_hasher_requires_ack_and_builds() {
+        use std::collections::hash_map::RandomState;
+        // The `KeysAreTrusted` marker is required at the call site
+        // — this test is the ergonomics regression: `::new()` is all
+        // that's needed, no unsafe blocks, no separate builder step.
+        let ring: ClockRing<u32, u32, RandomState> =
+            ClockRing::try_with_hasher(8, RandomState::new(), KeysAreTrusted::new()).unwrap();
+        assert_eq!(ring.capacity(), 8);
+
+        // Equivalent via `Default`, for callers who prefer that form.
+        let ring2: ClockRing<u32, u32, RandomState> =
+            ClockRing::try_with_hasher(8, RandomState::new(), KeysAreTrusted::default()).unwrap();
+        assert_eq!(ring2.capacity(), 8);
     }
 
     #[test]
