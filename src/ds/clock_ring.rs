@@ -248,9 +248,16 @@ impl std::error::Error for ClockRingError {}
 /// Using `checked_add` + fallback to `wrapping_add % cap` avoids the
 /// `(idx + 1) % cap` overflow that is theoretically reachable on
 /// pathologically large `cap` values.
+///
+/// Returns `0` when `cap == 0` so that the function is total: current
+/// callers all guard on non-zero capacity, but making `step` itself
+/// safe to call with any input prevents a release-mode division-by-zero
+/// panic if a future call site forgets the guard.
 #[inline]
 fn step(idx: usize, cap: usize) -> usize {
-    debug_assert!(cap > 0, "step called with zero capacity");
+    if cap == 0 {
+        return 0;
+    }
     match idx.checked_add(1) {
         Some(next) => next % cap,
         None => 0,
@@ -1785,6 +1792,30 @@ where
                 self.referenced[idx] = true;
                 return (Some(old), None);
             }
+            // Broken invariant: the index claims `key` lives at `idx`
+            // but the slot is empty. Rather than silently dropping the
+            // caller's `value`, repair state in place: place the value
+            // in the empty slot, refresh the index entry, and
+            // recompute `len` from ground truth (slot occupancy). The
+            // `debug_assert!` surfaces the root-cause corruption in
+            // tests and fuzzers without crashing release builds.
+            debug_assert!(false, "index entry points to empty slot in insert_swap");
+            self.index.remove(&key);
+            if idx < self.slots.len() {
+                let entry_key = key.clone();
+                self.slots[idx] = Some(Entry {
+                    key: entry_key,
+                    value,
+                });
+                if let Some(referenced) = self.referenced.get_mut(idx) {
+                    *referenced = false;
+                }
+                self.index.insert(key, idx);
+                self.len = self.slots.iter().filter(|slot| slot.is_some()).count();
+                let cap = self.slots.len();
+                self.hand = step(idx, cap);
+                return (None, None);
+            }
             return (None, None);
         }
 
@@ -2287,6 +2318,17 @@ mod tests {
     }
 
     #[test]
+    fn step_helper_is_total_for_zero_capacity() {
+        // step must be safe to call with cap == 0 (returns 0) rather
+        // than panicking on `next % 0`. Current callers always guard
+        // on non-zero capacity, but step itself should be total so
+        // future callers cannot trip a release-mode panic.
+        assert_eq!(step(0, 0), 0);
+        assert_eq!(step(42, 0), 0);
+        assert_eq!(step(usize::MAX, 0), 0);
+    }
+
+    #[test]
     fn try_new_rejects_capacity_above_max() {
         let err = ClockRing::<u32, u32>::try_new(MAX_CAPACITY + 1).unwrap_err();
         match err {
@@ -2316,6 +2358,34 @@ mod tests {
             },
             other => panic!("expected AllocationFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn insert_swap_repairs_stale_index_instead_of_dropping_value() {
+        // Security hardening regression: if the index maps a key to
+        // an idx but the slot at idx is empty (invariant broken by a
+        // malformed `Hash`/`Eq`/`Clone` impl on `K`, or a future
+        // refactor), the previous implementation silently dropped the
+        // caller's value. The hardened path repairs state in place.
+        //
+        // Gated on release builds because the repair path is preceded
+        // by a `debug_assert!(false, ...)` that fires in debug to
+        // surface the root-cause corruption during testing.
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("a", 1);
+        let idx = *ring.index.get("a").unwrap();
+
+        // Manually corrupt state: clear the slot but leave the index
+        // entry, mimicking a broken-invariant scenario.
+        ring.slots[idx] = None;
+
+        let (replaced, evicted) = ring.insert_swap("a", 99);
+        assert_eq!(replaced, None);
+        assert_eq!(evicted, None);
+        // The value we passed in must not have been silently dropped.
+        assert_eq!(ring.peek(&"a"), Some(&99));
+        ring.debug_validate_invariants();
     }
 
     #[test]
