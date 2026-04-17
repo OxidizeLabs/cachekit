@@ -11,7 +11,7 @@
 //! │                           ClockRing<K, V>                                 │
 //! │                                                                           │
 //! │   ┌─────────────────────────────┐   ┌─────────────────────────────────┐   │
-//! │   │  index: FxHashMap<K, usize> │   │  slots: Vec<Option<Entry>>      │   │
+//! │   │  index: HashMap<K, usize>   │   │  slots: Vec<Option<Entry>>      │   │
 //! │   │                             │   │                                 │   │
 //! │   │  ┌───────────┬──────────┐   │   │   ┌─────┬─────┬─────┬─────┐     │   │
 //! │   │  │    Key    │  Index   │   │   │   │  0  │  1  │  2  │  3  │     │   │
@@ -171,13 +171,15 @@
 //!
 //! - Fixed-size slot array; no reallocation during operation
 //! - Reference bits stored in a separate `Vec<bool>` for cache-friendly sweeps
-//! - Keys mapped to slot indices via [`FxHashMap`]; key is cloned once per new insertion
+//! - Keys mapped to slot indices via [`std::collections::HashMap`]; the default
+//!   DoS-resistant [`RandomState`] hasher is used unless the caller opts into
+//!   another via [`ClockRing::with_hasher`]. Key is cloned once per new insertion.
 //! - Hand pointer advances after each insert/eviction
 //! - [`insert`] is O(1) amortized: each access sets at most one ref bit, so the
 //!   total clearing work across N inserts is bounded by N
 //! - `debug_validate_invariants()` available in debug/test builds
 //!
-//! [`FxHashMap`]: rustc_hash::FxHashMap
+//! [`RandomState`]: std::collections::hash_map::RandomState
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -187,16 +189,17 @@ use std::hash::{BuildHasher, Hash};
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
 
-/// Upper bound on `capacity` accepted by [`ClockRing::new`] / [`ClockRing::try_new`].
+/// Coarse upper bound on `capacity` accepted by [`ClockRing::new`] /
+/// [`ClockRing::try_new`].
 ///
-/// Chosen so that the per-slot allocations (`Vec<Option<Entry<K, V>>>`,
-/// `Vec<bool>`, and the index `HashMap`) cannot trivially trigger an
-/// allocator abort or arithmetic overflow in [`ClockRing::approx_bytes`]
-/// regardless of the key/value sizes. Callers that have audited their
-/// `K` and `V` sizes and need a larger ring can construct one via
-/// [`ClockRing::with_hasher`] plus a manual `Vec::try_reserve`, but the
-/// default entry points clamp here so that untrusted capacity values
-/// fail fast with a clear error rather than OOM-aborting the process.
+/// This is a *first* guard that rejects obviously pathological values
+/// cheaply. It is intentionally permissive: for any key/value size
+/// larger than a few bytes, allocating `MAX_CAPACITY` slots would still
+/// exhaust memory. The constructors defend against that separately by
+/// using [`Vec::try_reserve_exact`] / [`HashMap::try_reserve`], so
+/// out-of-memory conditions surface as
+/// [`ClockRingError::AllocationFailed`] rather than aborting the
+/// process.
 pub const MAX_CAPACITY: usize = isize::MAX as usize / 64;
 
 /// Error returned by [`ClockRing::try_new`] / [`ClockRing::try_with_hasher`].
@@ -209,6 +212,17 @@ pub enum ClockRingError {
         /// The configured upper bound.
         max: usize,
     },
+    /// The allocator could not satisfy the per-slot reservation for the
+    /// requested capacity.
+    ///
+    /// Returned instead of aborting the process when
+    /// `capacity * size_of::<Option<Entry<K, V>>>()` exceeds what the
+    /// allocator can provide (including the case where the byte count
+    /// overflows `isize::MAX`).
+    AllocationFailed {
+        /// The capacity whose allocation failed.
+        requested: usize,
+    },
 }
 
 impl std::fmt::Display for ClockRingError {
@@ -216,6 +230,12 @@ impl std::fmt::Display for ClockRingError {
         match self {
             ClockRingError::CapacityTooLarge { requested, max } => {
                 write!(f, "ClockRing capacity {requested} exceeds maximum {max}")
+            },
+            ClockRingError::AllocationFailed { requested } => {
+                write!(
+                    f,
+                    "ClockRing failed to allocate backing storage for capacity {requested}"
+                )
             },
         }
     }
@@ -402,7 +422,7 @@ pub struct ClockRing<K, V, S = RandomState> {
 /// - A slow closure stalls every other reader/writer of this cache.
 ///   Keep closures short; clone data out if you need to perform I/O
 ///   or further work.
-/// - `get_with` / `get_mut_with` / `touch` / `update` / `insert` /
+/// - `get_with` / `get_mut_with` / `touch` / `update` /
 ///   `remove` / `pop_victim` and their `try_*` variants hold the
 ///   **write** lock across the closure because they mutate the
 ///   reference bits; `peek_with` / `peek_victim_with` hold the read
@@ -411,6 +431,17 @@ pub struct ClockRing<K, V, S = RandomState> {
 ///   (`parking_lot::RwLock` does not poison), but any observable state
 ///   changes performed *before* the closure (e.g. setting the
 ///   reference bit in `get_with`) are retained.
+///
+/// # `Drop for V` runs outside the lock
+///
+/// [`insert`](Self::insert) / [`try_insert`](Self::try_insert) release
+/// the internal write lock before dropping the value replaced by an
+/// update (and the caller is responsible for dropping the evicted
+/// entry after the method returns). This keeps an expensive or
+/// reentrant `Drop for V` from stalling other threads or deadlocking
+/// by calling back into the same cache. The same is true for
+/// [`remove`](Self::remove): the returned value is dropped on the
+/// caller's side of the lock.
 #[cfg(feature = "concurrency")]
 #[must_use]
 #[derive(Debug)]
@@ -682,6 +713,11 @@ where
     ///
     /// Returns `Some((evicted_key, evicted_value))` if an entry was evicted.
     ///
+    /// Any value replaced by an **update** (same key already present)
+    /// is dropped *after* the internal write lock has been released, so
+    /// a slow or reentrant `Drop for V` cannot stall other
+    /// readers/writers or deadlock by calling back into this cache.
+    ///
     /// # Example
     ///
     /// ```
@@ -696,8 +732,12 @@ where
     /// assert!(evicted.is_some());
     /// ```
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
-        let mut ring = self.inner.write();
-        ring.insert(key, value)
+        let (replaced, evicted) = {
+            let mut ring = self.inner.write();
+            ring.insert_swap(key, value)
+        };
+        drop(replaced);
+        evicted
     }
 
     /// Removes `key` and returns its value, if present.
@@ -887,8 +927,12 @@ where
     /// assert_eq!(cache.try_insert("b", 2), Some(None));
     /// ```
     pub fn try_insert(&self, key: K, value: V) -> Option<Option<(K, V)>> {
-        let mut ring = self.inner.try_write()?;
-        Some(ring.insert(key, value))
+        let (replaced, evicted) = {
+            let mut ring = self.inner.try_write()?;
+            ring.insert_swap(key, value)
+        };
+        drop(replaced);
+        Some(evicted)
     }
 
     /// Non-blocking version of [`remove`](Self::remove).
@@ -1280,6 +1324,13 @@ where
     }
 
     /// Fallible version of [`with_hasher`](Self::with_hasher).
+    ///
+    /// Returns [`ClockRingError::CapacityTooLarge`] when `capacity`
+    /// exceeds [`MAX_CAPACITY`], or [`ClockRingError::AllocationFailed`]
+    /// when the allocator cannot satisfy the backing-storage reservation
+    /// for `capacity`. This never aborts the process on hostile
+    /// capacity values, even when `capacity * size_of::<Option<Entry<K,
+    /// V>>>()` would overflow `isize::MAX`.
     pub fn try_with_hasher(capacity: usize, hash_builder: S) -> Result<Self, ClockRingError> {
         if capacity > MAX_CAPACITY {
             return Err(ClockRingError::CapacityTooLarge {
@@ -1287,12 +1338,28 @@ where
                 max: MAX_CAPACITY,
             });
         }
-        let mut slots = Vec::with_capacity(capacity);
+
+        let alloc_err = || ClockRingError::AllocationFailed {
+            requested: capacity,
+        };
+
+        let mut slots: Vec<Option<Entry<K, V>>> = Vec::new();
+        slots.try_reserve_exact(capacity).map_err(|_| alloc_err())?;
         slots.resize_with(capacity, || None);
+
+        let mut referenced: Vec<bool> = Vec::new();
+        referenced
+            .try_reserve_exact(capacity)
+            .map_err(|_| alloc_err())?;
+        referenced.resize(capacity, false);
+
+        let mut index = HashMap::with_hasher(hash_builder);
+        index.try_reserve(capacity).map_err(|_| alloc_err())?;
+
         Ok(Self {
             slots,
-            referenced: vec![false; capacity],
-            index: HashMap::with_capacity_and_hasher(capacity, hash_builder),
+            referenced,
+            index,
             hand: 0,
             len: 0,
             #[cfg(feature = "metrics")]
@@ -1549,8 +1616,9 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let idx = *self.index.get(key)?;
+        let entry = self.slots.get(idx)?.as_ref()?;
         self.referenced[idx] = true;
-        self.slots.get(idx)?.as_ref().map(|entry| &entry.value)
+        Some(&entry.value)
     }
 
     /// Returns a mutable reference to the value and sets the reference bit.
@@ -1575,11 +1643,12 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let idx = *self.index.get(key)?;
+        let slot = self.slots.get_mut(idx)?;
+        if slot.is_none() {
+            return None;
+        }
         self.referenced[idx] = true;
-        self.slots
-            .get_mut(idx)?
-            .as_mut()
-            .map(|entry| &mut entry.value)
+        slot.as_mut().map(|entry| &mut entry.value)
     }
 
     /// Sets the reference bit for `key`; returns `false` if missing.
@@ -1612,8 +1681,13 @@ where
             Some(idx) => *idx,
             None => return false,
         };
-        self.referenced[idx] = true;
-        true
+        match self.slots.get(idx) {
+            Some(Some(_)) => {
+                self.referenced[idx] = true;
+                true
+            },
+            _ => false,
+        }
     }
 
     /// Updates the value for an existing key, returning the old value.
@@ -1679,19 +1753,41 @@ where
     /// assert!(evicted.is_some());
     /// ```
     pub fn insert(&mut self, key: K, value: V) -> Option<(K, V)> {
+        let (replaced, evicted) = self.insert_swap(key, value);
+        drop(replaced);
+        evicted
+    }
+
+    /// Lower-level sibling of [`insert`](Self::insert) that *returns*
+    /// any value displaced by an update instead of dropping it inline.
+    ///
+    /// Semantics by state:
+    /// - **Zero capacity**: returns `(None, None)` (value is discarded).
+    /// - **Update of an existing key**: returns `(Some(old_value), None)`.
+    /// - **Insert into an empty slot**: returns `(None, None)`.
+    /// - **Insert into a full ring**: returns
+    ///   `(None, Some((evicted_key, evicted_value)))`.
+    ///
+    /// This method is useful when the caller wants to control *when*
+    /// the dropped value is destroyed — notably
+    /// [`ConcurrentClockRing::insert`] uses it to run the replaced
+    /// value's `Drop` **after** releasing the internal write lock, so a
+    /// slow or reentrant `Drop for V` cannot deadlock or stall other
+    /// threads.
+    pub fn insert_swap(&mut self, key: K, value: V) -> (Option<V>, Option<(K, V)>) {
         if self.capacity() == 0 {
-            return None;
+            return (None, None);
         }
 
         if let Some(&idx) = self.index.get(&key) {
             if let Some(entry) = self.slots.get_mut(idx).and_then(|slot| slot.as_mut()) {
-                entry.value = value;
+                let old = std::mem::replace(&mut entry.value, value);
                 self.referenced[idx] = true;
+                return (Some(old), None);
             }
-            return None;
+            return (None, None);
         }
 
-        // Not full — scan for an empty slot without disturbing ref bits.
         if self.len < self.capacity() {
             let cap = self.capacity();
             let mut idx = self.hand % cap;
@@ -1706,7 +1802,7 @@ where
                     self.index.insert(key, idx);
                     self.len = self.len.saturating_add(1);
                     self.hand = step(idx, cap);
-                    return None;
+                    return (None, None);
                 }
                 idx = step(idx, cap);
             }
@@ -1753,7 +1849,7 @@ where
             {
                 self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
             }
-            return Some((evicted.key, evicted.value));
+            return (None, Some((evicted.key, evicted.value)));
         }
         unreachable!("insert sweep exceeded 2*capacity without finding victim");
     }
@@ -2198,16 +2294,43 @@ mod tests {
                 assert_eq!(requested, MAX_CAPACITY + 1);
                 assert_eq!(max, MAX_CAPACITY);
             },
+            other => panic!("expected CapacityTooLarge, got {other:?}"),
         }
 
-        // Boundary: exactly MAX_CAPACITY is allowed in principle, but the
-        // test itself won't try to allocate that much; just check that
-        // try_new doesn't pre-emptively reject it.
-        //
-        // We avoid the actual allocation: small value still exercises the
-        // happy path.
+        // Happy path: small capacity allocates cleanly.
         let ring = ClockRing::<u32, u32>::try_new(8).unwrap();
         assert_eq!(ring.capacity(), 8);
+    }
+
+    #[test]
+    fn try_new_returns_allocation_failed_on_hostile_capacity() {
+        // `[u8; 1024]` keeps `Option<Entry<K, V>>` comfortably above 64 B,
+        // so `MAX_CAPACITY * size_of::<Option<Entry<K, V>>>()` exceeds
+        // `isize::MAX`. Pre-`try_reserve_exact` this would abort the
+        // process via `capacity_overflow`; we now surface it as a
+        // regular `ClockRingError::AllocationFailed`.
+        let err = ClockRing::<u32, [u8; 1024]>::try_new(MAX_CAPACITY).unwrap_err();
+        match err {
+            ClockRingError::AllocationFailed { requested } => {
+                assert_eq!(requested, MAX_CAPACITY);
+            },
+            other => panic!("expected AllocationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_does_not_set_ref_bit_on_missing_key() {
+        // Regression: get/touch/get_mut must not touch the reference
+        // vector when the key is absent or its slot is empty.
+        let mut ring = ClockRing::<&str, i32>::new(4);
+        ring.insert("a", 1);
+        // `a` was just inserted, so its ref bit is clear. A failed
+        // lookup must not silently promote any slot.
+        assert!(ring.get(&"missing").is_none());
+        assert!(!ring.touch(&"missing"));
+        assert!(ring.get_mut(&"missing").is_none());
+        // `a` still has ref bit cleared → it's a valid victim candidate.
+        assert_eq!(ring.peek_victim(), Some((&"a", &1)));
     }
 
     #[test]
