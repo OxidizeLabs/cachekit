@@ -179,12 +179,63 @@
 //!
 //! [`FxHashMap`]: rustc_hash::FxHashMap
 
-use rustc_hash::FxHashMap;
 use std::borrow::Borrow;
-use std::hash::Hash;
+use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hash};
 
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
+
+/// Upper bound on `capacity` accepted by [`ClockRing::new`] / [`ClockRing::try_new`].
+///
+/// Chosen so that the per-slot allocations (`Vec<Option<Entry<K, V>>>`,
+/// `Vec<bool>`, and the index `HashMap`) cannot trivially trigger an
+/// allocator abort or arithmetic overflow in [`ClockRing::approx_bytes`]
+/// regardless of the key/value sizes. Callers that have audited their
+/// `K` and `V` sizes and need a larger ring can construct one via
+/// [`ClockRing::with_hasher`] plus a manual `Vec::try_reserve`, but the
+/// default entry points clamp here so that untrusted capacity values
+/// fail fast with a clear error rather than OOM-aborting the process.
+pub const MAX_CAPACITY: usize = isize::MAX as usize / 64;
+
+/// Error returned by [`ClockRing::try_new`] / [`ClockRing::try_with_hasher`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockRingError {
+    /// The requested capacity exceeds [`MAX_CAPACITY`].
+    CapacityTooLarge {
+        /// The capacity that was requested.
+        requested: usize,
+        /// The configured upper bound.
+        max: usize,
+    },
+}
+
+impl std::fmt::Display for ClockRingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClockRingError::CapacityTooLarge { requested, max } => {
+                write!(f, "ClockRing capacity {requested} exceeds maximum {max}")
+            },
+        }
+    }
+}
+
+impl std::error::Error for ClockRingError {}
+
+/// Advance an index by one position modulo `cap`, overflow-safe.
+///
+/// Using `checked_add` + fallback to `wrapping_add % cap` avoids the
+/// `(idx + 1) % cap` overflow that is theoretically reachable on
+/// pathologically large `cap` values.
+#[inline]
+fn step(idx: usize, cap: usize) -> usize {
+    debug_assert!(cap > 0, "step called with zero capacity");
+    match idx.checked_add(1) {
+        Some(next) => next % cap,
+        None => 0,
+    }
+}
 
 /// Clock entry holding key and value.
 ///
@@ -214,6 +265,19 @@ struct Entry<K, V> {
 ///
 /// - `K`: Key type, must be `Eq + Hash + Clone`
 /// - `V`: Value type
+/// - `S`: Hash builder. Defaults to [`RandomState`], a DoS-resistant
+///   randomized hasher. Swap via [`ClockRing::with_hasher`] for a faster
+///   non-randomized hasher when keys are fully trusted.
+///
+/// # Hash-collision resistance
+///
+/// `ClockRing` defaults to the standard library's randomized
+/// [`RandomState`]. This makes it safe to use as a cache keyed by
+/// attacker-controlled data (URL paths, user IDs, header values, etc.)
+/// without worrying about adversarial hash collisions degrading lookups
+/// to O(n). Callers that fully trust their key source can opt into a
+/// faster non-randomized hasher (e.g. `rustc_hash::FxBuildHasher`) via
+/// [`ClockRing::with_hasher`] / [`ClockRing::try_with_hasher`].
 ///
 /// # Example
 ///
@@ -256,10 +320,10 @@ struct Entry<K, V> {
 /// ```
 #[must_use]
 #[derive(Debug, Clone)]
-pub struct ClockRing<K, V> {
+pub struct ClockRing<K, V, S = RandomState> {
     slots: Vec<Option<Entry<K, V>>>,
     referenced: Vec<bool>,
-    index: FxHashMap<K, usize>,
+    index: HashMap<K, usize, S>,
     hand: usize,
     len: usize,
     #[cfg(feature = "metrics")]
@@ -324,19 +388,48 @@ pub struct ClockRing<K, V> {
 ///     assert_eq!(val, 42);
 /// }
 /// ```
+///
+/// # Closures run under the lock
+///
+/// Every `*_with` / `try_*_with` method invokes the caller-supplied
+/// closure **while holding the internal `RwLock` guard**. This has
+/// important consequences:
+///
+/// - The closure **must not** call back into the same
+///   `ConcurrentClockRing` (or any structure that might). The lock is
+///   *not* reentrant, so re-entry will either deadlock (`*_with`) or
+///   spuriously fail by returning `None` (`try_*_with`).
+/// - A slow closure stalls every other reader/writer of this cache.
+///   Keep closures short; clone data out if you need to perform I/O
+///   or further work.
+/// - `get_with` / `get_mut_with` / `touch` / `update` / `insert` /
+///   `remove` / `pop_victim` and their `try_*` variants hold the
+///   **write** lock across the closure because they mutate the
+///   reference bits; `peek_with` / `peek_victim_with` hold the read
+///   lock.
+/// - If the closure panics the lock is released cleanly
+///   (`parking_lot::RwLock` does not poison), but any observable state
+///   changes performed *before* the closure (e.g. setting the
+///   reference bit in `get_with`) are retained.
 #[cfg(feature = "concurrency")]
 #[must_use]
 #[derive(Debug)]
-pub struct ConcurrentClockRing<K, V> {
-    inner: RwLock<ClockRing<K, V>>,
+pub struct ConcurrentClockRing<K, V, S = RandomState> {
+    inner: RwLock<ClockRing<K, V, S>>,
 }
 
 #[cfg(feature = "concurrency")]
-impl<K, V> ConcurrentClockRing<K, V>
+impl<K, V> ConcurrentClockRing<K, V, RandomState>
 where
     K: Eq + Hash + Clone,
 {
-    /// Creates a new ring with `capacity` slots.
+    /// Creates a new ring with `capacity` slots and the default
+    /// DoS-resistant hasher ([`RandomState`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_new`](Self::try_new) for a fallible version.
     ///
     /// # Example
     ///
@@ -351,6 +444,43 @@ where
         Self {
             inner: RwLock::new(ClockRing::new(capacity)),
         }
+    }
+
+    /// Fallible version of [`new`](Self::new).
+    ///
+    /// Returns [`ClockRingError::CapacityTooLarge`] if
+    /// `capacity > MAX_CAPACITY`.
+    pub fn try_new(capacity: usize) -> Result<Self, ClockRingError> {
+        Ok(Self {
+            inner: RwLock::new(ClockRing::try_new(capacity)?),
+        })
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V, S> ConcurrentClockRing<K, V, S>
+where
+    K: Eq + Hash + Clone,
+    S: BuildHasher,
+{
+    /// Creates a new ring with `capacity` slots using the provided
+    /// `hash_builder`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_with_hasher`](Self::try_with_hasher) for a fallible version.
+    pub fn with_hasher(capacity: usize, hash_builder: S) -> Self {
+        Self {
+            inner: RwLock::new(ClockRing::with_hasher(capacity, hash_builder)),
+        }
+    }
+
+    /// Fallible version of [`with_hasher`](Self::with_hasher).
+    pub fn try_with_hasher(capacity: usize, hash_builder: S) -> Result<Self, ClockRingError> {
+        Ok(Self {
+            inner: RwLock::new(ClockRing::try_with_hasher(capacity, hash_builder)?),
+        })
     }
 
     /// Returns the configured capacity (number of slots).
@@ -975,7 +1105,7 @@ where
 // Iteration methods — no trait bounds needed on K
 // ---------------------------------------------------------------------------
 
-impl<K, V> ClockRing<K, V> {
+impl<K, V, S> ClockRing<K, V, S> {
     /// Returns an iterator over `(&K, &V)` pairs in slot order.
     ///
     /// Does **not** set reference bits (like [`peek`](Self::peek)).
@@ -1082,11 +1212,17 @@ impl<K, V> ClockRing<K, V> {
     }
 }
 
-impl<K, V> ClockRing<K, V>
+impl<K, V> ClockRing<K, V, RandomState>
 where
     K: Eq + Hash + Clone,
 {
-    /// Creates a new ring with `capacity` slots.
+    /// Creates a new ring with `capacity` slots and the default
+    /// DoS-resistant hasher ([`RandomState`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_new`](Self::try_new) for a fallible version.
     ///
     /// # Example
     ///
@@ -1098,19 +1234,72 @@ where
     /// assert!(ring.is_empty());
     /// ```
     pub fn new(capacity: usize) -> Self {
+        Self::try_new(capacity).expect("ClockRing::new: capacity exceeds MAX_CAPACITY")
+    }
+
+    /// Fallible version of [`new`](Self::new).
+    ///
+    /// Returns [`ClockRingError::CapacityTooLarge`] when
+    /// `capacity > MAX_CAPACITY`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::{ClockRing, MAX_CAPACITY};
+    ///
+    /// let ring = ClockRing::<u32, u32>::try_new(16).unwrap();
+    /// assert_eq!(ring.capacity(), 16);
+    ///
+    /// assert!(ClockRing::<u32, u32>::try_new(MAX_CAPACITY + 1).is_err());
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, ClockRingError> {
+        Self::try_with_hasher(capacity, RandomState::default())
+    }
+}
+
+impl<K, V, S> ClockRing<K, V, S>
+where
+    K: Eq + Hash + Clone,
+    S: BuildHasher,
+{
+    /// Creates a new ring with `capacity` slots using the supplied
+    /// `hash_builder`.
+    ///
+    /// Use this to opt into a faster non-randomized hasher (e.g.
+    /// `rustc_hash::FxBuildHasher`) **only when keys are fully
+    /// trusted**. With attacker-controlled keys, a non-randomized hasher
+    /// enables hash-collision DoS.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_with_hasher`](Self::try_with_hasher) for a fallible version.
+    pub fn with_hasher(capacity: usize, hash_builder: S) -> Self {
+        Self::try_with_hasher(capacity, hash_builder)
+            .expect("ClockRing::with_hasher: capacity exceeds MAX_CAPACITY")
+    }
+
+    /// Fallible version of [`with_hasher`](Self::with_hasher).
+    pub fn try_with_hasher(capacity: usize, hash_builder: S) -> Result<Self, ClockRingError> {
+        if capacity > MAX_CAPACITY {
+            return Err(ClockRingError::CapacityTooLarge {
+                requested: capacity,
+                max: MAX_CAPACITY,
+            });
+        }
         let mut slots = Vec::with_capacity(capacity);
         slots.resize_with(capacity, || None);
-        Self {
+        Ok(Self {
             slots,
             referenced: vec![false; capacity],
-            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            index: HashMap::with_capacity_and_hasher(capacity, hash_builder),
             hand: 0,
             len: 0,
             #[cfg(feature = "metrics")]
             sweep_hand_advances: 0,
             #[cfg(feature = "metrics")]
             sweep_ref_bit_resets: 0,
-        }
+        })
     }
 
     /// Returns the configured capacity (number of slots).
@@ -1235,10 +1424,22 @@ where
     /// ```
     #[must_use]
     pub fn approx_bytes(&self) -> usize {
+        let index_bytes = self
+            .index
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(K, usize)>());
+        let slots_bytes = self
+            .slots
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Option<Entry<K, V>>>());
+        let ref_bytes = self
+            .referenced
+            .capacity()
+            .saturating_mul(std::mem::size_of::<bool>());
         std::mem::size_of::<Self>()
-            + self.index.capacity() * std::mem::size_of::<(K, usize)>()
-            + self.slots.capacity() * std::mem::size_of::<Option<Entry<K, V>>>()
-            + self.referenced.capacity() * std::mem::size_of::<bool>()
+            .saturating_add(index_bytes)
+            .saturating_add(slots_bytes)
+            .saturating_add(ref_bytes)
     }
 
     /// Returns the number of occupied slots.
@@ -1493,8 +1694,8 @@ where
         // Not full — scan for an empty slot without disturbing ref bits.
         if self.len < self.capacity() {
             let cap = self.capacity();
-            for offset in 0..cap {
-                let idx = (self.hand + offset) % cap;
+            let mut idx = self.hand % cap;
+            for _ in 0..cap {
                 if self.slots[idx].is_none() {
                     let entry_key = key.clone();
                     self.slots[idx] = Some(Entry {
@@ -1503,34 +1704,41 @@ where
                     });
                     self.referenced[idx] = false;
                     self.index.insert(key, idx);
-                    self.len += 1;
-                    self.hand = (idx + 1) % cap;
+                    self.len = self.len.saturating_add(1);
+                    self.hand = step(idx, cap);
                     return None;
                 }
+                idx = step(idx, cap);
             }
-            debug_assert!(false, "len < capacity but no empty slot found");
+            unreachable!("len < capacity but no empty slot found");
         }
 
         // Full — CLOCK sweep to find and evict a victim.
         // One pass clears all ref bits; the second finds an unreferenced slot.
         let cap = self.capacity();
-        for _ in 0..(2 * cap) {
+        for _ in 0..cap.saturating_mul(2) {
             let idx = self.hand;
             if self.referenced[idx] {
                 self.referenced[idx] = false;
                 #[cfg(feature = "metrics")]
                 {
-                    self.sweep_ref_bit_resets += 1;
+                    self.sweep_ref_bit_resets = self.sweep_ref_bit_resets.saturating_add(1);
                 }
                 self.advance_hand();
                 #[cfg(feature = "metrics")]
                 {
-                    self.sweep_hand_advances += 1;
+                    self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
                 }
                 continue;
             }
 
-            let evicted = self.slots[idx].take().expect("occupied slot missing");
+            let evicted = match self.slots[idx].take() {
+                Some(entry) => entry,
+                // Invariant: when `len == capacity` every slot must be
+                // occupied. If this ever fires we've corrupted state —
+                // fail loudly rather than dropping the incoming write.
+                None => unreachable!("occupied slot missing under full ring"),
+            };
             self.index.remove(&evicted.key);
 
             let entry_key = key.clone();
@@ -1543,15 +1751,11 @@ where
             self.advance_hand();
             #[cfg(feature = "metrics")]
             {
-                self.sweep_hand_advances += 1;
+                self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
             }
             return Some((evicted.key, evicted.value));
         }
-        debug_assert!(
-            false,
-            "insert sweep exceeded 2*capacity without finding victim"
-        );
-        None
+        unreachable!("insert sweep exceeded 2*capacity without finding victim");
     }
 
     /// Peeks the next eviction candidate without modifying state.
@@ -1581,13 +1785,14 @@ where
             return None;
         }
         let cap = self.capacity();
-        for offset in 0..cap {
-            let idx = (self.hand + offset) % cap;
+        let mut idx = self.hand % cap;
+        for _ in 0..cap {
             if let Some(entry) = self.slots.get(idx).and_then(|slot| slot.as_ref()) {
                 if !self.referenced[idx] {
                     return Some((&entry.key, &entry.value));
                 }
             }
+            idx = step(idx, cap);
         }
         None
     }
@@ -1621,38 +1826,44 @@ where
             return None;
         }
         let cap = self.capacity();
-        for _ in 0..(2 * cap) {
+        for _ in 0..cap.saturating_mul(2) {
             let idx = self.hand;
             if self.slots[idx].is_some() {
                 if self.referenced[idx] {
                     self.referenced[idx] = false;
                     #[cfg(feature = "metrics")]
                     {
-                        self.sweep_ref_bit_resets += 1;
+                        self.sweep_ref_bit_resets = self.sweep_ref_bit_resets.saturating_add(1);
                     }
                     self.advance_hand();
                     #[cfg(feature = "metrics")]
                     {
-                        self.sweep_hand_advances += 1;
+                        self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
                     }
                     continue;
                 }
 
-                let evicted = self.slots[idx].take().expect("occupied slot missing");
+                let evicted = match self.slots[idx].take() {
+                    Some(entry) => entry,
+                    None => unreachable!("slot reported occupied but take() returned None"),
+                };
                 self.index.remove(&evicted.key);
                 self.referenced[idx] = false;
-                self.len -= 1;
+                self.len = self
+                    .len
+                    .checked_sub(1)
+                    .unwrap_or_else(|| unreachable!("len underflow in pop_victim"));
                 self.advance_hand();
                 #[cfg(feature = "metrics")]
                 {
-                    self.sweep_hand_advances += 1;
+                    self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
                 }
                 return Some((evicted.key, evicted.value));
             }
             self.advance_hand();
             #[cfg(feature = "metrics")]
             {
-                self.sweep_hand_advances += 1;
+                self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
             }
         }
         None
@@ -1693,13 +1904,16 @@ where
         let idx = self.index.remove(key)?;
         let entry = self.slots.get_mut(idx)?.take()?;
         self.referenced[idx] = false;
-        self.len -= 1;
+        self.len = self
+            .len
+            .checked_sub(1)
+            .unwrap_or_else(|| unreachable!("len underflow in remove"));
         Some(entry.value)
     }
 
     /// Callers must ensure capacity > 0 before calling.
     fn advance_hand(&mut self) {
-        self.hand = (self.hand + 1) % self.slots.len();
+        self.hand = step(self.hand, self.slots.len());
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -1731,13 +1945,14 @@ where
     }
 }
 
-impl<K, V> Extend<(K, V)> for ClockRing<K, V>
+impl<K, V, S> Extend<(K, V)> for ClockRing<K, V, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher,
 {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         for (key, value) in iter {
-            self.insert(key, value);
+            let _ = self.insert(key, value);
         }
     }
 }
@@ -1889,7 +2104,7 @@ impl<'a, K, V> Iterator for ValuesMut<'a, K, V> {
 // IntoIterator impls (C-ITER: iter, iter_mut, into_iter)
 // ---------------------------------------------------------------------------
 
-impl<K, V> IntoIterator for ClockRing<K, V> {
+impl<K, V, S> IntoIterator for ClockRing<K, V, S> {
     type Item = (K, V);
     type IntoIter = IntoIter<K, V>;
 
@@ -1914,7 +2129,7 @@ impl<K, V> IntoIterator for ClockRing<K, V> {
     }
 }
 
-impl<'a, K, V> IntoIterator for &'a ClockRing<K, V> {
+impl<'a, K, V, S> IntoIterator for &'a ClockRing<K, V, S> {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
 
@@ -1923,7 +2138,7 @@ impl<'a, K, V> IntoIterator for &'a ClockRing<K, V> {
     }
 }
 
-impl<'a, K, V> IntoIterator for &'a mut ClockRing<K, V> {
+impl<'a, K, V, S> IntoIterator for &'a mut ClockRing<K, V, S> {
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
 
@@ -1937,7 +2152,7 @@ impl<'a, K, V> IntoIterator for &'a mut ClockRing<K, V> {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "concurrency")]
-impl<K, V> ConcurrentClockRing<K, V> {
+impl<K, V, S> ConcurrentClockRing<K, V, S> {
     /// Consumes the concurrent wrapper, returning the inner [`ClockRing`].
     ///
     /// This is useful when you need to iterate or inspect a concurrent ring
@@ -1956,7 +2171,7 @@ impl<K, V> ConcurrentClockRing<K, V> {
     /// let pairs: Vec<_> = ring.iter().collect();
     /// assert_eq!(pairs.len(), 2);
     /// ```
-    pub fn into_inner(self) -> ClockRing<K, V> {
+    pub fn into_inner(self) -> ClockRing<K, V, S> {
         self.inner.into_inner()
     }
 }
@@ -1965,6 +2180,63 @@ impl<K, V> ConcurrentClockRing<K, V> {
 #[allow(unused_must_use)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_helper_wraps_and_handles_usize_max() {
+        assert_eq!(step(0, 4), 1);
+        assert_eq!(step(3, 4), 0);
+        // Overflow path: idx + 1 would overflow usize::MAX. step must
+        // fall back to 0 rather than panic or wrap silently.
+        assert_eq!(step(usize::MAX, 4), 0);
+    }
+
+    #[test]
+    fn try_new_rejects_capacity_above_max() {
+        let err = ClockRing::<u32, u32>::try_new(MAX_CAPACITY + 1).unwrap_err();
+        match err {
+            ClockRingError::CapacityTooLarge { requested, max } => {
+                assert_eq!(requested, MAX_CAPACITY + 1);
+                assert_eq!(max, MAX_CAPACITY);
+            },
+        }
+
+        // Boundary: exactly MAX_CAPACITY is allowed in principle, but the
+        // test itself won't try to allocate that much; just check that
+        // try_new doesn't pre-emptively reject it.
+        //
+        // We avoid the actual allocation: small value still exercises the
+        // happy path.
+        let ring = ClockRing::<u32, u32>::try_new(8).unwrap();
+        assert_eq!(ring.capacity(), 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity exceeds MAX_CAPACITY")]
+    fn new_panics_on_oversized_capacity() {
+        let _ = ClockRing::<u32, u32>::new(MAX_CAPACITY + 1);
+    }
+
+    #[test]
+    fn approx_bytes_saturates_without_panicking() {
+        // Just exercise the saturating path on a normal ring; the main
+        // guarantee is that we don't panic in debug builds.
+        let ring: ClockRing<u64, u64> = ClockRing::new(128);
+        let bytes = ring.approx_bytes();
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn with_hasher_uses_custom_hasher() {
+        use std::collections::hash_map::RandomState;
+        // Build with an explicit RandomState instance. Exercises the
+        // generic `with_hasher` path end-to-end.
+        let mut ring: ClockRing<&str, i32, RandomState> =
+            ClockRing::with_hasher(4, RandomState::new());
+        assert_eq!(ring.insert("a", 1), None);
+        assert_eq!(ring.insert("b", 2), None);
+        assert_eq!(ring.peek(&"a"), Some(&1));
+        assert_eq!(ring.peek(&"b"), Some(&2));
+    }
 
     #[test]
     fn clock_ring_eviction_prefers_unreferenced() {

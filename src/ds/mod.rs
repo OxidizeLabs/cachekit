@@ -10,7 +10,9 @@ pub mod slot_arena;
 
 #[cfg(feature = "concurrency")]
 pub use clock_ring::ConcurrentClockRing;
-pub use clock_ring::{ClockRing, IntoIter, Iter, IterMut, Keys, Values, ValuesMut};
+pub use clock_ring::{
+    ClockRing, ClockRingError, IntoIter, Iter, IterMut, Keys, MAX_CAPACITY, Values, ValuesMut,
+};
 pub use fixed_history::FixedHistory;
 pub use frequency_buckets::{
     BucketEntries, BucketIds, DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryDebug,
