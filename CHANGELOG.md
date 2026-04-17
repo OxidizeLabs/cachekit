@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- `ClockRing::with_hasher` / `ClockRing::try_with_hasher` and the `ConcurrentClockRing` equivalents now require a third argument: a `KeysAreTrusted` marker. This forces every caller that opts out of the default DoS-resistant `RandomState` hasher to acknowledge the trade-off at the call site, making hash-collision-DoS exposure reviewable via `grep KeysAreTrusted`. Callers using `ClockRing::new` / `try_new` are unaffected. Migration: add `, KeysAreTrusted::new()` to existing `with_hasher` / `try_with_hasher` calls.
+
+### Added
+- `ClockRing::KeysAreTrusted` — ZST acknowledgement type required by hasher-configurable constructors. Constructible via `KeysAreTrusted::new()` or `KeysAreTrusted::default()`; see its type-level docs for guidance on when a non-randomized hasher is appropriate.
+- Re-export `KeysAreTrusted` from `cachekit::ds`.
+- `#[track_caller]` on `ClockRing::with_hasher` so `MAX_CAPACITY` panics blame the call site rather than the constructor body.
+
+### Fixed
+- **ClockRing `insert_swap` silent value drop** — when the index mapped a key to a slot that had been emptied (a broken invariant reachable only via a malformed `Hash`/`Eq`/`Clone` impl on `K`), the caller's value was silently discarded. The repair path now places the value in the empty slot, refreshes the index entry, and recomputes `len` from slot occupancy; a `debug_assert!` surfaces the root-cause corruption in debug/test/fuzz builds.
+- **ClockRing `step` helper now total for `cap == 0`** — previously protected only by a `debug_assert!` (stripped in release), so a future caller that forgot the capacity-zero guard would hit a release-mode division-by-zero panic. `step(_, 0)` now returns `0`.
+
+### Documentation
+- New `## Memory Budgeting` module-level section documenting that `approx_bytes` counts `size_of::<V>()` only and does not follow heap pointers — workloads with variable-sized values should enforce a byte budget at the call site.
+- New `## Timing Side Channels` module-level section documenting that `HashMap`-backed lookup timing reveals key presence, and recommending `ClockRing` not be used as the backing store for caches whose key set must remain confidential against a co-located attacker.
+
 ## [0.7.0] - 2026-04-09
 
 ### Breaking
