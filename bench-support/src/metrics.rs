@@ -747,7 +747,7 @@ where
     let cache_size = std::mem::size_of_val(cache);
     MemoryEstimate {
         total_bytes: cache_size,
-        bytes_per_entry: if entries > 0 { cache_size / entries } else { 0 },
+        bytes_per_entry: cache_size.checked_div(entries).unwrap_or(0),
         entry_count: entries,
     }
 }
