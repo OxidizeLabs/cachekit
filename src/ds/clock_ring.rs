@@ -1994,14 +1994,35 @@ where
             // sharing this ring (notably `ConcurrentClockRing`).
             let entry_key = key.clone();
 
-            let evicted = match self.slots[idx].take() {
-                Some(entry) => entry,
-                // Invariant: when `len == capacity` every slot must be
-                // occupied. If this ever fires we've corrupted state —
-                // fail loudly rather than dropping the incoming write.
+            // Remove the evictee's index entry **before** emptying the
+            // slot. `HashMap::remove` calls the user-supplied `Hash` /
+            // `Eq` on the evictee key; if either panics we must not
+            // have mutated the slot yet. Pre-fix, the slot was taken
+            // first and a panic here left `len == capacity` with one
+            // empty slot — the next insert then fired the
+            // `unreachable!("occupied slot missing under full ring")`
+            // below, turning a transient hasher panic into a
+            // persistent-panic DoS shared across every thread holding
+            // a `ConcurrentClockRing` handle.
+            let victim_key_ref = match &self.slots[idx] {
+                Some(entry) => &entry.key,
                 None => unreachable!("occupied slot missing under full ring"),
             };
-            self.index.remove(&evicted.key);
+            let removed = self.index.remove(victim_key_ref);
+            debug_assert_eq!(
+                removed,
+                Some(idx),
+                "index/slot disagreement in insert_swap eviction"
+            );
+
+            // From here on every step is infallible until the final
+            // `index.insert`: take + install + clear-ref bit.
+            let evicted = match self.slots[idx].take() {
+                Some(entry) => entry,
+                // Invariant: we just confirmed occupancy above, so
+                // this cannot happen.
+                None => unreachable!("slot vanished between borrow and take"),
+            };
 
             self.slots[idx] = Some(Entry {
                 key: entry_key,
@@ -2011,7 +2032,12 @@ where
             // The index was pre-sized at construction via
             // `try_reserve(capacity)` and `len` never exceeds
             // `capacity`, so this `insert` does not rehash and cannot
-            // fail an allocation here.
+            // fail an allocation here. If a user-supplied hasher
+            // nevertheless panics, the slot is already occupied with
+            // the new entry and the index is missing only the new
+            // key's pointer; subsequent lookups via the absent key
+            // return `None` and `insert_swap`'s repair path restores
+            // the mapping on the next write of the same key.
             self.index.insert(key, idx);
             self.advance_hand();
             #[cfg(feature = "metrics")]
@@ -2108,11 +2134,27 @@ where
                     continue;
                 }
 
+                // Remove the index entry **before** emptying the slot,
+                // so a panicking `K::Hash` / `K::Eq` in
+                // `HashMap::remove` leaves slot/len/referenced
+                // untouched. Pre-fix, `slots[idx].take()` ran first
+                // and a panic here left `len == capacity` with an
+                // empty slot, which weaponized the next insert's
+                // `unreachable!("occupied slot missing under full
+                // ring")` into a persistent-panic DoS.
+                let victim_key_ref = match &self.slots[idx] {
+                    Some(entry) => &entry.key,
+                    None => unreachable!("slot reported occupied but is empty"),
+                };
+                let removed = self.index.remove(victim_key_ref);
+                debug_assert_eq!(removed, Some(idx), "index/slot disagreement in pop_victim");
+
+                // From here on, every step is infallible: take + set
+                // + decrement + advance.
                 let evicted = match self.slots[idx].take() {
                     Some(entry) => entry,
                     None => unreachable!("slot reported occupied but take() returned None"),
                 };
-                self.index.remove(&evicted.key);
                 self.referenced[idx] = false;
                 self.len = self
                     .len
@@ -2210,6 +2252,24 @@ where
     }
 }
 
+/// Bulk-inserts `(K, V)` pairs via repeated [`ClockRing::insert`].
+///
+/// # Memory-budget caveat
+///
+/// `ClockRing` bounds the **number** of entries, not the aggregate
+/// byte footprint of stored values — see the `Memory Budgeting`
+/// section of the module docs. When `V` owns heap allocations (e.g.
+/// `Vec<u8>`, `String`) and the iterator is attacker-influenced, this
+/// impl will happily replace already-stored values with arbitrarily
+/// large new ones up to `capacity` times before any single eviction
+/// returns, so aggregate memory use is bounded only by `capacity *
+/// max(size_of(V_i))` across the iterator. Evicted entries are
+/// **silently dropped** — the caller never sees them.
+///
+/// For attacker-influenced values, enforce a byte budget at the call
+/// site (track `value.len()` on insert and evict via
+/// [`ClockRing::pop_victim`] until under budget) instead of using
+/// [`Extend`].
 impl<K, V, S> Extend<(K, V)> for ClockRing<K, V, S>
 where
     K: Eq + Hash + Clone,
@@ -3323,6 +3383,136 @@ mod tests {
         assert!(ring.contains(&PanicKey(1)));
         assert!(ring.contains(&PanicKey(2)));
         assert!(!ring.contains(&PanicKey(3)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Security hardening: exception safety when the evictee's `Hash`/`Eq`
+    // panics inside `HashMap::remove`.
+    //
+    // Pre-fix, `insert_swap` and `pop_victim` would `slots[idx].take()`
+    // *before* calling `self.index.remove(&evicted.key)`. A panic in the
+    // user-supplied `Hash`/`Eq` on the evictee key then left `len ==
+    // capacity` (or, for `pop_victim`, `len` un-decremented) with an
+    // empty slot — and the next `insert` fired
+    // `unreachable!("occupied slot missing under full ring")`, turning a
+    // single bad hash call into a persistent-panic DoS for every thread
+    // sharing a `ConcurrentClockRing` handle.
+    //
+    // The fix removes the index entry *by borrow* before taking the slot.
+    // These tests install a key type whose `Hash` panics after a
+    // caller-controlled budget and verify the ring survives the unwind.
+    // -----------------------------------------------------------------------
+
+    thread_local! {
+        static HASH_BUDGET: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(usize::MAX) };
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct HashPanicKey(u32);
+
+    impl std::hash::Hash for HashPanicKey {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            HASH_BUDGET.with(|b| {
+                let remaining = b.get();
+                if remaining == 0 {
+                    panic!("HashPanicKey: hash budget exhausted");
+                }
+                b.set(remaining - 1);
+            });
+            self.0.hash(state);
+        }
+    }
+
+    #[test]
+    fn insert_swap_eviction_panic_in_hash_preserves_invariants() {
+        // Build a full ring. The next insert must hit the eviction
+        // path and call `HashMap::remove` on the evictee's key —
+        // which we make panic via a starved hash budget.
+        let mut ring: ClockRing<HashPanicKey, i32> = ClockRing::new(2);
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(HashPanicKey(1), 10);
+        ring.insert(HashPanicKey(2), 20);
+        assert_eq!(ring.len(), 2);
+
+        let slots_before: Vec<Option<u32>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, _)| k.0))
+            .collect();
+
+        // Budget: exactly the hash calls required to locate the new
+        // key's slot (via `self.index.get(&key)` at the top of
+        // insert_swap) and check the full-ring fast path, but starved
+        // before `self.index.remove(&evictee.key)` inside the
+        // eviction branch. Setting to 1 is enough — the first hash
+        // in `index.get(&PanicKey(3))` consumes it, and every
+        // subsequent hash call (including the one inside
+        // `HashMap::remove`) panics.
+        HASH_BUDGET.with(|b| b.set(1));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.insert(HashPanicKey(3), 30);
+        }))
+        .is_err();
+        assert!(panicked, "HashPanicKey::hash must have fired");
+
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+
+        // The regression: `len` must still equal the number of
+        // occupied slots, and `debug_validate_invariants` must pass.
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 2, "len must not drift on hash panic");
+        assert_eq!(ring.capacity(), 2);
+
+        // Same two live entries. `HashPanicKey(3)` must not have
+        // been inserted.
+        let slots_after: Vec<Option<u32>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, _)| k.0))
+            .collect();
+        assert_eq!(slots_before, slots_after);
+
+        // And — the regression — the next insert must not fire
+        // `unreachable!("occupied slot missing under full ring")`.
+        let evicted = ring.insert(HashPanicKey(3), 30);
+        assert!(evicted.is_some(), "next insert must evict normally");
+        ring.debug_validate_invariants();
+    }
+
+    #[test]
+    fn pop_victim_panic_in_hash_preserves_invariants() {
+        let mut ring: ClockRing<HashPanicKey, i32> = ClockRing::new(3);
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(HashPanicKey(1), 10);
+        ring.insert(HashPanicKey(2), 20);
+        ring.insert(HashPanicKey(3), 30);
+        assert_eq!(ring.len(), 3);
+
+        let snapshot_before = ring.debug_snapshot_slots().len();
+
+        // Starve the hash budget so `self.index.remove(&victim.key)`
+        // inside pop_victim panics.
+        HASH_BUDGET.with(|b| b.set(0));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.pop_victim();
+        }))
+        .is_err();
+        assert!(panicked, "HashPanicKey::hash must have fired");
+
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+
+        // `len` must still reflect actual occupancy — pre-fix this
+        // drifted when take() ran before the panicking remove.
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 3, "len must not drift on hash panic");
+        assert_eq!(ring.debug_snapshot_slots().len(), snapshot_before);
+
+        // Follow-up pop_victim must succeed normally.
+        let evicted = ring.pop_victim();
+        assert!(evicted.is_some(), "pop_victim must recover after unwind");
+        assert_eq!(ring.len(), 2);
+        ring.debug_validate_invariants();
     }
 
     // -----------------------------------------------------------------------
