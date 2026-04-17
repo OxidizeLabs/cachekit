@@ -14,10 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ClockRing::KeysAreTrusted` — ZST acknowledgement type required by hasher-configurable constructors. Constructible via `KeysAreTrusted::new()` or `KeysAreTrusted::default()`; see its type-level docs for guidance on when a non-randomized hasher is appropriate.
 - Re-export `KeysAreTrusted` from `cachekit::ds`.
 - `#[track_caller]` on `ClockRing::with_hasher` so `MAX_CAPACITY` panics blame the call site rather than the constructor body.
+- `ClockRing::try_clone` — fallible clone that mirrors `try_new` / `try_with_hasher` by routing every backing allocation through `try_reserve_exact` / `try_reserve`, surfacing allocator failure as `ClockRingError::AllocationFailed` instead of aborting the process. Prefer this over `Clone::clone` when cloning with attacker-influenced capacity.
 
 ### Fixed
 - **ClockRing `insert_swap` silent value drop** — when the index mapped a key to a slot that had been emptied (a broken invariant reachable only via a malformed `Hash`/`Eq`/`Clone` impl on `K`), the caller's value was silently discarded. The repair path now places the value in the empty slot, refreshes the index entry, and recomputes `len` from slot occupancy; a `debug_assert!` surfaces the root-cause corruption in debug/test/fuzz builds.
 - **ClockRing `step` helper now total for `cap == 0`** — previously protected only by a `debug_assert!` (stripped in release), so a future caller that forgot the capacity-zero guard would hit a release-mode division-by-zero panic. `step(_, 0)` now returns `0`.
+- **ClockRing `insert_swap` eviction-path exception safety** — a panicking `K::Clone` (most plausibly OOM in a heap-allocating `Clone` impl) reached during full-ring eviction previously left the ring with an empty slot while `len == capacity`, turning the next `insert` into an `unreachable!("occupied slot missing under full ring")` panic. For `ConcurrentClockRing` this converted a single transient failure into a persistent-panic DoS for every caller sharing the ring. The fix clones the new key *before* any destructive state change, so a panic there leaves invariants intact. Regression tests `insert_swap_eviction_panic_in_clone_preserves_invariants` and `insert_swap_eviction_panic_in_clone_does_not_leak_evictee` guard both the invariant and the index integrity.
+
+### Changed
+- `ClockRing::clone` is now a hand-written impl (replacing the `#[derive(Clone)]`) so the abort-on-OOM failure mode inherited from `Vec`/`HashMap` is documented on the impl itself and callers are directed to `try_clone` when recovery matters. Behavior and trait bounds (`K: Clone, V: Clone, S: Clone`) are unchanged.
 
 ### Documentation
 - New `## Memory Budgeting` module-level section documenting that `approx_bytes` counts `size_of::<V>()` only and does not follow heap pointers — workloads with variable-sized values should enforce a byte budget at the call site.

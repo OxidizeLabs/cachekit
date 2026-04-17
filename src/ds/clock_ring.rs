@@ -430,7 +430,7 @@ struct Entry<K, V> {
 /// assert_eq!(eviction_count, 7);  // 10 inserts - 3 capacity = 7 evictions
 /// ```
 #[must_use]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ClockRing<K, V, S = RandomState> {
     slots: Vec<Option<Entry<K, V>>>,
     referenced: Vec<bool>,
@@ -1984,6 +1984,16 @@ where
                 continue;
             }
 
+            // Clone the new key *before* any destructive state change.
+            // A panicking `K::Clone` (including OOM in a heap-allocating
+            // Clone impl) reached from here must leave the ring
+            // invariants intact — otherwise the next `insert` can land
+            // on an empty slot with `len == capacity` and hit the
+            // `unreachable!()` below, turning a transient allocation
+            // failure into a persistent-panic DoS for every caller
+            // sharing this ring (notably `ConcurrentClockRing`).
+            let entry_key = key.clone();
+
             let evicted = match self.slots[idx].take() {
                 Some(entry) => entry,
                 // Invariant: when `len == capacity` every slot must be
@@ -1993,12 +2003,15 @@ where
             };
             self.index.remove(&evicted.key);
 
-            let entry_key = key.clone();
             self.slots[idx] = Some(Entry {
                 key: entry_key,
                 value,
             });
             self.referenced[idx] = false;
+            // The index was pre-sized at construction via
+            // `try_reserve(capacity)` and `len` never exceeds
+            // `capacity`, so this `insert` does not rehash and cannot
+            // fail an allocation here.
             self.index.insert(key, idx);
             self.advance_hand();
             #[cfg(feature = "metrics")]
@@ -2206,6 +2219,112 @@ where
         for (key, value) in iter {
             let _ = self.insert(key, value);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clone — manual impl so that behavior (and its failure mode) is explicit.
+// ---------------------------------------------------------------------------
+
+impl<K, V, S> Clone for ClockRing<K, V, S>
+where
+    K: Clone,
+    V: Clone,
+    S: Clone,
+{
+    /// Clones the ring using the global allocator's **infallible** paths.
+    ///
+    /// # Allocator behavior
+    ///
+    /// Unlike [`try_new`](Self::try_new) /
+    /// [`try_with_hasher`](Self::try_with_hasher), which surface
+    /// allocator failure as [`ClockRingError::AllocationFailed`], this
+    /// impl delegates to [`Vec::clone`] and [`HashMap::clone`] which
+    /// route through the infallible allocation path. On OOM the
+    /// global alloc-error handler fires — aborting the process by
+    /// default. Callers that reach `clone` with attacker-influenced
+    /// capacity should prefer [`try_clone`](Self::try_clone), which
+    /// uses `try_reserve_exact` / `try_reserve` and returns an error
+    /// instead of aborting.
+    fn clone(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            referenced: self.referenced.clone(),
+            index: self.index.clone(),
+            hand: self.hand,
+            len: self.len,
+            #[cfg(feature = "metrics")]
+            sweep_hand_advances: self.sweep_hand_advances,
+            #[cfg(feature = "metrics")]
+            sweep_ref_bit_resets: self.sweep_ref_bit_resets,
+        }
+    }
+}
+
+impl<K, V, S> ClockRing<K, V, S>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+    S: Clone + BuildHasher,
+{
+    /// Fallible clone that surfaces allocator failure as
+    /// [`ClockRingError::AllocationFailed`] rather than aborting the
+    /// process.
+    ///
+    /// Matches the [`try_new`](Self::try_new) /
+    /// [`try_with_hasher`](Self::try_with_hasher) contract: every
+    /// backing allocation is performed via
+    /// [`Vec::try_reserve_exact`] / [`HashMap::try_reserve`], so no
+    /// step falls back to the infallible alloc-error handler.
+    ///
+    /// Prefer this over [`Clone::clone`] when the ring's capacity is
+    /// attacker-influenced (see the `Clone` impl's docs for the
+    /// abort-on-OOM trade-off it inherits from `Vec`/`HashMap`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(4);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// let copy = ring.try_clone().unwrap();
+    /// assert_eq!(copy.len(), ring.len());
+    /// assert_eq!(copy.peek(&"a"), Some(&1));
+    /// ```
+    pub fn try_clone(&self) -> Result<Self, ClockRingError> {
+        let cap = self.capacity();
+        let alloc_err = || ClockRingError::AllocationFailed { requested: cap };
+
+        let mut slots: Vec<Option<Entry<K, V>>> = Vec::new();
+        slots.try_reserve_exact(cap).map_err(|_| alloc_err())?;
+        for slot in &self.slots {
+            slots.push(slot.clone());
+        }
+
+        let mut referenced: Vec<bool> = Vec::new();
+        referenced.try_reserve_exact(cap).map_err(|_| alloc_err())?;
+        referenced.extend_from_slice(&self.referenced);
+
+        let mut index = HashMap::with_hasher(self.index.hasher().clone());
+        index.try_reserve(cap).map_err(|_| alloc_err())?;
+        for (k, &v) in &self.index {
+            index.insert(k.clone(), v);
+        }
+
+        Ok(Self {
+            slots,
+            referenced,
+            index,
+            hand: self.hand,
+            len: self.len,
+            #[cfg(feature = "metrics")]
+            sweep_hand_advances: self.sweep_hand_advances,
+            #[cfg(feature = "metrics")]
+            sweep_ref_bit_resets: self.sweep_ref_bit_resets,
+        })
     }
 }
 
@@ -3086,6 +3205,183 @@ mod tests {
         assert_eq!(ring.len(), 3);
         assert!(ring.contains(&"d"));
         ring.debug_validate_invariants();
+    }
+
+    // -----------------------------------------------------------------------
+    // Security hardening: exception safety in insert_swap eviction path.
+    //
+    // If `K::Clone` panics during the full-ring eviction branch, the ring
+    // must not be left with an empty slot while `len == capacity`; a
+    // subsequent insert would hit `unreachable!("occupied slot missing
+    // under full ring")` and turn a transient allocation failure into a
+    // persistent-panic DoS. The fix clones `key` *before* taking the
+    // victim slot, so a panic there leaves state unchanged.
+    // -----------------------------------------------------------------------
+
+    // Per-test-thread budget for `PanicKey::clone` calls. Tests
+    // decrement this to force a clone to panic at a chosen point
+    // without depending on allocator failure.
+    thread_local! {
+        static CLONE_BUDGET: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(usize::MAX) };
+    }
+
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct PanicKey(u32);
+
+    impl Clone for PanicKey {
+        fn clone(&self) -> Self {
+            CLONE_BUDGET.with(|b| {
+                let remaining = b.get();
+                if remaining == 0 {
+                    panic!("PanicKey: clone budget exhausted");
+                }
+                b.set(remaining - 1);
+            });
+            Self(self.0)
+        }
+    }
+
+    #[test]
+    fn insert_swap_eviction_panic_in_clone_preserves_invariants() {
+        // Build a full ring, ensure the next insert will hit the
+        // eviction path. Starve the clone budget to 0 so `key.clone()`
+        // inside `insert_swap` panics.
+        let mut ring: ClockRing<PanicKey, i32> = ClockRing::new(2);
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(PanicKey(1), 10);
+        ring.insert(PanicKey(2), 20);
+        assert_eq!(ring.len(), 2);
+        assert_eq!(ring.capacity(), 2);
+
+        // Snapshot live keys as owned `(u32, bool)` pairs so the
+        // borrow is released before we re-borrow `ring` mutably.
+        let slots_before: Vec<Option<(u32, bool)>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, bit)| (k.0, bit)))
+            .collect();
+
+        CLONE_BUDGET.with(|b| b.set(0));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.insert(PanicKey(3), 30);
+        }))
+        .is_err();
+        assert!(panicked, "PanicKey::clone must have fired");
+
+        // Restore the budget so subsequent operations can clone freely.
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+
+        // Ring state must be internally consistent after the unwind.
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 2, "len must not drift on clone panic");
+        assert_eq!(ring.capacity(), 2);
+
+        // Same two entries are still present — the clone panic must
+        // not have evicted or replaced anything.
+        let slots_after: Vec<Option<(u32, bool)>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, bit)| (k.0, bit)))
+            .collect();
+        assert_eq!(slots_before.len(), slots_after.len());
+        for (before, after) in slots_before.iter().zip(slots_after.iter()) {
+            assert_eq!(
+                before.map(|(k, _)| k),
+                after.map(|(k, _)| k),
+                "slot contents changed after panicking clone"
+            );
+        }
+
+        // Subsequent insert must not hit the `unreachable!()` branch:
+        // this is the regression. Pre-fix, the empty slot created by
+        // `slots[idx].take()` combined with `len == capacity` would
+        // cause the next eviction sweep to panic.
+        let evicted = ring.insert(PanicKey(3), 30);
+        assert!(evicted.is_some(), "next insert must evict normally");
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 2);
+    }
+
+    #[test]
+    fn insert_swap_eviction_panic_in_clone_does_not_leak_evictee() {
+        // Tighter check: the caller-visible value `30` must not appear
+        // in the ring, and neither PanicKey(1) nor PanicKey(2) should
+        // have been partially removed from the index.
+        let mut ring: ClockRing<PanicKey, i32> = ClockRing::new(2);
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(PanicKey(1), 10);
+        ring.insert(PanicKey(2), 20);
+
+        CLONE_BUDGET.with(|b| b.set(0));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.insert(PanicKey(3), 30);
+        }));
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+
+        ring.debug_validate_invariants();
+        assert!(ring.contains(&PanicKey(1)));
+        assert!(ring.contains(&PanicKey(2)));
+        assert!(!ring.contains(&PanicKey(3)));
+    }
+
+    // -----------------------------------------------------------------------
+    // try_clone: matches try_new's fallible-allocation contract.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn try_clone_round_trips_contents() {
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+        ring.touch(&"a");
+
+        let clone = ring
+            .try_clone()
+            .expect("try_clone must succeed on sane capacity");
+        assert_eq!(clone.capacity(), ring.capacity());
+        assert_eq!(clone.len(), ring.len());
+        assert_eq!(clone.peek(&"a"), Some(&1));
+        assert_eq!(clone.peek(&"b"), Some(&2));
+        assert_eq!(clone.peek(&"c"), Some(&3));
+        clone.debug_validate_invariants();
+
+        // Snapshot equality: slot occupancy + ref bits must match.
+        assert_eq!(ring.debug_snapshot_slots(), clone.debug_snapshot_slots());
+    }
+
+    #[test]
+    fn try_clone_is_independent_of_source() {
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        let mut clone = ring.try_clone().unwrap();
+        clone.insert("c", 3);
+        clone.remove(&"a");
+
+        // Mutating the clone must not observably affect the original.
+        assert!(ring.contains(&"a"));
+        assert!(!ring.contains(&"c"));
+        assert_eq!(ring.len(), 2);
+    }
+
+    #[test]
+    fn clone_trait_matches_try_clone() {
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("x", 10);
+        ring.insert("y", 20);
+
+        let via_clone = ring.clone();
+        let via_try_clone = ring.try_clone().unwrap();
+
+        assert_eq!(
+            via_clone.debug_snapshot_slots(),
+            via_try_clone.debug_snapshot_slots()
+        );
+        assert_eq!(via_clone.len(), via_try_clone.len());
+        assert_eq!(via_clone.capacity(), via_try_clone.capacity());
     }
 
     #[test]
