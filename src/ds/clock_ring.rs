@@ -11,7 +11,7 @@
 //! │                           ClockRing<K, V>                                 │
 //! │                                                                           │
 //! │   ┌─────────────────────────────┐   ┌─────────────────────────────────┐   │
-//! │   │  index: FxHashMap<K, usize> │   │  slots: Vec<Option<Entry>>      │   │
+//! │   │  index: HashMap<K, usize>   │   │  slots: Vec<Option<Entry>>      │   │
 //! │   │                             │   │                                 │   │
 //! │   │  ┌───────────┬──────────┐   │   │   ┌─────┬─────┬─────┬─────┐     │   │
 //! │   │  │    Key    │  Index   │   │   │   │  0  │  1  │  2  │  3  │     │   │
@@ -171,20 +171,180 @@
 //!
 //! - Fixed-size slot array; no reallocation during operation
 //! - Reference bits stored in a separate `Vec<bool>` for cache-friendly sweeps
-//! - Keys mapped to slot indices via [`FxHashMap`]; key is cloned once per new insertion
+//! - Keys mapped to slot indices via [`std::collections::HashMap`]; the default
+//!   DoS-resistant [`RandomState`] hasher is used unless the caller opts into
+//!   another via [`ClockRing::with_hasher`]. Key is cloned once per new insertion.
 //! - Hand pointer advances after each insert/eviction
 //! - [`insert`] is O(1) amortized: each access sets at most one ref bit, so the
 //!   total clearing work across N inserts is bounded by N
 //! - `debug_validate_invariants()` available in debug/test builds
 //!
-//! [`FxHashMap`]: rustc_hash::FxHashMap
+//! ## Memory Budgeting
+//!
+//! `ClockRing` bounds the *number* of entries (`capacity`), not the
+//! aggregate byte footprint of stored values. [`ClockRing::approx_bytes`]
+//! reports only the in-line cost of `Option<Entry<K, V>>` slots plus
+//! the index map; it counts `size_of::<V>()` and **does not follow
+//! heap pointers owned by `V`**. A ring of `Vec<u8>` or `String` values
+//! can therefore consume orders of magnitude more memory than
+//! `approx_bytes` suggests.
+//!
+//! For workloads with variable-sized values, enforce a byte budget
+//! at the call site (e.g. track `value.len()` on insert and evict via
+//! [`ClockRing::pop_victim`] until under budget) rather than relying
+//! on slot count alone.
+//!
+//! ## Timing Side Channels
+//!
+//! Lookup methods ([`contains`](ClockRing::contains),
+//! [`peek`](ClockRing::peek), [`get`](ClockRing::get),
+//! [`touch`](ClockRing::touch), …) take time that depends on whether
+//! the key is present and on the hasher's probe chain length. This is
+//! standard for any [`HashMap`]-backed cache and is **not** mitigated
+//! here — the default [`RandomState`] randomizes the probe chain
+//! across processes (defeating cross-process collision attacks) but
+//! does not produce constant-time lookups.
+//!
+//! Do not use `ClockRing` as the backing store for data structures
+//! whose key set must remain confidential against a co-located
+//! attacker that can measure operation latency (e.g. session-token
+//! caches in a multi-tenant process where the tenant boundary is the
+//! key space). For such use cases, gate access behind an explicit
+//! constant-time membership check or use a constant-time data
+//! structure.
+//!
+//! [`RandomState`]: std::collections::hash_map::RandomState
+//! [`HashMap`]: std::collections::HashMap
 
-use rustc_hash::FxHashMap;
 use std::borrow::Borrow;
-use std::hash::Hash;
+use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hash};
 
 #[cfg(feature = "concurrency")]
 use parking_lot::RwLock;
+
+/// Coarse upper bound on `capacity` accepted by [`ClockRing::new`] /
+/// [`ClockRing::try_new`].
+///
+/// This is a *first* guard that rejects obviously pathological values
+/// cheaply. It is intentionally permissive: for any key/value size
+/// larger than a few bytes, allocating `MAX_CAPACITY` slots would still
+/// exhaust memory. The constructors defend against that separately by
+/// using [`Vec::try_reserve_exact`] / [`HashMap::try_reserve`], so
+/// out-of-memory conditions surface as
+/// [`ClockRingError::AllocationFailed`] rather than aborting the
+/// process.
+pub const MAX_CAPACITY: usize = isize::MAX as usize / 64;
+
+/// Error returned by [`ClockRing::try_new`] / [`ClockRing::try_with_hasher`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockRingError {
+    /// The requested capacity exceeds [`MAX_CAPACITY`].
+    CapacityTooLarge {
+        /// The capacity that was requested.
+        requested: usize,
+        /// The configured upper bound.
+        max: usize,
+    },
+    /// The allocator could not satisfy the per-slot reservation for the
+    /// requested capacity.
+    ///
+    /// Returned instead of aborting the process when
+    /// `capacity * size_of::<Option<Entry<K, V>>>()` exceeds what the
+    /// allocator can provide (including the case where the byte count
+    /// overflows `isize::MAX`).
+    AllocationFailed {
+        /// The capacity whose allocation failed.
+        requested: usize,
+    },
+}
+
+impl std::fmt::Display for ClockRingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClockRingError::CapacityTooLarge { requested, max } => {
+                write!(f, "ClockRing capacity {requested} exceeds maximum {max}")
+            },
+            ClockRingError::AllocationFailed { requested } => {
+                write!(
+                    f,
+                    "ClockRing failed to allocate backing storage for capacity {requested}"
+                )
+            },
+        }
+    }
+}
+
+impl std::error::Error for ClockRingError {}
+
+/// Acknowledges that the caller is supplying a hasher to
+/// [`ClockRing::with_hasher`] / [`ClockRing::try_with_hasher`] (and
+/// the [`ConcurrentClockRing`] equivalents) under the assumption that
+/// keys are **not attacker-controlled**.
+///
+/// Required at every call site as a deliberate, code-reviewable
+/// signal: a non-randomized hasher (e.g. `rustc_hash::FxBuildHasher`,
+/// unseeded `ahash::AHasher`, FNV) reintroduces hash-collision DoS —
+/// adversarial keys can degrade [`HashMap`]-backed lookups to O(n)
+/// regardless of the CLOCK sweep cost.
+///
+/// Acceptable inputs to a `KeysAreTrusted`-tagged ring include:
+/// authenticated user/row IDs, opaque handles minted internally,
+/// values already passed through a keyed hash (HMAC), or any source
+/// the application's threat model treats as integrity-protected.
+/// For attacker-controlled keys, use [`ClockRing::new`] /
+/// [`ClockRing::try_new`], which default to the DoS-resistant
+/// [`RandomState`] hasher.
+///
+/// # Example
+///
+/// ```
+/// use cachekit::ds::{ClockRing, KeysAreTrusted};
+/// use std::collections::hash_map::RandomState;
+///
+/// let ring: ClockRing<u64, &str> =
+///     ClockRing::with_hasher(64, RandomState::new(), KeysAreTrusted::new());
+/// assert_eq!(ring.capacity(), 64);
+/// ```
+///
+/// [`HashMap`]: std::collections::HashMap
+/// [`RandomState`]: std::collections::hash_map::RandomState
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeysAreTrusted(());
+
+impl KeysAreTrusted {
+    /// Constructs the acknowledgement.
+    ///
+    /// See the [type-level docs](KeysAreTrusted) for the security
+    /// implications of passing this to a hasher-configurable
+    /// constructor.
+    #[inline]
+    pub const fn new() -> Self {
+        Self(())
+    }
+}
+
+/// Advance an index by one position modulo `cap`, overflow-safe.
+///
+/// Using `checked_add` + fallback to `wrapping_add % cap` avoids the
+/// `(idx + 1) % cap` overflow that is theoretically reachable on
+/// pathologically large `cap` values.
+///
+/// Returns `0` when `cap == 0` so that the function is total: current
+/// callers all guard on non-zero capacity, but making `step` itself
+/// safe to call with any input prevents a release-mode division-by-zero
+/// panic if a future call site forgets the guard.
+#[inline]
+fn step(idx: usize, cap: usize) -> usize {
+    if cap == 0 {
+        return 0;
+    }
+    match idx.checked_add(1) {
+        Some(next) => next % cap,
+        None => 0,
+    }
+}
 
 /// Clock entry holding key and value.
 ///
@@ -214,6 +374,21 @@ struct Entry<K, V> {
 ///
 /// - `K`: Key type, must be `Eq + Hash + Clone`
 /// - `V`: Value type
+/// - `S`: Hash builder. Defaults to [`RandomState`], a DoS-resistant
+///   randomized hasher. Swap via [`ClockRing::with_hasher`] for a faster
+///   non-randomized hasher when keys are fully trusted.
+///
+/// # Hash-collision resistance
+///
+/// `ClockRing` defaults to the standard library's randomized
+/// [`RandomState`]. This makes it safe to use as a cache keyed by
+/// attacker-controlled data (URL paths, user IDs, header values, etc.)
+/// without worrying about adversarial hash collisions degrading lookups
+/// to O(n). Callers that fully trust their key source can opt into a
+/// faster non-randomized hasher (e.g. `rustc_hash::FxBuildHasher`) via
+/// [`ClockRing::with_hasher`] / [`ClockRing::try_with_hasher`], which
+/// require a [`KeysAreTrusted`] acknowledgement to make the trade-off
+/// visible at every call site.
 ///
 /// # Example
 ///
@@ -255,17 +430,38 @@ struct Entry<K, V> {
 /// assert_eq!(eviction_count, 7);  // 10 inserts - 3 capacity = 7 evictions
 /// ```
 #[must_use]
-#[derive(Debug, Clone)]
-pub struct ClockRing<K, V> {
+pub struct ClockRing<K, V, S = RandomState> {
     slots: Vec<Option<Entry<K, V>>>,
     referenced: Vec<bool>,
-    index: FxHashMap<K, usize>,
+    index: HashMap<K, usize, S>,
     hand: usize,
     len: usize,
     #[cfg(feature = "metrics")]
     sweep_hand_advances: u64,
     #[cfg(feature = "metrics")]
     sweep_ref_bit_resets: u64,
+}
+
+/// Hand-written so stored keys and values never appear in debug
+/// output. A derived `Debug` would recurse through every `Entry<K,
+/// V>` and `HashMap<K, usize, S>` entry, making `tracing::debug!`,
+/// `dbg!`, and panic-unwind backtraces into a secret-exposure channel
+/// for caches that hold session tokens, API keys, or any other
+/// sensitive material. Callers that need full contents can iterate
+/// via [`ClockRing::iter`] and print entries they've vetted.
+impl<K, V, S> std::fmt::Debug for ClockRing<K, V, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dbg = f.debug_struct("ClockRing");
+        dbg.field("len", &self.len)
+            .field("capacity", &self.slots.len())
+            .field("hand", &self.hand);
+        #[cfg(feature = "metrics")]
+        {
+            dbg.field("sweep_hand_advances", &self.sweep_hand_advances)
+                .field("sweep_ref_bit_resets", &self.sweep_ref_bit_resets);
+        }
+        dbg.finish_non_exhaustive()
+    }
 }
 
 /// Thread-safe wrapper around [`ClockRing`] using `parking_lot::RwLock`.
@@ -324,19 +520,80 @@ pub struct ClockRing<K, V> {
 ///     assert_eq!(val, 42);
 /// }
 /// ```
+///
+/// # Closures run under the lock
+///
+/// Every `*_with` / `try_*_with` method invokes the caller-supplied
+/// closure **while holding the internal `RwLock` guard**. This has
+/// important consequences:
+///
+/// - The closure **must not** call back into the same
+///   `ConcurrentClockRing` (or any structure that might). The lock is
+///   *not* reentrant, so re-entry will either deadlock (`*_with`) or
+///   spuriously fail by returning `None` (`try_*_with`).
+/// - A slow closure stalls every other reader/writer of this cache.
+///   Keep closures short; clone data out if you need to perform I/O
+///   or further work.
+/// - `get_with` / `get_mut_with` / `touch` / `update` /
+///   `remove` / `pop_victim` and their `try_*` variants hold the
+///   **write** lock across the closure because they mutate the
+///   reference bits; `peek_with` / `peek_victim_with` hold the read
+///   lock.
+/// - If the closure panics the lock is released cleanly
+///   (`parking_lot::RwLock` does not poison), but any observable state
+///   changes performed *before* the closure (e.g. setting the
+///   reference bit in `get_with`) are retained.
+///
+/// # `Drop for V` runs outside the lock
+///
+/// [`insert`](Self::insert) / [`try_insert`](Self::try_insert) release
+/// the internal write lock before dropping the value replaced by an
+/// update (and the caller is responsible for dropping the evicted
+/// entry after the method returns). This keeps an expensive or
+/// reentrant `Drop for V` from stalling other threads or deadlocking
+/// by calling back into the same cache. The same is true for
+/// [`remove`](Self::remove): the returned value is dropped on the
+/// caller's side of the lock.
 #[cfg(feature = "concurrency")]
 #[must_use]
-#[derive(Debug)]
-pub struct ConcurrentClockRing<K, V> {
-    inner: RwLock<ClockRing<K, V>>,
+pub struct ConcurrentClockRing<K, V, S = RandomState> {
+    inner: RwLock<ClockRing<K, V, S>>,
+}
+
+/// See the [`ClockRing`] `Debug` impl for the rationale: stored keys
+/// and values are redacted. Acquires the inner read lock, so calling
+/// `{:?}` under a held write guard will deadlock on the same thread
+/// that holds the guard — matching the behavior of
+/// `RwLock::read()` elsewhere in this module.
+#[cfg(feature = "concurrency")]
+impl<K, V, S> std::fmt::Debug for ConcurrentClockRing<K, V, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.inner.read();
+        let mut dbg = f.debug_struct("ConcurrentClockRing");
+        dbg.field("len", &inner.len)
+            .field("capacity", &inner.slots.len())
+            .field("hand", &inner.hand);
+        #[cfg(feature = "metrics")]
+        {
+            dbg.field("sweep_hand_advances", &inner.sweep_hand_advances)
+                .field("sweep_ref_bit_resets", &inner.sweep_ref_bit_resets);
+        }
+        dbg.finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "concurrency")]
-impl<K, V> ConcurrentClockRing<K, V>
+impl<K, V> ConcurrentClockRing<K, V, RandomState>
 where
     K: Eq + Hash + Clone,
 {
-    /// Creates a new ring with `capacity` slots.
+    /// Creates a new ring with `capacity` slots and the default
+    /// DoS-resistant hasher ([`RandomState`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_new`](Self::try_new) for a fallible version.
     ///
     /// # Example
     ///
@@ -351,6 +608,57 @@ where
         Self {
             inner: RwLock::new(ClockRing::new(capacity)),
         }
+    }
+
+    /// Fallible version of [`new`](Self::new).
+    ///
+    /// Returns [`ClockRingError::CapacityTooLarge`] if
+    /// `capacity > MAX_CAPACITY`.
+    pub fn try_new(capacity: usize) -> Result<Self, ClockRingError> {
+        Ok(Self {
+            inner: RwLock::new(ClockRing::try_new(capacity)?),
+        })
+    }
+}
+
+#[cfg(feature = "concurrency")]
+impl<K, V, S> ConcurrentClockRing<K, V, S>
+where
+    K: Eq + Hash + Clone,
+    S: BuildHasher,
+{
+    /// Creates a new ring with `capacity` slots using the provided
+    /// `hash_builder`.
+    ///
+    /// The [`KeysAreTrusted`] argument is a deliberate acknowledgement
+    /// that a non-randomized hasher is safe for this workload — see
+    /// its type-level docs for the DoS trade-off. Use
+    /// [`new`](Self::new) / [`try_new`](Self::try_new) for the default
+    /// DoS-resistant [`RandomState`] hasher.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_with_hasher`](Self::try_with_hasher) for a fallible version.
+    pub fn with_hasher(capacity: usize, hash_builder: S, ack: KeysAreTrusted) -> Self {
+        Self {
+            inner: RwLock::new(ClockRing::with_hasher(capacity, hash_builder, ack)),
+        }
+    }
+
+    /// Fallible version of [`with_hasher`](Self::with_hasher).
+    ///
+    /// The [`KeysAreTrusted`] argument is a deliberate acknowledgement
+    /// that a non-randomized hasher is safe for this workload — see
+    /// its type-level docs for the DoS trade-off.
+    pub fn try_with_hasher(
+        capacity: usize,
+        hash_builder: S,
+        ack: KeysAreTrusted,
+    ) -> Result<Self, ClockRingError> {
+        Ok(Self {
+            inner: RwLock::new(ClockRing::try_with_hasher(capacity, hash_builder, ack)?),
+        })
     }
 
     /// Returns the configured capacity (number of slots).
@@ -552,6 +860,11 @@ where
     ///
     /// Returns `Some((evicted_key, evicted_value))` if an entry was evicted.
     ///
+    /// Any value replaced by an **update** (same key already present)
+    /// is dropped *after* the internal write lock has been released, so
+    /// a slow or reentrant `Drop for V` cannot stall other
+    /// readers/writers or deadlock by calling back into this cache.
+    ///
     /// # Example
     ///
     /// ```
@@ -566,8 +879,12 @@ where
     /// assert!(evicted.is_some());
     /// ```
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
-        let mut ring = self.inner.write();
-        ring.insert(key, value)
+        let (replaced, evicted) = {
+            let mut ring = self.inner.write();
+            ring.insert_swap(key, value)
+        };
+        drop(replaced);
+        evicted
     }
 
     /// Removes `key` and returns its value, if present.
@@ -757,8 +1074,12 @@ where
     /// assert_eq!(cache.try_insert("b", 2), Some(None));
     /// ```
     pub fn try_insert(&self, key: K, value: V) -> Option<Option<(K, V)>> {
-        let mut ring = self.inner.try_write()?;
-        Some(ring.insert(key, value))
+        let (replaced, evicted) = {
+            let mut ring = self.inner.try_write()?;
+            ring.insert_swap(key, value)
+        };
+        drop(replaced);
+        Some(evicted)
     }
 
     /// Non-blocking version of [`remove`](Self::remove).
@@ -975,7 +1296,7 @@ where
 // Iteration methods — no trait bounds needed on K
 // ---------------------------------------------------------------------------
 
-impl<K, V> ClockRing<K, V> {
+impl<K, V, S> ClockRing<K, V, S> {
     /// Returns an iterator over `(&K, &V)` pairs in slot order.
     ///
     /// Does **not** set reference bits (like [`peek`](Self::peek)).
@@ -1082,11 +1403,17 @@ impl<K, V> ClockRing<K, V> {
     }
 }
 
-impl<K, V> ClockRing<K, V>
+impl<K, V> ClockRing<K, V, RandomState>
 where
     K: Eq + Hash + Clone,
 {
-    /// Creates a new ring with `capacity` slots.
+    /// Creates a new ring with `capacity` slots and the default
+    /// DoS-resistant hasher ([`RandomState`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_new`](Self::try_new) for a fallible version.
     ///
     /// # Example
     ///
@@ -1098,19 +1425,122 @@ where
     /// assert!(ring.is_empty());
     /// ```
     pub fn new(capacity: usize) -> Self {
-        let mut slots = Vec::with_capacity(capacity);
+        Self::try_new(capacity).expect("ClockRing::new: capacity exceeds MAX_CAPACITY")
+    }
+
+    /// Fallible version of [`new`](Self::new).
+    ///
+    /// Returns [`ClockRingError::CapacityTooLarge`] when
+    /// `capacity > MAX_CAPACITY`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::{ClockRing, MAX_CAPACITY};
+    ///
+    /// let ring = ClockRing::<u32, u32>::try_new(16).unwrap();
+    /// assert_eq!(ring.capacity(), 16);
+    ///
+    /// assert!(ClockRing::<u32, u32>::try_new(MAX_CAPACITY + 1).is_err());
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, ClockRingError> {
+        // `RandomState` *is* DoS-resistant, so the acknowledgement
+        // constructed here is truthful — it's the marker that the
+        // caller has chosen a hasher appropriate for untrusted keys.
+        Self::try_with_hasher(capacity, RandomState::default(), KeysAreTrusted::new())
+    }
+}
+
+impl<K, V, S> ClockRing<K, V, S>
+where
+    K: Eq + Hash + Clone,
+    S: BuildHasher,
+{
+    /// Creates a new ring with `capacity` slots using the supplied
+    /// `hash_builder`.
+    ///
+    /// Use this to opt into a faster non-randomized hasher (e.g.
+    /// `rustc_hash::FxBuildHasher`) **only when keys are fully
+    /// trusted**. With attacker-controlled keys, a non-randomized hasher
+    /// enables hash-collision DoS.
+    ///
+    /// The [`KeysAreTrusted`] argument is a deliberate, greppable
+    /// acknowledgement of that trade-off; see its type-level docs for
+    /// guidance on when it's appropriate.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_with_hasher`](Self::try_with_hasher) for a fallible version.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::{ClockRing, KeysAreTrusted};
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let ring: ClockRing<u64, &str> =
+    ///     ClockRing::with_hasher(64, RandomState::new(), KeysAreTrusted::new());
+    /// assert_eq!(ring.capacity(), 64);
+    /// ```
+    #[track_caller]
+    pub fn with_hasher(capacity: usize, hash_builder: S, ack: KeysAreTrusted) -> Self {
+        Self::try_with_hasher(capacity, hash_builder, ack)
+            .expect("ClockRing::with_hasher: capacity exceeds MAX_CAPACITY")
+    }
+
+    /// Fallible version of [`with_hasher`](Self::with_hasher).
+    ///
+    /// The [`KeysAreTrusted`] argument is a deliberate, greppable
+    /// acknowledgement that a non-randomized hasher is safe for this
+    /// workload; see its type-level docs for guidance.
+    ///
+    /// Returns [`ClockRingError::CapacityTooLarge`] when `capacity`
+    /// exceeds [`MAX_CAPACITY`], or [`ClockRingError::AllocationFailed`]
+    /// when the allocator cannot satisfy the backing-storage reservation
+    /// for `capacity`. This never aborts the process on hostile
+    /// capacity values, even when `capacity * size_of::<Option<Entry<K,
+    /// V>>>()` would overflow `isize::MAX`.
+    pub fn try_with_hasher(
+        capacity: usize,
+        hash_builder: S,
+        _ack: KeysAreTrusted,
+    ) -> Result<Self, ClockRingError> {
+        if capacity > MAX_CAPACITY {
+            return Err(ClockRingError::CapacityTooLarge {
+                requested: capacity,
+                max: MAX_CAPACITY,
+            });
+        }
+
+        let alloc_err = || ClockRingError::AllocationFailed {
+            requested: capacity,
+        };
+
+        let mut slots: Vec<Option<Entry<K, V>>> = Vec::new();
+        slots.try_reserve_exact(capacity).map_err(|_| alloc_err())?;
         slots.resize_with(capacity, || None);
-        Self {
+
+        let mut referenced: Vec<bool> = Vec::new();
+        referenced
+            .try_reserve_exact(capacity)
+            .map_err(|_| alloc_err())?;
+        referenced.resize(capacity, false);
+
+        let mut index = HashMap::with_hasher(hash_builder);
+        index.try_reserve(capacity).map_err(|_| alloc_err())?;
+
+        Ok(Self {
             slots,
-            referenced: vec![false; capacity],
-            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            referenced,
+            index,
             hand: 0,
             len: 0,
             #[cfg(feature = "metrics")]
             sweep_hand_advances: 0,
             #[cfg(feature = "metrics")]
             sweep_ref_bit_resets: 0,
-        }
+        })
     }
 
     /// Returns the configured capacity (number of slots).
@@ -1235,10 +1665,22 @@ where
     /// ```
     #[must_use]
     pub fn approx_bytes(&self) -> usize {
+        let index_bytes = self
+            .index
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(K, usize)>());
+        let slots_bytes = self
+            .slots
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Option<Entry<K, V>>>());
+        let ref_bytes = self
+            .referenced
+            .capacity()
+            .saturating_mul(std::mem::size_of::<bool>());
         std::mem::size_of::<Self>()
-            + self.index.capacity() * std::mem::size_of::<(K, usize)>()
-            + self.slots.capacity() * std::mem::size_of::<Option<Entry<K, V>>>()
-            + self.referenced.capacity() * std::mem::size_of::<bool>()
+            .saturating_add(index_bytes)
+            .saturating_add(slots_bytes)
+            .saturating_add(ref_bytes)
     }
 
     /// Returns the number of occupied slots.
@@ -1348,8 +1790,9 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let idx = *self.index.get(key)?;
+        let entry = self.slots.get(idx)?.as_ref()?;
         self.referenced[idx] = true;
-        self.slots.get(idx)?.as_ref().map(|entry| &entry.value)
+        Some(&entry.value)
     }
 
     /// Returns a mutable reference to the value and sets the reference bit.
@@ -1374,11 +1817,12 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let idx = *self.index.get(key)?;
+        let slot = self.slots.get_mut(idx)?;
+        if slot.is_none() {
+            return None;
+        }
         self.referenced[idx] = true;
-        self.slots
-            .get_mut(idx)?
-            .as_mut()
-            .map(|entry| &mut entry.value)
+        slot.as_mut().map(|entry| &mut entry.value)
     }
 
     /// Sets the reference bit for `key`; returns `false` if missing.
@@ -1411,8 +1855,13 @@ where
             Some(idx) => *idx,
             None => return false,
         };
-        self.referenced[idx] = true;
-        true
+        match self.slots.get(idx) {
+            Some(Some(_)) => {
+                self.referenced[idx] = true;
+                true
+            },
+            _ => false,
+        }
     }
 
     /// Updates the value for an existing key, returning the old value.
@@ -1478,23 +1927,88 @@ where
     /// assert!(evicted.is_some());
     /// ```
     pub fn insert(&mut self, key: K, value: V) -> Option<(K, V)> {
+        let (replaced, evicted) = self.insert_swap(key, value);
+        drop(replaced);
+        evicted
+    }
+
+    /// Lower-level sibling of [`insert`](Self::insert) that *returns*
+    /// any value displaced by an update instead of dropping it inline.
+    ///
+    /// Semantics by state:
+    /// - **Zero capacity**: returns `(None, None)` (value is discarded).
+    /// - **Update of an existing key**: returns `(Some(old_value), None)`.
+    /// - **Insert into an empty slot**: returns `(None, None)`.
+    /// - **Insert into a full ring**: returns
+    ///   `(None, Some((evicted_key, evicted_value)))`.
+    /// - **Invariant violation** (the index maps `key` to a slot index
+    ///   that is out of bounds for `slots`; reachable only via state
+    ///   corruption, never from safe use of this module): returns
+    ///   `(Some(value), None)` handing the caller's value back
+    ///   untouched rather than silently dropping it. A
+    ///   `debug_assert!` in the same branch surfaces the root-cause
+    ///   corruption in debug/test/fuzz builds.
+    ///
+    /// This method is useful when the caller wants to control *when*
+    /// the dropped value is destroyed — notably
+    /// [`ConcurrentClockRing::insert`] uses it to run the replaced
+    /// value's `Drop` **after** releasing the internal write lock, so a
+    /// slow or reentrant `Drop for V` cannot deadlock or stall other
+    /// threads.
+    pub fn insert_swap(&mut self, key: K, value: V) -> (Option<V>, Option<(K, V)>) {
         if self.capacity() == 0 {
-            return None;
+            return (None, None);
         }
 
         if let Some(&idx) = self.index.get(&key) {
             if let Some(entry) = self.slots.get_mut(idx).and_then(|slot| slot.as_mut()) {
-                entry.value = value;
+                let old = std::mem::replace(&mut entry.value, value);
                 self.referenced[idx] = true;
+                return (Some(old), None);
             }
-            return None;
+            // Broken invariant: the index claims `key` lives at `idx`
+            // but the slot is empty. Rather than silently dropping the
+            // caller's `value`, repair state in place: place the value
+            // in the empty slot, refresh the index entry, and
+            // recompute `len` from ground truth (slot occupancy). The
+            // `debug_assert!` surfaces the root-cause corruption in
+            // tests and fuzzers without crashing release builds.
+            debug_assert!(false, "index entry points to empty slot in insert_swap");
+            self.index.remove(&key);
+            if idx < self.slots.len() {
+                let entry_key = key.clone();
+                self.slots[idx] = Some(Entry {
+                    key: entry_key,
+                    value,
+                });
+                if let Some(referenced) = self.referenced.get_mut(idx) {
+                    *referenced = false;
+                }
+                self.index.insert(key, idx);
+                self.len = self.slots.iter().filter(|slot| slot.is_some()).count();
+                let cap = self.slots.len();
+                self.hand = step(idx, cap);
+                return (None, None);
+            }
+            // Deeper corruption: the index maps `key` to an out-of-bounds
+            // slot index. No valid slot exists to install the value in,
+            // so we hand it back via the `replaced` position rather than
+            // silently dropping it. For `V` owning a file descriptor,
+            // lock, `Arc<_>`, or any resource with observable Drop, a
+            // silent drop would leak a resource across a single
+            // corruption event without surfacing any error. Surfacing it
+            // through the return keeps `insert_swap`'s
+            // no-silent-value-loss contract intact; `ClockRing::insert`
+            // will still drop it at the caller boundary (matching the
+            // update path), and `ConcurrentClockRing::insert` will drop
+            // it after releasing the write lock.
+            return (Some(value), None);
         }
 
-        // Not full — scan for an empty slot without disturbing ref bits.
         if self.len < self.capacity() {
             let cap = self.capacity();
-            for offset in 0..cap {
-                let idx = (self.hand + offset) % cap;
+            let mut idx = self.hand % cap;
+            for _ in 0..cap {
                 if self.slots[idx].is_none() {
                     let entry_key = key.clone();
                     self.slots[idx] = Some(Entry {
@@ -1503,55 +2017,97 @@ where
                     });
                     self.referenced[idx] = false;
                     self.index.insert(key, idx);
-                    self.len += 1;
-                    self.hand = (idx + 1) % cap;
-                    return None;
+                    self.len = self.len.saturating_add(1);
+                    self.hand = step(idx, cap);
+                    return (None, None);
                 }
+                idx = step(idx, cap);
             }
-            debug_assert!(false, "len < capacity but no empty slot found");
+            unreachable!("len < capacity but no empty slot found");
         }
 
         // Full — CLOCK sweep to find and evict a victim.
         // One pass clears all ref bits; the second finds an unreferenced slot.
         let cap = self.capacity();
-        for _ in 0..(2 * cap) {
+        for _ in 0..cap.saturating_mul(2) {
             let idx = self.hand;
             if self.referenced[idx] {
                 self.referenced[idx] = false;
                 #[cfg(feature = "metrics")]
                 {
-                    self.sweep_ref_bit_resets += 1;
+                    self.sweep_ref_bit_resets = self.sweep_ref_bit_resets.saturating_add(1);
                 }
                 self.advance_hand();
                 #[cfg(feature = "metrics")]
                 {
-                    self.sweep_hand_advances += 1;
+                    self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
                 }
                 continue;
             }
 
-            let evicted = self.slots[idx].take().expect("occupied slot missing");
-            self.index.remove(&evicted.key);
-
+            // Clone the new key *before* any destructive state change.
+            // A panicking `K::Clone` (including OOM in a heap-allocating
+            // Clone impl) reached from here must leave the ring
+            // invariants intact — otherwise the next `insert` can land
+            // on an empty slot with `len == capacity` and hit the
+            // `unreachable!()` below, turning a transient allocation
+            // failure into a persistent-panic DoS for every caller
+            // sharing this ring (notably `ConcurrentClockRing`).
             let entry_key = key.clone();
+
+            // Remove the evictee's index entry **before** emptying the
+            // slot. `HashMap::remove` calls the user-supplied `Hash` /
+            // `Eq` on the evictee key; if either panics we must not
+            // have mutated the slot yet. Pre-fix, the slot was taken
+            // first and a panic here left `len == capacity` with one
+            // empty slot — the next insert then fired the
+            // `unreachable!("occupied slot missing under full ring")`
+            // below, turning a transient hasher panic into a
+            // persistent-panic DoS shared across every thread holding
+            // a `ConcurrentClockRing` handle.
+            let victim_key_ref = match &self.slots[idx] {
+                Some(entry) => &entry.key,
+                None => unreachable!("occupied slot missing under full ring"),
+            };
+            let removed = self.index.remove(victim_key_ref);
+            debug_assert_eq!(
+                removed,
+                Some(idx),
+                "index/slot disagreement in insert_swap eviction"
+            );
+
+            // From here on every step is infallible until the final
+            // `index.insert`: take + install + clear-ref bit.
+            let evicted = match self.slots[idx].take() {
+                Some(entry) => entry,
+                // Invariant: we just confirmed occupancy above, so
+                // this cannot happen.
+                None => unreachable!("slot vanished between borrow and take"),
+            };
+
             self.slots[idx] = Some(Entry {
                 key: entry_key,
                 value,
             });
             self.referenced[idx] = false;
+            // The index was pre-sized at construction via
+            // `try_reserve(capacity)` and `len` never exceeds
+            // `capacity`, so this `insert` does not rehash and cannot
+            // fail an allocation here. If a user-supplied hasher
+            // nevertheless panics, the slot is already occupied with
+            // the new entry and the index is missing only the new
+            // key's pointer; subsequent lookups via the absent key
+            // return `None` and `insert_swap`'s repair path restores
+            // the mapping on the next write of the same key.
             self.index.insert(key, idx);
             self.advance_hand();
             #[cfg(feature = "metrics")]
             {
-                self.sweep_hand_advances += 1;
+                self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
             }
-            return Some((evicted.key, evicted.value));
+            return (None, Some((evicted.key, evicted.value)));
         }
-        debug_assert!(
-            false,
-            "insert sweep exceeded 2*capacity without finding victim"
-        );
-        None
+        unreachable!("insert sweep exceeded 2*capacity without finding victim");
     }
 
     /// Peeks the next eviction candidate without modifying state.
@@ -1581,13 +2137,14 @@ where
             return None;
         }
         let cap = self.capacity();
-        for offset in 0..cap {
-            let idx = (self.hand + offset) % cap;
+        let mut idx = self.hand % cap;
+        for _ in 0..cap {
             if let Some(entry) = self.slots.get(idx).and_then(|slot| slot.as_ref()) {
                 if !self.referenced[idx] {
                     return Some((&entry.key, &entry.value));
                 }
             }
+            idx = step(idx, cap);
         }
         None
     }
@@ -1621,38 +2178,60 @@ where
             return None;
         }
         let cap = self.capacity();
-        for _ in 0..(2 * cap) {
+        for _ in 0..cap.saturating_mul(2) {
             let idx = self.hand;
             if self.slots[idx].is_some() {
                 if self.referenced[idx] {
                     self.referenced[idx] = false;
                     #[cfg(feature = "metrics")]
                     {
-                        self.sweep_ref_bit_resets += 1;
+                        self.sweep_ref_bit_resets = self.sweep_ref_bit_resets.saturating_add(1);
                     }
                     self.advance_hand();
                     #[cfg(feature = "metrics")]
                     {
-                        self.sweep_hand_advances += 1;
+                        self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
                     }
                     continue;
                 }
 
-                let evicted = self.slots[idx].take().expect("occupied slot missing");
-                self.index.remove(&evicted.key);
+                // Remove the index entry **before** emptying the slot,
+                // so a panicking `K::Hash` / `K::Eq` in
+                // `HashMap::remove` leaves slot/len/referenced
+                // untouched. Pre-fix, `slots[idx].take()` ran first
+                // and a panic here left `len == capacity` with an
+                // empty slot, which weaponized the next insert's
+                // `unreachable!("occupied slot missing under full
+                // ring")` into a persistent-panic DoS.
+                let victim_key_ref = match &self.slots[idx] {
+                    Some(entry) => &entry.key,
+                    None => unreachable!("slot reported occupied but is empty"),
+                };
+                let removed = self.index.remove(victim_key_ref);
+                debug_assert_eq!(removed, Some(idx), "index/slot disagreement in pop_victim");
+
+                // From here on, every step is infallible: take + set
+                // + decrement + advance.
+                let evicted = match self.slots[idx].take() {
+                    Some(entry) => entry,
+                    None => unreachable!("slot reported occupied but take() returned None"),
+                };
                 self.referenced[idx] = false;
-                self.len -= 1;
+                self.len = self
+                    .len
+                    .checked_sub(1)
+                    .unwrap_or_else(|| unreachable!("len underflow in pop_victim"));
                 self.advance_hand();
                 #[cfg(feature = "metrics")]
                 {
-                    self.sweep_hand_advances += 1;
+                    self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
                 }
                 return Some((evicted.key, evicted.value));
             }
             self.advance_hand();
             #[cfg(feature = "metrics")]
             {
-                self.sweep_hand_advances += 1;
+                self.sweep_hand_advances = self.sweep_hand_advances.saturating_add(1);
             }
         }
         None
@@ -1693,13 +2272,16 @@ where
         let idx = self.index.remove(key)?;
         let entry = self.slots.get_mut(idx)?.take()?;
         self.referenced[idx] = false;
-        self.len -= 1;
+        self.len = self
+            .len
+            .checked_sub(1)
+            .unwrap_or_else(|| unreachable!("len underflow in remove"));
         Some(entry.value)
     }
 
     /// Callers must ensure capacity > 0 before calling.
     fn advance_hand(&mut self) {
-        self.hand = (self.hand + 1) % self.slots.len();
+        self.hand = step(self.hand, self.slots.len());
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -1731,14 +2313,139 @@ where
     }
 }
 
-impl<K, V> Extend<(K, V)> for ClockRing<K, V>
+/// Bulk-inserts `(K, V)` pairs via repeated [`ClockRing::insert`].
+///
+/// # Memory-budget caveat
+///
+/// `ClockRing` bounds the **number** of entries, not the aggregate
+/// byte footprint of stored values — see the `Memory Budgeting`
+/// section of the module docs. When `V` owns heap allocations (e.g.
+/// `Vec<u8>`, `String`) and the iterator is attacker-influenced, this
+/// impl will happily replace already-stored values with arbitrarily
+/// large new ones up to `capacity` times before any single eviction
+/// returns, so aggregate memory use is bounded only by `capacity *
+/// max(size_of(V_i))` across the iterator. Evicted entries are
+/// **silently dropped** — the caller never sees them.
+///
+/// For attacker-influenced values, enforce a byte budget at the call
+/// site (track `value.len()` on insert and evict via
+/// [`ClockRing::pop_victim`] until under budget) instead of using
+/// [`Extend`].
+impl<K, V, S> Extend<(K, V)> for ClockRing<K, V, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher,
 {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         for (key, value) in iter {
-            self.insert(key, value);
+            let _ = self.insert(key, value);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clone — manual impl so that behavior (and its failure mode) is explicit.
+// ---------------------------------------------------------------------------
+
+impl<K, V, S> Clone for ClockRing<K, V, S>
+where
+    K: Clone,
+    V: Clone,
+    S: Clone,
+{
+    /// Clones the ring using the global allocator's **infallible** paths.
+    ///
+    /// # Allocator behavior
+    ///
+    /// Unlike [`try_new`](Self::try_new) /
+    /// [`try_with_hasher`](Self::try_with_hasher), which surface
+    /// allocator failure as [`ClockRingError::AllocationFailed`], this
+    /// impl delegates to [`Vec::clone`] and [`HashMap::clone`] which
+    /// route through the infallible allocation path. On OOM the
+    /// global alloc-error handler fires — aborting the process by
+    /// default. Callers that reach `clone` with attacker-influenced
+    /// capacity should prefer [`try_clone`](Self::try_clone), which
+    /// uses `try_reserve_exact` / `try_reserve` and returns an error
+    /// instead of aborting.
+    fn clone(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            referenced: self.referenced.clone(),
+            index: self.index.clone(),
+            hand: self.hand,
+            len: self.len,
+            #[cfg(feature = "metrics")]
+            sweep_hand_advances: self.sweep_hand_advances,
+            #[cfg(feature = "metrics")]
+            sweep_ref_bit_resets: self.sweep_ref_bit_resets,
+        }
+    }
+}
+
+impl<K, V, S> ClockRing<K, V, S>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+    S: Clone + BuildHasher,
+{
+    /// Fallible clone that surfaces allocator failure as
+    /// [`ClockRingError::AllocationFailed`] rather than aborting the
+    /// process.
+    ///
+    /// Matches the [`try_new`](Self::try_new) /
+    /// [`try_with_hasher`](Self::try_with_hasher) contract: every
+    /// backing allocation is performed via
+    /// [`Vec::try_reserve_exact`] / [`HashMap::try_reserve`], so no
+    /// step falls back to the infallible alloc-error handler.
+    ///
+    /// Prefer this over [`Clone::clone`] when the ring's capacity is
+    /// attacker-influenced (see the `Clone` impl's docs for the
+    /// abort-on-OOM trade-off it inherits from `Vec`/`HashMap`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::ClockRing;
+    ///
+    /// let mut ring = ClockRing::new(4);
+    /// ring.insert("a", 1);
+    /// ring.insert("b", 2);
+    ///
+    /// let copy = ring.try_clone().unwrap();
+    /// assert_eq!(copy.len(), ring.len());
+    /// assert_eq!(copy.peek(&"a"), Some(&1));
+    /// ```
+    pub fn try_clone(&self) -> Result<Self, ClockRingError> {
+        let cap = self.capacity();
+        let alloc_err = || ClockRingError::AllocationFailed { requested: cap };
+
+        let mut slots: Vec<Option<Entry<K, V>>> = Vec::new();
+        slots.try_reserve_exact(cap).map_err(|_| alloc_err())?;
+        for slot in &self.slots {
+            slots.push(slot.clone());
+        }
+
+        let mut referenced: Vec<bool> = Vec::new();
+        referenced.try_reserve_exact(cap).map_err(|_| alloc_err())?;
+        referenced.extend_from_slice(&self.referenced);
+
+        let mut index = HashMap::with_hasher(self.index.hasher().clone());
+        index.try_reserve(cap).map_err(|_| alloc_err())?;
+        for (k, &v) in &self.index {
+            index.insert(k.clone(), v);
+        }
+
+        Ok(Self {
+            slots,
+            referenced,
+            index,
+            hand: self.hand,
+            len: self.len,
+            #[cfg(feature = "metrics")]
+            sweep_hand_advances: self.sweep_hand_advances,
+            #[cfg(feature = "metrics")]
+            sweep_ref_bit_resets: self.sweep_ref_bit_resets,
+        })
     }
 }
 
@@ -1889,7 +2596,7 @@ impl<'a, K, V> Iterator for ValuesMut<'a, K, V> {
 // IntoIterator impls (C-ITER: iter, iter_mut, into_iter)
 // ---------------------------------------------------------------------------
 
-impl<K, V> IntoIterator for ClockRing<K, V> {
+impl<K, V, S> IntoIterator for ClockRing<K, V, S> {
     type Item = (K, V);
     type IntoIter = IntoIter<K, V>;
 
@@ -1914,7 +2621,7 @@ impl<K, V> IntoIterator for ClockRing<K, V> {
     }
 }
 
-impl<'a, K, V> IntoIterator for &'a ClockRing<K, V> {
+impl<'a, K, V, S> IntoIterator for &'a ClockRing<K, V, S> {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
 
@@ -1923,7 +2630,7 @@ impl<'a, K, V> IntoIterator for &'a ClockRing<K, V> {
     }
 }
 
-impl<'a, K, V> IntoIterator for &'a mut ClockRing<K, V> {
+impl<'a, K, V, S> IntoIterator for &'a mut ClockRing<K, V, S> {
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
 
@@ -1937,7 +2644,7 @@ impl<'a, K, V> IntoIterator for &'a mut ClockRing<K, V> {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "concurrency")]
-impl<K, V> ConcurrentClockRing<K, V> {
+impl<K, V, S> ConcurrentClockRing<K, V, S> {
     /// Consumes the concurrent wrapper, returning the inner [`ClockRing`].
     ///
     /// This is useful when you need to iterate or inspect a concurrent ring
@@ -1956,7 +2663,7 @@ impl<K, V> ConcurrentClockRing<K, V> {
     /// let pairs: Vec<_> = ring.iter().collect();
     /// assert_eq!(pairs.len(), 2);
     /// ```
-    pub fn into_inner(self) -> ClockRing<K, V> {
+    pub fn into_inner(self) -> ClockRing<K, V, S> {
         self.inner.into_inner()
     }
 }
@@ -1965,6 +2672,231 @@ impl<K, V> ConcurrentClockRing<K, V> {
 #[allow(unused_must_use)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_helper_wraps_and_handles_usize_max() {
+        assert_eq!(step(0, 4), 1);
+        assert_eq!(step(3, 4), 0);
+        // Overflow path: idx + 1 would overflow usize::MAX. step must
+        // fall back to 0 rather than panic or wrap silently.
+        assert_eq!(step(usize::MAX, 4), 0);
+    }
+
+    #[test]
+    fn step_helper_is_total_for_zero_capacity() {
+        // step must be safe to call with cap == 0 (returns 0) rather
+        // than panicking on `next % 0`. Current callers always guard
+        // on non-zero capacity, but step itself should be total so
+        // future callers cannot trip a release-mode panic.
+        assert_eq!(step(0, 0), 0);
+        assert_eq!(step(42, 0), 0);
+        assert_eq!(step(usize::MAX, 0), 0);
+    }
+
+    #[test]
+    fn try_new_rejects_capacity_above_max() {
+        let err = ClockRing::<u32, u32>::try_new(MAX_CAPACITY + 1).unwrap_err();
+        match err {
+            ClockRingError::CapacityTooLarge { requested, max } => {
+                assert_eq!(requested, MAX_CAPACITY + 1);
+                assert_eq!(max, MAX_CAPACITY);
+            },
+            other => panic!("expected CapacityTooLarge, got {other:?}"),
+        }
+
+        // Happy path: small capacity allocates cleanly.
+        let ring = ClockRing::<u32, u32>::try_new(8).unwrap();
+        assert_eq!(ring.capacity(), 8);
+    }
+
+    #[test]
+    fn try_new_returns_allocation_failed_on_hostile_capacity() {
+        // `[u8; 1024]` keeps `Option<Entry<K, V>>` comfortably above 64 B,
+        // so `MAX_CAPACITY * size_of::<Option<Entry<K, V>>>()` exceeds
+        // `isize::MAX`. Pre-`try_reserve_exact` this would abort the
+        // process via `capacity_overflow`; we now surface it as a
+        // regular `ClockRingError::AllocationFailed`.
+        let err = ClockRing::<u32, [u8; 1024]>::try_new(MAX_CAPACITY).unwrap_err();
+        match err {
+            ClockRingError::AllocationFailed { requested } => {
+                assert_eq!(requested, MAX_CAPACITY);
+            },
+            other => panic!("expected AllocationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn insert_swap_repairs_stale_index_instead_of_dropping_value() {
+        // Security hardening regression: if the index maps a key to
+        // an idx but the slot at idx is empty (invariant broken by a
+        // malformed `Hash`/`Eq`/`Clone` impl on `K`, or a future
+        // refactor), the previous implementation silently dropped the
+        // caller's value. The hardened path repairs state in place.
+        //
+        // Gated on release builds because the repair path is preceded
+        // by a `debug_assert!(false, ...)` that fires in debug to
+        // surface the root-cause corruption during testing.
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("a", 1);
+        let idx = *ring.index.get("a").unwrap();
+
+        // Manually corrupt state: clear the slot but leave the index
+        // entry, mimicking a broken-invariant scenario.
+        ring.slots[idx] = None;
+
+        let (replaced, evicted) = ring.insert_swap("a", 99);
+        assert_eq!(replaced, None);
+        assert_eq!(evicted, None);
+        // The value we passed in must not have been silently dropped.
+        assert_eq!(ring.peek(&"a"), Some(&99));
+        ring.debug_validate_invariants();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn insert_swap_returns_value_when_index_points_out_of_bounds() {
+        // Security hardening regression: if the index maps a key to an
+        // out-of-bounds slot idx (state corruption reachable only via a
+        // malformed `Hash`/`Eq`/`Clone` impl on `K` or unsafe code —
+        // never from safe use of this module), the previous
+        // implementation silently dropped the caller's value. With `V`
+        // owning a file descriptor, lock, or `Arc<_>`, that would leak
+        // the resource without surfacing any error. The hardened path
+        // now returns `(Some(value), None)` so the caller receives
+        // their value back via the replaced-value position.
+        //
+        // Gated on release builds because the fallthrough path is
+        // preceded by a `debug_assert!(false, ...)` that fires in debug
+        // to surface the root-cause corruption during testing.
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("a", 1);
+
+        // Manually corrupt state: rewrite the index entry to point past
+        // the end of `slots`, simulating an invariant violation. The
+        // slot-side entry is cleared so slot occupancy still matches
+        // `len == 0` post-remove, keeping the rest of the ring
+        // internally consistent.
+        ring.index.insert("a", ring.slots.len() + 5);
+        ring.slots[0] = None;
+        ring.len = 0;
+
+        let (replaced, evicted) = ring.insert_swap("a", 99);
+        assert_eq!(
+            replaced,
+            Some(99),
+            "value must be handed back via the replaced position \
+             rather than silently dropped on invariant violation",
+        );
+        assert_eq!(evicted, None);
+        // The corruption itself isn't fully repaired (no valid slot to
+        // install into), but `insert_swap` removed the stale index
+        // entry so subsequent operations don't observe the OOB mapping.
+        assert!(!ring.contains(&"a"));
+    }
+
+    #[test]
+    fn debug_impl_does_not_leak_keys_or_values() {
+        // Security hardening: the derived `Debug` for `ClockRing`
+        // recursed through every stored `Entry<K, V>` and
+        // `HashMap<K, usize, S>` entry, turning `tracing::debug!`,
+        // `dbg!`, and panic backtraces into a secret-exposure channel
+        // for caches keyed on session tokens / API keys or holding
+        // sensitive values. The hand-written `Debug` redacts contents.
+        let mut ring: ClockRing<&str, &str> = ClockRing::new(4);
+        ring.insert("session-token-key-do-not-leak", "bearer-secret-do-not-leak");
+        ring.insert("api-key-do-not-leak", "plaintext-password-do-not-leak");
+
+        let rendered = format!("{ring:?}");
+        assert!(
+            !rendered.contains("do-not-leak"),
+            "Debug impl leaked key or value into output: {rendered}",
+        );
+
+        // Safety: still expose aggregate shape for ops dashboards /
+        // snapshot tests.
+        assert!(rendered.contains("ClockRing"));
+        assert!(rendered.contains("len"));
+        assert!(rendered.contains("capacity"));
+        assert!(rendered.contains("hand"));
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_debug_impl_does_not_leak_keys_or_values() {
+        let cache: ConcurrentClockRing<&str, &str> = ConcurrentClockRing::new(4);
+        cache.insert("session-token-key-do-not-leak", "bearer-secret-do-not-leak");
+        cache.insert("api-key-do-not-leak", "plaintext-password-do-not-leak");
+
+        let rendered = format!("{cache:?}");
+        assert!(
+            !rendered.contains("do-not-leak"),
+            "Debug impl leaked key or value into output: {rendered}",
+        );
+        assert!(rendered.contains("ConcurrentClockRing"));
+        assert!(rendered.contains("len"));
+        assert!(rendered.contains("capacity"));
+    }
+
+    #[test]
+    fn get_does_not_set_ref_bit_on_missing_key() {
+        // Regression: get/touch/get_mut must not touch the reference
+        // vector when the key is absent or its slot is empty.
+        let mut ring = ClockRing::<&str, i32>::new(4);
+        ring.insert("a", 1);
+        // `a` was just inserted, so its ref bit is clear. A failed
+        // lookup must not silently promote any slot.
+        assert!(ring.get(&"missing").is_none());
+        assert!(!ring.touch(&"missing"));
+        assert!(ring.get_mut(&"missing").is_none());
+        // `a` still has ref bit cleared → it's a valid victim candidate.
+        assert_eq!(ring.peek_victim(), Some((&"a", &1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity exceeds MAX_CAPACITY")]
+    fn new_panics_on_oversized_capacity() {
+        let _ = ClockRing::<u32, u32>::new(MAX_CAPACITY + 1);
+    }
+
+    #[test]
+    fn approx_bytes_saturates_without_panicking() {
+        // Just exercise the saturating path on a normal ring; the main
+        // guarantee is that we don't panic in debug builds.
+        let ring: ClockRing<u64, u64> = ClockRing::new(128);
+        let bytes = ring.approx_bytes();
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn with_hasher_uses_custom_hasher() {
+        use std::collections::hash_map::RandomState;
+        // Build with an explicit RandomState instance. Exercises the
+        // generic `with_hasher` path end-to-end, including the
+        // `KeysAreTrusted` acknowledgement.
+        let mut ring: ClockRing<&str, i32, RandomState> =
+            ClockRing::with_hasher(4, RandomState::new(), KeysAreTrusted::new());
+        assert_eq!(ring.insert("a", 1), None);
+        assert_eq!(ring.insert("b", 2), None);
+        assert_eq!(ring.peek(&"a"), Some(&1));
+        assert_eq!(ring.peek(&"b"), Some(&2));
+    }
+
+    #[test]
+    fn try_with_hasher_requires_ack_and_builds() {
+        use std::collections::hash_map::RandomState;
+        // The `KeysAreTrusted` marker is required at the call site
+        // — this test is the ergonomics regression: `::new()` is all
+        // that's needed, no unsafe blocks, no separate builder step.
+        let ring: ClockRing<u32, u32, RandomState> =
+            ClockRing::try_with_hasher(8, RandomState::new(), KeysAreTrusted::new()).unwrap();
+        assert_eq!(ring.capacity(), 8);
+
+        // Equivalent via `Default`, for callers who prefer that form.
+        let ring2: ClockRing<u32, u32, RandomState> =
+            ClockRing::try_with_hasher(8, RandomState::new(), KeysAreTrusted::default()).unwrap();
+        assert_eq!(ring2.capacity(), 8);
+    }
 
     #[test]
     fn clock_ring_eviction_prefers_unreferenced() {
@@ -2479,6 +3411,313 @@ mod tests {
         assert_eq!(ring.len(), 3);
         assert!(ring.contains(&"d"));
         ring.debug_validate_invariants();
+    }
+
+    // -----------------------------------------------------------------------
+    // Security hardening: exception safety in insert_swap eviction path.
+    //
+    // If `K::Clone` panics during the full-ring eviction branch, the ring
+    // must not be left with an empty slot while `len == capacity`; a
+    // subsequent insert would hit `unreachable!("occupied slot missing
+    // under full ring")` and turn a transient allocation failure into a
+    // persistent-panic DoS. The fix clones `key` *before* taking the
+    // victim slot, so a panic there leaves state unchanged.
+    // -----------------------------------------------------------------------
+
+    // Per-test-thread budget for `PanicKey::clone` calls. Tests
+    // decrement this to force a clone to panic at a chosen point
+    // without depending on allocator failure.
+    thread_local! {
+        static CLONE_BUDGET: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(usize::MAX) };
+    }
+
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct PanicKey(u32);
+
+    impl Clone for PanicKey {
+        fn clone(&self) -> Self {
+            CLONE_BUDGET.with(|b| {
+                let remaining = b.get();
+                if remaining == 0 {
+                    panic!("PanicKey: clone budget exhausted");
+                }
+                b.set(remaining - 1);
+            });
+            Self(self.0)
+        }
+    }
+
+    #[test]
+    fn insert_swap_eviction_panic_in_clone_preserves_invariants() {
+        // Build a full ring, ensure the next insert will hit the
+        // eviction path. Starve the clone budget to 0 so `key.clone()`
+        // inside `insert_swap` panics.
+        let mut ring: ClockRing<PanicKey, i32> = ClockRing::new(2);
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(PanicKey(1), 10);
+        ring.insert(PanicKey(2), 20);
+        assert_eq!(ring.len(), 2);
+        assert_eq!(ring.capacity(), 2);
+
+        // Snapshot live keys as owned `(u32, bool)` pairs so the
+        // borrow is released before we re-borrow `ring` mutably.
+        let slots_before: Vec<Option<(u32, bool)>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, bit)| (k.0, bit)))
+            .collect();
+
+        CLONE_BUDGET.with(|b| b.set(0));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.insert(PanicKey(3), 30);
+        }))
+        .is_err();
+        assert!(panicked, "PanicKey::clone must have fired");
+
+        // Restore the budget so subsequent operations can clone freely.
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+
+        // Ring state must be internally consistent after the unwind.
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 2, "len must not drift on clone panic");
+        assert_eq!(ring.capacity(), 2);
+
+        // Same two entries are still present — the clone panic must
+        // not have evicted or replaced anything.
+        let slots_after: Vec<Option<(u32, bool)>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, bit)| (k.0, bit)))
+            .collect();
+        assert_eq!(slots_before.len(), slots_after.len());
+        for (before, after) in slots_before.iter().zip(slots_after.iter()) {
+            assert_eq!(
+                before.map(|(k, _)| k),
+                after.map(|(k, _)| k),
+                "slot contents changed after panicking clone"
+            );
+        }
+
+        // Subsequent insert must not hit the `unreachable!()` branch:
+        // this is the regression. Pre-fix, the empty slot created by
+        // `slots[idx].take()` combined with `len == capacity` would
+        // cause the next eviction sweep to panic.
+        let evicted = ring.insert(PanicKey(3), 30);
+        assert!(evicted.is_some(), "next insert must evict normally");
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 2);
+    }
+
+    #[test]
+    fn insert_swap_eviction_panic_in_clone_does_not_leak_evictee() {
+        // Tighter check: the caller-visible value `30` must not appear
+        // in the ring, and neither PanicKey(1) nor PanicKey(2) should
+        // have been partially removed from the index.
+        let mut ring: ClockRing<PanicKey, i32> = ClockRing::new(2);
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(PanicKey(1), 10);
+        ring.insert(PanicKey(2), 20);
+
+        CLONE_BUDGET.with(|b| b.set(0));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.insert(PanicKey(3), 30);
+        }));
+        CLONE_BUDGET.with(|b| b.set(usize::MAX));
+
+        ring.debug_validate_invariants();
+        assert!(ring.contains(&PanicKey(1)));
+        assert!(ring.contains(&PanicKey(2)));
+        assert!(!ring.contains(&PanicKey(3)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Security hardening: exception safety when the evictee's `Hash`/`Eq`
+    // panics inside `HashMap::remove`.
+    //
+    // Pre-fix, `insert_swap` and `pop_victim` would `slots[idx].take()`
+    // *before* calling `self.index.remove(&evicted.key)`. A panic in the
+    // user-supplied `Hash`/`Eq` on the evictee key then left `len ==
+    // capacity` (or, for `pop_victim`, `len` un-decremented) with an
+    // empty slot — and the next `insert` fired
+    // `unreachable!("occupied slot missing under full ring")`, turning a
+    // single bad hash call into a persistent-panic DoS for every thread
+    // sharing a `ConcurrentClockRing` handle.
+    //
+    // The fix removes the index entry *by borrow* before taking the slot.
+    // These tests install a key type whose `Hash` panics after a
+    // caller-controlled budget and verify the ring survives the unwind.
+    // -----------------------------------------------------------------------
+
+    thread_local! {
+        static HASH_BUDGET: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(usize::MAX) };
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct HashPanicKey(u32);
+
+    impl std::hash::Hash for HashPanicKey {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            HASH_BUDGET.with(|b| {
+                let remaining = b.get();
+                if remaining == 0 {
+                    panic!("HashPanicKey: hash budget exhausted");
+                }
+                b.set(remaining - 1);
+            });
+            self.0.hash(state);
+        }
+    }
+
+    #[test]
+    fn insert_swap_eviction_panic_in_hash_preserves_invariants() {
+        // Build a full ring. The next insert must hit the eviction
+        // path and call `HashMap::remove` on the evictee's key —
+        // which we make panic via a starved hash budget.
+        let mut ring: ClockRing<HashPanicKey, i32> = ClockRing::new(2);
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(HashPanicKey(1), 10);
+        ring.insert(HashPanicKey(2), 20);
+        assert_eq!(ring.len(), 2);
+
+        let slots_before: Vec<Option<u32>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, _)| k.0))
+            .collect();
+
+        // Budget: exactly the hash calls required to locate the new
+        // key's slot (via `self.index.get(&key)` at the top of
+        // insert_swap) and check the full-ring fast path, but starved
+        // before `self.index.remove(&evictee.key)` inside the
+        // eviction branch. Setting to 1 is enough — the first hash
+        // in `index.get(&PanicKey(3))` consumes it, and every
+        // subsequent hash call (including the one inside
+        // `HashMap::remove`) panics.
+        HASH_BUDGET.with(|b| b.set(1));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.insert(HashPanicKey(3), 30);
+        }))
+        .is_err();
+        assert!(panicked, "HashPanicKey::hash must have fired");
+
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+
+        // The regression: `len` must still equal the number of
+        // occupied slots, and `debug_validate_invariants` must pass.
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 2, "len must not drift on hash panic");
+        assert_eq!(ring.capacity(), 2);
+
+        // Same two live entries. `HashPanicKey(3)` must not have
+        // been inserted.
+        let slots_after: Vec<Option<u32>> = ring
+            .debug_snapshot_slots()
+            .into_iter()
+            .map(|slot| slot.map(|(k, _)| k.0))
+            .collect();
+        assert_eq!(slots_before, slots_after);
+
+        // And — the regression — the next insert must not fire
+        // `unreachable!("occupied slot missing under full ring")`.
+        let evicted = ring.insert(HashPanicKey(3), 30);
+        assert!(evicted.is_some(), "next insert must evict normally");
+        ring.debug_validate_invariants();
+    }
+
+    #[test]
+    fn pop_victim_panic_in_hash_preserves_invariants() {
+        let mut ring: ClockRing<HashPanicKey, i32> = ClockRing::new(3);
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+        ring.insert(HashPanicKey(1), 10);
+        ring.insert(HashPanicKey(2), 20);
+        ring.insert(HashPanicKey(3), 30);
+        assert_eq!(ring.len(), 3);
+
+        let snapshot_before = ring.debug_snapshot_slots().len();
+
+        // Starve the hash budget so `self.index.remove(&victim.key)`
+        // inside pop_victim panics.
+        HASH_BUDGET.with(|b| b.set(0));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.pop_victim();
+        }))
+        .is_err();
+        assert!(panicked, "HashPanicKey::hash must have fired");
+
+        HASH_BUDGET.with(|b| b.set(usize::MAX));
+
+        // `len` must still reflect actual occupancy — pre-fix this
+        // drifted when take() ran before the panicking remove.
+        ring.debug_validate_invariants();
+        assert_eq!(ring.len(), 3, "len must not drift on hash panic");
+        assert_eq!(ring.debug_snapshot_slots().len(), snapshot_before);
+
+        // Follow-up pop_victim must succeed normally.
+        let evicted = ring.pop_victim();
+        assert!(evicted.is_some(), "pop_victim must recover after unwind");
+        assert_eq!(ring.len(), 2);
+        ring.debug_validate_invariants();
+    }
+
+    // -----------------------------------------------------------------------
+    // try_clone: matches try_new's fallible-allocation contract.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn try_clone_round_trips_contents() {
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+        ring.insert("c", 3);
+        ring.touch(&"a");
+
+        let clone = ring
+            .try_clone()
+            .expect("try_clone must succeed on sane capacity");
+        assert_eq!(clone.capacity(), ring.capacity());
+        assert_eq!(clone.len(), ring.len());
+        assert_eq!(clone.peek(&"a"), Some(&1));
+        assert_eq!(clone.peek(&"b"), Some(&2));
+        assert_eq!(clone.peek(&"c"), Some(&3));
+        clone.debug_validate_invariants();
+
+        // Snapshot equality: slot occupancy + ref bits must match.
+        assert_eq!(ring.debug_snapshot_slots(), clone.debug_snapshot_slots());
+    }
+
+    #[test]
+    fn try_clone_is_independent_of_source() {
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(3);
+        ring.insert("a", 1);
+        ring.insert("b", 2);
+
+        let mut clone = ring.try_clone().unwrap();
+        clone.insert("c", 3);
+        clone.remove(&"a");
+
+        // Mutating the clone must not observably affect the original.
+        assert!(ring.contains(&"a"));
+        assert!(!ring.contains(&"c"));
+        assert_eq!(ring.len(), 2);
+    }
+
+    #[test]
+    fn clone_trait_matches_try_clone() {
+        let mut ring: ClockRing<&str, i32> = ClockRing::new(4);
+        ring.insert("x", 10);
+        ring.insert("y", 20);
+
+        let via_clone = ring.clone();
+        let via_try_clone = ring.try_clone().unwrap();
+
+        assert_eq!(
+            via_clone.debug_snapshot_slots(),
+            via_try_clone.debug_snapshot_slots()
+        );
+        assert_eq!(via_clone.len(), via_try_clone.len());
+        assert_eq!(via_clone.capacity(), via_try_clone.capacity());
     }
 
     #[test]
