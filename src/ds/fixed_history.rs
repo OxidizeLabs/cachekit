@@ -149,12 +149,43 @@
 //! `FixedHistory` is not thread-safe. It is typically embedded within
 //! cache entries and protected by the cache's synchronization.
 //!
+//! ## Security & Invariants
+//!
+//! - **Trusted timestamps.** The caller is responsible for supplying
+//!   monotonically non-decreasing timestamps drawn from a trusted source
+//!   (e.g. a coarse monotonic counter). If an adversary can influence the
+//!   timestamp stream — for example via a wall-clock that can jump
+//!   backwards, or a user-controlled counter — they can manipulate
+//!   LRU-K-style eviction decisions built on top of this type.
+//! - **Capacity bound.** `K` is capped at [`MAX_K`] (see [`FixedHistory::new`]).
+//!   This keeps the inline `[u64; K]` array from triggering stack exhaustion
+//!   if `K` is ever influenced by code an attacker controls.
+//! - **Not constant-time.** [`PartialEq`] and [`std::hash::Hash`] iterate
+//!   only as far as the shared prefix, so they are not suitable for
+//!   comparing data that must remain secret. `FixedHistory` is intended for
+//!   access-timestamp bookkeeping, not for security-sensitive values.
+//!
 //! ## Implementation Notes
 //!
 //! - Uses a fixed-size array (no heap allocation)
 //! - Const generic `K` determines history depth at compile time
 //! - Zero-size history (`K=0`) is a no-op
+//! - Construction is bounded by [`MAX_K`]; exceeding it is a compile-time error
 //! - `debug_validate_invariants()` available in debug/test builds
+//!
+//! [`MAX_K`]: MAX_K
+
+/// Upper bound on `K` for [`FixedHistory`].
+///
+/// `FixedHistory<K>` stores `[u64; K]` inline, so an arbitrary `K` would risk
+/// stack exhaustion (especially since [`FixedHistory::new`] returns by value
+/// and materialises the array on the stack before any move).
+///
+/// This limit is enforced at compile time by [`FixedHistory::new`] and is
+/// deliberately generous: realistic LRU-K policies use `K` in the single
+/// digits, so `4096` leaves multiple orders of magnitude of headroom while
+/// keeping the worst-case stack footprint at 32 KiB.
+pub const MAX_K: usize = 4096;
 
 /// Fixed-size ring buffer of the last `K` timestamps.
 ///
@@ -218,6 +249,13 @@ pub struct FixedHistory<const K: usize> {
 impl<const K: usize> FixedHistory<K> {
     /// Creates an empty history.
     ///
+    /// # Compile-time bound
+    ///
+    /// `K` must be less than or equal to [`MAX_K`]. Instantiating
+    /// `FixedHistory<K>` with a larger `K` fails compilation. This prevents
+    /// stack exhaustion from pathological `K` values and keeps the inline
+    /// `[u64; K]` array to a bounded size.
+    ///
     /// # Example
     ///
     /// ```
@@ -228,6 +266,12 @@ impl<const K: usize> FixedHistory<K> {
     /// assert_eq!(history.capacity(), 4);
     /// ```
     pub fn new() -> Self {
+        const {
+            assert!(
+                K <= MAX_K,
+                "FixedHistory<K>: K exceeds MAX_K (see cachekit::ds::fixed_history::MAX_K)"
+            );
+        }
         Self {
             data: [0; K],
             len: 0,
@@ -365,7 +409,10 @@ impl<const K: usize> FixedHistory<K> {
         if K == 0 || k == 0 || k > self.len {
             return None;
         }
-        let idx = (self.cursor + K - k) % K;
+        // Parenthesise as `cursor + (K - k)` so the intermediate stays below
+        // `2 * K` even for the largest permitted `K`. `k <= self.len <= K`
+        // guarantees `K - k` does not underflow.
+        let idx = (self.cursor + (K - k)) % K;
         Some(self.data[idx])
     }
 
@@ -477,13 +524,23 @@ impl<const K: usize> FixedHistory<K> {
         std::mem::size_of::<Self>()
     }
 
-    #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of the history in MRU order.
+    ///
+    /// Only available in `cfg(test)` or `debug_assertions` builds. Not part
+    /// of the stable API; do not rely on this being callable from release
+    /// builds of downstream crates.
+    #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
     pub fn debug_snapshot_mru(&self) -> Vec<u64> {
         self.to_vec_mru()
     }
 
+    /// Asserts internal invariants; panics on violation.
+    ///
+    /// Only available in `cfg(test)` or `debug_assertions` builds. Not part
+    /// of the stable API.
     #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
     pub fn debug_validate_invariants(&self) {
         assert!(self.len <= K);
         if K == 0 {
@@ -1011,6 +1068,30 @@ mod tests {
         // Call twice — possible only because FixedHistory is Copy
         assert_eq!(sum_history(h), 60);
         assert_eq!(sum_history(h), 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // Security / hardening tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn max_k_bound_permits_realistic_k() {
+        let h = FixedHistory::<{ MAX_K }>::new();
+        assert_eq!(h.capacity(), MAX_K);
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn kth_most_recent_handles_full_capacity_at_max_k() {
+        // Exercises the `cursor + (K - k)` path with the largest allowed K
+        // to confirm no intermediate arithmetic overflow.
+        let mut h = FixedHistory::<{ MAX_K }>::new();
+        for ts in 0..(MAX_K as u64) {
+            h.record(ts);
+        }
+        assert_eq!(h.most_recent(), Some((MAX_K as u64) - 1));
+        assert_eq!(h.kth_most_recent(MAX_K), Some(0));
+        assert_eq!(h.kth_most_recent(MAX_K + 1), None);
     }
 }
 
