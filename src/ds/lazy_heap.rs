@@ -129,16 +129,143 @@
 //!
 //! `LazyMinHeap` is not thread-safe. Wrap in a mutex for concurrent access.
 //!
+//! ## Security Considerations
+//!
+//! `LazyMinHeap` is intended for internal bookkeeping inside eviction
+//! policies and similar trusted subsystems. Calls are assumed to come
+//! from in-process code, **not** directly from adversary-controlled
+//! input. The hardening below addresses the exposure paths that remain
+//! when the key set or the call volume is influenced by untrusted
+//! input.
+//!
+//! - **Unbounded memory growth via stale entries.** [`update`] pushes a
+//!   new heap entry on every call; the old entry is not removed, it is
+//!   skipped by [`pop_best`]. An attacker that can drive
+//!   [`update`] on the same (small) key set faster than the caller
+//!   drains via [`pop_best`] or
+//!   [`rebuild`] can grow the heap without bound even though
+//!   [`len`](LazyMinHeap::len) stays tiny. Pair the heap with a bounded
+//!   rebuild cadence — either call [`maybe_rebuild`] on a schedule, or
+//!   construct the heap with
+//!   [`LazyMinHeap::with_auto_rebuild`] /
+//!   [`LazyMinHeap::set_auto_rebuild`] so every [`update`] runs a
+//!   [`maybe_rebuild`] with the configured factor.
+//! - **Constructor DoS via oversized capacity.** [`with_capacity`],
+//!   [`reserve`], and [`from_iter`] forward their argument straight
+//!   into `HashMap` / `BinaryHeap` allocation. A capacity close to
+//!   `usize::MAX` would abort the process inside the allocator. Both
+//!   public constructors now reject capacities above
+//!   [`MAX_CAPACITY`]. For attacker-influenced capacity, prefer the
+//!   fallible [`try_with_capacity`] /
+//!   [`try_reserve`] variants, which surface the error as a
+//!   [`LazyMinHeapError`] instead of aborting.
+//! - **Sequence-number wraparound.** The [`pop_best`] staleness check
+//!   relies on `(score, seq)` being unique across live and stale heap
+//!   entries for the same key. The counter is `u64`, so wrap is only
+//!   reachable after ≈ 2⁶⁴ `update` calls, but a wrap would let a
+//!   stale heap entry satisfy the equality check and be popped as if
+//!   live. The counter is now guarded by `checked_add`; on imminent
+//!   overflow the heap renumbers every live entry with fresh
+//!   sequential seqs and resets the counter, preserving FIFO
+//!   tie-breaking order.
+//! - **`approx_bytes` overflow.** The old formula `capacity *
+//!   size_of::<…>()` could overflow `usize` for pathologically large
+//!   capacities. `approx_bytes` now uses `saturating_mul` /
+//!   `saturating_add` and returns `usize::MAX` in the saturating case
+//!   rather than panicking in debug or wrapping silently in release.
+//! - **`Debug` output leaks keys and scores.** The derived `Debug`
+//!   recursed through every `(key, score)` pair and every stale heap
+//!   entry, turning `tracing::debug!`, `dbg!`, and panic-unwind
+//!   backtraces into a disclosure channel for caches keyed on session
+//!   tokens / API keys. The impl is now hand-written and redacts every
+//!   stored key and score, reporting only `len`, `heap_len`, and
+//!   whether auto-rebuild is configured. Callers that need full
+//!   contents can iterate via [`iter`](LazyMinHeap::iter) or
+//!   [`into_iter`](LazyMinHeap#impl-IntoIterator) and log entries they
+//!   have vetted.
+//!
+//! Thread-safety, timing side channels from the backing `HashMap`, and
+//! the lack of bytes-level budgeting mirror
+//! [`ClockRing`](crate::ds::ClockRing); consult its module docs for
+//! the same set of caveats.
+//!
 //! ## Implementation Notes
 //!
 //! - Uses `BinaryHeap<Reverse<_>>` for min-heap behavior
 //! - Tie-breaking uses sequence numbers for FIFO among equal scores
+//!
+//! [`update`]: LazyMinHeap::update
+//! [`pop_best`]: LazyMinHeap::pop_best
+//! [`rebuild`]: LazyMinHeap::rebuild
+//! [`maybe_rebuild`]: LazyMinHeap::maybe_rebuild
+//! [`len`]: LazyMinHeap::len
+//! [`with_capacity`]: LazyMinHeap::with_capacity
+//! [`reserve`]: LazyMinHeap::reserve
+//! [`try_with_capacity`]: LazyMinHeap::try_with_capacity
+//! [`try_reserve`]: LazyMinHeap::try_reserve
+//! [`from_iter`]: LazyMinHeap#impl-FromIterator%3C(K,+S)%3E
 use std::borrow::Borrow;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::fmt;
 use std::hash::Hash;
 use std::iter::FusedIterator;
+
+/// Coarse upper bound on `capacity` accepted by
+/// [`LazyMinHeap::with_capacity`] / [`LazyMinHeap::try_with_capacity`]
+/// and [`LazyMinHeap::reserve`] / [`LazyMinHeap::try_reserve`].
+///
+/// This is a *first* guard that rejects obviously pathological values
+/// cheaply. It is intentionally permissive: for any key/score size
+/// larger than a few bytes, allocating `MAX_CAPACITY` entries would
+/// still exhaust memory. The fallible constructors defend against
+/// that separately by using `HashMap::try_reserve` / `Vec::try_reserve`,
+/// so out-of-memory conditions surface as
+/// [`LazyMinHeapError::AllocationFailed`] rather than aborting the
+/// process.
+pub const MAX_CAPACITY: usize = isize::MAX as usize / 64;
+
+/// Error returned by [`LazyMinHeap::try_with_capacity`],
+/// [`LazyMinHeap::try_reserve`], and [`LazyMinHeap::try_rebuild`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LazyMinHeapError {
+    /// The requested capacity exceeds [`MAX_CAPACITY`].
+    CapacityTooLarge {
+        /// The capacity that was requested.
+        requested: usize,
+        /// The configured upper bound.
+        max: usize,
+    },
+    /// The allocator could not satisfy the reservation for the
+    /// requested capacity.
+    ///
+    /// Returned instead of aborting the process when `capacity *
+    /// size_of::<_>()` exceeds what the allocator can provide
+    /// (including the case where the byte count overflows
+    /// `isize::MAX`).
+    AllocationFailed {
+        /// The capacity whose allocation failed.
+        requested: usize,
+    },
+}
+
+impl fmt::Display for LazyMinHeapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LazyMinHeapError::CapacityTooLarge { requested, max } => {
+                write!(f, "LazyMinHeap capacity {requested} exceeds maximum {max}")
+            },
+            LazyMinHeapError::AllocationFailed { requested } => {
+                write!(
+                    f,
+                    "LazyMinHeap failed to allocate backing storage for capacity {requested}"
+                )
+            },
+        }
+    }
+}
+
+impl std::error::Error for LazyMinHeapError {}
 
 #[derive(Debug, Clone)]
 struct HeapEntry<K, S> {
@@ -228,11 +355,34 @@ where
 ///     assert!(victim == "page_b" || victim == "page_c");  // Both have count 1
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LazyMinHeap<K, S> {
     scores: HashMap<K, ScoreEntry<S>>,
     heap: BinaryHeap<Reverse<HeapEntry<K, S>>>,
     seq: u64,
+    /// When `Some(factor)`, every [`update`](Self::update) finishes
+    /// with a [`maybe_rebuild`](Self::maybe_rebuild) call at the
+    /// configured factor, bounding stale heap growth at roughly
+    /// `len() * factor` entries.
+    auto_rebuild: Option<usize>,
+}
+
+impl<K, S> fmt::Debug for LazyMinHeap<K, S> {
+    /// Redacted `Debug` output.
+    ///
+    /// Historical derived `Debug` recursed through every `(key,
+    /// score)` pair and every stale heap entry, which exposed all
+    /// cache keys via `tracing::debug!`, `dbg!`, and panic
+    /// backtraces. This impl deliberately does **not** require
+    /// `K: Debug` / `S: Debug` and reports only aggregate counters.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyMinHeap")
+            .field("len", &self.scores.len())
+            .field("heap_len", &self.heap.len())
+            .field("seq", &self.seq)
+            .field("auto_rebuild_factor", &self.auto_rebuild)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<K, S> LazyMinHeap<K, S>
@@ -255,10 +405,18 @@ where
             scores: HashMap::new(),
             heap: BinaryHeap::new(),
             seq: 0,
+            auto_rebuild: None,
         }
     }
 
     /// Creates an empty heap with pre-allocated capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity > MAX_CAPACITY`. Use
+    /// [`try_with_capacity`](Self::try_with_capacity) for a fallible
+    /// variant that surfaces allocator failure as a
+    /// [`LazyMinHeapError`].
     ///
     /// # Example
     ///
@@ -268,15 +426,64 @@ where
     /// let heap: LazyMinHeap<i32, i32> = LazyMinHeap::with_capacity(1000);
     /// assert!(heap.is_empty());
     /// ```
+    #[track_caller]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            scores: HashMap::with_capacity(capacity),
-            heap: BinaryHeap::with_capacity(capacity),
-            seq: 0,
+        Self::try_with_capacity(capacity)
+            .expect("LazyMinHeap::with_capacity: capacity exceeds MAX_CAPACITY")
+    }
+
+    /// Fallible [`with_capacity`](Self::with_capacity).
+    ///
+    /// Returns [`LazyMinHeapError::CapacityTooLarge`] when `capacity`
+    /// exceeds [`MAX_CAPACITY`], or
+    /// [`LazyMinHeapError::AllocationFailed`] when the allocator
+    /// cannot satisfy the reservation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::{LazyMinHeap, MAX_CAPACITY};
+    ///
+    /// let heap: LazyMinHeap<i32, i32> =
+    ///     LazyMinHeap::try_with_capacity(1000).unwrap();
+    /// assert!(heap.is_empty());
+    ///
+    /// assert!(LazyMinHeap::<u32, u32>::try_with_capacity(MAX_CAPACITY + 1).is_err());
+    /// ```
+    pub fn try_with_capacity(capacity: usize) -> Result<Self, LazyMinHeapError> {
+        if capacity > MAX_CAPACITY {
+            return Err(LazyMinHeapError::CapacityTooLarge {
+                requested: capacity,
+                max: MAX_CAPACITY,
+            });
         }
+        let mut scores: HashMap<K, ScoreEntry<S>> = HashMap::new();
+        scores
+            .try_reserve(capacity)
+            .map_err(|_| LazyMinHeapError::AllocationFailed {
+                requested: capacity,
+            })?;
+        let mut heap_vec: Vec<Reverse<HeapEntry<K, S>>> = Vec::new();
+        heap_vec
+            .try_reserve_exact(capacity)
+            .map_err(|_| LazyMinHeapError::AllocationFailed {
+                requested: capacity,
+            })?;
+        Ok(Self {
+            scores,
+            heap: BinaryHeap::from(heap_vec),
+            seq: 0,
+            auto_rebuild: None,
+        })
     }
 
     /// Reserves capacity for at least `additional` more entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the post-reservation capacity would exceed
+    /// [`MAX_CAPACITY`] or if the allocator aborts. Use
+    /// [`try_reserve`](Self::try_reserve) for a fallible variant.
     ///
     /// # Example
     ///
@@ -286,9 +493,91 @@ where
     /// let mut heap: LazyMinHeap<i32, i32> = LazyMinHeap::new();
     /// heap.reserve(100);
     /// ```
+    #[track_caller]
     pub fn reserve(&mut self, additional: usize) {
-        self.scores.reserve(additional);
-        self.heap.reserve(additional);
+        self.try_reserve(additional)
+            .expect("LazyMinHeap::reserve: capacity exceeds MAX_CAPACITY");
+    }
+
+    /// Fallible [`reserve`](Self::reserve).
+    ///
+    /// Returns [`LazyMinHeapError::CapacityTooLarge`] when the
+    /// requested total would exceed [`MAX_CAPACITY`], or
+    /// [`LazyMinHeapError::AllocationFailed`] when the allocator
+    /// cannot satisfy the reservation.
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), LazyMinHeapError> {
+        let projected = self.scores.len().checked_add(additional).ok_or(
+            LazyMinHeapError::CapacityTooLarge {
+                requested: additional,
+                max: MAX_CAPACITY,
+            },
+        )?;
+        if projected > MAX_CAPACITY {
+            return Err(LazyMinHeapError::CapacityTooLarge {
+                requested: projected,
+                max: MAX_CAPACITY,
+            });
+        }
+        self.scores
+            .try_reserve(additional)
+            .map_err(|_| LazyMinHeapError::AllocationFailed {
+                requested: additional,
+            })?;
+        // `BinaryHeap::try_reserve` is not stable; reserve the backing
+        // `Vec` indirectly by replacing the heap with a sized `Vec`.
+        // This only runs when `try_reserve` on the scores map succeeded,
+        // so we are not in a no-allocation budget.
+        let existing: Vec<Reverse<HeapEntry<K, S>>> = std::mem::take(&mut self.heap).into_vec();
+        let mut new_vec = existing;
+        new_vec
+            .try_reserve(additional)
+            .map_err(|_| LazyMinHeapError::AllocationFailed {
+                requested: additional,
+            })?;
+        self.heap = BinaryHeap::from(new_vec);
+        Ok(())
+    }
+
+    /// Enables automatic [`maybe_rebuild`](Self::maybe_rebuild) on
+    /// every [`update`](Self::update), bounding stale heap growth.
+    ///
+    /// `factor` follows the same convention as
+    /// [`maybe_rebuild`](Self::maybe_rebuild): a rebuild triggers
+    /// when `heap_len() > len() * factor`. Values below `1` are
+    /// clamped to `1`. Pass this value to the builder to mitigate the
+    /// unbounded-growth DoS described in the module-level **Security
+    /// Considerations** section.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, u32> =
+    ///     LazyMinHeap::with_auto_rebuild(4);
+    /// for i in 0..1_000 {
+    ///     heap.update("hot", i);
+    /// }
+    /// // heap_len stays bounded rather than growing to 1_000.
+    /// assert!(heap.heap_len() <= 4);
+    /// ```
+    pub fn with_auto_rebuild(factor: usize) -> Self {
+        let mut heap = Self::new();
+        heap.set_auto_rebuild(Some(factor));
+        heap
+    }
+
+    /// Configures automatic rebuild on [`update`](Self::update).
+    ///
+    /// Passing `None` disables auto-rebuild (the default). Passing
+    /// `Some(factor)` mirrors [`with_auto_rebuild`](Self::with_auto_rebuild).
+    pub fn set_auto_rebuild(&mut self, factor: Option<usize>) {
+        self.auto_rebuild = factor.map(|f| f.max(1));
+    }
+
+    /// Returns the currently configured auto-rebuild factor, if any.
+    pub fn auto_rebuild_factor(&self) -> Option<usize> {
+        self.auto_rebuild
     }
 
     /// Shrinks internal storage to fit current contents.
@@ -464,8 +753,19 @@ where
     /// assert_eq!(heap.score_of(&"item"), Some(&5));
     /// ```
     pub fn update(&mut self, key: K, score: S) -> Option<S> {
+        // Guard against sequence-number wraparound. After ~2^64
+        // updates the counter would otherwise wrap and a stale heap
+        // entry could satisfy the `(score, seq)` equality check in
+        // `pop_best`. Renumbering at the overflow boundary keeps the
+        // check sound.
+        if self.seq == u64::MAX {
+            self.renumber_seqs();
+        }
         let seq = self.seq;
-        self.seq = self.seq.wrapping_add(1);
+        self.seq = self
+            .seq
+            .checked_add(1)
+            .expect("LazyMinHeap::update: seq overflow after renumber (unreachable)");
         let previous = self.scores.insert(
             key.clone(),
             ScoreEntry {
@@ -474,7 +774,47 @@ where
             },
         );
         self.push_entry_with_seq(key, score, seq);
+
+        if let Some(factor) = self.auto_rebuild {
+            self.maybe_rebuild(factor);
+        }
+
         previous.map(|entry| entry.score)
+    }
+
+    /// Renumbers all live entries with fresh sequential seqs and
+    /// resets the counter to `len()`.
+    ///
+    /// Preserves FIFO tie-breaking order by sorting live entries by
+    /// their existing seq before renumbering. Called automatically on
+    /// [`update`](Self::update) at the overflow boundary; exposed here
+    /// so callers that retain heaps across extremely long-running
+    /// processes can force the renumber explicitly.
+    pub fn renumber_seqs(&mut self) {
+        // Drain live entries preserving original seq order so that
+        // equal-score keys keep their FIFO position post-renumber.
+        let mut live: Vec<(K, S, u64)> = self
+            .scores
+            .iter()
+            .map(|(k, entry)| (k.clone(), entry.score.clone(), entry.seq))
+            .collect();
+        live.sort_by_key(|(_, _, seq)| *seq);
+
+        self.scores.clear();
+        self.heap.clear();
+        self.seq = 0;
+        for (key, score, _) in live {
+            let seq = self.seq;
+            self.seq += 1;
+            self.scores.insert(
+                key.clone(),
+                ScoreEntry {
+                    score: score.clone(),
+                    seq,
+                },
+            );
+            self.push_entry_with_seq(key, score, seq);
+        }
     }
 
     /// Removes `key` and returns its score, if present.
@@ -569,6 +909,30 @@ where
         }
     }
 
+    /// Fallible [`rebuild`](Self::rebuild) that routes backing
+    /// allocations through `Vec::try_reserve_exact`.
+    ///
+    /// Returns [`LazyMinHeapError::AllocationFailed`] without mutating
+    /// the heap when the allocator cannot satisfy the new heap
+    /// buffer. Prefer this over [`rebuild`](Self::rebuild) when the
+    /// population size is attacker-influenced.
+    pub fn try_rebuild(&mut self) -> Result<(), LazyMinHeapError> {
+        let n = self.scores.len();
+        let mut new_vec: Vec<Reverse<HeapEntry<K, S>>> = Vec::new();
+        new_vec
+            .try_reserve_exact(n)
+            .map_err(|_| LazyMinHeapError::AllocationFailed { requested: n })?;
+        for (key, entry) in self.scores.iter() {
+            new_vec.push(Reverse(HeapEntry {
+                score: entry.score.clone(),
+                seq: entry.seq,
+                key: key.clone(),
+            }));
+        }
+        self.heap = BinaryHeap::from(new_vec);
+        Ok(())
+    }
+
     /// Rebuilds if the heap has grown too stale relative to map size.
     ///
     /// Triggers rebuild when `heap_len() > len() * factor`. Values of
@@ -615,9 +979,21 @@ where
     /// assert!(bytes > 0);
     /// ```
     pub fn approx_bytes(&self) -> usize {
+        // Saturate on overflow. `capacity() * size_of::<_>()` can
+        // overflow `usize` for pathologically large capacities;
+        // without saturation this would panic in debug builds and
+        // wrap silently in release.
+        let scores_bytes = self
+            .scores
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(K, ScoreEntry<S>)>());
+        let heap_bytes = self
+            .heap
+            .capacity()
+            .saturating_mul(std::mem::size_of::<std::cmp::Reverse<HeapEntry<K, S>>>());
         std::mem::size_of::<Self>()
-            + self.scores.capacity() * std::mem::size_of::<(K, ScoreEntry<S>)>()
-            + self.heap.capacity() * std::mem::size_of::<std::cmp::Reverse<HeapEntry<K, S>>>()
+            .saturating_add(scores_bytes)
+            .saturating_add(heap_bytes)
     }
 
     #[cfg(test)]
@@ -733,7 +1109,12 @@ where
     fn from_iter<I: IntoIterator<Item = (K, S)>>(iter: I) -> Self {
         let iter = iter.into_iter();
         let (lower, _) = iter.size_hint();
-        let mut heap = Self::with_capacity(lower);
+        // Clamp caller-reported `size_hint` against `MAX_CAPACITY` so
+        // an oversized or adversarial `size_hint` cannot turn
+        // `FromIterator` into an allocator DoS / abort vector. See the
+        // module-level **Security Considerations** section.
+        let capacity = lower.min(MAX_CAPACITY);
+        let mut heap = Self::with_capacity(capacity);
         for (key, score) in iter {
             heap.update(key, score);
         }
@@ -936,6 +1317,188 @@ mod tests {
         let mut entries: Vec<_> = heap.into_iter().collect();
         entries.sort();
         assert_eq!(entries, vec![("a", 2), ("b", 1)]);
+    }
+
+    // =============================================================================
+    // Security Regression Tests
+    // =============================================================================
+
+    #[test]
+    fn try_with_capacity_rejects_oversized_capacity() {
+        let err = LazyMinHeap::<u32, u32>::try_with_capacity(MAX_CAPACITY + 1).unwrap_err();
+        assert!(matches!(err, LazyMinHeapError::CapacityTooLarge { .. }));
+    }
+
+    #[test]
+    #[should_panic(expected = "MAX_CAPACITY")]
+    fn with_capacity_panics_on_oversized_capacity() {
+        let _heap: LazyMinHeap<u32, u32> = LazyMinHeap::with_capacity(MAX_CAPACITY + 1);
+    }
+
+    #[test]
+    fn try_reserve_rejects_oversized_total() {
+        let mut heap: LazyMinHeap<u32, u32> = LazyMinHeap::new();
+        let err = heap.try_reserve(MAX_CAPACITY + 1).unwrap_err();
+        assert!(matches!(err, LazyMinHeapError::CapacityTooLarge { .. }));
+    }
+
+    #[test]
+    fn try_reserve_small_value_succeeds_and_is_usable() {
+        let mut heap: LazyMinHeap<u32, u32> = LazyMinHeap::new();
+        heap.try_reserve(16).expect("reserve should succeed");
+        heap.update(1, 10);
+        heap.update(2, 5);
+        assert_eq!(heap.pop_best(), Some((2, 5)));
+        assert_eq!(heap.pop_best(), Some((1, 10)));
+    }
+
+    #[test]
+    fn try_rebuild_preserves_live_entries_and_removes_stale() {
+        let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+        heap.update("a", 3);
+        heap.update("a", 2);
+        heap.update("a", 1);
+        heap.update("b", 4);
+        assert!(heap.heap_len() > heap.len());
+
+        heap.try_rebuild().expect("rebuild should succeed");
+        assert_eq!(heap.heap_len(), heap.len());
+        assert_eq!(heap.pop_best(), Some(("a", 1)));
+        assert_eq!(heap.pop_best(), Some(("b", 4)));
+    }
+
+    #[test]
+    fn auto_rebuild_bounds_stale_heap_growth() {
+        // Without auto_rebuild: heap_len grows unbounded.
+        let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+        for i in 0..1_000 {
+            heap.update("hot", i);
+        }
+        assert_eq!(heap.len(), 1);
+        assert_eq!(heap.heap_len(), 1_000);
+
+        // With auto_rebuild(4): heap_len stays bounded.
+        let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::with_auto_rebuild(4);
+        for i in 0..1_000 {
+            heap.update("hot", i);
+        }
+        assert_eq!(heap.len(), 1);
+        assert!(heap.heap_len() <= 4);
+        assert_eq!(heap.auto_rebuild_factor(), Some(4));
+    }
+
+    #[test]
+    fn set_auto_rebuild_clamps_factor_below_one() {
+        let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+        heap.set_auto_rebuild(Some(0));
+        assert_eq!(heap.auto_rebuild_factor(), Some(1));
+        heap.set_auto_rebuild(None);
+        assert_eq!(heap.auto_rebuild_factor(), None);
+    }
+
+    #[test]
+    fn renumber_seqs_preserves_fifo_for_equal_scores() {
+        let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+        heap.update("first", 1);
+        heap.update("second", 1);
+        heap.update("third", 1);
+        heap.renumber_seqs();
+        // Pop order must still reflect insertion order.
+        assert_eq!(heap.pop_best(), Some(("first", 1)));
+        assert_eq!(heap.pop_best(), Some(("second", 1)));
+        assert_eq!(heap.pop_best(), Some(("third", 1)));
+    }
+
+    #[test]
+    fn update_at_seq_saturation_renumbers_without_stale_match() {
+        // Simulate a heap about to wrap its sequence counter.
+        let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+        heap.update("a", 1);
+        heap.update("b", 2);
+
+        // Fast-forward seq to the overflow boundary. The next `update`
+        // must renumber rather than wrap the counter.
+        heap.seq = u64::MAX;
+
+        heap.update("c", 3);
+
+        // All three keys present, correct order, fresh seqs.
+        assert_eq!(heap.len(), 3);
+        assert_eq!(heap.pop_best(), Some(("a", 1)));
+        assert_eq!(heap.pop_best(), Some(("b", 2)));
+        assert_eq!(heap.pop_best(), Some(("c", 3)));
+        assert!(heap.seq < u64::MAX);
+    }
+
+    #[test]
+    fn approx_bytes_does_not_overflow() {
+        let heap: LazyMinHeap<u64, u64> = LazyMinHeap::with_capacity(1_024);
+        // Saturating arithmetic: result is well-defined and finite.
+        let bytes = heap.approx_bytes();
+        assert!(bytes >= std::mem::size_of::<LazyMinHeap<u64, u64>>());
+        assert!(bytes < usize::MAX);
+    }
+
+    #[test]
+    fn debug_impl_does_not_leak_keys_or_scores() {
+        // Keys and scores intentionally do *not* implement Debug; a
+        // derived Debug would fail to compile, proving the redacted
+        // impl avoids exposing them.
+        struct Secret(u32);
+        impl PartialEq for Secret {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+        impl Eq for Secret {}
+        impl Clone for Secret {
+            fn clone(&self) -> Self {
+                Secret(self.0)
+            }
+        }
+        impl std::hash::Hash for Secret {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.0.hash(state)
+            }
+        }
+        impl Ord for Secret {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.0.cmp(&other.0)
+            }
+        }
+        impl PartialOrd for Secret {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut heap: LazyMinHeap<Secret, Secret> = LazyMinHeap::new();
+        heap.update(Secret(0xdead_beef), Secret(0xfeed_face));
+
+        let rendered = format!("{:?}", heap);
+        assert!(rendered.contains("LazyMinHeap"));
+        assert!(rendered.contains("len"));
+        assert!(!rendered.contains("dead"));
+        assert!(!rendered.contains("beef"));
+        assert!(!rendered.contains("feed"));
+        assert!(!rendered.contains("face"));
+    }
+
+    #[test]
+    fn from_iter_clamps_size_hint_to_max_capacity() {
+        struct AdversarialHint;
+        impl Iterator for AdversarialHint {
+            type Item = (u32, u32);
+            fn next(&mut self) -> Option<Self::Item> {
+                None
+            }
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (usize::MAX, None)
+            }
+        }
+        // Must not panic or abort on the allocator.
+        let heap: LazyMinHeap<u32, u32> = AdversarialHint.collect();
+        assert!(heap.is_empty());
     }
 }
 
