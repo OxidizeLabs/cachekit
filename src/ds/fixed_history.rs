@@ -163,6 +163,14 @@
 //!   if `K` is ever influenced by code an attacker controls. For large `K`
 //!   on restricted stacks, use [`FixedHistory::boxed`] to heap-allocate
 //!   without materialising the array on the stack.
+//! - **Per-entry memory is a multiplier, not a bound.** [`MAX_K`] caps the
+//!   per-instance footprint at 32 KiB, not the total. If an attacker can
+//!   cause `N` `FixedHistory<K>` instances to be created (one per cache
+//!   entry, one per session, etc.) the effective heap pressure is
+//!   `N * size_of::<FixedHistory<K>>()`. When `K` approaches [`MAX_K`]
+//!   and `N` is attacker-influenced, pair this type with a hard
+//!   admission-control cap on the surrounding container; [`MAX_K`] alone
+//!   will not save you from a memory-DoS in that configuration.
 //! - **No stale-slot disclosure via the public API.**
 //!   [`FixedHistory::clear`] overwrites the backing array with zeros and
 //!   the manual `Debug` impl only prints logically-live entries, so
@@ -245,10 +253,17 @@ pub const MAX_K: usize = 4096;
 ///     history.record(ts);
 /// }
 ///
-/// // Check if accessed recently (within last 100 time units)
-/// let now = 260;
+/// // Check if accessed recently (within last 100 time units).
+/// //
+/// // `saturating_sub` rather than `-` because, per the module-level
+/// // "trusted timestamps" docs, nothing in `FixedHistory` guarantees
+/// // that recorded timestamps are monotonic relative to `now`. If the
+/// // clock source can ever run backwards (wall clock, attacker-
+/// // influenced counter, NTP step), a plain subtraction underflows and
+/// // panics in debug / wraps to `u64::MAX - delta` in release.
+/// let now = 260u64;
 /// let oldest_in_window = history.kth_most_recent(5).unwrap();
-/// let window_duration = now - oldest_in_window;
+/// let window_duration = now.saturating_sub(oldest_in_window);
 ///
 /// assert_eq!(window_duration, 160);  // 5 accesses over 160 time units
 /// ```
@@ -294,12 +309,26 @@ impl<const K: usize> FixedHistory<K> {
 // not the raw ring buffer. This prevents stale slots (left behind after a
 // `clear()` or a wrap) from appearing in panic messages / logs, which would
 // otherwise leak past access patterns that the public API already hides.
+//
+// Allocation-free: streams entries through `self.iter()` via a nested
+// `DebugList` adapter rather than materialising a `Vec<u64>` first. This
+// matters on the panic / OOM path — `Debug` is frequently invoked from
+// `assert!` / `panic!` formatting, and a second allocation there can
+// double-panic to abort. For `K = MAX_K` the old form allocated 32 KiB
+// per `{:?}` call; this form allocates nothing.
 impl<const K: usize> std::fmt::Debug for FixedHistory<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct MruList<'a, const K: usize>(&'a FixedHistory<K>);
+        impl<const K: usize> std::fmt::Debug for MruList<'_, K> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_list().entries(self.0.iter()).finish()
+            }
+        }
+
         f.debug_struct("FixedHistory")
             .field("capacity", &K)
             .field("len", &self.len)
-            .field("mru", &self.to_vec_mru())
+            .field("mru", &MruList(self))
             .finish()
     }
 }
@@ -498,6 +527,24 @@ impl<const K: usize> FixedHistory<K> {
         if K == 0 {
             return;
         }
+        // Zero-tail invariant guard: while partially filled, `cursor`
+        // and `len` must stay in lock-step so every slot at index
+        // `>= len` is still a pristine zero. The `Copy` / `Clone` safety
+        // story in the module docs hinges on this, and nothing in the
+        // release build catches a refactor that splits `record()` into
+        // "write first, commit `len` later" or otherwise breaks the
+        // lock-step. Assert at the point of change so a regression
+        // surfaces in debug/test runs at the offending operation, not
+        // only when `debug_validate_invariants` happens to be called.
+        debug_assert!(self.cursor < K, "cursor out of range");
+        debug_assert!(
+            self.len == K || self.cursor == self.len,
+            "FixedHistory zero-tail invariant broken before record(): \
+             cursor = {}, len = {}, K = {}",
+            self.cursor,
+            self.len,
+            K
+        );
         self.data[self.cursor] = timestamp;
         self.cursor = (self.cursor + 1) % K;
         if self.len < K {
@@ -613,20 +660,30 @@ impl<const K: usize> FixedHistory<K> {
     /// Zeroes the backing array so the public API, the manual `Debug`
     /// impl, and derived traits (`PartialEq`, `Hash`, `IntoIterator`)
     /// cannot observe previously recorded timestamps. This is a logical
-    /// reset for bookkeeping, **not** a secure wipe:
+    /// reset for bookkeeping, **not** a secure wipe — do not rely on
+    /// `clear()` to scrub secret-equivalent data from memory:
     ///
-    /// - The writes are ordinary assignments. They are not guaranteed to
-    ///   survive compiler optimisation if `clear()` is the last use of
-    ///   the value before it is dropped or goes out of scope.
-    /// - `FixedHistory` is [`Copy`]. Any copy made before `clear()` still
-    ///   holds the original timestamps; clearing one copy does not clear
-    ///   the others.
+    /// - The writes are ordinary assignments through a non-volatile
+    ///   pointer. Under `opt-level=3` / LTO, an optimiser is free to
+    ///   elide the zeroing entirely if `clear()` is the last use of the
+    ///   value before it is dropped or goes out of scope, because `u64`
+    ///   has no `Drop` and no subsequent safe-code observation exists.
+    /// - `FixedHistory` is [`Copy`]. Any copy made before `clear()`
+    ///   (including implicit copies through pass-by-value, `PartialEq`
+    ///   invocations, and iterator state) still holds the original
+    ///   timestamps; clearing one copy does not clear the others. This
+    ///   is worse than the usual "not a secure wipe" caveat because
+    ///   `Copy` means those copies happen *without a move at the call
+    ///   site*.
     /// - Panics between [`record`](Self::record) and `clear` leave the
     ///   backing array populated.
     ///
     /// If you need a cryptographic-grade wipe (e.g. the timestamps
-    /// encode secret data), do not use this type; use a dedicated
-    /// secret-storage type backed by `zeroize` or equivalent.
+    /// encode secret data), do not use this type. Use a dedicated
+    /// secret-storage type backed by [`zeroize`] or equivalent, and do
+    /// not derive `Copy` on it.
+    ///
+    /// [`zeroize`]: https://docs.rs/zeroize
     ///
     /// # Example
     ///
@@ -677,6 +734,17 @@ impl<const K: usize> FixedHistory<K> {
     ///
     /// Since `FixedHistory` uses a fixed-size array, this is constant
     /// regardless of how many timestamps are recorded.
+    ///
+    /// # Caveats
+    ///
+    /// Reports `size_of::<Self>()` — the payload, not the allocation.
+    /// When the history lives behind a [`Box`] (e.g. via
+    /// [`boxed`](Self::boxed)), this *does not* account for the
+    /// `size_of::<Box<_>>` pointer on the stack or for any allocator
+    /// overhead. If you are using `approx_bytes` for admission control
+    /// or a per-entry memory quota, add `size_of::<Box<FixedHistory<K>>>()`
+    /// manually for the heap-allocated form, and budget some slack for
+    /// allocator bookkeeping.
     ///
     /// # Example
     ///
@@ -827,7 +895,18 @@ impl<'a, const K: usize> Iterator for Iter<'a, K> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.history.len().saturating_sub(self.pos - 1);
+        // `saturating_sub(1)` rather than `self.pos - 1`. Today `pos`
+        // starts at 1 and only ever increments, so a plain subtraction
+        // is safe by construction — but the invariant is enforced by
+        // the two constructors alone. If a future refactor exposes any
+        // constructor (or `skip_to` / `seek` method) that can leave
+        // `pos == 0`, the plain form underflows in release and panics
+        // in debug. This form is robust-by-construction and costs a
+        // single instruction.
+        let remaining = self
+            .history
+            .len()
+            .saturating_sub(self.pos.saturating_sub(1));
         (remaining, Some(remaining))
     }
 }
@@ -856,7 +935,12 @@ impl<const K: usize> Iterator for IntoIter<K> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.history.len().saturating_sub(self.pos - 1);
+        // See `Iter::size_hint` for why `saturating_sub(1)` instead of
+        // `self.pos - 1`.
+        let remaining = self
+            .history
+            .len()
+            .saturating_sub(self.pos.saturating_sub(1));
         (remaining, Some(remaining))
     }
 }
