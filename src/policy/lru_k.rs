@@ -11,7 +11,13 @@
 //!   │                          LrukCache<K, V>                                 │
 //!   │                                                                          │
 //!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  HashMap<K, usize> + Slot<K> (history + segment)                   │ │
+//!   │   │  FxHashMap<K, SlotId> (key -> arena slot index)                    │ │
+//!   │   └────────────────────────────────────────────────────────────────────┘ │
+//!   │                                                                          │
+//!   │   ┌────────────────────────────────────────────────────────────────────┐ │
+//!   │   │  SlotArena<Node<K, V>> (contiguous Vec + free list)                │ │
+//!   │   │                                                                    │ │
+//!   │   │  Node { prev, next: Option<SlotId>, segment, history, key, value } │ │
 //!   │   │                                                                    │ │
 //!   │   │  ┌─────────┬───────────────────────────────────────────────────┐   │ │
 //!   │   │  │   Key   │  Access History + Segment                         │   │ │
@@ -21,13 +27,13 @@
 //!   │   │  │ page_3  │  [t₂, t₇], cold/hot                               │   │ │
 //!   │   │  └─────────┴───────────────────────────────────────────────────┘   │ │
 //!   │   │                                                                    │ │
-//!   │   │  VecDeque stores last K timestamps (microseconds since epoch)      │ │
+//!   │   │  VecDeque stores last K logical ticks                              │ │
+//!   │   │  value is stored as Arc<V> for zero-copy sharing                   │ │
 //!   │   └────────────────────────────────────────────────────────────────────┘ │
 //!   │                                                                          │
-//!   │   ┌────────────────────────────────────────────────────────────────────┐ │
-//!   │   │  HashMapStore<K, V> (values live here)                             │ │
-//!   │   │  K -> Arc<V>                                                       │ │
-//!   │   └────────────────────────────────────────────────────────────────────┘ │
+//!   │   Two doubly-linked lists threaded through the arena via SlotId links:   │
+//!   │   • cold segment: entries with < K accesses (FIFO)                       │
+//!   │   • hot segment:  entries with ≥ K accesses (LRU)                        │
 //!   │                                                                          │
 //!   │   Configuration:                                                         │
 //!   │   • capacity: Maximum entries                                            │
@@ -110,10 +116,11 @@
 //!
 //! | Component        | Description                                        |
 //! |------------------|----------------------------------------------------|
-//! | `LrukCache<K,V>` | Main cache struct with store + K value             |
-//! | `index`          | `HashMap<K, usize>` to slot indices                |
-//! | `cold`/`hot`     | Segmented LRU lists (>K and ≥K accesses)          |
-//! | `store`          | Stores key -> `Arc<V>` ownership                   |
+//! | `LrukCache<K,V>` | Main cache struct: arena + map + segment pointers  |
+//! | `arena`          | `SlotArena<Node<K,V>>` pool with free-list reuse   |
+//! | `map`            | `FxHashMap<K, SlotId>` — key to arena slot         |
+//! | `cold`/`hot`     | Segmented lists (<K FIFO and ≥K LRU) via SlotId    |
+//! | `Node.value`     | `Arc<V>` ownership inside each arena node          |
 //! | `k`              | Number of accesses to track (default: 2)           |
 //!
 //! ## Core Operations ([`Cache`] + capability traits)
@@ -260,11 +267,11 @@
 
 use std::collections::VecDeque;
 use std::hash::Hash;
-use std::ptr::NonNull;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
+use crate::ds::{SlotArena, SlotId};
 #[cfg(feature = "metrics")]
 use crate::metrics::metrics_impl::LruKMetrics;
 #[cfg(feature = "metrics")]
@@ -284,17 +291,13 @@ enum Segment {
     Hot,
 }
 
-/// Node in the LRU-K linked list.
+/// Node in the LRU-K linked list, stored in a `SlotArena`.
 ///
-/// Layout optimized for cache locality:
-/// - Linked list pointers first for fast traversal
-/// - Segment for quick cold/hot determination
-/// - History for K-distance calculation
-/// - Key and value for data access
-#[repr(C)]
+/// Links use `SlotId` indices into the arena instead of raw pointers,
+/// so all list manipulation is safe.
 struct Node<K, V> {
-    prev: Option<NonNull<Node<K, V>>>,
-    next: Option<NonNull<Node<K, V>>>,
+    prev: Option<SlotId>,
+    next: Option<SlotId>,
     segment: Segment,
     history: VecDeque<u64>,
     key: K,
@@ -358,63 +361,73 @@ struct Node<K, V> {
 pub struct LrukCache<K, V> {
     k: usize,
     capacity: usize,
-    map: FxHashMap<K, NonNull<Node<K, V>>>,
+    arena: SlotArena<Node<K, V>>,
+    map: FxHashMap<K, SlotId>,
     // Cold segment (< K accesses) - FIFO order
-    cold_head: Option<NonNull<Node<K, V>>>,
-    cold_tail: Option<NonNull<Node<K, V>>>,
+    cold_head: Option<SlotId>,
+    cold_tail: Option<SlotId>,
     cold_len: usize,
     // Hot segment (>= K accesses) - LRU order
-    hot_head: Option<NonNull<Node<K, V>>>,
-    hot_tail: Option<NonNull<Node<K, V>>>,
+    hot_head: Option<SlotId>,
+    hot_tail: Option<SlotId>,
     hot_len: usize,
     tick: u64,
     #[cfg(feature = "metrics")]
     metrics: LruKMetrics,
 }
 
-// SAFETY: LrukCache owns all Node heap allocations exclusively via NonNull
-// pointers. No aliasing or shared mutable state exists outside the cache.
-// Transferring ownership between threads is safe when K and V are Send.
-unsafe impl<K: Send, V: Send> Send for LrukCache<K, V> {}
-
-// SAFETY: All mutation requires &mut self so &LrukCache cannot cause data
-// races. The NonNull pointers are only dereferenced behind &mut self.
-// Sharing &LrukCache between threads is safe when K and V are Sync.
-unsafe impl<K: Sync, V: Sync> Sync for LrukCache<K, V> {}
+// Send + Sync are auto-derived: SlotArena<Node<K,V>>, FxHashMap<K,SlotId>,
+// Option<SlotId>, usize — all Send/Sync when K and V are.
 
 impl<K, V> LrukCache<K, V> {
     /// Pop the tail node from the cold segment.
     #[inline(always)]
-    fn pop_cold_tail_inner(&mut self) -> Option<Box<Node<K, V>>> {
-        self.cold_tail.map(|tail_ptr| unsafe {
-            let node = Box::from_raw(tail_ptr.as_ptr());
+    fn pop_cold_tail_inner(&mut self) -> Option<Node<K, V>> {
+        let tail_id = self.cold_tail?;
+        let new_tail = self.arena.get(tail_id)?.prev;
+        let node = self
+            .arena
+            .remove(tail_id)
+            .expect("pop_cold_tail_inner: stale tail");
 
-            self.cold_tail = node.prev;
-            match self.cold_tail {
-                Some(mut t) => t.as_mut().next = None,
-                None => self.cold_head = None,
-            }
-            self.cold_len -= 1;
+        self.cold_tail = new_tail;
+        match self.cold_tail {
+            Some(t) => {
+                self.arena
+                    .get_mut(t)
+                    .expect("pop_cold_tail_inner: stale new tail")
+                    .next = None;
+            },
+            None => self.cold_head = None,
+        }
+        self.cold_len -= 1;
 
-            node
-        })
+        Some(node)
     }
 
     /// Pop the tail node from the hot segment.
     #[inline(always)]
-    fn pop_hot_tail_inner(&mut self) -> Option<Box<Node<K, V>>> {
-        self.hot_tail.map(|tail_ptr| unsafe {
-            let node = Box::from_raw(tail_ptr.as_ptr());
+    fn pop_hot_tail_inner(&mut self) -> Option<Node<K, V>> {
+        let tail_id = self.hot_tail?;
+        let new_tail = self.arena.get(tail_id)?.prev;
+        let node = self
+            .arena
+            .remove(tail_id)
+            .expect("pop_hot_tail_inner: stale tail");
 
-            self.hot_tail = node.prev;
-            match self.hot_tail {
-                Some(mut t) => t.as_mut().next = None,
-                None => self.hot_head = None,
-            }
-            self.hot_len -= 1;
+        self.hot_tail = new_tail;
+        match self.hot_tail {
+            Some(t) => {
+                self.arena
+                    .get_mut(t)
+                    .expect("pop_hot_tail_inner: stale new tail")
+                    .next = None;
+            },
+            None => self.hot_head = None,
+        }
+        self.hot_len -= 1;
 
-            node
-        })
+        Some(node)
     }
 }
 
@@ -481,6 +494,7 @@ where
         LrukCache {
             k,
             capacity,
+            arena: SlotArena::with_capacity(capacity),
             map: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             cold_head: None,
             cold_tail: None,
@@ -496,100 +510,133 @@ where
 
     /// Detach a node from its current segment list.
     #[inline(always)]
-    fn detach(&mut self, node_ptr: NonNull<Node<K, V>>) {
-        unsafe {
-            let node = node_ptr.as_ref();
-            let prev = node.prev;
-            let next = node.next;
-            let segment = node.segment;
+    fn detach(&mut self, id: SlotId) {
+        let node = self.arena.get(id).expect("detach: stale SlotId");
+        let prev = node.prev;
+        let next = node.next;
+        let segment = node.segment;
 
-            let (head, tail, len) = match segment {
-                Segment::Cold => (&mut self.cold_head, &mut self.cold_tail, &mut self.cold_len),
-                Segment::Hot => (&mut self.hot_head, &mut self.hot_tail, &mut self.hot_len),
-            };
+        match prev {
+            Some(prev_id) => {
+                self.arena
+                    .get_mut(prev_id)
+                    .expect("detach: stale prev")
+                    .next = next
+            },
+            None => match segment {
+                Segment::Cold => self.cold_head = next,
+                Segment::Hot => self.hot_head = next,
+            },
+        }
 
-            match prev {
-                Some(mut p) => p.as_mut().next = next,
-                None => *head = next,
-            }
+        match next {
+            Some(next_id) => {
+                self.arena
+                    .get_mut(next_id)
+                    .expect("detach: stale next")
+                    .prev = prev
+            },
+            None => match segment {
+                Segment::Cold => self.cold_tail = prev,
+                Segment::Hot => self.hot_tail = prev,
+            },
+        }
 
-            match next {
-                Some(mut n) => n.as_mut().prev = prev,
-                None => *tail = prev,
-            }
-
-            *len -= 1;
+        match segment {
+            Segment::Cold => self.cold_len -= 1,
+            Segment::Hot => self.hot_len -= 1,
         }
     }
 
     /// Attach a node at the front of the cold segment.
     #[inline(always)]
-    fn attach_cold_front(&mut self, mut node_ptr: NonNull<Node<K, V>>) {
-        unsafe {
-            let node = node_ptr.as_mut();
+    fn attach_cold_front(&mut self, id: SlotId) {
+        {
+            let node = self
+                .arena
+                .get_mut(id)
+                .expect("attach_cold_front: stale SlotId");
             node.prev = None;
             node.next = self.cold_head;
             node.segment = Segment::Cold;
-
-            match self.cold_head {
-                Some(mut h) => h.as_mut().prev = Some(node_ptr),
-                None => self.cold_tail = Some(node_ptr),
-            }
-
-            self.cold_head = Some(node_ptr);
-            self.cold_len += 1;
         }
+
+        match self.cold_head {
+            Some(old_head) => {
+                self.arena
+                    .get_mut(old_head)
+                    .expect("attach_cold_front: stale head")
+                    .prev = Some(id);
+            },
+            None => self.cold_tail = Some(id),
+        }
+
+        self.cold_head = Some(id);
+        self.cold_len += 1;
     }
 
     /// Attach a node at the front of the hot segment.
     #[inline(always)]
-    fn attach_hot_front(&mut self, mut node_ptr: NonNull<Node<K, V>>) {
-        unsafe {
-            let node = node_ptr.as_mut();
+    fn attach_hot_front(&mut self, id: SlotId) {
+        {
+            let node = self
+                .arena
+                .get_mut(id)
+                .expect("attach_hot_front: stale SlotId");
             node.prev = None;
             node.next = self.hot_head;
             node.segment = Segment::Hot;
-
-            match self.hot_head {
-                Some(mut h) => h.as_mut().prev = Some(node_ptr),
-                None => self.hot_tail = Some(node_ptr),
-            }
-
-            self.hot_head = Some(node_ptr);
-            self.hot_len += 1;
         }
+
+        match self.hot_head {
+            Some(old_head) => {
+                self.arena
+                    .get_mut(old_head)
+                    .expect("attach_hot_front: stale head")
+                    .prev = Some(id);
+            },
+            None => self.hot_tail = Some(id),
+        }
+
+        self.hot_head = Some(id);
+        self.hot_len += 1;
     }
 
     /// Records an access for the node, updating its history.
     #[inline(always)]
-    fn record_access(&mut self, node_ptr: NonNull<Node<K, V>>) -> usize {
+    fn record_access(&mut self, id: SlotId) -> usize {
         self.tick = self.tick.saturating_add(1);
-        unsafe {
-            let node = &mut *node_ptr.as_ptr();
-            node.history.push_back(self.tick);
-            if node.history.len() > self.k {
-                node.history.pop_front();
-            }
-            node.history.len()
+        let tick = self.tick;
+        let k = self.k;
+        let node = self.arena.get_mut(id).expect("record_access: stale SlotId");
+        node.history.push_back(tick);
+        if node.history.len() > k {
+            node.history.pop_front();
         }
+        node.history.len()
     }
 
     /// Moves a hot-segment entry to the MRU position.
     #[inline(always)]
-    fn move_hot_to_front(&mut self, node_ptr: NonNull<Node<K, V>>) {
-        let is_hot = unsafe { node_ptr.as_ref().segment == Segment::Hot };
+    fn move_hot_to_front(&mut self, id: SlotId) {
+        let is_hot = self
+            .arena
+            .get(id)
+            .expect("move_hot_to_front: stale SlotId")
+            .segment
+            == Segment::Hot;
         if !is_hot {
             return;
         }
-        self.detach(node_ptr);
-        self.attach_hot_front(node_ptr);
+        self.detach(id);
+        self.attach_hot_front(id);
     }
 
     /// Promotes an entry from cold to hot segment if it has >= K accesses.
     #[inline(always)]
-    fn promote_if_needed(&mut self, node_ptr: NonNull<Node<K, V>>) {
-        let (is_cold, history_len) = unsafe {
-            let node = node_ptr.as_ref();
+    fn promote_if_needed(&mut self, id: SlotId) {
+        let (is_cold, history_len) = {
+            let node = self.arena.get(id).expect("promote_if_needed: stale SlotId");
             (node.segment == Segment::Cold, node.history.len())
         };
 
@@ -597,14 +644,14 @@ where
             return;
         }
 
-        self.detach(node_ptr);
-        self.attach_hot_front(node_ptr);
+        self.detach(id);
+        self.attach_hot_front(id);
     }
 
     /// Selects and removes the eviction victim.
     /// Priority: cold segment LRU first, then hot segment LRU.
     #[inline]
-    fn evict_candidate(&mut self) -> Option<Box<Node<K, V>>> {
+    fn evict_candidate(&mut self) -> Option<Node<K, V>> {
         let node = if self.cold_len > 0 {
             self.pop_cold_tail_inner()?
         } else {
@@ -615,9 +662,9 @@ where
         Some(node)
     }
 
-    /// Returns a reference to the eviction candidate without removing it.
+    /// Returns the SlotId of the eviction candidate without removing it.
     #[inline]
-    fn peek_candidate(&self) -> Option<NonNull<Node<K, V>>> {
+    fn peek_candidate(&self) -> Option<SlotId> {
         if self.cold_len > 0 {
             self.cold_tail
         } else {
@@ -672,8 +719,8 @@ where
 
     #[inline]
     fn peek(&self, key: &K) -> Option<&V> {
-        let &node_ptr = self.map.get(key)?;
-        unsafe { Some((*node_ptr.as_ptr()).value.as_ref()) }
+        let &id = self.map.get(key)?;
+        self.arena.get(id).map(|node| node.value.as_ref())
     }
 
     #[inline]
@@ -686,19 +733,19 @@ where
         }
 
         // Check for existing key
-        if let Some(&node_ptr) = self.map.get(&key) {
+        if let Some(&id) = self.map.get(&key) {
             #[cfg(feature = "metrics")]
             self.metrics.record_insert_update();
 
-            let old_value = unsafe {
-                let node = &mut *node_ptr.as_ptr();
-                let old = std::mem::replace(&mut node.value, Arc::new(value));
-                (*old).clone()
+            let old_arc = {
+                let node = self.arena.get_mut(id).expect("insert: stale SlotId");
+                std::mem::replace(&mut node.value, Arc::new(value))
             };
+            let old_value = (*old_arc).clone();
 
-            self.record_access(node_ptr);
-            self.promote_if_needed(node_ptr);
-            self.move_hot_to_front(node_ptr);
+            self.record_access(id);
+            self.promote_if_needed(id);
+            self.move_hot_to_front(id);
 
             return Some(old_value);
         }
@@ -722,7 +769,7 @@ where
         let mut history = VecDeque::with_capacity(self.k);
         history.push_back(self.tick);
 
-        let node = Box::new(Node {
+        let id = self.arena.insert(Node {
             prev: None,
             next: None,
             segment: Segment::Cold,
@@ -730,18 +777,17 @@ where
             key: key.clone(),
             value: Arc::new(value),
         });
-        let node_ptr = NonNull::new(Box::into_raw(node)).unwrap();
 
-        self.map.insert(key, node_ptr);
-        self.attach_cold_front(node_ptr);
+        self.map.insert(key, id);
+        self.attach_cold_front(id);
 
         None
     }
 
     #[inline]
     fn get(&mut self, key: &K) -> Option<&V> {
-        let node_ptr = match self.map.get(key) {
-            Some(&ptr) => ptr,
+        let id = match self.map.get(key) {
+            Some(&id) => id,
             None => {
                 #[cfg(feature = "metrics")]
                 self.metrics.record_get_miss();
@@ -749,22 +795,22 @@ where
             },
         };
 
-        self.record_access(node_ptr);
-        self.promote_if_needed(node_ptr);
-        self.move_hot_to_front(node_ptr);
+        self.record_access(id);
+        self.promote_if_needed(id);
+        self.move_hot_to_front(id);
 
         #[cfg(feature = "metrics")]
         self.metrics.record_get_hit();
 
-        unsafe { Some((*node_ptr.as_ptr()).value.as_ref()) }
+        self.arena.get(id).map(|node| node.value.as_ref())
     }
 
     #[inline]
     fn remove(&mut self, key: &K) -> Option<V> {
-        let node_ptr = self.map.remove(key)?;
+        let id = self.map.remove(key)?;
 
-        self.detach(node_ptr);
-        let node = unsafe { Box::from_raw(node_ptr.as_ptr()) };
+        self.detach(id);
+        let node = self.arena.remove(id).expect("remove: stale SlotId");
 
         Some((*node.value).clone())
     }
@@ -773,9 +819,14 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_clear();
 
-        while self.pop_cold_tail_inner().is_some() {}
-        while self.pop_hot_tail_inner().is_some() {}
         self.map.clear();
+        self.arena.clear();
+        self.cold_head = None;
+        self.cold_tail = None;
+        self.cold_len = 0;
+        self.hot_head = None;
+        self.hot_tail = None;
+        self.hot_len = 0;
         self.tick = 0;
     }
 }
@@ -806,15 +857,13 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_k_call();
 
-        let node_ptr = self.peek_candidate()?;
+        let id = self.peek_candidate()?;
+        let node = self.arena.get(id)?;
 
         #[cfg(feature = "metrics")]
         (&self.metrics).record_peek_lru_k_found();
 
-        unsafe {
-            let node = node_ptr.as_ref();
-            Some((&node.key, node.value.as_ref()))
-        }
+        Some((&node.key, node.value.as_ref()))
     }
 
     /// Returns the K value used by this cache.
@@ -825,18 +874,16 @@ where
 
     /// Returns the access history for a key (most recent first).
     pub fn access_history(&self, key: &K) -> Option<Vec<u64>> {
-        let node_ptr = self.map.get(key)?;
-        unsafe {
-            let node = node_ptr.as_ref();
-            Some(node.history.iter().rev().copied().collect())
-        }
+        let &id = self.map.get(key)?;
+        let node = self.arena.get(id)?;
+        Some(node.history.iter().rev().copied().collect())
     }
 
     /// Returns the number of accesses recorded for a key.
     #[inline]
     pub fn access_count(&self, key: &K) -> Option<usize> {
-        let node_ptr = self.map.get(key)?;
-        unsafe { Some(node_ptr.as_ref().history.len()) }
+        let &id = self.map.get(key)?;
+        Some(self.arena.get(id)?.history.len())
     }
 
     /// Returns the K-distance for a key.
@@ -845,8 +892,8 @@ where
         #[cfg(feature = "metrics")]
         (&self.metrics).record_k_distance_call();
 
-        let result = self.map.get(key).and_then(|node_ptr| unsafe {
-            let node = node_ptr.as_ref();
+        let result = self.map.get(key).and_then(|&id| {
+            let node = self.arena.get(id)?;
             if node.history.len() >= self.k {
                 node.history.front().copied()
             } else {
@@ -868,13 +915,13 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_call();
 
-        let node_ptr = match self.map.get(key) {
-            Some(&ptr) => ptr,
+        let id = match self.map.get(key) {
+            Some(&id) => id,
             None => return false,
         };
-        self.record_access(node_ptr);
-        self.promote_if_needed(node_ptr);
-        self.move_hot_to_front(node_ptr);
+        self.record_access(id);
+        self.promote_if_needed(id);
+        self.move_hot_to_front(id);
 
         #[cfg(feature = "metrics")]
         self.metrics.record_touch_found();
@@ -894,8 +941,12 @@ where
 
         let mut items_with_distances: Vec<(bool, u64)> = Vec::new();
 
-        for node_ptr in self.map.values() {
-            let history = unsafe { &node_ptr.as_ref().history };
+        for &id in self.map.values() {
+            let history = &self
+                .arena
+                .get(id)
+                .expect("k_distance_rank: stale SlotId")
+                .history;
             #[cfg(feature = "metrics")]
             (&self.metrics).record_k_distance_rank_scan_step();
 
@@ -917,8 +968,12 @@ where
             (true, false) => std::cmp::Ordering::Greater,
         });
 
-        let target_node = self.map.get(key)?;
-        let target_history = unsafe { &target_node.as_ref().history };
+        let &target_id = self.map.get(key)?;
+        let target_history = &self
+            .arena
+            .get(target_id)
+            .expect("k_distance_rank: stale target SlotId")
+            .history;
         let target_num_accesses = target_history.len();
         let target_value = if target_num_accesses < self.k {
             (false, target_history.front().copied().unwrap_or(u64::MAX))
@@ -966,31 +1021,35 @@ where
     }
 
     fn recency_rank(&self, key: &K) -> Option<usize> {
-        if !self.map.contains_key(key) {
-            return None;
-        }
-
-        let target_ptr = *self.map.get(key)?;
+        let &target_id = self.map.get(key)?;
         let mut rank = 0;
 
         // Walk hot list head (MRU) to tail
         let mut current = self.hot_head;
-        while let Some(ptr) = current {
-            if ptr == target_ptr {
+        while let Some(id) = current {
+            if id == target_id {
                 return Some(rank);
             }
             rank += 1;
-            current = unsafe { ptr.as_ref().next };
+            current = self
+                .arena
+                .get(id)
+                .expect("recency_rank: stale hot SlotId")
+                .next;
         }
 
         // Walk cold list head to tail
         let mut current = self.cold_head;
-        while let Some(ptr) = current {
-            if ptr == target_ptr {
+        while let Some(id) = current {
+            if id == target_id {
                 return Some(rank);
             }
             rank += 1;
-            current = unsafe { ptr.as_ref().next };
+            current = self
+                .arena
+                .get(id)
+                .expect("recency_rank: stale cold SlotId")
+                .next;
         }
 
         None
@@ -1029,14 +1088,7 @@ where
     }
 }
 
-// Proper cleanup when cache is dropped - free all heap-allocated nodes
-impl<K, V> Drop for LrukCache<K, V> {
-    fn drop(&mut self) {
-        // Free all nodes by traversing both lists
-        while self.pop_cold_tail_inner().is_some() {}
-        while self.pop_hot_tail_inner().is_some() {}
-    }
-}
+// No custom Drop needed: SlotArena drops all live nodes when it goes out of scope.
 
 // Debug implementation
 impl<K, V> std::fmt::Debug for LrukCache<K, V> {
@@ -1057,6 +1109,7 @@ impl<K, V> Default for LrukCache<K, V> {
         LrukCache {
             k: 2,
             capacity: 0,
+            arena: SlotArena::new(),
             map: FxHashMap::default(),
             cold_head: None,
             cold_tail: None,
@@ -1080,6 +1133,7 @@ where
         let mut new = LrukCache {
             k: self.k,
             capacity: self.capacity,
+            arena: SlotArena::with_capacity(self.capacity),
             map: FxHashMap::with_capacity_and_hasher(self.map.len(), Default::default()),
             cold_head: None,
             cold_tail: None,
@@ -1093,51 +1147,67 @@ where
         };
 
         let mut current = self.cold_head;
-        while let Some(ptr) = current {
-            unsafe {
-                let src = ptr.as_ref();
-                let node = Box::new(Node {
-                    prev: new.cold_tail,
-                    next: None,
-                    segment: Segment::Cold,
-                    history: src.history.clone(),
-                    key: src.key.clone(),
-                    value: Arc::clone(&src.value),
-                });
-                let np = NonNull::new_unchecked(Box::into_raw(node));
-                match new.cold_tail {
-                    Some(mut t) => t.as_mut().next = Some(np),
-                    None => new.cold_head = Some(np),
-                }
-                new.cold_tail = Some(np);
-                new.cold_len += 1;
-                new.map.insert(src.key.clone(), np);
-                current = src.next;
+        while let Some(id) = current {
+            let (next_src, history, key, value) = {
+                let src = self.arena.get(id).expect("clone: stale cold SlotId");
+                (
+                    src.next,
+                    src.history.clone(),
+                    src.key.clone(),
+                    Arc::clone(&src.value),
+                )
+            };
+            let prev = new.cold_tail;
+            let new_id = new.arena.insert(Node {
+                prev,
+                next: None,
+                segment: Segment::Cold,
+                history,
+                key: key.clone(),
+                value,
+            });
+            match new.cold_tail {
+                Some(t) => {
+                    new.arena.get_mut(t).expect("clone: stale cold tail").next = Some(new_id);
+                },
+                None => new.cold_head = Some(new_id),
             }
+            new.cold_tail = Some(new_id);
+            new.cold_len += 1;
+            new.map.insert(key, new_id);
+            current = next_src;
         }
 
         let mut current = self.hot_head;
-        while let Some(ptr) = current {
-            unsafe {
-                let src = ptr.as_ref();
-                let node = Box::new(Node {
-                    prev: new.hot_tail,
-                    next: None,
-                    segment: Segment::Hot,
-                    history: src.history.clone(),
-                    key: src.key.clone(),
-                    value: Arc::clone(&src.value),
-                });
-                let np = NonNull::new_unchecked(Box::into_raw(node));
-                match new.hot_tail {
-                    Some(mut t) => t.as_mut().next = Some(np),
-                    None => new.hot_head = Some(np),
-                }
-                new.hot_tail = Some(np);
-                new.hot_len += 1;
-                new.map.insert(src.key.clone(), np);
-                current = src.next;
+        while let Some(id) = current {
+            let (next_src, history, key, value) = {
+                let src = self.arena.get(id).expect("clone: stale hot SlotId");
+                (
+                    src.next,
+                    src.history.clone(),
+                    src.key.clone(),
+                    Arc::clone(&src.value),
+                )
+            };
+            let prev = new.hot_tail;
+            let new_id = new.arena.insert(Node {
+                prev,
+                next: None,
+                segment: Segment::Hot,
+                history,
+                key: key.clone(),
+                value,
+            });
+            match new.hot_tail {
+                Some(t) => {
+                    new.arena.get_mut(t).expect("clone: stale hot tail").next = Some(new_id);
+                },
+                None => new.hot_head = Some(new_id),
             }
+            new.hot_tail = Some(new_id);
+            new.hot_len += 1;
+            new.map.insert(key, new_id);
+            current = next_src;
         }
 
         new
