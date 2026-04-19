@@ -269,23 +269,26 @@ pub struct FixedHistory<const K: usize> {
     cursor: usize,
 }
 
-// Tripwire for `FixedHistory::boxed`. That constructor zero-initialises a
-// heap-allocated `MaybeUninit<Self>` and calls `assume_init`, which is
-// sound only so long as every field of `FixedHistory<K>` accepts the
-// all-zero bit pattern. Today the fields are `[u64; K]`, `usize`, and
-// `usize` — all zero-valid — and `size_of::<FixedHistory<0>>()` is
-// exactly the two `usize` fields (the `[u64; 0]` is a ZST).
-//
-// If this assertion fires, a field has been added or changed. Do NOT
-// just update the arithmetic: re-audit the SAFETY comment on `boxed()`
-// and confirm every field still accepts all-zero. If any new field does
-// not (e.g. `NonZeroUsize`, `&T`, an enum with niches), `boxed()` must
-// switch to a different initialization strategy before this assertion
-// can be updated.
-const _: () = assert!(
-    std::mem::size_of::<FixedHistory<0>>() == 2 * std::mem::size_of::<usize>(),
-    "FixedHistory: field added or changed — re-audit `boxed()` SAFETY before updating this assertion"
-);
+// Tripwire for `FixedHistory::boxed`. The constructor below initialises
+// each field individually through a typed raw pointer, so its SAFETY
+// obligation is narrow — only "`u64` accepts any bit pattern" is relied
+// upon. The remaining failure mode is *forgetting* to initialise a new
+// field after it's added to the struct, which `assume_init` cannot
+// catch on its own. This destructure pattern forces that to be a
+// compile error: adding a field without listing it here fails with
+// "pattern does not mention field ...". If this trips, update the
+// destructure AND add a matching write in `boxed()` — do not just
+// paper over the pattern.
+impl<const K: usize> FixedHistory<K> {
+    #[allow(dead_code)]
+    fn _boxed_field_exhaustiveness_tripwire(s: Self) {
+        let Self {
+            data: _,
+            len: _,
+            cursor: _,
+        } = s;
+    }
+}
 
 // Manual `Debug` impl: only print the logically-live entries in MRU order,
 // not the raw ring buffer. This prevents stale slots (left behind after a
@@ -363,26 +366,38 @@ impl<const K: usize> FixedHistory<K> {
                 "FixedHistory<K>: K exceeds MAX_K (see cachekit::ds::fixed_history::MAX_K)"
             );
         }
-        // `FixedHistory<K>` has three fields: `data: [u64; K]`,
-        // `len: usize`, and `cursor: usize`. All three types accept the
-        // all-zero bit pattern as a valid value (`u64` and `usize` have
-        // no validity invariants; `[u64; K]` inherits that element-wise).
-        // Field layout, ordering, and any padding chosen by the compiler
-        // are therefore irrelevant: every byte inside `size_of::<Self>()`
-        // is either an in-bounds field byte with a zero-valid value, or
-        // a padding byte with no validity requirement. The tripwire
-        // `const _` assertion near the struct definition catches the
-        // most common way to invalidate this argument (adding or
-        // resizing a field) at compile time; adding a field whose type
-        // does not accept all-zero would also require re-auditing the
-        // SAFETY block below.
         let mut uninit: Box<std::mem::MaybeUninit<Self>> = Box::new_uninit();
-        // SAFETY: `uninit` points to `size_of::<Self>()` bytes of
-        // heap-allocated storage. After the `write_bytes` call every
-        // byte in that region is initialised to `0`, which yields a
-        // valid `Self` by the argument above, so `assume_init` is sound.
+        // SAFETY: `uninit` is a unique, properly-aligned heap allocation
+        // of `MaybeUninit<Self>`. Before `assume_init` is called, every
+        // field of `Self` is written exactly once:
+        //
+        // * `data: [u64; K]` — the `let data_ptr: *mut [u64; K]` binding
+        //   has an explicit type annotation. If the field's type ever
+        //   changes (e.g. to `[NonZeroU64; K]`, which is *not* zero-valid),
+        //   that `let` stops compiling, so the `write_bytes(_, 0, 1)`
+        //   cannot silently zero a non-zero-valid element type. `u64`
+        //   accepts any bit pattern, so zeroing `size_of::<[u64; K]>()`
+        //   bytes yields a valid `[u64; K]`.
+        //
+        // * `len` and `cursor` are each written with `0_usize` through
+        //   `addr_of_mut!(...).write(0_usize)`. If either field is
+        //   changed to a type that does not coerce from a `usize`
+        //   literal (e.g. `NonZeroUsize`), the `write(0_usize)` call
+        //   stops compiling, guarding against a silent validity
+        //   regression.
+        //
+        // * Adding a *new* field is caught at compile time by
+        //   `_boxed_field_exhaustiveness_tripwire` above, which fails
+        //   to compile if any field is missing from its destructure
+        //   pattern.
+        //
+        // With all fields initialised, `assume_init` is sound.
         unsafe {
-            std::ptr::write_bytes(uninit.as_mut_ptr(), 0, 1);
+            let p = uninit.as_mut_ptr();
+            let data_ptr: *mut [u64; K] = std::ptr::addr_of_mut!((*p).data);
+            std::ptr::write_bytes(data_ptr, 0u8, 1);
+            std::ptr::addr_of_mut!((*p).len).write(0_usize);
+            std::ptr::addr_of_mut!((*p).cursor).write(0_usize);
             uninit.assume_init()
         }
     }
@@ -627,7 +642,13 @@ impl<const K: usize> FixedHistory<K> {
     /// assert_eq!(history.most_recent(), None);
     /// ```
     pub fn clear(&mut self) {
-        self.data = [0; K];
+        // `self.data.fill(0)` instead of `self.data = [0; K]`. The
+        // assignment form materialises a `[u64; K]` temporary on the
+        // stack before moving it into `self.data`, which defeats the
+        // point of `boxed()` for large `K`: calling `clear()` on a
+        // `Box<FixedHistory<MAX_K>>` would still burst 32 KiB of
+        // stack. `fill` writes through the existing place.
+        self.data.fill(0);
         self.len = 0;
         self.cursor = 0;
     }
@@ -1345,6 +1366,84 @@ mod tests {
             "Debug must not expose cleared timestamps: {rendered}"
         );
         assert!(rendered.contains("len: 0"), "debug output: {rendered}");
+    }
+
+    #[test]
+    fn zero_tail_invariant_holds_partially_filled() {
+        // Invariant (see module docs on `#[derive(Clone, Copy)]`): for a
+        // partially-filled history (`len < K`), every backing slot at
+        // index `>= len` must be zero. This is the property that lets
+        // the derived `Copy` / `Clone` avoid leaking stale timestamps,
+        // so it must not silently regress if `record()` or `clear()`
+        // ever change. Probe the raw array directly — a pure public-API
+        // test cannot distinguish "hidden stale slot" from "slot does
+        // not exist".
+        let mut h = FixedHistory::<8>::new();
+        let sentinels = [
+            0x1111_1111_1111_1111,
+            0x2222_2222_2222_2222,
+            0x3333_3333_3333_3333,
+        ];
+        for ts in sentinels {
+            h.record(ts);
+        }
+
+        assert_eq!(h.len, sentinels.len());
+        for (idx, slot) in h.data.iter().enumerate().skip(h.len) {
+            assert_eq!(
+                *slot, 0,
+                "zero-tail invariant broken at data[{idx}] (len = {})",
+                h.len
+            );
+        }
+    }
+
+    #[test]
+    fn zero_tail_invariant_holds_after_wrap_and_clear() {
+        // After wrap every slot is live, so the invariant is vacuous —
+        // but `clear()` must restore it by zeroing every slot, including
+        // the ones that were overwritten post-wrap.
+        let mut h = FixedHistory::<4>::new();
+        for ts in [
+            0xAAAA_AAAA_AAAA_AAAA,
+            0xBBBB_BBBB_BBBB_BBBB,
+            0xCCCC_CCCC_CCCC_CCCC,
+            0xDDDD_DDDD_DDDD_DDDD,
+            0xEEEE_EEEE_EEEE_EEEE,
+            0xFFFF_FFFF_FFFF_FFFF,
+        ] {
+            h.record(ts);
+        }
+        assert_eq!(h.len, 4, "precondition: history is full");
+
+        h.clear();
+
+        assert_eq!(h.len, 0);
+        for (idx, slot) in h.data.iter().enumerate() {
+            assert_eq!(*slot, 0, "clear() left data[{idx}] = {:#x}", *slot);
+        }
+    }
+
+    #[test]
+    fn copy_does_not_leak_stale_slots_via_raw_bytes() {
+        // `FixedHistory` is `Copy`. The type's documented contract is
+        // that a bitwise copy cannot carry timestamps past the
+        // logically-live region. Serialization / debug dumps that
+        // observe the raw struct bytes (think a future memory-mapped
+        // cache format, `bytemuck`, a panic hook, etc.) must not see
+        // anything the public API would hide.
+        let mut original = FixedHistory::<6>::new();
+        original.record(0xDEAD_BEEF_DEAD_BEEF);
+        original.record(0xCAFE_BABE_CAFE_BABE);
+
+        let snap = original;
+        for (idx, slot) in snap.data.iter().enumerate().skip(snap.len) {
+            assert_eq!(
+                *slot, 0,
+                "Copy leaked non-live slot at data[{idx}] = {:#x}",
+                *slot
+            );
+        }
     }
 
     #[test]
