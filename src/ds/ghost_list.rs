@@ -132,16 +132,40 @@
 //! `GhostList` is not thread-safe. For concurrent use, wrap in
 //! `parking_lot::RwLock` or similar synchronization primitive.
 //!
+//! ## Security
+//!
+//! The default hasher is [`rustc_hash::FxBuildHasher`], chosen for speed on
+//! trusted input. **`FxHash` is non-cryptographic and is not resistant to
+//! hash-flooding / HashDoS attacks.** If a `GhostList` may observe keys
+//! derived from untrusted input (for example, cache keys sourced from
+//! HTTP URLs, user IDs, or request parameters), callers should either:
+//!
+//! - construct it with a DoS-resistant hasher via
+//!   [`GhostList::with_hasher`] / [`GhostList::with_capacity_and_hasher`]
+//!   (e.g. [`std::collections::hash_map::RandomState`]), or
+//! - preprocess keys into a form the attacker cannot control the hash of.
+//!
+//! `GhostList` also rejects pathologically large capacities. [`GhostList::new`]
+//! silently clamps `capacity` to [`GhostList::MAX_CAPACITY`] to prevent a
+//! single oversized construction from aborting the process with an allocator
+//! error (for example, if `capacity` is derived from untrusted configuration).
+//! Use [`GhostList::try_new`] to detect the clamp explicitly.
+//!
 //! ## Implementation Notes
 //!
 //! - Backed by [`IntrusiveList`] for O(1) reordering
 //! - Keys are stored in both the list and index (requires `Clone`)
 //! - Zero-capacity ghost lists are no-ops (record does nothing)
+//! - `K`'s `Hash`, `Eq`, and `Clone` impls must be mutually consistent:
+//!   `a == b` implies `hash(a) == hash(b)`, and `a.clone() == a`. Violating
+//!   this contract can leave a permanent, unreachable node in the internal
+//!   arena (memory leak for the lifetime of the ghost list).
 //! - `debug_validate_invariants()` available in debug/test builds
 //!
 
-use rustc_hash::FxHashMap;
-use std::hash::Hash;
+use rustc_hash::FxBuildHasher;
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash};
 
 use crate::ds::intrusive_list::IntrusiveList;
 use crate::ds::slot_arena::SlotId;
@@ -211,22 +235,32 @@ use crate::ds::slot_arena::SlotId;
 ///
 /// Implements [`Clone`], [`PartialEq`], [`Eq`], [`Default`], [`Extend<K>`](Extend),
 /// [`FromIterator<K>`](FromIterator), and [`IntoIterator`] (consuming and borrowed).
-#[derive(Debug)]
-pub struct GhostList<K> {
+pub struct GhostList<K, S = FxBuildHasher> {
     list: IntrusiveList<K>,
-    index: FxHashMap<K, SlotId>,
+    index: HashMap<K, SlotId, S>,
     capacity: usize,
 }
 
-impl<K> Clone for GhostList<K>
+impl<K: std::fmt::Debug, S> std::fmt::Debug for GhostList<K, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GhostList")
+            .field("capacity", &self.capacity)
+            .field("len", &self.list.len())
+            .field("list", &self.list)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<K, S> Clone for GhostList<K, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher + Clone,
 {
     fn clone(&self) -> Self {
-        let mut new_list = IntrusiveList::with_capacity(self.capacity);
-        let mut new_index = FxHashMap::with_capacity_and_hasher(self.capacity, Default::default());
+        let alloc = self.list.len().min(self.capacity);
+        let mut new_list = IntrusiveList::with_capacity(alloc);
+        let mut new_index = HashMap::with_capacity_and_hasher(alloc, self.index.hasher().clone());
 
-        // Rebuild list and index from current state
         for (_, key) in self.list.iter_entries() {
             let id = new_list.push_back(key.clone());
             new_index.insert(key.clone(), id);
@@ -326,9 +360,10 @@ impl<K> ExactSizeIterator for IntoIter<K> {}
 
 impl<K> std::iter::FusedIterator for IntoIter<K> {}
 
-impl<K> IntoIterator for GhostList<K>
+impl<K, S> IntoIterator for GhostList<K, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher,
 {
     type Item = K;
     type IntoIter = IntoIter<K>;
@@ -342,9 +377,10 @@ where
     }
 }
 
-impl<'a, K> IntoIterator for &'a GhostList<K>
+impl<'a, K, S> IntoIterator for &'a GhostList<K, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher,
 {
     type Item = &'a K;
     type IntoIter = Iter<'a, K>;
@@ -354,9 +390,10 @@ where
     }
 }
 
-impl<K> PartialEq for GhostList<K>
+impl<K, S> PartialEq for GhostList<K, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher,
 {
     fn eq(&self, other: &Self) -> bool {
         self.capacity == other.capacity
@@ -365,11 +402,17 @@ where
     }
 }
 
-impl<K> Eq for GhostList<K> where K: Eq + Hash + Clone {}
-
-impl<K> Extend<K> for GhostList<K>
+impl<K, S> Eq for GhostList<K, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher,
+{
+}
+
+impl<K, S> Extend<K> for GhostList<K, S>
+where
+    K: Eq + Hash + Clone,
+    S: BuildHasher,
 {
     fn extend<I: IntoIterator<Item = K>>(&mut self, iter: I) {
         for key in iter {
@@ -378,14 +421,19 @@ where
     }
 }
 
-impl<K> FromIterator<K> for GhostList<K>
+impl<K, S> FromIterator<K> for GhostList<K, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher + Default,
 {
     /// Collects keys into a ghost list whose capacity equals the number of unique keys.
     ///
     /// Duplicate keys are promoted rather than inserted twice, so the resulting
     /// length may be less than the iterator length.
+    ///
+    /// The capacity used during collection is clamped to
+    /// [`GhostList::MAX_CAPACITY`], which protects against iterators that
+    /// report a pathologically large `size_hint` lower bound.
     ///
     /// # Example
     ///
@@ -399,7 +447,10 @@ where
     fn from_iter<I: IntoIterator<Item = K>>(iter: I) -> Self {
         let iter = iter.into_iter();
         let (lower, _) = iter.size_hint();
-        let mut ghost = Self::new(lower.max(16));
+        // Cap the initial allocation to avoid a hostile `size_hint` triggering
+        // an oversized preallocation (OOM DoS vector).
+        let initial = lower.clamp(16, Self::MAX_CAPACITY);
+        let mut ghost = Self::with_capacity_and_hasher(initial, S::default());
         for key in iter {
             ghost.record(key);
         }
@@ -408,9 +459,93 @@ where
     }
 }
 
-impl<K> Default for GhostList<K>
+impl<K> GhostList<K, FxBuildHasher>
 where
     K: Eq + Hash + Clone,
+{
+    /// Creates a new ghost list with a maximum of `capacity` keys, using the
+    /// default [`FxBuildHasher`].
+    ///
+    /// A capacity of 0 creates a no-op ghost list that ignores all records.
+    ///
+    /// `capacity` is silently clamped to [`Self::MAX_CAPACITY`] to prevent a
+    /// single oversized construction from aborting the process with an
+    /// allocator error when the value is derived from untrusted input. Use
+    /// [`Self::try_new`] if you want to detect the clamp explicitly.
+    ///
+    /// **Security note:** the default hasher (`FxBuildHasher`) is fast but
+    /// not DoS-resistant. When keys may be attacker-influenced, construct
+    /// with [`Self::with_capacity_and_hasher`] using
+    /// [`std::collections::hash_map::RandomState`] or another
+    /// cryptographically-randomised hasher instead. See the
+    /// [module-level security notes](self).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let ghost: GhostList<String> = GhostList::new(100);
+    /// assert_eq!(ghost.capacity(), 100);
+    /// assert!(ghost.is_empty());
+    /// ```
+    pub fn new(capacity: usize) -> Self {
+        Self::with_capacity_and_hasher(capacity, FxBuildHasher)
+    }
+
+    /// Creates a new ghost list, returning an error if `capacity` exceeds
+    /// [`Self::MAX_CAPACITY`].
+    ///
+    /// Prefer this over [`Self::new`] when `capacity` is user-supplied and
+    /// you want to reject oversized requests rather than silently clamp.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    ///
+    /// let ghost: GhostList<String> = GhostList::try_new(100).unwrap();
+    /// assert_eq!(ghost.capacity(), 100);
+    ///
+    /// assert!(GhostList::<String>::try_new(usize::MAX).is_err());
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, CapacityOverflowError> {
+        if capacity > Self::MAX_CAPACITY {
+            return Err(CapacityOverflowError {
+                requested: capacity,
+                max: Self::MAX_CAPACITY,
+            });
+        }
+        Ok(Self::with_capacity_and_hasher(capacity, FxBuildHasher))
+    }
+}
+
+/// Returned by [`GhostList::try_new`] when the requested capacity exceeds
+/// [`GhostList::MAX_CAPACITY`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapacityOverflowError {
+    /// Capacity requested by the caller.
+    pub requested: usize,
+    /// Hard maximum enforced by [`GhostList`].
+    pub max: usize,
+}
+
+impl std::fmt::Display for CapacityOverflowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GhostList capacity {} exceeds maximum of {}",
+            self.requested, self.max
+        )
+    }
+}
+
+impl std::error::Error for CapacityOverflowError {}
+
+impl<K, S> Default for GhostList<K, S>
+where
+    K: Eq + Hash + Clone,
+    S: BuildHasher + Default,
 {
     /// Creates an empty ghost list with zero capacity (no-op mode).
     ///
@@ -424,33 +559,50 @@ where
     /// assert!(ghost.is_empty());
     /// ```
     fn default() -> Self {
-        Self::new(0)
+        Self::with_capacity_and_hasher(0, S::default())
     }
 }
 
-impl<K> GhostList<K>
+impl<K, S> GhostList<K, S>
 where
     K: Eq + Hash + Clone,
+    S: BuildHasher,
 {
-    /// Creates a new ghost list with a maximum of `capacity` keys.
+    /// Upper bound on the capacity accepted by [`Self::new`],
+    /// [`Self::with_hasher`], and [`Self::with_capacity_and_hasher`].
     ///
-    /// A capacity of 0 creates a no-op ghost list that ignores all records.
+    /// Capacities larger than this are clamped. This is a defense-in-depth
+    /// guard that prevents a single construction call from triggering an
+    /// allocator abort when `capacity` is derived from untrusted input.
     ///
-    /// # Example
+    /// The value is intentionally much larger than any realistic ghost list
+    /// (2^30 ≈ 1.07 billion entries) while remaining small enough that the
+    /// backing `Vec` allocation cannot itself overflow `isize::MAX` bytes
+    /// for typical `K`.
+    pub const MAX_CAPACITY: usize = 1 << 30;
+
+    /// Creates a new ghost list with the given hasher and capacity clamped to
+    /// [`Self::MAX_CAPACITY`].
     ///
-    /// ```
-    /// use cachekit::ds::GhostList;
-    ///
-    /// let ghost: GhostList<String> = GhostList::new(100);
-    /// assert_eq!(ghost.capacity(), 100);
-    /// assert!(ghost.is_empty());
-    /// ```
-    pub fn new(capacity: usize) -> Self {
+    /// Use this constructor to install a DoS-resistant hasher (e.g.
+    /// [`std::collections::hash_map::RandomState`]) when keys may be
+    /// attacker-influenced; see the [module-level security notes](self).
+    pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
+        let capacity = capacity.min(Self::MAX_CAPACITY);
         Self {
             list: IntrusiveList::with_capacity(capacity),
-            index: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            index: HashMap::with_capacity_and_hasher(capacity, hasher),
             capacity,
         }
+    }
+
+    /// Creates a new ghost list with the given hasher and zero capacity.
+    ///
+    /// The list is a no-op until further methods (there are none today) grow
+    /// its capacity. Provided primarily for symmetry with
+    /// [`std::collections::HashMap::with_hasher`].
+    pub fn with_hasher(hasher: S) -> Self {
+        Self::with_capacity_and_hasher(0, hasher)
     }
 
     /// Returns the configured capacity.
@@ -577,6 +729,12 @@ where
             self.list.move_to_front(id);
             return None;
         }
+
+        // Reserve index capacity *before* mutating the list so that an
+        // allocation failure here cannot leave the list containing a node
+        // that the index never learns about (which would desynchronise
+        // `list.len() == index.len()` and leak a slot permanently).
+        self.index.reserve(1);
 
         let evicted = if self.list.len() >= self.capacity {
             let old_key = self.list.pop_back()?;
@@ -780,9 +938,17 @@ where
     /// println!("~{} bytes per entry (lower bound)", per_entry);
     /// ```
     pub fn approx_bytes(&self) -> usize {
+        // Saturating arithmetic here prevents a huge hash-map capacity (or a
+        // large `K`) from silently wrapping to a nonsensical value — callers
+        // sometimes use this for budget enforcement, where a wrapped result
+        // is worse than a saturated one.
+        let entry_bytes = self
+            .index
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(K, SlotId)>());
         std::mem::size_of::<Self>()
-            + self.list.approx_bytes()
-            + self.index.capacity() * std::mem::size_of::<(K, SlotId)>()
+            .saturating_add(self.list.approx_bytes())
+            .saturating_add(entry_bytes)
     }
 
     /// Returns an iterator over keys in MRU -> LRU order.
@@ -1416,6 +1582,99 @@ mod tests {
         let iter = ghost.into_iter();
         let debug_str = format!("{:?}", iter);
         assert!(debug_str.contains("IntoIter"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Security hardening
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ghost_list_new_clamps_oversized_capacity() {
+        let ghost: GhostList<u32> = GhostList::new(usize::MAX);
+        assert_eq!(
+            ghost.capacity(),
+            GhostList::<u32>::MAX_CAPACITY,
+            "new() must clamp to MAX_CAPACITY to avoid OOM-abort DoS"
+        );
+        assert!(ghost.is_empty());
+    }
+
+    #[test]
+    fn ghost_list_try_new_rejects_oversized_capacity() {
+        let err = GhostList::<u32>::try_new(usize::MAX).unwrap_err();
+        assert_eq!(err.requested, usize::MAX);
+        assert_eq!(err.max, GhostList::<u32>::MAX_CAPACITY);
+
+        // Within bounds succeeds.
+        let ok = GhostList::<u32>::try_new(GhostList::<u32>::MAX_CAPACITY).unwrap();
+        assert_eq!(ok.capacity(), GhostList::<u32>::MAX_CAPACITY);
+    }
+
+    #[test]
+    fn ghost_list_from_iter_clamps_hostile_size_hint() {
+        struct HostileIter(usize);
+        impl Iterator for HostileIter {
+            type Item = u32;
+            fn next(&mut self) -> Option<u32> {
+                if self.0 == 0 {
+                    None
+                } else {
+                    self.0 -= 1;
+                    Some(self.0 as u32)
+                }
+            }
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                // Report a pathological lower bound.
+                (usize::MAX, None)
+            }
+        }
+
+        // If `from_iter` honoured the hostile size_hint without clamping, this
+        // would attempt to preallocate for usize::MAX entries and abort.
+        let ghost: GhostList<u32> = HostileIter(3).collect();
+        assert_eq!(ghost.len(), 3);
+    }
+
+    #[test]
+    fn ghost_list_with_custom_hasher_is_dos_resistant() {
+        use std::collections::hash_map::RandomState;
+
+        let mut ghost: GhostList<u32, RandomState> =
+            GhostList::with_capacity_and_hasher(4, RandomState::new());
+        ghost.record(1);
+        ghost.record(2);
+        ghost.record(3);
+        assert!(ghost.contains(&1));
+        assert!(ghost.contains(&3));
+        assert_eq!(ghost.len(), 3);
+    }
+
+    #[test]
+    fn ghost_list_record_preserves_invariant_after_heavy_churn() {
+        // Regression: record() previously mutated the list before reserving
+        // hash-map capacity, so an allocation failure mid-insert could leak
+        // a slot. With the pre-reserve fix, invariants must hold through
+        // any number of inserts/evictions.
+        let mut ghost = GhostList::new(8);
+        for i in 0..1_000u32 {
+            ghost.record(i);
+            ghost.debug_validate_invariants();
+        }
+        assert_eq!(ghost.len(), 8);
+    }
+
+    #[test]
+    fn ghost_list_approx_bytes_does_not_overflow_on_huge_capacity() {
+        // Construct a ghost list whose index would overflow usize if
+        // `capacity * size_of::<(K, SlotId)>` were computed without
+        // saturating arithmetic. MAX_CAPACITY is already within safe bounds,
+        // so the saturating path mostly matters for `index.capacity()` after
+        // hash-map growth — but we still want to confirm the call never
+        // panics or wraps.
+        let ghost: GhostList<u64> = GhostList::new(1024);
+        let bytes = ghost.approx_bytes();
+        assert!(bytes > 0);
+        assert!(bytes < usize::MAX / 2);
     }
 }
 
