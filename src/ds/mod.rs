@@ -23,7 +23,7 @@ pub use frequency_buckets::{
 #[cfg(feature = "concurrency")]
 pub use frequency_buckets::{ShardedFrequencyBucketEntryMeta, ShardedFrequencyBuckets};
 pub use ghost_list::GhostList;
-pub use interner::KeyInterner;
+pub use interner::{InternerError, KeyInterner};
 #[cfg(feature = "concurrency")]
 pub use intrusive_list::ConcurrentIntrusiveList;
 pub use intrusive_list::IntrusiveList;
