@@ -27,7 +27,10 @@ pub use interner::KeyInterner;
 #[cfg(feature = "concurrency")]
 pub use intrusive_list::ConcurrentIntrusiveList;
 pub use intrusive_list::IntrusiveList;
-pub use lazy_heap::{IntoIter as LazyHeapIntoIter, Iter as LazyHeapIter, LazyMinHeap};
+pub use lazy_heap::{
+    IntoIter as LazyHeapIntoIter, Iter as LazyHeapIter, LazyMinHeap, LazyMinHeapError,
+    MAX_CAPACITY as LAZY_HEAP_MAX_CAPACITY,
+};
 pub use shard::ShardSelector;
 #[cfg(feature = "concurrency")]
 pub use slot_arena::{ConcurrentSlotArena, ShardedSlotArena, ShardedSlotId};
