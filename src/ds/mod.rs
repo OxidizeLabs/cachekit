@@ -31,7 +31,7 @@ pub use lazy_heap::{
     IntoIter as LazyHeapIntoIter, Iter as LazyHeapIter, LazyMinHeap, LazyMinHeapError,
     MAX_CAPACITY as LAZY_HEAP_MAX_CAPACITY,
 };
-pub use shard::ShardSelector;
+pub use shard::{MAX_SHARDS as SHARD_SELECTOR_MAX_SHARDS, ShardSelector};
 #[cfg(feature = "concurrency")]
 pub use slot_arena::{ConcurrentSlotArena, ShardedSlotArena, ShardedSlotId};
 pub use slot_arena::{
