@@ -156,10 +156,18 @@
 //!   (e.g. a coarse monotonic counter). If an adversary can influence the
 //!   timestamp stream — for example via a wall-clock that can jump
 //!   backwards, or a user-controlled counter — they can manipulate
-//!   LRU-K-style eviction decisions built on top of this type.
+//!   LRU-K-style eviction decisions built on top of this type. See
+//!   [`FixedHistory::record`] for the full trust boundary.
 //! - **Capacity bound.** `K` is capped at [`MAX_K`] (see [`FixedHistory::new`]).
 //!   This keeps the inline `[u64; K]` array from triggering stack exhaustion
-//!   if `K` is ever influenced by code an attacker controls.
+//!   if `K` is ever influenced by code an attacker controls. For large `K`
+//!   on restricted stacks, use [`FixedHistory::boxed`] to heap-allocate
+//!   without materialising the array on the stack.
+//! - **No stale-slot disclosure.** [`FixedHistory::clear`] zeroes the
+//!   backing array in addition to resetting the cursor and length, and the
+//!   manual `Debug` impl only prints logically-live entries in MRU order.
+//!   Overwritten / cleared timestamps are not observable through the public
+//!   API, `Debug` output, or panic messages.
 //! - **Not constant-time.** [`PartialEq`] and [`std::hash::Hash`] iterate
 //!   only as far as the shared prefix, so they are not suitable for
 //!   comparing data that must remain secret. `FixedHistory` is intended for
@@ -167,7 +175,8 @@
 //!
 //! ## Implementation Notes
 //!
-//! - Uses a fixed-size array (no heap allocation)
+//! - Uses a fixed-size inline array by default (no heap allocation);
+//!   [`FixedHistory::boxed`] is provided for heap-allocating large `K`.
 //! - Const generic `K` determines history depth at compile time
 //! - Zero-size history (`K=0`) is a no-op
 //! - Construction is bounded by [`MAX_K`]; exceeding it is a compile-time error
@@ -239,11 +248,25 @@ pub const MAX_K: usize = 4096;
 ///
 /// assert_eq!(window_duration, 160);  // 5 accesses over 160 time units
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct FixedHistory<const K: usize> {
     data: [u64; K],
     len: usize,
     cursor: usize,
+}
+
+// Manual `Debug` impl: only print the logically-live entries in MRU order,
+// not the raw ring buffer. This prevents stale slots (left behind after a
+// `clear()` or a wrap) from appearing in panic messages / logs, which would
+// otherwise leak past access patterns that the public API already hides.
+impl<const K: usize> std::fmt::Debug for FixedHistory<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixedHistory")
+            .field("capacity", &K)
+            .field("len", &self.len)
+            .field("mru", &self.to_vec_mru())
+            .finish()
+    }
 }
 
 impl<const K: usize> FixedHistory<K> {
@@ -276,6 +299,51 @@ impl<const K: usize> FixedHistory<K> {
             data: [0; K],
             len: 0,
             cursor: 0,
+        }
+    }
+
+    /// Creates an empty history on the heap without materialising the
+    /// `[u64; K]` array on the stack.
+    ///
+    /// For small `K` this is equivalent to `Box::new(Self::new())` and
+    /// slightly slower. For large `K` (up to [`MAX_K`]) the difference is
+    /// significant: `Self::new()` returns `Self` by value, and a naive
+    /// `Box::new(Self::new())` may materialise the 32 KiB array on the
+    /// stack before moving it to the heap. That stack copy is an
+    /// availability concern on restricted stacks (async tasks on small
+    /// runtimes, threads created with a custom stack size, `no_std`
+    /// targets). `boxed()` sidesteps this by zero-initialising the heap
+    /// allocation in place.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FixedHistory;
+    ///
+    /// let mut history: Box<FixedHistory<4096>> = FixedHistory::boxed();
+    /// history.record(100);
+    /// assert_eq!(history.most_recent(), Some(100));
+    /// ```
+    pub fn boxed() -> Box<Self> {
+        const {
+            assert!(
+                K <= MAX_K,
+                "FixedHistory<K>: K exceeds MAX_K (see cachekit::ds::fixed_history::MAX_K)"
+            );
+        }
+        // `FixedHistory` is `[u64; K]` + two `usize`s. Its canonical empty
+        // state has every byte set to zero (`data = [0; K]`, `len = 0`,
+        // `cursor = 0`), and it contains no padding, pointers, references,
+        // or other types for which the all-zero bit pattern is invalid.
+        // Writing zeros into a heap-allocated `MaybeUninit<Self>` therefore
+        // produces a valid `Self` without ever touching the stack.
+        let mut uninit: Box<std::mem::MaybeUninit<Self>> = Box::new_uninit();
+        // SAFETY: `uninit` points to `size_of::<Self>()` bytes of
+        // heap-allocated storage. Writing zeros into all of them yields a
+        // valid `Self` for the reasons above, so `assume_init` is sound.
+        unsafe {
+            std::ptr::write_bytes(uninit.as_mut_ptr(), 0, 1);
+            uninit.assume_init()
         }
     }
 
@@ -334,6 +402,27 @@ impl<const K: usize> FixedHistory<K> {
     }
 
     /// Records a timestamp, overwriting the oldest if the history is full.
+    ///
+    /// # Trust boundary
+    ///
+    /// `record` does **not** validate `timestamp` — it accepts any `u64`
+    /// and treats the most recently recorded value as "now" for the
+    /// purposes of LRU-K ordering. Callers are responsible for supplying
+    /// timestamps from a trusted source, typically a monotonic counter
+    /// incremented on each cache access. If an attacker can influence the
+    /// timestamp stream (for example, because it is derived from a
+    /// wall-clock that can jump, a user-supplied header, or any
+    /// value not under the cache's exclusive control) they can:
+    ///
+    /// - Pin victim entries in cache forever by recording a far-future
+    ///   timestamp, triggering eviction of legitimate entries (cache
+    ///   pollution / DoS).
+    /// - Make victim entries look "cold" by recording stale timestamps,
+    ///   evicting hot entries they do not own (targeted eviction / cache
+    ///   side channel).
+    ///
+    /// Store this value internally; never route it directly from network
+    /// input.
     ///
     /// # Example
     ///
@@ -466,6 +555,12 @@ impl<const K: usize> FixedHistory<K> {
 
     /// Clears the history and resets cursor/length.
     ///
+    /// Also zeroes the backing array so that previously recorded timestamps
+    /// cannot be observed through `Debug` output, core dumps, or accidental
+    /// raw-byte access. This is a minor hardening measure — the public API
+    /// already respects `len` and never returns stale slots — but it removes
+    /// a class of passive information-disclosure hazards.
+    ///
     /// # Example
     ///
     /// ```
@@ -480,6 +575,7 @@ impl<const K: usize> FixedHistory<K> {
     /// assert_eq!(history.most_recent(), None);
     /// ```
     pub fn clear(&mut self) {
+        self.data = [0; K];
         self.len = 0;
         self.cursor = 0;
     }
@@ -563,6 +659,17 @@ impl<const K: usize> Default for FixedHistory<K> {
 // (raw derive would flag stale slots as differences)
 // ---------------------------------------------------------------------------
 
+/// Compares logical content in MRU order, ignoring stale slots in the
+/// backing array.
+///
+/// # Security
+///
+/// This implementation is **not constant-time**: it short-circuits on the
+/// first differing MRU entry, leaking the length of the matching prefix
+/// through timing. `FixedHistory` is intended for access-timestamp
+/// bookkeeping and is not suitable for comparing values that must remain
+/// secret. Do not use it as a `HashMap` key whose timestamps are derived
+/// from untrusted input without a DoS-resistant hasher (see `Hash` below).
 impl<const K: usize> PartialEq for FixedHistory<K> {
     fn eq(&self, other: &Self) -> bool {
         if self.len != other.len {
@@ -579,6 +686,19 @@ impl<const K: usize> PartialEq for FixedHistory<K> {
 
 impl<const K: usize> Eq for FixedHistory<K> {}
 
+/// Hashes logical content in MRU order so histories with the same timestamps
+/// but different internal cursor positions hash equal (consistent with
+/// [`PartialEq`]).
+///
+/// # Security
+///
+/// The standard-library default hasher is randomised and DoS-resistant,
+/// but this trait will cooperate with any hasher chosen by the caller.
+/// If `FixedHistory` values are used as keys in a map where timestamps
+/// can be influenced by an adversary (for example, wall-clock readings
+/// from untrusted input), pair this type with a DoS-resistant hasher
+/// rather than a fast non-cryptographic one. The contents themselves are
+/// not secret-equivalent — do not rely on hashing to hide timestamps.
 impl<const K: usize> std::hash::Hash for FixedHistory<K> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.len.hash(state);
@@ -605,6 +725,12 @@ impl<'a, const K: usize> Iterator for Iter<'a, K> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // The `?` must come *before* the increment: once the iterator is
+        // exhausted (pos > len), `kth_most_recent` returns `None` and we
+        // return without touching `pos`. This keeps `pos` bounded by
+        // `len + 1 <= K + 1 <= MAX_K + 1`, so the `+= 1` below cannot
+        // overflow no matter how many times `next()` is called after
+        // exhaustion. Do not reorder.
         let val = self.history.kth_most_recent(self.pos)?;
         self.pos += 1;
         Some(val)
@@ -631,6 +757,9 @@ impl<const K: usize> Iterator for IntoIter<K> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // See `Iter::next` for the invariant justifying `+= 1`: the `?`
+        // must remain before the increment so `pos` stays bounded once
+        // exhausted.
         let val = self.history.kth_most_recent(self.pos)?;
         self.pos += 1;
         Some(val)
@@ -1092,6 +1221,99 @@ mod tests {
         assert_eq!(h.most_recent(), Some((MAX_K as u64) - 1));
         assert_eq!(h.kth_most_recent(MAX_K), Some(0));
         assert_eq!(h.kth_most_recent(MAX_K + 1), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Stale-slot hardening tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clear_zeroes_backing_array() {
+        // After clear(), no sentinel previously-recorded timestamp should
+        // remain in memory where `Debug` / core dumps could observe it.
+        let mut h = FixedHistory::<4>::new();
+        h.record(0xDEAD_BEEF);
+        h.record(0xCAFE_BABE);
+        h.record(0xFEED_FACE);
+
+        h.clear();
+
+        // Public API already hid them, but check the raw array directly.
+        for slot in h.data.iter() {
+            assert_eq!(*slot, 0, "clear() must zero the backing array");
+        }
+    }
+
+    #[test]
+    fn debug_output_hides_stale_slots_after_wrap() {
+        // Record more than K entries so the ring wraps, then make sure
+        // `Debug` output does not mention the overwritten timestamp.
+        let mut h = FixedHistory::<2>::new();
+        h.record(0x1111_1111_1111_1111);
+        h.record(0x2222_2222_2222_2222);
+        h.record(0x3333_3333_3333_3333); // overwrites 0x1111...
+
+        let rendered = format!("{h:?}");
+        assert!(
+            !rendered.contains("1111111111111111"),
+            "Debug must not expose overwritten timestamp: {rendered}"
+        );
+        // Live entries should still appear.
+        assert!(rendered.contains("len: 2"), "debug output: {rendered}");
+    }
+
+    #[test]
+    fn debug_output_hides_stale_slots_after_clear() {
+        let mut h = FixedHistory::<3>::new();
+        h.record(0xAAAA_AAAA_AAAA_AAAA);
+        h.record(0xBBBB_BBBB_BBBB_BBBB);
+
+        h.clear();
+
+        let rendered = format!("{h:?}");
+        assert!(
+            !rendered.contains("AAAA") && !rendered.contains("aaaa"),
+            "Debug must not expose cleared timestamps: {rendered}"
+        );
+        assert!(rendered.contains("len: 0"), "debug output: {rendered}");
+    }
+
+    #[test]
+    fn boxed_returns_empty_history() {
+        let h: Box<FixedHistory<8>> = FixedHistory::boxed();
+        assert!(h.is_empty());
+        assert_eq!(h.len(), 0);
+        assert_eq!(h.capacity(), 8);
+        assert_eq!(h.most_recent(), None);
+        h.debug_validate_invariants();
+    }
+
+    #[test]
+    fn boxed_is_usable_like_new() {
+        let mut h: Box<FixedHistory<4>> = FixedHistory::boxed();
+        h.record(10);
+        h.record(20);
+        h.record(30);
+        assert_eq!(h.most_recent(), Some(30));
+        assert_eq!(h.to_vec_mru(), vec![30, 20, 10]);
+    }
+
+    #[test]
+    fn boxed_at_max_k_succeeds() {
+        // The whole point of `boxed()`: allocate 32 KiB of ring buffer
+        // without touching the stack.
+        let mut h: Box<FixedHistory<{ MAX_K }>> = FixedHistory::boxed();
+        h.record(42);
+        assert_eq!(h.most_recent(), Some(42));
+        assert_eq!(h.len(), 1);
+    }
+
+    #[test]
+    fn boxed_at_zero_capacity_is_noop() {
+        let mut h: Box<FixedHistory<0>> = FixedHistory::boxed();
+        h.record(1);
+        assert!(h.is_empty());
+        assert_eq!(h.most_recent(), None);
     }
 }
 
