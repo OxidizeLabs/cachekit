@@ -49,7 +49,7 @@
 //! | `with_capacity`         | Create an empty interner with reserved space | O(1)       |
 //! | `with_hasher`           | Create an empty interner with a custom hasher| O(1)       |
 //! | `intern`                | Get or create handle for key                 | O(1) avg   |
-//! | `try_intern`            | Fallible [`intern`], respects `MAX_CAPACITY` | O(1) avg   |
+//! | `try_intern`            | Fallible `intern`, respects `MAX_CAPACITY`   | O(1) avg   |
 //! | `get_handle`            | Lookup handle without inserting              | O(1) avg   |
 //! | `get_handle_borrowed`   | Lookup handle using a borrowed key form      | O(1) avg   |
 //! | `resolve`               | Convert handle back to key reference         | O(1)       |
