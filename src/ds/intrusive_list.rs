@@ -211,6 +211,28 @@ pub struct IntrusiveList<T> {
 }
 
 impl<T> IntrusiveList<T> {
+    /// Worst-case heap bytes consumed per filled slot, excluding the
+    /// fixed-size outer struct.
+    ///
+    /// This is the exact compile-time sum of the per-slot footprint of
+    /// the backing [`SlotArena`]:
+    ///
+    /// - `size_of::<Option<Node<T>>>()` for the payload (`T` plus the
+    ///   prev/next/epoch link overhead and the arena's live/empty
+    ///   discriminant, including alignment padding).
+    /// - `size_of::<u32>()` for the generation counter.
+    /// - `size_of::<usize>()` for a free-list entry (one per slot in the
+    ///   worst case, when every slot has been reused).
+    ///
+    /// Intended for callers that need to budget a hard upper bound on a
+    /// list's memory footprint at a given capacity (e.g. when clamping
+    /// untrusted capacity values to a byte budget). Because it is derived
+    /// directly from the real internal types, it stays correct under any
+    /// future change to the node layout.
+    pub const BYTES_PER_ENTRY: usize = std::mem::size_of::<Option<Node<T>>>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<usize>();
+
     /// Creates an empty list.
     ///
     /// # Example

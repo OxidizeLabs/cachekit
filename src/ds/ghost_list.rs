@@ -520,18 +520,13 @@ where
     /// assert!(GhostList::<String>::try_new(usize::MAX).is_err());
     /// ```
     pub fn try_new(capacity: usize) -> Result<Self, CapacityOverflowError> {
-        if capacity > Self::MAX_CAPACITY {
-            return Err(CapacityOverflowError {
-                requested: capacity,
-                max: Self::MAX_CAPACITY,
-            });
-        }
-        Ok(Self::with_capacity_and_hasher(capacity, FxBuildHasher))
+        Self::try_with_capacity_and_hasher(capacity, FxBuildHasher)
     }
 }
 
-/// Returned by [`GhostList::try_new`] when the requested capacity exceeds
-/// [`GhostList::MAX_CAPACITY`].
+/// Returned by [`GhostList::try_new`] and
+/// [`GhostList::try_with_capacity_and_hasher`] when the requested capacity
+/// exceeds [`GhostList::MAX_CAPACITY`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapacityOverflowError {
     /// Capacity requested by the caller.
@@ -593,10 +588,14 @@ where
     ///
     /// The computation is:
     ///
-    /// - A per-entry byte cost is estimated conservatively as
-    ///   `size_of::<K>() + 64`, covering the intrusive-list node, hash-map
-    ///   bucket, control bytes, alignment padding, and the fact that `K`
-    ///   is stored in both the list and the index.
+    /// - A per-entry byte cost is assembled from two sources whose values
+    ///   are exact at compile time for the chosen `K`:
+    ///   - the intrusive-list arena's [`IntrusiveList::BYTES_PER_ENTRY`],
+    ///     which bundles `Option<Node<K>>`, the per-slot generation, and a
+    ///     worst-case free-list entry; and
+    ///   - the hash-map's per-bucket cost of `size_of::<(K, SlotId)>() + 1`
+    ///     (one control byte per bucket), multiplied by a worst-case
+    ///     [load-factor inflation](#load-factor-multiplier) of `3`.
     /// - A byte budget is chosen as the smaller of:
     ///   - 16 GiB (a hard cap on any single construction), and
     ///   - `isize::MAX / 4` (leaving a 4× safety margin on smaller
@@ -604,22 +603,34 @@ where
     ///     transient rehash-time doubling all fit in address space).
     /// - `MAX_CAPACITY` is `byte_budget / per_entry`.
     ///
-    /// Worked examples (64-bit target):
+    /// <a id="load-factor-multiplier"></a>
+    /// **Load-factor multiplier.** `hashbrown` rounds the bucket count up
+    /// to the next power of two sized for a 7/8 target load factor, so the
+    /// backing allocation at capacity `N` can be as large as
+    /// `(N * 8 / 7 + 1).next_power_of_two()` buckets. The worst-case
+    /// inflation ratio is `16/7 ≈ 2.29` (achieved when `N * 8 / 7`
+    /// narrowly exceeds a power of two); we round that up to `3` so the
+    /// arithmetic stays integer and the clamp remains conservative against
+    /// future load-factor changes in `hashbrown`.
     ///
-    /// - `K = u32`   → per-entry ≈ 68 B → `MAX_CAPACITY` ≈ 252 M.
-    /// - `K = [u8; 4096]` → per-entry ≈ 4160 B → `MAX_CAPACITY` ≈ 4.1 M.
+    /// Worked examples (64-bit target, 16 GiB budget):
     ///
-    /// Worked examples (32-bit target, `isize::MAX / 4` ≈ 512 MiB):
-    ///
-    /// - `K = u32`   → `MAX_CAPACITY` ≈ 7.9 M.
+    /// - `K = u32`   → `MAX_CAPACITY` ≈ 135 M.
+    /// - `K = [u8; 4096]` → `MAX_CAPACITY` ≈ 1.04 M.
     pub const MAX_CAPACITY: usize = {
-        // Per-entry byte cost, rounded up. 64 bytes covers:
-        //   - ~24 bytes of `Node<K>` overhead in the intrusive list arena
-        //     (prev/next `Option<SlotId>` plus `epoch: u64`)
-        //   - ~16 bytes of hash-map bucket + control byte overhead
-        //   - slack for alignment padding and duplicate key storage
-        //     (`K` is stored in both the list and the index).
-        let per_entry = std::mem::size_of::<K>().saturating_add(64);
+        // `hashbrown` rounds bucket counts up to a power of two sized for a
+        // 7/8 load factor. Worst-case blowup is 16/7; round to 3 so the
+        // arithmetic is exact and the clamp stays conservative.
+        const HASHMAP_LOAD_FACTOR_MULTIPLIER: usize = 3;
+
+        // Exact, compile-time-known per-entry footprint of each container.
+        // These are sourced directly from the backing types' layouts so
+        // they track any future change to `Node<K>`, `SlotId`, or
+        // `hashbrown`'s bucket format.
+        let list_per_entry = IntrusiveList::<K>::BYTES_PER_ENTRY;
+        let bucket_bytes = std::mem::size_of::<(K, SlotId)>().saturating_add(1);
+        let index_per_entry = bucket_bytes.saturating_mul(HASHMAP_LOAD_FACTOR_MULTIPLIER);
+        let per_entry = list_per_entry.saturating_add(index_per_entry);
 
         // Hard ceiling on any single construction: 16 GiB. Anything larger
         // than this is almost certainly a misconfiguration or adversarial
@@ -661,6 +672,47 @@ where
             index: HashMap::with_capacity_and_hasher(capacity, hasher),
             capacity,
         }
+    }
+
+    /// Creates a new ghost list with the given hasher, returning an error if
+    /// `capacity` exceeds [`Self::MAX_CAPACITY`].
+    ///
+    /// This is the fallible counterpart to [`Self::with_capacity_and_hasher`]
+    /// and the hasher-aware counterpart to [`Self::try_new`]. Prefer it when
+    /// `capacity` is user-supplied and you want to reject oversized requests
+    /// rather than silently clamp — particularly in combination with a
+    /// DoS-resistant hasher, where the caller is already handling untrusted
+    /// input.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::GhostList;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let ghost: GhostList<String, RandomState> =
+    ///     GhostList::try_with_capacity_and_hasher(100, RandomState::new()).unwrap();
+    /// assert_eq!(ghost.capacity(), 100);
+    ///
+    /// assert!(
+    ///     GhostList::<String, RandomState>::try_with_capacity_and_hasher(
+    ///         usize::MAX,
+    ///         RandomState::new(),
+    ///     )
+    ///     .is_err()
+    /// );
+    /// ```
+    pub fn try_with_capacity_and_hasher(
+        capacity: usize,
+        hasher: S,
+    ) -> Result<Self, CapacityOverflowError> {
+        if capacity > Self::MAX_CAPACITY {
+            return Err(CapacityOverflowError {
+                requested: capacity,
+                max: Self::MAX_CAPACITY,
+            });
+        }
+        Ok(Self::with_capacity_and_hasher(capacity, hasher))
     }
 
     /// Creates a new ghost list with the given hasher and zero capacity.
@@ -1712,19 +1764,44 @@ mod tests {
 
     #[test]
     fn ghost_list_max_capacity_respects_byte_budget() {
-        // On all supported targets, MAX_CAPACITY * per_entry_bytes must fit
-        // comfortably inside `isize::MAX`. If this assertion fails the clamp
-        // has regressed and `new(usize::MAX)` could abort the process during
-        // Vec::with_capacity on at least one target.
-        let max = GhostList::<u32>::MAX_CAPACITY;
-        let per_entry = std::mem::size_of::<u32>() + 64;
-        let budget = (isize::MAX as usize) / 4;
-        assert!(
-            max.checked_mul(per_entry)
-                .map(|b| b <= budget)
-                .unwrap_or(false),
-            "MAX_CAPACITY * per_entry must fit in isize::MAX/4"
-        );
+        // Validate the robust per-entry invariant used by `MAX_CAPACITY`:
+        // at the clamp boundary, the worst-case footprint of the arena
+        // plus the hash map (including `hashbrown`'s power-of-two bucket
+        // inflation) must still fit inside both the 16 GiB construction
+        // ceiling and the 1/4-of-`isize::MAX` address-space budget.
+        //
+        // We recompute `per_entry` here from the same primitives that
+        // `MAX_CAPACITY` uses, so a regression in either the constant or
+        // the formula will trip this assertion. Exercise it across several
+        // key sizes so that a fat-key OOM (as seen with 4 KiB keys) cannot
+        // silently reappear.
+        fn assert_fits<K: Clone + Eq + Hash>() {
+            let max = GhostList::<K>::MAX_CAPACITY;
+            let list_per_entry = IntrusiveList::<K>::BYTES_PER_ENTRY;
+            let bucket_bytes = std::mem::size_of::<(K, SlotId)>() + 1;
+            // Matches `HASHMAP_LOAD_FACTOR_MULTIPLIER` in `MAX_CAPACITY`.
+            let index_per_entry = bucket_bytes * 3;
+            let per_entry = list_per_entry + index_per_entry;
+
+            let sixteen_gib: usize = 16 * 1024 * 1024 * 1024;
+            let isize_quarter = (isize::MAX as usize) / 4;
+            let budget = sixteen_gib.min(isize_quarter);
+
+            let footprint = max.checked_mul(per_entry).unwrap_or_else(|| {
+                panic!("MAX_CAPACITY overflow for K={}", std::any::type_name::<K>())
+            });
+            assert!(
+                footprint <= budget,
+                "MAX_CAPACITY footprint {footprint} exceeds budget {budget} for K={}",
+                std::any::type_name::<K>(),
+            );
+        }
+
+        assert_fits::<u8>();
+        assert_fits::<u32>();
+        assert_fits::<u64>();
+        assert_fits::<[u8; 64]>();
+        assert_fits::<[u8; 4096]>();
     }
 
     #[test]
@@ -1758,6 +1835,34 @@ mod tests {
         // Within bounds succeeds.
         let ok = GhostList::<u32>::try_new(GhostList::<u32>::MAX_CAPACITY).unwrap();
         assert_eq!(ok.capacity(), GhostList::<u32>::MAX_CAPACITY);
+    }
+
+    #[test]
+    fn ghost_list_try_with_capacity_and_hasher_rejects_oversized_capacity() {
+        use std::collections::hash_map::RandomState;
+
+        // Mirrors `try_new`, but on the custom-hasher path a security-
+        // conscious caller (e.g. using `RandomState` for DoS resistance)
+        // can detect the clamp instead of silently losing capacity.
+        type Gh = GhostList<u32, RandomState>;
+
+        let err = Gh::try_with_capacity_and_hasher(usize::MAX, RandomState::new()).unwrap_err();
+        assert_eq!(err.requested, usize::MAX);
+        assert_eq!(err.max, Gh::MAX_CAPACITY);
+
+        let ok = Gh::try_with_capacity_and_hasher(Gh::MAX_CAPACITY, RandomState::new()).unwrap();
+        assert_eq!(ok.capacity(), Gh::MAX_CAPACITY);
+
+        // Zero capacity is always valid.
+        let empty = Gh::try_with_capacity_and_hasher(0, RandomState::new()).unwrap();
+        assert_eq!(empty.capacity(), 0);
+        assert!(empty.is_empty());
+
+        // Exactly at the boundary: MAX_CAPACITY + 1 must fail.
+        if let Some(over) = Gh::MAX_CAPACITY.checked_add(1) {
+            let err = Gh::try_with_capacity_and_hasher(over, RandomState::new()).unwrap_err();
+            assert_eq!(err.requested, over);
+        }
     }
 
     #[test]
