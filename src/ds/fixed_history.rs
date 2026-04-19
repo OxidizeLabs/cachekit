@@ -252,6 +252,16 @@ pub const MAX_K: usize = 4096;
 ///
 /// assert_eq!(window_duration, 160);  // 5 accesses over 160 time units
 /// ```
+// `Clone` and `Copy` are sound to derive because the backing array
+// maintains a zero-tail invariant: slots outside the logically-live
+// region (index `>= len` while `len < K`) are always `0`. That is
+// enforced by `new` / `boxed` zero-initialising `data`, by `clear`
+// re-zeroing it, and by `record` only ever writing to `data[cursor]`
+// where `cursor` tracks the next live slot. `debug_validate_invariants`
+// checks this explicitly in test / debug builds. The upshot is that a
+// bitwise copy of `FixedHistory<K>` never carries forward stale
+// timestamps, so the derived `Clone` / `Copy` cannot leak data that
+// the public API would otherwise hide.
 #[derive(Clone, Copy)]
 pub struct FixedHistory<const K: usize> {
     data: [u64; K],
@@ -686,6 +696,23 @@ impl<const K: usize> FixedHistory<K> {
             assert_eq!(self.cursor, 0);
         } else {
             assert!(self.cursor < K);
+        }
+        // Zero-tail invariant: slots outside the logically-live region
+        // must be zero. This is what makes the derived `Clone` / `Copy`
+        // safe to memcpy without leaking stale timestamps, and what
+        // keeps `Debug` / `PartialEq` / `Hash` from having to inspect
+        // the tail at all. Any code path that writes past `len` without
+        // updating `len`, or that returns a `FixedHistory` with
+        // uninitialised tail bytes, will trip this assertion.
+        if self.len < K {
+            for (i, slot) in self.data[self.len..].iter().enumerate() {
+                assert_eq!(
+                    *slot,
+                    0,
+                    "FixedHistory zero-tail invariant violated at data[{}]",
+                    self.len + i
+                );
+            }
         }
     }
 }
