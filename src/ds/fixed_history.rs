@@ -163,11 +163,15 @@
 //!   if `K` is ever influenced by code an attacker controls. For large `K`
 //!   on restricted stacks, use [`FixedHistory::boxed`] to heap-allocate
 //!   without materialising the array on the stack.
-//! - **No stale-slot disclosure.** [`FixedHistory::clear`] zeroes the
-//!   backing array in addition to resetting the cursor and length, and the
-//!   manual `Debug` impl only prints logically-live entries in MRU order.
-//!   Overwritten / cleared timestamps are not observable through the public
-//!   API, `Debug` output, or panic messages.
+//! - **No stale-slot disclosure via the public API.**
+//!   [`FixedHistory::clear`] overwrites the backing array with zeros and
+//!   the manual `Debug` impl only prints logically-live entries, so
+//!   overwritten or cleared timestamps cannot be observed through
+//!   `record` / `kth_most_recent` / `iter` / `Debug` / `PartialEq` /
+//!   `Hash`. This is a logical guarantee, not a memory-scrubbing one:
+//!   [`FixedHistory::clear`] is not a secure wipe, and `Copy` / `Clone`
+//!   propagate the full backing array (including stale slots beyond
+//!   `len`) to the new value.
 //! - **Not constant-time.** [`PartialEq`] and [`std::hash::Hash`] iterate
 //!   only as far as the shared prefix, so they are not suitable for
 //!   comparing data that must remain secret. `FixedHistory` is intended for
@@ -555,11 +559,23 @@ impl<const K: usize> FixedHistory<K> {
 
     /// Clears the history and resets cursor/length.
     ///
-    /// Also zeroes the backing array so that previously recorded timestamps
-    /// cannot be observed through `Debug` output, core dumps, or accidental
-    /// raw-byte access. This is a minor hardening measure — the public API
-    /// already respects `len` and never returns stale slots — but it removes
-    /// a class of passive information-disclosure hazards.
+    /// Zeroes the backing array so the public API, the manual `Debug`
+    /// impl, and derived traits (`PartialEq`, `Hash`, `IntoIterator`)
+    /// cannot observe previously recorded timestamps. This is a logical
+    /// reset for bookkeeping, **not** a secure wipe:
+    ///
+    /// - The writes are ordinary assignments. They are not guaranteed to
+    ///   survive compiler optimisation if `clear()` is the last use of
+    ///   the value before it is dropped or goes out of scope.
+    /// - `FixedHistory` is [`Copy`]. Any copy made before `clear()` still
+    ///   holds the original timestamps; clearing one copy does not clear
+    ///   the others.
+    /// - Panics between [`record`](Self::record) and `clear` leave the
+    ///   backing array populated.
+    ///
+    /// If you need a cryptographic-grade wipe (e.g. the timestamps
+    /// encode secret data), do not use this type; use a dedicated
+    /// secret-storage type backed by `zeroize` or equivalent.
     ///
     /// # Example
     ///
