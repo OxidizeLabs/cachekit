@@ -241,12 +241,22 @@ pub struct GhostList<K, S = FxBuildHasher> {
     capacity: usize,
 }
 
-impl<K: std::fmt::Debug, S> std::fmt::Debug for GhostList<K, S> {
+impl<K, S> std::fmt::Debug for GhostList<K, S> {
+    /// Prints only structural metadata (`capacity` and `len`) — **not** the
+    /// stored keys.
+    ///
+    /// Cache keys in real deployments frequently embed user identifiers,
+    /// session tokens, URLs with sensitive query strings, or other PII.
+    /// Echoing the full key list into logs, panic messages, or crash
+    /// reports via `{:?}` would turn a benign observability statement
+    /// into an information-disclosure surface. Callers who genuinely need
+    /// to inspect keys should use [`GhostList::iter`] or, in debug builds,
+    /// [`GhostList::debug_snapshot_keys`] and format the result
+    /// explicitly.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GhostList")
             .field("capacity", &self.capacity)
             .field("len", &self.list.len())
-            .field("list", &self.list)
             .finish_non_exhaustive()
     }
 }
@@ -575,11 +585,68 @@ where
     /// guard that prevents a single construction call from triggering an
     /// allocator abort when `capacity` is derived from untrusted input.
     ///
-    /// The value is intentionally much larger than any realistic ghost list
-    /// (2^30 ≈ 1.07 billion entries) while remaining small enough that the
-    /// backing `Vec` allocation cannot itself overflow `isize::MAX` bytes
-    /// for typical `K`.
-    pub const MAX_CAPACITY: usize = 1 << 30;
+    /// The value is derived at compile time from `size_of::<K>()` and the
+    /// target's pointer width, so the backing `Vec` allocations cannot
+    /// themselves overflow `isize::MAX` bytes on any supported target, and
+    /// the total byte footprint of a single `GhostList` cannot exceed a
+    /// fixed platform-independent budget.
+    ///
+    /// The computation is:
+    ///
+    /// - A per-entry byte cost is estimated conservatively as
+    ///   `size_of::<K>() + 64`, covering the intrusive-list node, hash-map
+    ///   bucket, control bytes, alignment padding, and the fact that `K`
+    ///   is stored in both the list and the index.
+    /// - A byte budget is chosen as the smaller of:
+    ///   - 16 GiB (a hard cap on any single construction), and
+    ///   - `isize::MAX / 4` (leaving a 4× safety margin on smaller
+    ///     pointer widths so that both backing allocations plus a
+    ///     transient rehash-time doubling all fit in address space).
+    /// - `MAX_CAPACITY` is `byte_budget / per_entry`.
+    ///
+    /// Worked examples (64-bit target):
+    ///
+    /// - `K = u32`   → per-entry ≈ 68 B → `MAX_CAPACITY` ≈ 252 M.
+    /// - `K = [u8; 4096]` → per-entry ≈ 4160 B → `MAX_CAPACITY` ≈ 4.1 M.
+    ///
+    /// Worked examples (32-bit target, `isize::MAX / 4` ≈ 512 MiB):
+    ///
+    /// - `K = u32`   → `MAX_CAPACITY` ≈ 7.9 M.
+    pub const MAX_CAPACITY: usize = {
+        // Per-entry byte cost, rounded up. 64 bytes covers:
+        //   - ~24 bytes of `Node<K>` overhead in the intrusive list arena
+        //     (prev/next `Option<SlotId>` plus `epoch: u64`)
+        //   - ~16 bytes of hash-map bucket + control byte overhead
+        //   - slack for alignment padding and duplicate key storage
+        //     (`K` is stored in both the list and the index).
+        let per_entry = std::mem::size_of::<K>().saturating_add(64);
+
+        // Hard ceiling on any single construction: 16 GiB. Anything larger
+        // than this is almost certainly a misconfiguration or adversarial
+        // input — legitimate ghost lists are 6+ orders of magnitude smaller.
+        // Compute in u64 so the literal fits on 32-bit targets, then
+        // saturate back into usize.
+        let sixteen_gib_u64: u64 = 16 * 1024 * 1024 * 1024;
+        let sixteen_gib: usize = if sixteen_gib_u64 <= usize::MAX as u64 {
+            sixteen_gib_u64 as usize
+        } else {
+            usize::MAX
+        };
+
+        // Address-space-relative budget: 1/4 of `isize::MAX` so that both
+        // the arena and the hash map can be resident simultaneously and
+        // still briefly double their backing storage during a rehash
+        // without exhausting address space. Matters on 32-bit.
+        let isize_quarter = (isize::MAX as usize) / 4;
+
+        let byte_budget = if sixteen_gib < isize_quarter {
+            sixteen_gib
+        } else {
+            isize_quarter
+        };
+
+        byte_budget / if per_entry == 0 { 1 } else { per_entry }
+    };
 
     /// Creates a new ghost list with the given hasher and capacity clamped to
     /// [`Self::MAX_CAPACITY`].
@@ -1584,6 +1651,50 @@ mod tests {
         assert!(debug_str.contains("IntoIter"));
     }
 
+    #[test]
+    fn ghost_list_debug_does_not_leak_keys() {
+        // Simulate a "sensitive" key value. The Debug impl for GhostList
+        // must NOT echo this substring, otherwise `{:?}` becomes an
+        // information-disclosure surface when the list is logged.
+        const SECRET: &str = "session-token-deadbeef-SECRET";
+
+        let mut ghost = GhostList::new(4);
+        ghost.record(SECRET.to_string());
+        ghost.record("other-key".to_string());
+
+        let debug_str = format!("{:?}", ghost);
+
+        assert!(
+            !debug_str.contains("SECRET"),
+            "GhostList Debug must not echo stored keys; got: {debug_str}"
+        );
+        assert!(
+            !debug_str.contains("other-key"),
+            "GhostList Debug must not echo stored keys; got: {debug_str}"
+        );
+
+        // Structural metadata is fine (and useful).
+        assert!(debug_str.contains("GhostList"));
+        assert!(debug_str.contains("capacity"));
+        assert!(debug_str.contains("len"));
+    }
+
+    #[test]
+    fn ghost_list_debug_works_for_non_debug_keys() {
+        // Regression: the Debug impl must NOT require `K: Debug`. Verified
+        // by constructing a ghost list of a `K` that is deliberately not
+        // `Debug` and still formatting it.
+        #[derive(Clone, Eq, PartialEq, Hash)]
+        struct NoDebug(u32);
+
+        let mut ghost = GhostList::new(2);
+        ghost.record(NoDebug(1));
+        ghost.record(NoDebug(2));
+
+        let s = format!("{:?}", ghost);
+        assert!(s.contains("GhostList"));
+    }
+
     // -------------------------------------------------------------------------
     // Security hardening
     // -------------------------------------------------------------------------
@@ -1597,6 +1708,45 @@ mod tests {
             "new() must clamp to MAX_CAPACITY to avoid OOM-abort DoS"
         );
         assert!(ghost.is_empty());
+    }
+
+    #[test]
+    fn ghost_list_max_capacity_respects_byte_budget() {
+        // On all supported targets, MAX_CAPACITY * per_entry_bytes must fit
+        // comfortably inside `isize::MAX`. If this assertion fails the clamp
+        // has regressed and `new(usize::MAX)` could abort the process during
+        // Vec::with_capacity on at least one target.
+        let max = GhostList::<u32>::MAX_CAPACITY;
+        let per_entry = std::mem::size_of::<u32>() + 64;
+        let budget = (isize::MAX as usize) / 4;
+        assert!(
+            max.checked_mul(per_entry)
+                .map(|b| b <= budget)
+                .unwrap_or(false),
+            "MAX_CAPACITY * per_entry must fit in isize::MAX/4"
+        );
+    }
+
+    #[test]
+    fn ghost_list_max_capacity_shrinks_for_large_keys() {
+        // A 4 KiB key type must produce a MUCH smaller MAX_CAPACITY than a
+        // 4-byte key type; otherwise we'd OOM-abort on constructing
+        // `new(usize::MAX)` for fat keys.
+        #[repr(C)]
+        #[derive(Clone, Eq, PartialEq, Hash)]
+        struct Fat([u8; 4096]);
+
+        let small_cap = GhostList::<u32>::MAX_CAPACITY;
+        let fat_cap = GhostList::<Fat>::MAX_CAPACITY;
+        assert!(
+            fat_cap < small_cap,
+            "MAX_CAPACITY must scale down with size_of::<K>(): \
+             fat_cap={fat_cap} small_cap={small_cap}"
+        );
+
+        // And constructing at the advertised max must not abort.
+        let ghost: GhostList<Fat> = GhostList::new(usize::MAX);
+        assert_eq!(ghost.capacity(), fat_cap);
     }
 
     #[test]
