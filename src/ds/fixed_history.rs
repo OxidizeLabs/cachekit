@@ -149,12 +149,64 @@
 //! `FixedHistory` is not thread-safe. It is typically embedded within
 //! cache entries and protected by the cache's synchronization.
 //!
+//! ## Security & Invariants
+//!
+//! - **Trusted timestamps.** The caller is responsible for supplying
+//!   monotonically non-decreasing timestamps drawn from a trusted source
+//!   (e.g. a coarse monotonic counter). If an adversary can influence the
+//!   timestamp stream — for example via a wall-clock that can jump
+//!   backwards, or a user-controlled counter — they can manipulate
+//!   LRU-K-style eviction decisions built on top of this type. See
+//!   [`FixedHistory::record`] for the full trust boundary.
+//! - **Capacity bound.** `K` is capped at [`MAX_K`] (see [`FixedHistory::new`]).
+//!   This keeps the inline `[u64; K]` array from triggering stack exhaustion
+//!   if `K` is ever influenced by code an attacker controls. For large `K`
+//!   on restricted stacks, use [`FixedHistory::boxed`] to heap-allocate
+//!   without materialising the array on the stack.
+//! - **Per-entry memory is a multiplier, not a bound.** [`MAX_K`] caps the
+//!   per-instance footprint at 32 KiB, not the total. If an attacker can
+//!   cause `N` `FixedHistory<K>` instances to be created (one per cache
+//!   entry, one per session, etc.) the effective heap pressure is
+//!   `N * size_of::<FixedHistory<K>>()`. When `K` approaches [`MAX_K`]
+//!   and `N` is attacker-influenced, pair this type with a hard
+//!   admission-control cap on the surrounding container; [`MAX_K`] alone
+//!   will not save you from a memory-DoS in that configuration.
+//! - **No stale-slot disclosure via the public API.**
+//!   [`FixedHistory::clear`] overwrites the backing array with zeros and
+//!   the manual `Debug` impl only prints logically-live entries, so
+//!   overwritten or cleared timestamps cannot be observed through
+//!   `record` / `kth_most_recent` / `iter` / `Debug` / `PartialEq` /
+//!   `Hash`. This is a logical guarantee, not a memory-scrubbing one:
+//!   [`FixedHistory::clear`] is not a secure wipe, and `Copy` / `Clone`
+//!   propagate the full backing array (including stale slots beyond
+//!   `len`) to the new value.
+//! - **Not constant-time.** [`PartialEq`] and [`std::hash::Hash`] iterate
+//!   only as far as the shared prefix, so they are not suitable for
+//!   comparing data that must remain secret. `FixedHistory` is intended for
+//!   access-timestamp bookkeeping, not for security-sensitive values.
+//!
 //! ## Implementation Notes
 //!
-//! - Uses a fixed-size array (no heap allocation)
+//! - Uses a fixed-size inline array by default (no heap allocation);
+//!   [`FixedHistory::boxed`] is provided for heap-allocating large `K`.
 //! - Const generic `K` determines history depth at compile time
 //! - Zero-size history (`K=0`) is a no-op
+//! - Construction is bounded by [`MAX_K`]; exceeding it is a compile-time error
 //! - `debug_validate_invariants()` available in debug/test builds
+//!
+//! [`MAX_K`]: MAX_K
+
+/// Upper bound on `K` for [`FixedHistory`].
+///
+/// `FixedHistory<K>` stores `[u64; K]` inline, so an arbitrary `K` would risk
+/// stack exhaustion (especially since [`FixedHistory::new`] returns by value
+/// and materialises the array on the stack before any move).
+///
+/// This limit is enforced at compile time by [`FixedHistory::new`] and is
+/// deliberately generous: realistic LRU-K policies use `K` in the single
+/// digits, so `4096` leaves multiple orders of magnitude of headroom while
+/// keeping the worst-case stack footprint at 32 KiB.
+pub const MAX_K: usize = 4096;
 
 /// Fixed-size ring buffer of the last `K` timestamps.
 ///
@@ -201,22 +253,95 @@
 ///     history.record(ts);
 /// }
 ///
-/// // Check if accessed recently (within last 100 time units)
-/// let now = 260;
+/// // Check if accessed recently (within last 100 time units).
+/// //
+/// // `saturating_sub` rather than `-` because, per the module-level
+/// // "trusted timestamps" docs, nothing in `FixedHistory` guarantees
+/// // that recorded timestamps are monotonic relative to `now`. If the
+/// // clock source can ever run backwards (wall clock, attacker-
+/// // influenced counter, NTP step), a plain subtraction underflows and
+/// // panics in debug / wraps to `u64::MAX - delta` in release.
+/// let now = 260u64;
 /// let oldest_in_window = history.kth_most_recent(5).unwrap();
-/// let window_duration = now - oldest_in_window;
+/// let window_duration = now.saturating_sub(oldest_in_window);
 ///
 /// assert_eq!(window_duration, 160);  // 5 accesses over 160 time units
 /// ```
-#[derive(Debug, Clone, Copy)]
+// `Clone` and `Copy` are sound to derive because the backing array
+// maintains a zero-tail invariant: slots outside the logically-live
+// region (index `>= len` while `len < K`) are always `0`. That is
+// enforced by `new` / `boxed` zero-initialising `data`, by `clear`
+// re-zeroing it, and by `record` only ever writing to `data[cursor]`
+// where `cursor` tracks the next live slot. `debug_validate_invariants`
+// checks this explicitly in test / debug builds. The upshot is that a
+// bitwise copy of `FixedHistory<K>` never carries forward stale
+// timestamps, so the derived `Clone` / `Copy` cannot leak data that
+// the public API would otherwise hide.
+#[derive(Clone, Copy)]
 pub struct FixedHistory<const K: usize> {
     data: [u64; K],
     len: usize,
     cursor: usize,
 }
 
+// Tripwire for `FixedHistory::boxed`. The constructor below initialises
+// each field individually through a typed raw pointer, so its SAFETY
+// obligation is narrow — only "`u64` accepts any bit pattern" is relied
+// upon. The remaining failure mode is *forgetting* to initialise a new
+// field after it's added to the struct, which `assume_init` cannot
+// catch on its own. This destructure pattern forces that to be a
+// compile error: adding a field without listing it here fails with
+// "pattern does not mention field ...". If this trips, update the
+// destructure AND add a matching write in `boxed()` — do not just
+// paper over the pattern.
+impl<const K: usize> FixedHistory<K> {
+    #[allow(dead_code)]
+    fn _boxed_field_exhaustiveness_tripwire(s: Self) {
+        let Self {
+            data: _,
+            len: _,
+            cursor: _,
+        } = s;
+    }
+}
+
+// Manual `Debug` impl: only print the logically-live entries in MRU order,
+// not the raw ring buffer. This prevents stale slots (left behind after a
+// `clear()` or a wrap) from appearing in panic messages / logs, which would
+// otherwise leak past access patterns that the public API already hides.
+//
+// Allocation-free: streams entries through `self.iter()` via a nested
+// `DebugList` adapter rather than materialising a `Vec<u64>` first. This
+// matters on the panic / OOM path — `Debug` is frequently invoked from
+// `assert!` / `panic!` formatting, and a second allocation there can
+// double-panic to abort. For `K = MAX_K` the old form allocated 32 KiB
+// per `{:?}` call; this form allocates nothing.
+impl<const K: usize> std::fmt::Debug for FixedHistory<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct MruList<'a, const K: usize>(&'a FixedHistory<K>);
+        impl<const K: usize> std::fmt::Debug for MruList<'_, K> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_list().entries(self.0.iter()).finish()
+            }
+        }
+
+        f.debug_struct("FixedHistory")
+            .field("capacity", &K)
+            .field("len", &self.len)
+            .field("mru", &MruList(self))
+            .finish()
+    }
+}
+
 impl<const K: usize> FixedHistory<K> {
     /// Creates an empty history.
+    ///
+    /// # Compile-time bound
+    ///
+    /// `K` must be less than or equal to [`MAX_K`]. Instantiating
+    /// `FixedHistory<K>` with a larger `K` fails compilation. This prevents
+    /// stack exhaustion from pathological `K` values and keeps the inline
+    /// `[u64; K]` array to a bounded size.
     ///
     /// # Example
     ///
@@ -228,10 +353,81 @@ impl<const K: usize> FixedHistory<K> {
     /// assert_eq!(history.capacity(), 4);
     /// ```
     pub fn new() -> Self {
+        const {
+            assert!(
+                K <= MAX_K,
+                "FixedHistory<K>: K exceeds MAX_K (see cachekit::ds::fixed_history::MAX_K)"
+            );
+        }
         Self {
             data: [0; K],
             len: 0,
             cursor: 0,
+        }
+    }
+
+    /// Creates an empty history on the heap without materialising the
+    /// `[u64; K]` array on the stack.
+    ///
+    /// For small `K` this is equivalent to `Box::new(Self::new())` and
+    /// slightly slower. For large `K` (up to [`MAX_K`]) the difference is
+    /// significant: `Self::new()` returns `Self` by value, and a naive
+    /// `Box::new(Self::new())` may materialise the 32 KiB array on the
+    /// stack before moving it to the heap. That stack copy is an
+    /// availability concern on restricted stacks (async tasks on small
+    /// runtimes, threads created with a custom stack size, `no_std`
+    /// targets). `boxed()` sidesteps this by zero-initialising the heap
+    /// allocation in place.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::FixedHistory;
+    ///
+    /// let mut history: Box<FixedHistory<4096>> = FixedHistory::boxed();
+    /// history.record(100);
+    /// assert_eq!(history.most_recent(), Some(100));
+    /// ```
+    pub fn boxed() -> Box<Self> {
+        const {
+            assert!(
+                K <= MAX_K,
+                "FixedHistory<K>: K exceeds MAX_K (see cachekit::ds::fixed_history::MAX_K)"
+            );
+        }
+        let mut uninit: Box<std::mem::MaybeUninit<Self>> = Box::new_uninit();
+        // SAFETY: `uninit` is a unique, properly-aligned heap allocation
+        // of `MaybeUninit<Self>`. Before `assume_init` is called, every
+        // field of `Self` is written exactly once:
+        //
+        // * `data: [u64; K]` — the `let data_ptr: *mut [u64; K]` binding
+        //   has an explicit type annotation. If the field's type ever
+        //   changes (e.g. to `[NonZeroU64; K]`, which is *not* zero-valid),
+        //   that `let` stops compiling, so the `write_bytes(_, 0, 1)`
+        //   cannot silently zero a non-zero-valid element type. `u64`
+        //   accepts any bit pattern, so zeroing `size_of::<[u64; K]>()`
+        //   bytes yields a valid `[u64; K]`.
+        //
+        // * `len` and `cursor` are each written with `0_usize` through
+        //   `addr_of_mut!(...).write(0_usize)`. If either field is
+        //   changed to a type that does not coerce from a `usize`
+        //   literal (e.g. `NonZeroUsize`), the `write(0_usize)` call
+        //   stops compiling, guarding against a silent validity
+        //   regression.
+        //
+        // * Adding a *new* field is caught at compile time by
+        //   `_boxed_field_exhaustiveness_tripwire` above, which fails
+        //   to compile if any field is missing from its destructure
+        //   pattern.
+        //
+        // With all fields initialised, `assume_init` is sound.
+        unsafe {
+            let p = uninit.as_mut_ptr();
+            let data_ptr: *mut [u64; K] = std::ptr::addr_of_mut!((*p).data);
+            std::ptr::write_bytes(data_ptr, 0u8, 1);
+            std::ptr::addr_of_mut!((*p).len).write(0_usize);
+            std::ptr::addr_of_mut!((*p).cursor).write(0_usize);
+            uninit.assume_init()
         }
     }
 
@@ -291,6 +487,27 @@ impl<const K: usize> FixedHistory<K> {
 
     /// Records a timestamp, overwriting the oldest if the history is full.
     ///
+    /// # Trust boundary
+    ///
+    /// `record` does **not** validate `timestamp` — it accepts any `u64`
+    /// and treats the most recently recorded value as "now" for the
+    /// purposes of LRU-K ordering. Callers are responsible for supplying
+    /// timestamps from a trusted source, typically a monotonic counter
+    /// incremented on each cache access. If an attacker can influence the
+    /// timestamp stream (for example, because it is derived from a
+    /// wall-clock that can jump, a user-supplied header, or any
+    /// value not under the cache's exclusive control) they can:
+    ///
+    /// - Pin victim entries in cache forever by recording a far-future
+    ///   timestamp, triggering eviction of legitimate entries (cache
+    ///   pollution / DoS).
+    /// - Make victim entries look "cold" by recording stale timestamps,
+    ///   evicting hot entries they do not own (targeted eviction / cache
+    ///   side channel).
+    ///
+    /// Store this value internally; never route it directly from network
+    /// input.
+    ///
     /// # Example
     ///
     /// ```
@@ -310,6 +527,24 @@ impl<const K: usize> FixedHistory<K> {
         if K == 0 {
             return;
         }
+        // Zero-tail invariant guard: while partially filled, `cursor`
+        // and `len` must stay in lock-step so every slot at index
+        // `>= len` is still a pristine zero. The `Copy` / `Clone` safety
+        // story in the module docs hinges on this, and nothing in the
+        // release build catches a refactor that splits `record()` into
+        // "write first, commit `len` later" or otherwise breaks the
+        // lock-step. Assert at the point of change so a regression
+        // surfaces in debug/test runs at the offending operation, not
+        // only when `debug_validate_invariants` happens to be called.
+        debug_assert!(self.cursor < K, "cursor out of range");
+        debug_assert!(
+            self.len == K || self.cursor == self.len,
+            "FixedHistory zero-tail invariant broken before record(): \
+             cursor = {}, len = {}, K = {}",
+            self.cursor,
+            self.len,
+            K
+        );
         self.data[self.cursor] = timestamp;
         self.cursor = (self.cursor + 1) % K;
         if self.len < K {
@@ -365,7 +600,10 @@ impl<const K: usize> FixedHistory<K> {
         if K == 0 || k == 0 || k > self.len {
             return None;
         }
-        let idx = (self.cursor + K - k) % K;
+        // Parenthesise as `cursor + (K - k)` so the intermediate stays below
+        // `2 * K` even for the largest permitted `K`. `k <= self.len <= K`
+        // guarantees `K - k` does not underflow.
+        let idx = (self.cursor + (K - k)) % K;
         Some(self.data[idx])
     }
 
@@ -419,6 +657,34 @@ impl<const K: usize> FixedHistory<K> {
 
     /// Clears the history and resets cursor/length.
     ///
+    /// Zeroes the backing array so the public API, the manual `Debug`
+    /// impl, and derived traits (`PartialEq`, `Hash`, `IntoIterator`)
+    /// cannot observe previously recorded timestamps. This is a logical
+    /// reset for bookkeeping, **not** a secure wipe — do not rely on
+    /// `clear()` to scrub secret-equivalent data from memory:
+    ///
+    /// - The writes are ordinary assignments through a non-volatile
+    ///   pointer. Under `opt-level=3` / LTO, an optimiser is free to
+    ///   elide the zeroing entirely if `clear()` is the last use of the
+    ///   value before it is dropped or goes out of scope, because `u64`
+    ///   has no `Drop` and no subsequent safe-code observation exists.
+    /// - `FixedHistory` is [`Copy`]. Any copy made before `clear()`
+    ///   (including implicit copies through pass-by-value, `PartialEq`
+    ///   invocations, and iterator state) still holds the original
+    ///   timestamps; clearing one copy does not clear the others. This
+    ///   is worse than the usual "not a secure wipe" caveat because
+    ///   `Copy` means those copies happen *without a move at the call
+    ///   site*.
+    /// - Panics between [`record`](Self::record) and `clear` leave the
+    ///   backing array populated.
+    ///
+    /// If you need a cryptographic-grade wipe (e.g. the timestamps
+    /// encode secret data), do not use this type. Use a dedicated
+    /// secret-storage type backed by [`zeroize`] or equivalent, and do
+    /// not derive `Copy` on it.
+    ///
+    /// [`zeroize`]: https://docs.rs/zeroize
+    ///
     /// # Example
     ///
     /// ```
@@ -433,6 +699,13 @@ impl<const K: usize> FixedHistory<K> {
     /// assert_eq!(history.most_recent(), None);
     /// ```
     pub fn clear(&mut self) {
+        // `self.data.fill(0)` instead of `self.data = [0; K]`. The
+        // assignment form materialises a `[u64; K]` temporary on the
+        // stack before moving it into `self.data`, which defeats the
+        // point of `boxed()` for large `K`: calling `clear()` on a
+        // `Box<FixedHistory<MAX_K>>` would still burst 32 KiB of
+        // stack. `fill` writes through the existing place.
+        self.data.fill(0);
         self.len = 0;
         self.cursor = 0;
     }
@@ -462,6 +735,17 @@ impl<const K: usize> FixedHistory<K> {
     /// Since `FixedHistory` uses a fixed-size array, this is constant
     /// regardless of how many timestamps are recorded.
     ///
+    /// # Caveats
+    ///
+    /// Reports `size_of::<Self>()` — the payload, not the allocation.
+    /// When the history lives behind a [`Box`] (e.g. via
+    /// [`boxed`](Self::boxed)), this *does not* account for the
+    /// `size_of::<Box<_>>` pointer on the stack or for any allocator
+    /// overhead. If you are using `approx_bytes` for admission control
+    /// or a per-entry memory quota, add `size_of::<Box<FixedHistory<K>>>()`
+    /// manually for the heap-allocated form, and budget some slack for
+    /// allocator bookkeeping.
+    ///
     /// # Example
     ///
     /// ```
@@ -477,13 +761,23 @@ impl<const K: usize> FixedHistory<K> {
         std::mem::size_of::<Self>()
     }
 
-    #[cfg(any(test, debug_assertions))]
     /// Returns a debug snapshot of the history in MRU order.
+    ///
+    /// Only available in `cfg(test)` or `debug_assertions` builds. Not part
+    /// of the stable API; do not rely on this being callable from release
+    /// builds of downstream crates.
+    #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
     pub fn debug_snapshot_mru(&self) -> Vec<u64> {
         self.to_vec_mru()
     }
 
+    /// Asserts internal invariants; panics on violation.
+    ///
+    /// Only available in `cfg(test)` or `debug_assertions` builds. Not part
+    /// of the stable API.
     #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
     pub fn debug_validate_invariants(&self) {
         assert!(self.len <= K);
         if K == 0 {
@@ -491,6 +785,23 @@ impl<const K: usize> FixedHistory<K> {
             assert_eq!(self.cursor, 0);
         } else {
             assert!(self.cursor < K);
+        }
+        // Zero-tail invariant: slots outside the logically-live region
+        // must be zero. This is what makes the derived `Clone` / `Copy`
+        // safe to memcpy without leaking stale timestamps, and what
+        // keeps `Debug` / `PartialEq` / `Hash` from having to inspect
+        // the tail at all. Any code path that writes past `len` without
+        // updating `len`, or that returns a `FixedHistory` with
+        // uninitialised tail bytes, will trip this assertion.
+        if self.len < K {
+            for (i, slot) in self.data[self.len..].iter().enumerate() {
+                assert_eq!(
+                    *slot,
+                    0,
+                    "FixedHistory zero-tail invariant violated at data[{}]",
+                    self.len + i
+                );
+            }
         }
     }
 }
@@ -506,6 +817,17 @@ impl<const K: usize> Default for FixedHistory<K> {
 // (raw derive would flag stale slots as differences)
 // ---------------------------------------------------------------------------
 
+/// Compares logical content in MRU order, ignoring stale slots in the
+/// backing array.
+///
+/// # Security
+///
+/// This implementation is **not constant-time**: it short-circuits on the
+/// first differing MRU entry, leaking the length of the matching prefix
+/// through timing. `FixedHistory` is intended for access-timestamp
+/// bookkeeping and is not suitable for comparing values that must remain
+/// secret. Do not use it as a `HashMap` key whose timestamps are derived
+/// from untrusted input without a DoS-resistant hasher (see `Hash` below).
 impl<const K: usize> PartialEq for FixedHistory<K> {
     fn eq(&self, other: &Self) -> bool {
         if self.len != other.len {
@@ -522,6 +844,19 @@ impl<const K: usize> PartialEq for FixedHistory<K> {
 
 impl<const K: usize> Eq for FixedHistory<K> {}
 
+/// Hashes logical content in MRU order so histories with the same timestamps
+/// but different internal cursor positions hash equal (consistent with
+/// [`PartialEq`]).
+///
+/// # Security
+///
+/// The standard-library default hasher is randomised and DoS-resistant,
+/// but this trait will cooperate with any hasher chosen by the caller.
+/// If `FixedHistory` values are used as keys in a map where timestamps
+/// can be influenced by an adversary (for example, wall-clock readings
+/// from untrusted input), pair this type with a DoS-resistant hasher
+/// rather than a fast non-cryptographic one. The contents themselves are
+/// not secret-equivalent — do not rely on hashing to hide timestamps.
 impl<const K: usize> std::hash::Hash for FixedHistory<K> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.len.hash(state);
@@ -548,13 +883,30 @@ impl<'a, const K: usize> Iterator for Iter<'a, K> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // The `?` must come *before* the increment: once the iterator is
+        // exhausted (pos > len), `kth_most_recent` returns `None` and we
+        // return without touching `pos`. This keeps `pos` bounded by
+        // `len + 1 <= K + 1 <= MAX_K + 1`, so the `+= 1` below cannot
+        // overflow no matter how many times `next()` is called after
+        // exhaustion. Do not reorder.
         let val = self.history.kth_most_recent(self.pos)?;
         self.pos += 1;
         Some(val)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.history.len().saturating_sub(self.pos - 1);
+        // `saturating_sub(1)` rather than `self.pos - 1`. Today `pos`
+        // starts at 1 and only ever increments, so a plain subtraction
+        // is safe by construction — but the invariant is enforced by
+        // the two constructors alone. If a future refactor exposes any
+        // constructor (or `skip_to` / `seek` method) that can leave
+        // `pos == 0`, the plain form underflows in release and panics
+        // in debug. This form is robust-by-construction and costs a
+        // single instruction.
+        let remaining = self
+            .history
+            .len()
+            .saturating_sub(self.pos.saturating_sub(1));
         (remaining, Some(remaining))
     }
 }
@@ -574,13 +926,21 @@ impl<const K: usize> Iterator for IntoIter<K> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // See `Iter::next` for the invariant justifying `+= 1`: the `?`
+        // must remain before the increment so `pos` stays bounded once
+        // exhausted.
         let val = self.history.kth_most_recent(self.pos)?;
         self.pos += 1;
         Some(val)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.history.len().saturating_sub(self.pos - 1);
+        // See `Iter::size_hint` for why `saturating_sub(1)` instead of
+        // `self.pos - 1`.
+        let remaining = self
+            .history
+            .len()
+            .saturating_sub(self.pos.saturating_sub(1));
         (remaining, Some(remaining))
     }
 }
@@ -1011,6 +1371,201 @@ mod tests {
         // Call twice — possible only because FixedHistory is Copy
         assert_eq!(sum_history(h), 60);
         assert_eq!(sum_history(h), 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // Security / hardening tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn max_k_bound_permits_realistic_k() {
+        let h = FixedHistory::<{ MAX_K }>::new();
+        assert_eq!(h.capacity(), MAX_K);
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn kth_most_recent_handles_full_capacity_at_max_k() {
+        // Exercises the `cursor + (K - k)` path with the largest allowed K
+        // to confirm no intermediate arithmetic overflow.
+        let mut h = FixedHistory::<{ MAX_K }>::new();
+        for ts in 0..(MAX_K as u64) {
+            h.record(ts);
+        }
+        assert_eq!(h.most_recent(), Some((MAX_K as u64) - 1));
+        assert_eq!(h.kth_most_recent(MAX_K), Some(0));
+        assert_eq!(h.kth_most_recent(MAX_K + 1), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Stale-slot hardening tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clear_zeroes_backing_array() {
+        // After clear(), no sentinel previously-recorded timestamp should
+        // remain in memory where `Debug` / core dumps could observe it.
+        let mut h = FixedHistory::<4>::new();
+        h.record(0xDEAD_BEEF);
+        h.record(0xCAFE_BABE);
+        h.record(0xFEED_FACE);
+
+        h.clear();
+
+        // Public API already hid them, but check the raw array directly.
+        for slot in h.data.iter() {
+            assert_eq!(*slot, 0, "clear() must zero the backing array");
+        }
+    }
+
+    #[test]
+    fn debug_output_hides_stale_slots_after_wrap() {
+        // Record more than K entries so the ring wraps, then make sure
+        // `Debug` output does not mention the overwritten timestamp.
+        let mut h = FixedHistory::<2>::new();
+        h.record(0x1111_1111_1111_1111);
+        h.record(0x2222_2222_2222_2222);
+        h.record(0x3333_3333_3333_3333); // overwrites 0x1111...
+
+        let rendered = format!("{h:?}");
+        assert!(
+            !rendered.contains("1111111111111111"),
+            "Debug must not expose overwritten timestamp: {rendered}"
+        );
+        // Live entries should still appear.
+        assert!(rendered.contains("len: 2"), "debug output: {rendered}");
+    }
+
+    #[test]
+    fn debug_output_hides_stale_slots_after_clear() {
+        let mut h = FixedHistory::<3>::new();
+        h.record(0xAAAA_AAAA_AAAA_AAAA);
+        h.record(0xBBBB_BBBB_BBBB_BBBB);
+
+        h.clear();
+
+        let rendered = format!("{h:?}");
+        assert!(
+            !rendered.contains("AAAA") && !rendered.contains("aaaa"),
+            "Debug must not expose cleared timestamps: {rendered}"
+        );
+        assert!(rendered.contains("len: 0"), "debug output: {rendered}");
+    }
+
+    #[test]
+    fn zero_tail_invariant_holds_partially_filled() {
+        // Invariant (see module docs on `#[derive(Clone, Copy)]`): for a
+        // partially-filled history (`len < K`), every backing slot at
+        // index `>= len` must be zero. This is the property that lets
+        // the derived `Copy` / `Clone` avoid leaking stale timestamps,
+        // so it must not silently regress if `record()` or `clear()`
+        // ever change. Probe the raw array directly — a pure public-API
+        // test cannot distinguish "hidden stale slot" from "slot does
+        // not exist".
+        let mut h = FixedHistory::<8>::new();
+        let sentinels = [
+            0x1111_1111_1111_1111,
+            0x2222_2222_2222_2222,
+            0x3333_3333_3333_3333,
+        ];
+        for ts in sentinels {
+            h.record(ts);
+        }
+
+        assert_eq!(h.len, sentinels.len());
+        for (idx, slot) in h.data.iter().enumerate().skip(h.len) {
+            assert_eq!(
+                *slot, 0,
+                "zero-tail invariant broken at data[{idx}] (len = {})",
+                h.len
+            );
+        }
+    }
+
+    #[test]
+    fn zero_tail_invariant_holds_after_wrap_and_clear() {
+        // After wrap every slot is live, so the invariant is vacuous —
+        // but `clear()` must restore it by zeroing every slot, including
+        // the ones that were overwritten post-wrap.
+        let mut h = FixedHistory::<4>::new();
+        for ts in [
+            0xAAAA_AAAA_AAAA_AAAA,
+            0xBBBB_BBBB_BBBB_BBBB,
+            0xCCCC_CCCC_CCCC_CCCC,
+            0xDDDD_DDDD_DDDD_DDDD,
+            0xEEEE_EEEE_EEEE_EEEE,
+            0xFFFF_FFFF_FFFF_FFFF,
+        ] {
+            h.record(ts);
+        }
+        assert_eq!(h.len, 4, "precondition: history is full");
+
+        h.clear();
+
+        assert_eq!(h.len, 0);
+        for (idx, slot) in h.data.iter().enumerate() {
+            assert_eq!(*slot, 0, "clear() left data[{idx}] = {:#x}", *slot);
+        }
+    }
+
+    #[test]
+    fn copy_does_not_leak_stale_slots_via_raw_bytes() {
+        // `FixedHistory` is `Copy`. The type's documented contract is
+        // that a bitwise copy cannot carry timestamps past the
+        // logically-live region. Serialization / debug dumps that
+        // observe the raw struct bytes (think a future memory-mapped
+        // cache format, `bytemuck`, a panic hook, etc.) must not see
+        // anything the public API would hide.
+        let mut original = FixedHistory::<6>::new();
+        original.record(0xDEAD_BEEF_DEAD_BEEF);
+        original.record(0xCAFE_BABE_CAFE_BABE);
+
+        let snap = original;
+        for (idx, slot) in snap.data.iter().enumerate().skip(snap.len) {
+            assert_eq!(
+                *slot, 0,
+                "Copy leaked non-live slot at data[{idx}] = {:#x}",
+                *slot
+            );
+        }
+    }
+
+    #[test]
+    fn boxed_returns_empty_history() {
+        let h: Box<FixedHistory<8>> = FixedHistory::boxed();
+        assert!(h.is_empty());
+        assert_eq!(h.len(), 0);
+        assert_eq!(h.capacity(), 8);
+        assert_eq!(h.most_recent(), None);
+        h.debug_validate_invariants();
+    }
+
+    #[test]
+    fn boxed_is_usable_like_new() {
+        let mut h: Box<FixedHistory<4>> = FixedHistory::boxed();
+        h.record(10);
+        h.record(20);
+        h.record(30);
+        assert_eq!(h.most_recent(), Some(30));
+        assert_eq!(h.to_vec_mru(), vec![30, 20, 10]);
+    }
+
+    #[test]
+    fn boxed_at_max_k_succeeds() {
+        // The whole point of `boxed()`: allocate 32 KiB of ring buffer
+        // without touching the stack.
+        let mut h: Box<FixedHistory<{ MAX_K }>> = FixedHistory::boxed();
+        h.record(42);
+        assert_eq!(h.most_recent(), Some(42));
+        assert_eq!(h.len(), 1);
+    }
+
+    #[test]
+    fn boxed_at_zero_capacity_is_noop() {
+        let mut h: Box<FixedHistory<0>> = FixedHistory::boxed();
+        h.record(1);
+        assert!(h.is_empty());
+        assert_eq!(h.most_recent(), None);
     }
 }
 

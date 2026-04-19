@@ -14,7 +14,7 @@ pub use clock_ring::{
     ClockRing, ClockRingError, IntoIter, Iter, IterMut, Keys, KeysAreTrusted, MAX_CAPACITY, Values,
     ValuesMut,
 };
-pub use fixed_history::FixedHistory;
+pub use fixed_history::{FixedHistory, MAX_K as FIXED_HISTORY_MAX_K};
 pub use frequency_buckets::{
     BucketEntries, BucketIds, DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryDebug,
     FrequencyBucketEntryMeta, FrequencyBuckets, FrequencyBucketsHandle,
