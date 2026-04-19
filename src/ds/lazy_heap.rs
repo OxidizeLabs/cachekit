@@ -523,19 +523,18 @@ where
             .map_err(|_| LazyMinHeapError::AllocationFailed {
                 requested: additional,
             })?;
-        // `BinaryHeap::try_reserve` is not stable; reserve the backing
-        // `Vec` indirectly by replacing the heap with a sized `Vec`.
-        // This only runs when `try_reserve` on the scores map succeeded,
-        // so we are not in a no-allocation budget.
-        let existing: Vec<Reverse<HeapEntry<K, S>>> = std::mem::take(&mut self.heap).into_vec();
-        let mut new_vec = existing;
-        new_vec
-            .try_reserve(additional)
-            .map_err(|_| LazyMinHeapError::AllocationFailed {
-                requested: additional,
-            })?;
-        self.heap = BinaryHeap::from(new_vec);
-        Ok(())
+        // `BinaryHeap::try_reserve` is not stable. Reserve the
+        // backing `Vec` indirectly by swapping the heap out into a
+        // `Vec`, calling `try_reserve` on that, then swapping the
+        // heap back in. Crucially, we swap the heap back even on
+        // reservation failure so that partial allocator pressure
+        // does not silently wipe the heap's contents.
+        let mut vec: Vec<Reverse<HeapEntry<K, S>>> = std::mem::take(&mut self.heap).into_vec();
+        let reserve_result = vec.try_reserve(additional);
+        self.heap = BinaryHeap::from(vec);
+        reserve_result.map_err(|_| LazyMinHeapError::AllocationFailed {
+            requested: additional,
+        })
     }
 
     /// Enables automatic [`maybe_rebuild`](Self::maybe_rebuild) on
@@ -1109,12 +1108,13 @@ where
     fn from_iter<I: IntoIterator<Item = (K, S)>>(iter: I) -> Self {
         let iter = iter.into_iter();
         let (lower, _) = iter.size_hint();
-        // Clamp caller-reported `size_hint` against `MAX_CAPACITY` so
-        // an oversized or adversarial `size_hint` cannot turn
-        // `FromIterator` into an allocator DoS / abort vector. See the
-        // module-level **Security Considerations** section.
-        let capacity = lower.min(MAX_CAPACITY);
-        let mut heap = Self::with_capacity(capacity);
+        // Use the *fallible* `try_with_capacity` and silently fall
+        // back to a zero-capacity heap when the caller-reported
+        // `size_hint` cannot be honored. This prevents an oversized
+        // or adversarial `size_hint` (e.g. `usize::MAX`) from turning
+        // `FromIterator` into an allocator DoS / abort vector. See
+        // the module-level **Security Considerations** section.
+        let mut heap = Self::try_with_capacity(lower).unwrap_or_else(|_| Self::new());
         for (key, score) in iter {
             heap.update(key, score);
         }
