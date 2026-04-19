@@ -82,6 +82,7 @@ policy-nru = []
 parking_lot = { version = "0.12", optional = true }
 rustc-hash = "2.1"
 serde = { version = "1", features = ["derive"], optional = true }
+siphasher = "1"
 
 [dev-dependencies]
 bench-support = { path = "bench-support" }
