@@ -1013,6 +1013,14 @@ mod tests {
         assert_eq!(err, InternerError::CapacityExceeded);
     }
 
+    // Skipped under Miri: the test intentionally feeds `usize::MAX` to
+    // exercise the clamp-and-swallow-allocator-failure path. The real
+    // allocator refuses the clamped `MAX_CAPACITY` request and
+    // `try_reserve` converts that into an `Err` we drop. Miri instead
+    // raises a "resource exhaustion" error that aborts the test, so the
+    // invariant we're pinning (no process-wide abort) can't be
+    // meaningfully validated under Miri.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn with_capacity_clamps_silently() {
         // `with_capacity` is documented to clamp rather than panic, so
