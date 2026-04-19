@@ -259,6 +259,24 @@ pub struct FixedHistory<const K: usize> {
     cursor: usize,
 }
 
+// Tripwire for `FixedHistory::boxed`. That constructor zero-initialises a
+// heap-allocated `MaybeUninit<Self>` and calls `assume_init`, which is
+// sound only so long as every field of `FixedHistory<K>` accepts the
+// all-zero bit pattern. Today the fields are `[u64; K]`, `usize`, and
+// `usize` — all zero-valid — and `size_of::<FixedHistory<0>>()` is
+// exactly the two `usize` fields (the `[u64; 0]` is a ZST).
+//
+// If this assertion fires, a field has been added or changed. Do NOT
+// just update the arithmetic: re-audit the SAFETY comment on `boxed()`
+// and confirm every field still accepts all-zero. If any new field does
+// not (e.g. `NonZeroUsize`, `&T`, an enum with niches), `boxed()` must
+// switch to a different initialization strategy before this assertion
+// can be updated.
+const _: () = assert!(
+    std::mem::size_of::<FixedHistory<0>>() == 2 * std::mem::size_of::<usize>(),
+    "FixedHistory: field added or changed — re-audit `boxed()` SAFETY before updating this assertion"
+);
+
 // Manual `Debug` impl: only print the logically-live entries in MRU order,
 // not the raw ring buffer. This prevents stale slots (left behind after a
 // `clear()` or a wrap) from appearing in panic messages / logs, which would
@@ -335,16 +353,24 @@ impl<const K: usize> FixedHistory<K> {
                 "FixedHistory<K>: K exceeds MAX_K (see cachekit::ds::fixed_history::MAX_K)"
             );
         }
-        // `FixedHistory` is `[u64; K]` + two `usize`s. Its canonical empty
-        // state has every byte set to zero (`data = [0; K]`, `len = 0`,
-        // `cursor = 0`), and it contains no padding, pointers, references,
-        // or other types for which the all-zero bit pattern is invalid.
-        // Writing zeros into a heap-allocated `MaybeUninit<Self>` therefore
-        // produces a valid `Self` without ever touching the stack.
+        // `FixedHistory<K>` has three fields: `data: [u64; K]`,
+        // `len: usize`, and `cursor: usize`. All three types accept the
+        // all-zero bit pattern as a valid value (`u64` and `usize` have
+        // no validity invariants; `[u64; K]` inherits that element-wise).
+        // Field layout, ordering, and any padding chosen by the compiler
+        // are therefore irrelevant: every byte inside `size_of::<Self>()`
+        // is either an in-bounds field byte with a zero-valid value, or
+        // a padding byte with no validity requirement. The tripwire
+        // `const _` assertion near the struct definition catches the
+        // most common way to invalidate this argument (adding or
+        // resizing a field) at compile time; adding a field whose type
+        // does not accept all-zero would also require re-auditing the
+        // SAFETY block below.
         let mut uninit: Box<std::mem::MaybeUninit<Self>> = Box::new_uninit();
         // SAFETY: `uninit` points to `size_of::<Self>()` bytes of
-        // heap-allocated storage. Writing zeros into all of them yields a
-        // valid `Self` for the reasons above, so `assume_init` is sound.
+        // heap-allocated storage. After the `write_bytes` call every
+        // byte in that region is initialised to `0`, which yields a
+        // valid `Self` by the argument above, so `assume_init` is sound.
         unsafe {
             std::ptr::write_bytes(uninit.as_mut_ptr(), 0, 1);
             uninit.assume_init()
