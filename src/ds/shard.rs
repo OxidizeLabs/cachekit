@@ -63,7 +63,7 @@
 //! material:
 //!
 //! - [`ShardSelector::randomized`] draws the key material from the stdlib's
-//!   [`RandomState`](std::collections::hash_map::RandomState), which seeds
+//!   [`RandomState`], which seeds
 //!   itself from the OS CSPRNG. Use this whenever shard assignment is *not*
 //!   required to be reproducible across processes (the common case).
 //! - [`ShardSelector::new`] keeps the deterministic `(shards, seed)`
@@ -188,7 +188,7 @@ impl ShardSelector {
     }
 
     /// Creates a selector whose SipHash keys are drawn from the stdlib's
-    /// [`RandomState`](std::collections::hash_map::RandomState), which seeds
+    /// [`RandomState`], which seeds
     /// itself from the OS CSPRNG.
     ///
     /// Use this for HashDoS-resistant sharding when the shard assignment does
