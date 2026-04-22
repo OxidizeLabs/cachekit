@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-22
+
 ### Breaking
 - `ClockRing::with_hasher` / `ClockRing::try_with_hasher` and the `ConcurrentClockRing` equivalents now require a third argument: a `KeysAreTrusted` marker. This forces every caller that opts out of the default DoS-resistant `RandomState` hasher to acknowledge the trade-off at the call site, making hash-collision-DoS exposure reviewable via `grep KeysAreTrusted`. Callers using `ClockRing::new` / `try_new` are unaffected. Migration: add `, KeysAreTrusted::new()` to existing `with_hasher` / `try_with_hasher` calls.
 
@@ -41,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `## Memory Budgeting` module-level section documenting that `approx_bytes` counts `size_of::<V>()` only and does not follow heap pointers — workloads with variable-sized values should enforce a byte budget at the call site.
 - New `## Timing Side Channels` module-level section documenting that `HashMap`-backed lookup timing reveals key presence, and recommending `ClockRing` not be used as the backing store for caches whose key set must remain confidential against a co-located attacker.
 - `Extend<(K, V)> for ClockRing` impl now carries a memory-budget caveat pointing callers at `pop_victim`-based byte accounting when values are attacker-influenced; evicted entries are silently dropped by `Extend` and the aggregate memory use during a bulk insert is bounded only by `capacity × max(size_of(V_i))` across the iterator.
+
+### Fixed (additional)
+- **KeyInterner** — hardening for hash-flooding and unbounded-growth DoS, fallible `try_intern`, `with_hasher` and capacity bounds, safe insert ordering, and key-redacted `Debug` (#99).
+- **GhostList** — configurable hasher, capacity clamp, key-redacted `Debug`, and security documentation for workloads with untrusted keys (#96).
+- **FixedHistory** — stricter `K` bound enforcement, `boxed` for large inline histories, key-redacted `Debug`, zeroing `clear`, and safer arithmetic in hot paths (#95).
+
+### Changed (additional)
+- **LRU-K policy** — internal `SlotArena` and `FxHashMap` for hot-path layout and handle lookup (#101).
+- **Sharded** caches use `SipHasher` to compute shard indices (#100).
+- **Benchmarks** (dev only): `lru` comparison crate updated to 0.17.0 (#103).
 
 ## [0.7.0] - 2026-04-09
 

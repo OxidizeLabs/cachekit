@@ -9,7 +9,7 @@ name = "render_docs"
 path = "src/bin/render_docs.rs"
 
 [dependencies]
-cachekit = { path = "..", version = "0.7.0", features = ["policy-all"] }
+cachekit = { path = "..", version = "0.8.0", features = ["policy-all"] }
 rand = "0.10.1"
 rand_distr = "0.6"
 serde = { version = "1.0", features = ["derive"] }

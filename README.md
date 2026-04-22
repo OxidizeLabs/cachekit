@@ -50,7 +50,7 @@ Add `cachekit` as a dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachekit = "0.7.0"
+cachekit = "0.8.0"
 ```
 
 From source:
