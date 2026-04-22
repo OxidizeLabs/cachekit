@@ -1750,8 +1750,14 @@ mod tests {
     // -------------------------------------------------------------------------
     // Security hardening
     // -------------------------------------------------------------------------
+    //
+    // Some tests below would materialize a `GhostList` at [`GhostList::MAX_CAPACITY`].
+    // On a 64-bit target that can require backing storage on the order of the 16 GiB
+    // construction budget, so they are `#[ignore]` and are meant for high-memory
+    // machines: `cargo test ghost_list_ -- --ignored --test-threads=1`
 
     #[test]
+    #[ignore = "allocates up to 16 GiB; run: cargo test ghost_list_new_clamps_oversized_capacity -- --ignored --test-threads=1"]
     fn ghost_list_new_clamps_oversized_capacity() {
         let ghost: GhostList<u32> = GhostList::new(usize::MAX);
         assert_eq!(
@@ -1820,8 +1826,16 @@ mod tests {
             "MAX_CAPACITY must scale down with size_of::<K>(): \
              fat_cap={fat_cap} small_cap={small_cap}"
         );
+    }
 
-        // And constructing at the advertised max must not abort.
+    #[test]
+    #[ignore = "allocates multiple GiB; run: cargo test ghost_list_max_capacity_fat_key_materializes_at_clamp -- --ignored --test-threads=1"]
+    fn ghost_list_max_capacity_fat_key_materializes_at_clamp() {
+        #[repr(C)]
+        #[derive(Clone, Eq, PartialEq, Hash)]
+        struct Fat([u8; 4096]);
+
+        let fat_cap = GhostList::<Fat>::MAX_CAPACITY;
         let ghost: GhostList<Fat> = GhostList::new(usize::MAX);
         assert_eq!(ghost.capacity(), fat_cap);
     }
@@ -1832,7 +1846,16 @@ mod tests {
         assert_eq!(err.requested, usize::MAX);
         assert_eq!(err.max, GhostList::<u32>::MAX_CAPACITY);
 
-        // Within bounds succeeds.
+        // Succeeds well below the construction ceiling (full `MAX_CAPACITY` is
+        // covered in an ignored test — it can allocate on the order of 16 GiB).
+        const N: usize = 65_536;
+        let ok = GhostList::<u32>::try_new(N).unwrap();
+        assert_eq!(ok.capacity(), N);
+    }
+
+    #[test]
+    #[ignore = "allocates up to 16 GiB; run: cargo test ghost_list_try_new_succeeds_at_max_capacity -- --ignored --test-threads=1"]
+    fn ghost_list_try_new_succeeds_at_max_capacity() {
         let ok = GhostList::<u32>::try_new(GhostList::<u32>::MAX_CAPACITY).unwrap();
         assert_eq!(ok.capacity(), GhostList::<u32>::MAX_CAPACITY);
     }
@@ -1850,8 +1873,9 @@ mod tests {
         assert_eq!(err.requested, usize::MAX);
         assert_eq!(err.max, Gh::MAX_CAPACITY);
 
-        let ok = Gh::try_with_capacity_and_hasher(Gh::MAX_CAPACITY, RandomState::new()).unwrap();
-        assert_eq!(ok.capacity(), Gh::MAX_CAPACITY);
+        const N: usize = 65_536;
+        let ok = Gh::try_with_capacity_and_hasher(N, RandomState::new()).unwrap();
+        assert_eq!(ok.capacity(), N);
 
         // Zero capacity is always valid.
         let empty = Gh::try_with_capacity_and_hasher(0, RandomState::new()).unwrap();
@@ -1863,6 +1887,16 @@ mod tests {
             let err = Gh::try_with_capacity_and_hasher(over, RandomState::new()).unwrap_err();
             assert_eq!(err.requested, over);
         }
+    }
+
+    #[test]
+    #[ignore = "allocates up to 16 GiB; run: cargo test ghost_list_try_with_capacity_and_hasher_succeeds_at_max_capacity -- --ignored --test-threads=1"]
+    fn ghost_list_try_with_capacity_and_hasher_succeeds_at_max_capacity() {
+        use std::collections::hash_map::RandomState;
+
+        type Gh = GhostList<u32, RandomState>;
+        let ok = Gh::try_with_capacity_and_hasher(Gh::MAX_CAPACITY, RandomState::new()).unwrap();
+        assert_eq!(ok.capacity(), Gh::MAX_CAPACITY);
     }
 
     #[test]
