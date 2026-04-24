@@ -150,11 +150,41 @@
 //! ## Thread Safety
 //!
 //! - [`SlabStore`] is **not** thread-safe (single-threaded only)
-//! - [`ConcurrentSlabStore`] is `Send + Sync` via `parking_lot::RwLock`
+//! - [`ConcurrentSlabStore`] is `Send + Sync` via a single `parking_lot::RwLock`
+//!   guarding all internal state (index, entries, free list)
+//!
+//! ## Security Considerations
+//!
+//! - **Hasher:** the key index is backed by `FxHashMap`, which is fast but
+//!   **not** HashDoS-resistant. If keys can originate from untrusted input
+//!   (user-supplied strings, request headers, tenant IDs), an adversary can
+//!   force hash collisions to degrade O(1) lookups toward O(n). Prefer
+//!   [`crate::store::hashmap::HashMapStore`] (default `RandomState`) when
+//!   caching adversarial keys.
+//! - **Capacity:** [`SlabStore::new`] and [`ConcurrentSlabStore::new`] panic
+//!   on allocator failure (and may pre-allocate `capacity` slots eagerly).
+//!   Use [`SlabStore::try_new`] / [`ConcurrentSlabStore::try_new`] when
+//!   `capacity` originates from untrusted input.
+//! - **Stale `EntryId`:** slot indices are reused from the free list after a
+//!   remove. Holding an `EntryId` across a `remove` + later `try_insert` can
+//!   cause reads (`get_by_id`) to observe a *different* entry's value and
+//!   writes (`remove_by_id`, `get_by_id_mut`) to silently mutate or remove
+//!   the wrong entry. Treat `EntryId`s as tied to the lifetime of the entry
+//!   they were created for; prefer key-based APIs across remove boundaries.
+//! - **Sensitive values:** dropped values are not zeroed. Wrap `V` in
+//!   `zeroize::Zeroizing` (or equivalent) when caching secrets.
+//! - **Lock poisoning:** `parking_lot::RwLock` does not poison on panic.
+//!   Under `panic = "unwind"`, a panicking `K::Clone` or `V::Drop` may leak
+//!   a slot (permanently reducing usable capacity). Under the crate's
+//!   default `panic = "abort"` profile the process terminates first.
+//! - **Counters:** metrics counters use `Relaxed` ordering and wrap on
+//!   overflow in release (`overflow-checks = false`). Treat them as
+//!   best-effort observability rather than audit-grade.
 //!
 //! ## Implementation Notes
 //!
 //! - `EntryId` indices are reused; stale IDs after removal are undefined
+//!   (see *Security Considerations* above).
 //! - Metrics use atomic counters for concurrent compatibility
 //! - `remove_by_id` enables O(1) eviction without key lookup
 
@@ -185,8 +215,17 @@ use crate::store::traits::{StoreCore, StoreFactory, StoreFull, StoreMetrics, Sto
 /// # Invalidation
 ///
 /// After `remove()` or `remove_by_id()`, the slot is returned to the free
-/// list and may be reused. Accessing a stale `EntryId` may return `None`
-/// or a different entry's data.
+/// list and may be reused by a subsequent insert. A stale `EntryId` is
+/// unsafe to use in the *logical* sense (not the Rust-memory-safety sense):
+///
+/// - `get_by_id`/`peek` may silently return the **new** entry's value.
+/// - `get_by_id_mut` may silently mutate the **new** entry.
+/// - `remove_by_id` may silently remove the **new** entry, deleting data
+///   the caller never intended to touch.
+///
+/// Treat `EntryId`s as scoped to the lifetime of the entry they were
+/// created for. Across a remove/insert boundary, re-derive the handle via
+/// [`entry_id`](SlabStore::entry_id) or use key-based APIs.
 ///
 /// # Example
 ///
@@ -282,6 +321,13 @@ impl StoreCounters {
         self.removes.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Adds `n` to the `removes` counter in a single atomic step. Used by
+    /// `clear()` so bulk removals are auditable alongside per-entry
+    /// `remove()` / `remove_by_id()` calls.
+    fn add_removes(&self, n: u64) {
+        self.removes.fetch_add(n, Ordering::Relaxed);
+    }
+
     fn inc_eviction(&self) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
     }
@@ -375,6 +421,12 @@ where
     ///
     /// Pre-allocates internal structures for the given capacity.
     ///
+    /// # Panics
+    ///
+    /// Panics on allocator failure — including the `capacity == usize::MAX`
+    /// degenerate case. Use [`SlabStore::try_new`] when `capacity` can
+    /// originate from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -393,6 +445,43 @@ where
             capacity,
             metrics: StoreCounters::default(),
         }
+    }
+
+    /// Fallible variant of [`new`](SlabStore::new) that reports allocator
+    /// failure instead of panicking.
+    ///
+    /// Use this when `capacity` may originate from untrusted configuration
+    /// — for example, a user-tunable cache size — so the caller can handle
+    /// out-of-memory conditions explicitly rather than aborting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::collections::TryReserveError`] if either the entries
+    /// `Vec` or the index `HashMap` cannot reserve space for `capacity`
+    /// elements.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::SlabStore;
+    /// use cachekit::store::traits::StoreCore;
+    ///
+    /// let store: SlabStore<String, i32> =
+    ///     SlabStore::try_new(1000).expect("reasonable capacity");
+    /// assert_eq!(store.capacity(), 1000);
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        let mut entries: Vec<Option<Entry<K, V>>> = Vec::new();
+        entries.try_reserve_exact(capacity)?;
+        let mut index: FxHashMap<K, EntryId> = FxHashMap::with_hasher(Default::default());
+        index.try_reserve(capacity)?;
+        Ok(Self {
+            entries,
+            free_list: Vec::new(),
+            index,
+            capacity,
+            metrics: StoreCounters::default(),
+        })
     }
 
     /// Returns the `EntryId` handle for a key.
@@ -657,17 +746,21 @@ where
     /// # Errors
     ///
     /// Returns [`StoreFull`] if at capacity and the key is new.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the index references a slot that is unexpectedly empty,
-    /// indicating an internal invariant violation.
     fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreFull> {
-        if let Some(id) = self.index.get(&key).copied() {
-            let entry = self.entries[id.0].as_mut().expect("slab entry missing");
-            let previous = std::mem::replace(&mut entry.value, value);
-            self.metrics.inc_update();
-            return Ok(Some(previous));
+        if let Some(&id) = self.index.get(&key) {
+            if let Some(Some(entry)) = self.entries.get_mut(id.0) {
+                let previous = std::mem::replace(&mut entry.value, value);
+                self.metrics.inc_update();
+                return Ok(Some(previous));
+            }
+            // Invariant violation: `index` references a slot that is empty or
+            // out of bounds. Only reachable under internal corruption (e.g. a
+            // broken `Eq`/`Hash` on `K`, or a partial mutation left by a
+            // `panic = "unwind"` build). Assert loudly in debug; in release,
+            // heal by dropping the stale index entry so we fall into the
+            // new-key path without panicking.
+            debug_assert!(false, "slab store index/entries desync at slot {}", id.0);
+            self.index.remove(&key);
         }
 
         if self.index.len() >= self.capacity {
@@ -689,17 +782,33 @@ where
     /// The slot is returned to the free list for reuse.
     fn remove(&mut self, key: &K) -> Option<V> {
         let id = self.index.remove(key)?;
-        let entry = self.entries[id.0].take()?;
+        // Defensive access: `get_mut` avoids a panic if the invariant
+        // between `index` and `entries` is violated. Under normal flows the
+        // slot is always `Some`.
+        let entry = self.entries.get_mut(id.0).and_then(|slot| slot.take())?;
         self.free_list.push(id.0);
         self.metrics.inc_remove();
         Some(entry.value)
     }
 
     /// Removes all entries and clears the free list.
+    ///
+    /// Attributes the cleared entries to the `removes` metric so bulk
+    /// clears remain auditable alongside per-entry removals.
+    ///
+    /// The free list and index are cleared *before* the entries vector so
+    /// that a panicking `V::Drop` (under `panic = "unwind"`) leaves the
+    /// store in a logically-empty, self-consistent state rather than one
+    /// where `len()` reports stale entries and `allocate_slot()` would
+    /// hand back free-list indices pointing past the truncated
+    /// `entries` Vec. Remaining values may leak, but the store remains
+    /// usable.
     fn clear(&mut self) {
-        self.entries.clear();
+        let removed = self.index.len() as u64;
         self.free_list.clear();
         self.index.clear();
+        self.entries.clear();
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -737,8 +846,9 @@ where
 ///
 /// Provides the same functionality as [`SlabStore`] but safe for concurrent
 /// access. Uses `Arc<V>` for values since references cannot outlive lock
-/// guards. Each internal structure (`entries`, `index`, `free_list`) has
-/// its own `RwLock` for fine-grained locking.
+/// guards. The entire internal state (`entries`, `index`, `free_list`,
+/// `capacity`) is guarded by a single `parking_lot::RwLock`, keeping
+/// mutations atomic across all three sub-structures.
 ///
 /// # Type Parameters
 ///
@@ -747,9 +857,12 @@ where
 ///
 /// # Synchronization
 ///
-/// - Read operations acquire read locks on `index` and `entries`
-/// - Write operations acquire write locks as needed
+/// - Read operations take a read lock on the inner state
+/// - Write operations take a write lock on the inner state
 /// - Metrics use atomic counters (lock-free)
+/// - Read-read parallelism across independent sub-structures is **not**
+///   offered; read contention on hot keys will be with other readers, and
+///   any writer serializes all access.
 ///
 /// # Example
 ///
@@ -819,6 +932,12 @@ where
 {
     /// Creates a concurrent slab store with the specified capacity.
     ///
+    /// # Panics
+    ///
+    /// Panics on allocator failure. Use
+    /// [`try_new`](ConcurrentSlabStore::try_new) when `capacity` can
+    /// originate from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -839,6 +958,41 @@ where
             }),
             metrics: StoreCounters::default(),
         }
+    }
+
+    /// Fallible variant of [`new`](ConcurrentSlabStore::new) that reports
+    /// allocator failure instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::collections::TryReserveError`] if either the entries
+    /// `Vec` or the index `HashMap` cannot reserve space for `capacity`
+    /// elements.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::slab::ConcurrentSlabStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentSlabStore<String, Vec<u8>> =
+    ///     ConcurrentSlabStore::try_new(1000).expect("reasonable capacity");
+    /// assert_eq!(store.capacity(), 1000);
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        let mut entries: Vec<Option<Entry<K, Arc<V>>>> = Vec::new();
+        entries.try_reserve_exact(capacity)?;
+        let mut index: FxHashMap<K, EntryId> = FxHashMap::with_hasher(Default::default());
+        index.try_reserve(capacity)?;
+        Ok(Self {
+            inner: RwLock::new(SlabInner {
+                entries,
+                free_list: Vec::new(),
+                index,
+                capacity,
+            }),
+            metrics: StoreCounters::default(),
+        })
     }
 
     /// Returns the `EntryId` handle for a key.
@@ -1082,13 +1236,21 @@ where
         let mut inner = self.inner.write();
 
         if let Some(&id) = inner.index.get(&key) {
-            if let Some(slot) = inner.entries.get_mut(id.0) {
-                if let Some(entry) = slot.as_mut() {
-                    let previous = std::mem::replace(&mut entry.value, value);
-                    self.metrics.inc_update();
-                    return Ok(Some(previous));
-                }
+            if let Some(Some(entry)) = inner.entries.get_mut(id.0) {
+                let previous = std::mem::replace(&mut entry.value, value);
+                self.metrics.inc_update();
+                return Ok(Some(previous));
             }
+            // Invariant violation: `index` references a slot that is empty
+            // or out of bounds. Assert loudly in debug; in release, heal by
+            // dropping the stale index entry so the new-key path can take
+            // over without blindly counting a logical-update as an insert.
+            debug_assert!(
+                false,
+                "concurrent slab store index/entries desync at slot {}",
+                id.0
+            );
+            inner.index.remove(&key);
         }
 
         if inner.index.len() >= inner.capacity {
@@ -1114,11 +1276,21 @@ where
         Some(entry.value)
     }
 
+    /// Removes all entries.
+    ///
+    /// Attributes the cleared entries to the `removes` metric. The free
+    /// list and index are cleared before the entries vector so a panicking
+    /// `V::Drop` under `panic = "unwind"` leaves the store in a
+    /// logically-empty, self-consistent state (values may leak, but
+    /// `len()` reports 0 and no stale free-list index can point past the
+    /// truncated `entries` Vec).
     fn clear(&self) {
         let mut inner = self.inner.write();
-        inner.entries.clear();
+        let removed = inner.index.len() as u64;
         inner.free_list.clear();
         inner.index.clear();
+        inner.entries.clear();
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -1282,5 +1454,148 @@ mod tests {
 
         assert!(store.peek(&"missing").is_none());
         assert_eq!(store.metrics().misses, 0);
+    }
+
+    #[test]
+    fn slab_store_try_new_reserves_capacity() {
+        let store: SlabStore<u64, u64> =
+            SlabStore::try_new(16).expect("try_new(16) should succeed");
+        assert_eq!(store.capacity(), 16);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn slab_store_clear_attributes_removes() {
+        let mut store: SlabStore<u64, u64> = SlabStore::new(4);
+        for i in 0..4u64 {
+            store.try_insert(i, i * 10).unwrap();
+        }
+        assert_eq!(store.len(), 4);
+        let before = store.metrics();
+        assert_eq!(before.removes, 0);
+
+        store.clear();
+
+        let after = store.metrics();
+        assert_eq!(after.removes, 4, "clear() must count each removed entry");
+        assert_eq!(store.len(), 0);
+        // Post-clear inserts should not credit as removes.
+        store.try_insert(99, 0).unwrap();
+        assert_eq!(store.metrics().removes, 4);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_slab_store_try_new_reserves_capacity() {
+        let store: ConcurrentSlabStore<u64, u64> =
+            ConcurrentSlabStore::try_new(16).expect("try_new(16) should succeed");
+        assert_eq!(store.capacity(), 16);
+        assert!(store.is_empty());
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_slab_store_clear_attributes_removes() {
+        let store: ConcurrentSlabStore<u64, u64> = ConcurrentSlabStore::new(4);
+        for i in 0..4u64 {
+            store.try_insert(i, Arc::new(i * 10)).unwrap();
+        }
+        assert_eq!(store.len(), 4);
+        assert_eq!(store.metrics().removes, 0);
+
+        store.clear();
+
+        assert_eq!(
+            store.metrics().removes,
+            4,
+            "clear() must count each removed entry"
+        );
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn slab_store_clear_panic_leaves_empty_logical_state() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomOrder};
+
+        // Armed only for the single V::Drop that should panic. Subsequent
+        // drops (including those that run while the unwind is in flight)
+        // return early via `thread::panicking()`.
+        static SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
+
+        struct PanicOnDrop(#[allow(dead_code)] u64);
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    return;
+                }
+                if SHOULD_PANIC.swap(false, AtomOrder::SeqCst) {
+                    panic!("intentional drop panic for test");
+                }
+            }
+        }
+
+        SHOULD_PANIC.store(false, AtomOrder::SeqCst);
+
+        let mut store: SlabStore<u64, PanicOnDrop> = SlabStore::new(10);
+        for i in 0..5u64 {
+            store.try_insert(i, PanicOnDrop(i)).unwrap();
+        }
+        // Populate the free list so that a post-panic `allocate_slot()`
+        // would pop a stale index if the clear order were unsafe.
+        let _ = store.remove(&2u64);
+
+        SHOULD_PANIC.store(true, AtomOrder::SeqCst);
+        let _ = catch_unwind(AssertUnwindSafe(|| store.clear()));
+
+        // Direction-safe invariant: post-panic, the store must report
+        // itself as empty rather than leaving the index populated while
+        // `entries.len()` has been truncated to zero by `Vec::clear`'s
+        // `SetLenOnDrop`.
+        assert_eq!(store.len(), 0, "post-panic len must be zero");
+        assert!(store.is_empty());
+
+        // Subsequent inserts must not panic out-of-bounds against a stale
+        // free-list index pointing past the truncated `entries` Vec.
+        store.try_insert(999, PanicOnDrop(999)).unwrap();
+        assert_eq!(store.len(), 1);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_slab_store_clear_panic_leaves_empty_logical_state() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomOrder};
+
+        static SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
+
+        struct PanicOnDrop(#[allow(dead_code)] u64);
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    return;
+                }
+                if SHOULD_PANIC.swap(false, AtomOrder::SeqCst) {
+                    panic!("intentional drop panic for test");
+                }
+            }
+        }
+
+        SHOULD_PANIC.store(false, AtomOrder::SeqCst);
+
+        let store: ConcurrentSlabStore<u64, PanicOnDrop> = ConcurrentSlabStore::new(10);
+        for i in 0..5u64 {
+            store.try_insert(i, Arc::new(PanicOnDrop(i))).unwrap();
+        }
+        let _ = store.remove(&2u64);
+
+        SHOULD_PANIC.store(true, AtomOrder::SeqCst);
+        let _ = catch_unwind(AssertUnwindSafe(|| store.clear()));
+
+        assert_eq!(store.len(), 0, "post-panic len must be zero");
+        assert!(store.is_empty());
+
+        store.try_insert(999, Arc::new(PanicOnDrop(999))).unwrap();
+        assert_eq!(store.len(), 1);
     }
 }
