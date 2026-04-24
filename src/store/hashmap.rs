@@ -147,6 +147,26 @@
 //! - [`HashMapStore`] is **not** thread-safe (single-threaded only)
 //! - [`ConcurrentHashMapStore`] and [`ShardedHashMapStore`] are `Send + Sync`
 //!
+//! ## Security Considerations
+//!
+//! - **Hasher:** the default hasher is `RandomState` (HashDoS-resistant).
+//!   Callers using [`with_hasher`](HashMapStore::with_hasher) or its
+//!   concurrent equivalents are responsible for choosing a hasher appropriate
+//!   to the threat model — e.g., `FxBuildHasher` is fast but not
+//!   HashDoS-resistant and must only be used when keys come from a trusted
+//!   source.
+//! - **Capacity / shard count:** constructors panic on allocator failure.
+//!   Use [`HashMapStore::try_new`] / [`try_with_hasher`](HashMapStore::try_with_hasher)
+//!   (and the concurrent and sharded equivalents) when `capacity` or `shards`
+//!   originates from untrusted input.
+//! - **Sensitive values:** dropped values are not zeroed. Wrap `V` in
+//!   `zeroize::Zeroizing` (or equivalent) when caching secrets.
+//! - **Lock poisoning:** `parking_lot::RwLock` does not poison on panic.
+//!   Under `panic = "unwind"`, avoid panicking `Drop` impls on `V`.
+//! - **Covert mutation:** [`HashMapStore::peek_mut`] exposes `&mut V` without
+//!   incrementing `updates`. Callers requiring a full audit trail should
+//!   avoid it or wrap access in their own bookkeeping.
+//!
 //! ## Implementation Notes
 //!
 //! - Sharded store uses `hash(key) % shard_count` for shard selection
@@ -226,6 +246,10 @@ impl StoreCounters {
         self.removes.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn add_removes(&self, n: u64) {
+        self.removes.fetch_add(n, Ordering::Relaxed);
+    }
+
     fn inc_eviction(&self) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
     }
@@ -301,6 +325,9 @@ where
 {
     /// Creates a store with the specified capacity using the default hasher.
     ///
+    /// Panics on allocator failure. Use [`try_new`](Self::try_new) when
+    /// `capacity` originates from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -314,6 +341,29 @@ where
     pub fn new(capacity: usize) -> Self {
         Self::with_hasher(capacity, RandomState::new())
     }
+
+    /// Fallible constructor for [`new`](Self::new).
+    ///
+    /// Reserves space for `capacity` entries without panicking on allocator
+    /// failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve capacity for `capacity` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::hashmap::HashMapStore;
+    /// use cachekit::store::traits::StoreCore;
+    ///
+    /// let store: HashMapStore<i32, String> = HashMapStore::try_new(100).unwrap();
+    /// assert_eq!(store.capacity(), 100);
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        Self::try_with_hasher(capacity, RandomState::new())
+    }
 }
 
 impl<K, V, S> HashMapStore<K, V, S>
@@ -324,7 +374,8 @@ where
     /// Creates a store with the specified capacity and custom hasher.
     ///
     /// Use this when you need a deterministic or faster hasher than the
-    /// default `RandomState`.
+    /// default `RandomState`. Panics on allocator failure; see
+    /// [`try_with_hasher`](Self::try_with_hasher) for the fallible variant.
     ///
     /// # Example
     ///
@@ -344,6 +395,37 @@ where
             capacity,
             metrics: StoreCounters::default(),
         }
+    }
+
+    /// Fallible constructor for [`with_hasher`](Self::with_hasher).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve capacity for `capacity` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::hash_map::RandomState;
+    /// use cachekit::store::hashmap::HashMapStore;
+    /// use cachekit::store::traits::StoreCore;
+    ///
+    /// let store: HashMapStore<&str, i32, RandomState> =
+    ///     HashMapStore::try_with_hasher(50, RandomState::new()).unwrap();
+    /// assert_eq!(store.capacity(), 50);
+    /// ```
+    pub fn try_with_hasher(
+        capacity: usize,
+        hasher: S,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut map: HashMap<K, V, S> = HashMap::with_hasher(hasher);
+        map.try_reserve(capacity)?;
+        Ok(Self {
+            map,
+            capacity,
+            metrics: StoreCounters::default(),
+        })
     }
 
     /// Returns a reference to the value without updating metrics.
@@ -546,9 +628,14 @@ where
         removed
     }
 
-    /// Removes all entries. Does not update metrics.
+    /// Removes all entries.
+    ///
+    /// Attributes the cleared entries to the `removes` metric so audit
+    /// trails reflect that entries left the store.
     fn clear(&mut self) {
+        let removed = self.map.len() as u64;
         self.map.clear();
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -642,6 +729,9 @@ where
 {
     /// Creates a concurrent store with the specified capacity.
     ///
+    /// Panics on allocator failure. Use [`try_new`](Self::try_new) when
+    /// `capacity` originates from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -655,6 +745,27 @@ where
     pub fn new(capacity: usize) -> Self {
         Self::with_hasher(capacity, RandomState::new())
     }
+
+    /// Fallible constructor for [`new`](Self::new).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve capacity for `capacity` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::hashmap::ConcurrentHashMapStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentHashMapStore<String, Vec<u8>> =
+    ///     ConcurrentHashMapStore::try_new(1000).unwrap();
+    /// assert_eq!(store.capacity(), 1000);
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        Self::try_with_hasher(capacity, RandomState::new())
+    }
 }
 
 #[cfg(feature = "concurrency")]
@@ -664,6 +775,9 @@ where
     S: BuildHasher,
 {
     /// Creates a concurrent store with the specified capacity and custom hasher.
+    ///
+    /// Panics on allocator failure; see [`try_with_hasher`](Self::try_with_hasher)
+    /// for the fallible variant.
     ///
     /// # Example
     ///
@@ -683,6 +797,37 @@ where
             capacity,
             metrics: StoreCounters::default(),
         }
+    }
+
+    /// Fallible constructor for [`with_hasher`](Self::with_hasher).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve capacity for `capacity` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::hash_map::RandomState;
+    /// use cachekit::store::hashmap::ConcurrentHashMapStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentHashMapStore<u64, String, RandomState> =
+    ///     ConcurrentHashMapStore::try_with_hasher(100, RandomState::new()).unwrap();
+    /// assert_eq!(store.capacity(), 100);
+    /// ```
+    pub fn try_with_hasher(
+        capacity: usize,
+        hasher: S,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut map: HashMap<K, Arc<V>, S> = HashMap::with_hasher(hasher);
+        map.try_reserve(capacity)?;
+        Ok(Self {
+            map: RwLock::new(map),
+            capacity,
+            metrics: StoreCounters::default(),
+        })
     }
 
     /// Records an eviction in the metrics.
@@ -802,9 +947,15 @@ where
         removed
     }
 
-    /// Removes all entries. Acquires write lock.
+    /// Removes all entries.
+    ///
+    /// Acquires a write lock. Attributes the cleared entries to the `removes`
+    /// metric so audit trails reflect that entries left the store.
     fn clear(&self) {
-        self.map.write().clear()
+        let mut map = self.map.write();
+        let removed = map.len() as u64;
+        map.clear();
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -915,6 +1066,9 @@ where
 {
     /// Creates a sharded store with the specified capacity and shard count.
     ///
+    /// Panics on allocator failure. Use [`try_new`](Self::try_new) when
+    /// `capacity` or `shards` originate from untrusted input.
+    ///
     /// # Arguments
     ///
     /// * `capacity` - Maximum number of entries across all shards
@@ -934,6 +1088,31 @@ where
     pub fn new(capacity: usize, shards: usize) -> Self {
         Self::with_hasher(capacity, shards, RandomState::new())
     }
+
+    /// Fallible constructor for [`new`](Self::new).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve space for the shard vector.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::hashmap::ShardedHashMapStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ShardedHashMapStore<String, Vec<u8>> =
+    ///     ShardedHashMapStore::try_new(10000, 16).unwrap();
+    /// assert_eq!(store.capacity(), 10000);
+    /// assert_eq!(store.shard_count(), 16);
+    /// ```
+    pub fn try_new(
+        capacity: usize,
+        shards: usize,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        Self::try_with_hasher(capacity, shards, RandomState::new())
+    }
 }
 
 #[cfg(feature = "concurrency")]
@@ -944,7 +1123,9 @@ where
 {
     /// Creates a sharded store with custom hasher.
     ///
-    /// The hasher is cloned for each shard's internal HashMap.
+    /// The hasher is cloned for each shard's internal HashMap. Panics on
+    /// allocator failure; see [`try_with_hasher`](Self::try_with_hasher) for
+    /// the fallible variant.
     ///
     /// # Example
     ///
@@ -970,6 +1151,46 @@ where
             metrics: StoreCounters::default(),
             hasher,
         }
+    }
+
+    /// Fallible constructor for [`with_hasher`](Self::with_hasher).
+    ///
+    /// Uses `Vec::try_reserve_exact` for the shard vector, so adversarial
+    /// `shards` values cannot abort the process via allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve space for the shard vector.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::hash_map::RandomState;
+    /// use cachekit::store::hashmap::ShardedHashMapStore;
+    ///
+    /// let store: ShardedHashMapStore<u64, String, RandomState> =
+    ///     ShardedHashMapStore::try_with_hasher(1000, 4, RandomState::new()).unwrap();
+    /// assert_eq!(store.shard_count(), 4);
+    /// ```
+    pub fn try_with_hasher(
+        capacity: usize,
+        shards: usize,
+        hasher: S,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let shard_count = shards.max(1);
+        let mut shard_vec: Vec<RwLock<HashMap<K, Arc<V>, S>>> = Vec::new();
+        shard_vec.try_reserve_exact(shard_count)?;
+        for _ in 0..shard_count {
+            shard_vec.push(RwLock::new(HashMap::with_hasher(hasher.clone())));
+        }
+        Ok(Self {
+            shards: shard_vec,
+            capacity,
+            size: AtomicUsize::new(0),
+            metrics: StoreCounters::default(),
+            hasher,
+        })
     }
 
     /// Returns the number of shards.
@@ -1116,7 +1337,18 @@ where
                     }
                 }
 
+                // Roll back the reservation if `entry.insert` unwinds, so
+                // the size counter never drifts above the actual entry count.
+                struct SizeGuard<'a>(&'a AtomicUsize);
+                impl Drop for SizeGuard<'_> {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let guard = SizeGuard(&self.size);
                 entry.insert(value);
+                std::mem::forget(guard);
+
                 self.metrics.inc_insert();
                 Ok(None)
             },
@@ -1140,16 +1372,28 @@ where
     ///
     /// Acquires write locks on all shards simultaneously to ensure
     /// consistency. This is the only operation that locks multiple shards.
+    /// Attributes the cleared entries to the `removes` metric.
+    ///
+    /// The size counter is decremented per shard, *after* that shard has been
+    /// successfully cleared. If a `V::drop` unwinds mid-clear, untouched
+    /// shards' entries remain accounted for in `size` — so `size` is never
+    /// allowed to drift below the true logical entry count and the cache
+    /// cannot silently exceed its configured capacity. Because all shard
+    /// write locks are held across the entire operation, no concurrent
+    /// observer sees the intermediate state.
     fn clear(&self) {
-        // Lock all shards first to prevent concurrent modifications
         let mut guards = Vec::with_capacity(self.shards.len());
         for shard in &self.shards {
             guards.push(shard.write());
         }
+        let mut removed: u64 = 0;
         for guard in guards.iter_mut() {
+            let n = guard.len();
             guard.clear();
+            self.size.fetch_sub(n, Ordering::Relaxed);
+            removed = removed.saturating_add(n as u64);
         }
-        self.size.store(0, Ordering::Relaxed);
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -1300,5 +1544,158 @@ mod tests {
             Err(StoreFull)
         );
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn hashmap_store_clear_attributes_removes() {
+        let mut store: HashMapStore<&str, i32> = HashMapStore::new(4);
+        store.try_insert("a", 1).unwrap();
+        store.try_insert("b", 2).unwrap();
+        store.try_insert("c", 3).unwrap();
+
+        store.clear();
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.metrics().removes, 3);
+    }
+
+    #[test]
+    fn hashmap_store_try_new_reserves_capacity() {
+        let store: HashMapStore<u64, ()> = HashMapStore::try_new(0).expect("try_new(0)");
+        assert_eq!(store.capacity(), 0);
+        let store: HashMapStore<u64, ()> = HashMapStore::try_new(64).expect("try_new(64)");
+        assert_eq!(store.capacity(), 64);
+        assert!(store.map_capacity() >= 64);
+    }
+
+    #[test]
+    fn hashmap_store_try_with_hasher_reserves_capacity() {
+        let store: HashMapStore<&str, i32, RandomState> =
+            HashMapStore::try_with_hasher(32, RandomState::new()).expect("try_with_hasher(32)");
+        assert_eq!(store.capacity(), 32);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_hashmap_store_clear_attributes_removes() {
+        let store: ConcurrentHashMapStore<&str, i32> = ConcurrentHashMapStore::new(4);
+        store.try_insert("a", Arc::new(1)).unwrap();
+        store.try_insert("b", Arc::new(2)).unwrap();
+        store.try_insert("c", Arc::new(3)).unwrap();
+
+        store.clear();
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.metrics().removes, 3);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_hashmap_store_try_new_reserves_capacity() {
+        let store: ConcurrentHashMapStore<u64, String> =
+            ConcurrentHashMapStore::try_new(128).expect("try_new(128)");
+        assert_eq!(store.capacity(), 128);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn sharded_store_clear_attributes_removes() {
+        let store: ShardedHashMapStore<u64, ()> = ShardedHashMapStore::new(8, 4);
+        for i in 0..5u64 {
+            store.try_insert(i, Arc::new(())).unwrap();
+        }
+
+        store.clear();
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.metrics().removes, 5);
+        // After clear, the store must accept `capacity` more entries — verifies
+        // that `size` was zeroed even though `clear` runs per-shard.
+        for i in 0..8u64 {
+            assert_eq!(store.try_insert(i, Arc::new(())), Ok(None));
+        }
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn sharded_store_try_new_reserves_shard_vec() {
+        let store: ShardedHashMapStore<u64, ()> =
+            ShardedHashMapStore::try_new(1000, 8).expect("try_new(1000, 8)");
+        assert_eq!(store.capacity(), 1000);
+        assert_eq!(store.shard_count(), 8);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn sharded_store_try_new_clamps_zero_shards_to_one() {
+        let store: ShardedHashMapStore<u64, ()> =
+            ShardedHashMapStore::try_new(10, 0).expect("try_new(10, 0)");
+        assert_eq!(store.shard_count(), 1);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn sharded_store_clear_panic_does_not_allow_over_capacity() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomOrder};
+
+        static FIRST_DROP_PANICKED: AtomicBool = AtomicBool::new(false);
+
+        struct PanicOnDrop(#[allow(dead_code)] u64);
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    // Avoid double-panic while unwinding.
+                    return;
+                }
+                if FIRST_DROP_PANICKED.swap(true, AtomOrder::SeqCst) {
+                    // Only the first drop panics; later drops run quietly so
+                    // the test harness can clean up without aborting.
+                    return;
+                }
+                panic!("intentional drop panic for test");
+            }
+        }
+
+        FIRST_DROP_PANICKED.store(false, AtomOrder::SeqCst);
+
+        let capacity: usize = 100;
+        let store: ShardedHashMapStore<u64, PanicOnDrop> = ShardedHashMapStore::new(capacity, 4);
+        for i in 0..40u64 {
+            store.try_insert(i, Arc::new(PanicOnDrop(i))).unwrap();
+        }
+
+        // A `V::drop` panic inside the underlying HashMap's `clear` unwinds
+        // through our per-shard `clear` loop. We must still uphold the
+        // invariant that the cache cannot silently exceed `capacity`.
+        let _ = catch_unwind(AssertUnwindSafe(|| store.clear()));
+
+        // Fill to whatever headroom `size` reports.
+        let headroom = store.capacity().saturating_sub(store.len());
+        for i in 1000..(1000 + headroom as u64) {
+            let _ = store.try_insert(i, Arc::new(PanicOnDrop(i)));
+        }
+
+        // Count logical entries still reachable in the map — both original
+        // keys that survived the panicking clear and new ones we just added.
+        let mut logical_count = 0usize;
+        for i in 0..40u64 {
+            if store.contains(&i) {
+                logical_count += 1;
+            }
+        }
+        for i in 1000..(1000 + headroom as u64) {
+            if store.contains(&i) {
+                logical_count += 1;
+            }
+        }
+
+        assert!(
+            logical_count <= capacity,
+            "logical entries ({}) exceeded capacity ({}) — clear panic path \
+             allowed over-capacity",
+            logical_count,
+            capacity,
+        );
     }
 }
