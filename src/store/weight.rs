@@ -154,6 +154,54 @@
 //! - Updates recompute weight and adjust `total_weight` atomically
 //! - Does **not** implement `StoreCore`/`StoreMut` (uses `Arc<V>` API)
 //! - Metrics use atomic counters for concurrent compatibility
+//!
+//! ## Security Considerations
+//!
+//! - **Hasher:** the key index is backed by `FxHashMap`, which is fast but
+//!   **not** HashDoS-resistant. Because this store is specifically designed
+//!   for large, variable-size values (images, documents, serialized blobs),
+//!   keys often originate from request paths, tenant IDs, or filenames —
+//!   i.e. adversarial input. Callers caching such values should either
+//!   pre-hash keys with a keyed hash (e.g. `siphasher::sip::SipHasher13` with
+//!   a per-process key) or migrate to
+//!   [`crate::store::hashmap::HashMapStore`] (default `RandomState`).
+//! - **Capacity:** [`WeightStore::with_capacity`] and
+//!   [`ConcurrentWeightStore::with_capacity`] eagerly reserve
+//!   `capacity_entries` slots in the underlying hash map and panic on
+//!   allocator failure. Use [`WeightStore::try_with_capacity`] /
+//!   [`ConcurrentWeightStore::try_with_capacity`] when `capacity_entries`
+//!   originates from untrusted input.
+//! - **Weight function contract:** `F: Fn(&V) -> usize` must be
+//!   cheap (ideally O(1)), deterministic, and non-panicking. In
+//!   [`ConcurrentWeightStore`] the weight function is invoked while the
+//!   inner write lock is held, so a slow or adversarial `F` stalls every
+//!   concurrent reader and writer — a DoS amplification vector for
+//!   caches fronting user-supplied values. A panicking `F` aborts the
+//!   process under the crate's default `panic = "abort"` release profile.
+//! - **Sensitive values:** dropped `V`s are not zeroized. Cached secrets
+//!   linger in memory until the last `Arc<V>` clone is released and the
+//!   allocator reuses the slab. Wrap `V` in `zeroize::Zeroizing` (or
+//!   equivalent) when caching credentials or cryptographic material.
+//! - **Lock poisoning:** [`ConcurrentWeightStore`] uses
+//!   `parking_lot::RwLock`, which does **not** poison on panic. Under
+//!   `panic = "unwind"`, a panicking `K::Drop` / `V::Drop` during
+//!   [`WeightStore::clear`] could historically leave `total_weight`
+//!   stale and permanently inflate the weight baseline, silently rejecting
+//!   future valid inserts. This module resets `total_weight` *before*
+//!   dropping the map contents so that post-panic the store is
+//!   self-consistent (`len() == 0 && total_weight == 0`); individual
+//!   values may still leak through the unwinding drop, but the caller's
+//!   capacity accounting is never corrupted. Under the crate's default
+//!   `panic = "abort"` profile the process terminates first, so this
+//!   ordering matters only for callers who override the profile.
+//! - **Counters:** metrics counters use `Relaxed` ordering and wrap on
+//!   overflow in release (`overflow-checks = false`). Treat them as
+//!   best-effort observability rather than audit-grade.
+//! - **Total-weight side channel:** callers with access to
+//!   [`WeightStore::total_weight`] / [`ConcurrentWeightStore::total_weight`]
+//!   can infer the size of other cached entries from before/after
+//!   differentials. Avoid exposing the counter across trust boundaries
+//!   when caching variable-size records keyed by tenant identity.
 
 use std::fmt;
 use std::hash::Hash;
@@ -229,6 +277,13 @@ impl StoreCounters {
 
     fn inc_remove(&self) {
         self.removes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Attribute a bulk-removal count (e.g. from `clear()`) to the
+    /// `removes` counter so bulk operations remain visible alongside
+    /// per-entry removals.
+    fn add_removes(&self, n: u64) {
+        self.removes.fetch_add(n, Ordering::Relaxed);
     }
 
     fn inc_eviction(&self) {
@@ -330,6 +385,14 @@ where
     /// * `capacity_weight` - Maximum total weight across all entries
     /// * `weight_fn` - Function to compute weight from a value
     ///
+    /// # Panics
+    ///
+    /// Panics on allocator failure — this constructor eagerly reserves
+    /// space for `capacity_entries` slots in the underlying hash map, so
+    /// extreme values (including `usize::MAX`) will panic on allocation.
+    /// Use [`WeightStore::try_with_capacity`] when `capacity_entries`
+    /// originates from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -355,6 +418,44 @@ where
             weight_fn,
             metrics: StoreCounters::default(),
         }
+    }
+
+    /// Fallible variant of [`with_capacity`](Self::with_capacity) that
+    /// returns an error on allocator failure instead of panicking.
+    ///
+    /// Use this constructor when `capacity_entries` is derived from
+    /// untrusted input (config files, request payloads, environment
+    /// variables) to avoid a process-level OOM abort under the crate's
+    /// default `panic = "abort"` release profile.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::WeightStore;
+    ///
+    /// let store: WeightStore<String, Vec<u8>, _> = WeightStore::try_with_capacity(
+    ///     1_000,
+    ///     50_000,
+    ///     |v: &Vec<u8>| v.len(),
+    /// ).expect("try_with_capacity(1_000, ...) should succeed");
+    ///
+    /// assert_eq!(store.capacity(), 1_000);
+    /// ```
+    pub fn try_with_capacity(
+        capacity_entries: usize,
+        capacity_weight: usize,
+        weight_fn: F,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut map: FxHashMap<K, WeightEntry<V>> = FxHashMap::with_hasher(Default::default());
+        map.try_reserve(capacity_entries)?;
+        Ok(Self {
+            map,
+            capacity_entries,
+            capacity_weight,
+            total_weight: 0,
+            weight_fn,
+            metrics: StoreCounters::default(),
+        })
     }
 
     /// Returns the current total weight of all entries.
@@ -712,6 +813,16 @@ where
 
     /// Removes all entries and resets total weight to zero.
     ///
+    /// Attributes the cleared entries to the `removes` metric so bulk
+    /// clears remain auditable alongside per-entry removals.
+    ///
+    /// `total_weight` is reset *before* dropping the map contents so that
+    /// under `panic = "unwind"` a panicking `V::Drop` still leaves the
+    /// store in a self-consistent state (`map.len() == 0`, the hashbrown
+    /// `ClearOnDrop` guard guarantees this; `total_weight == 0`).
+    /// Remaining values may leak via the unwinding drop, but no stale
+    /// weight baseline can inflate future capacity checks.
+    ///
     /// # Example
     ///
     /// ```
@@ -727,12 +838,15 @@ where
     /// store.clear();
     /// assert!(store.is_empty());
     /// assert_eq!(store.total_weight(), 0);
+    /// assert_eq!(store.metrics().removes, 2);
     /// # Ok(())
     /// # }
     /// ```
     pub fn clear(&mut self) {
-        self.map.clear();
+        let removed = self.map.len() as u64;
         self.total_weight = 0;
+        self.map.clear();
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -816,6 +930,12 @@ where
     /// * `capacity_weight` - Maximum total weight across all entries
     /// * `weight_fn` - Function to compute weight from a value
     ///
+    /// # Panics
+    ///
+    /// Panics on allocator failure. Use
+    /// [`try_with_capacity`](ConcurrentWeightStore::try_with_capacity) when
+    /// `capacity_entries` originates from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -840,6 +960,41 @@ where
             )),
             metrics: StoreCounters::default(),
         }
+    }
+
+    /// Fallible variant of
+    /// [`with_capacity`](ConcurrentWeightStore::with_capacity) that returns
+    /// an error on allocator failure instead of panicking.
+    ///
+    /// Use this constructor when `capacity_entries` is derived from
+    /// untrusted input to avoid a process-level OOM abort under the
+    /// crate's default `panic = "abort"` release profile.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::weight::ConcurrentWeightStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentWeightStore<String, Vec<u8>, _> =
+    ///     ConcurrentWeightStore::try_with_capacity(
+    ///         1_000,
+    ///         50_000,
+    ///         |v: &Vec<u8>| v.len(),
+    ///     ).expect("try_with_capacity(1_000, ...) should succeed");
+    ///
+    /// assert_eq!(store.capacity(), 1_000);
+    /// ```
+    pub fn try_with_capacity(
+        capacity_entries: usize,
+        capacity_weight: usize,
+        weight_fn: F,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let inner = WeightStore::try_with_capacity(capacity_entries, capacity_weight, weight_fn)?;
+        Ok(Self {
+            inner: RwLock::new(inner),
+            metrics: StoreCounters::default(),
+        })
     }
 
     /// Returns the current total weight of all entries.
@@ -1010,10 +1165,15 @@ where
 
     /// Removes all entries and resets total weight.
     ///
-    /// Acquires write lock.
+    /// Acquires write lock. Attributes the cleared entries to the outer
+    /// `removes` metric. Inner-store counters are ignored here so the
+    /// public metrics surface counts each bulk clear exactly once.
     fn clear(&self) {
         let mut store = self.inner.write();
-        store.clear();
+        let removed = store.map.len() as u64;
+        store.total_weight = 0;
+        store.map.clear();
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -1195,6 +1355,9 @@ mod tests {
         assert_eq!(after.hits, before.hits);
         assert_eq!(after.misses, before.misses);
         assert_eq!(after.evictions, before.evictions);
+        // `clear()` attributes each cleared entry to the `removes` metric
+        // so bulk clears remain auditable alongside per-entry removals.
+        assert_eq!(after.removes, before.removes + 2);
     }
 
     #[test]
@@ -1449,6 +1612,10 @@ mod tests {
                         prop_assert_eq!(actual, expected);
                     },
                     MetricsOp::Clear => {
+                        // `clear()` now attributes each cleared entry to
+                        // the `removes` metric so bulk clears remain
+                        // auditable. Mirror that in the reference model.
+                        exp_removes += model.len() as u64;
                         model.clear();
                         store.clear();
                     },
@@ -1649,5 +1816,219 @@ mod tests {
         let metrics = store.metrics();
         assert_eq!(metrics.hits, 1);
         assert_eq!(metrics.misses, 1);
+    }
+
+    // ==============================================
+    // Priority 1 hardening — regression tests
+    // ==============================================
+
+    #[test]
+    fn weight_store_try_with_capacity_reserves_capacity() {
+        let store: WeightStore<&str, String, _> =
+            WeightStore::try_with_capacity(16, 1_024, weight_by_len)
+                .expect("try_with_capacity(16, ...) should succeed");
+        assert_eq!(store.capacity(), 16);
+        assert_eq!(store.capacity_weight(), 1_024);
+        assert!(store.is_empty());
+        assert_eq!(store.total_weight(), 0);
+    }
+
+    #[test]
+    fn weight_store_try_with_capacity_rejects_hostile_capacity() {
+        // `usize::MAX` cannot be backed by any real allocation because the
+        // hash-map layout calculation overflows `isize::MAX`. This is the
+        // whole reason `try_with_capacity` exists — a caller passing an
+        // untrusted size must get a `Result::Err`, not a process abort.
+        let result: Result<WeightStore<String, Vec<u8>, _>, _> =
+            WeightStore::try_with_capacity(usize::MAX, usize::MAX, |v: &Vec<u8>| v.len());
+        assert!(
+            result.is_err(),
+            "try_with_capacity(usize::MAX, ...) must return Err, got Ok"
+        );
+    }
+
+    #[test]
+    fn weight_store_try_with_capacity_zero_entries_is_valid() {
+        // Zero-sized reservation must succeed and produce a usable but
+        // immediately-full store. Matches the semantics of
+        // `with_capacity(0, ...)`.
+        let store: WeightStore<&str, String, _> =
+            WeightStore::try_with_capacity(0, 1_024, weight_by_len)
+                .expect("try_with_capacity(0, ...) should succeed");
+        assert_eq!(store.capacity(), 0);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn weight_store_clear_attributes_removes() {
+        let mut store = WeightStore::with_capacity(4, 1_024, weight_by_len);
+        for i in 0..4u32 {
+            store
+                .try_insert(i, Arc::new(format!("v{i}")))
+                .expect("insert should succeed");
+        }
+        assert_eq!(store.len(), 4);
+        assert_eq!(store.metrics().removes, 0);
+
+        store.clear();
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.total_weight(), 0);
+        assert_eq!(
+            store.metrics().removes,
+            4,
+            "clear() must count each removed entry"
+        );
+    }
+
+    #[test]
+    fn weight_store_clear_panic_leaves_empty_logical_state() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomOrder};
+
+        // Armed only for the single V::Drop that should panic. Subsequent
+        // drops (including those that run while the unwind is in flight)
+        // return early via `thread::panicking()`.
+        static SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
+
+        struct PanicOnDrop(#[allow(dead_code)] u64);
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    return;
+                }
+                if SHOULD_PANIC.swap(false, AtomOrder::SeqCst) {
+                    panic!("intentional drop panic for test");
+                }
+            }
+        }
+
+        SHOULD_PANIC.store(false, AtomOrder::SeqCst);
+
+        let mut store: WeightStore<u64, PanicOnDrop, _> =
+            WeightStore::with_capacity(10, 1_000, |_: &PanicOnDrop| 10);
+        for i in 0..5u64 {
+            store
+                .try_insert(i, Arc::new(PanicOnDrop(i)))
+                .expect("insert should succeed");
+        }
+        assert_eq!(store.total_weight(), 50);
+
+        SHOULD_PANIC.store(true, AtomOrder::SeqCst);
+        let _ = catch_unwind(AssertUnwindSafe(|| store.clear()));
+
+        // Direction-safe invariant: post-panic, the store must report
+        // itself as empty and free of any inflated weight baseline. The
+        // pre-fix ordering (map.clear() before total_weight reset) would
+        // leave `total_weight == 50` with `len() == 0`, permanently
+        // rejecting valid inserts up to capacity_weight.
+        assert_eq!(store.len(), 0, "post-panic len must be zero");
+        assert_eq!(
+            store.total_weight(),
+            0,
+            "post-panic total_weight must be zero"
+        );
+        assert!(store.is_empty());
+
+        // Subsequent inserts must succeed without tripping the stale
+        // weight baseline.
+        store
+            .try_insert(999, Arc::new(PanicOnDrop(999)))
+            .expect("post-panic insert should succeed");
+        assert_eq!(store.total_weight(), 10);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_try_with_capacity_reserves_capacity() {
+        let store: ConcurrentWeightStore<&str, String, _> =
+            ConcurrentWeightStore::try_with_capacity(16, 1_024, weight_by_len)
+                .expect("try_with_capacity(16, ...) should succeed");
+        assert_eq!(store.capacity(), 16);
+        assert_eq!(store.capacity_weight(), 1_024);
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.total_weight(), 0);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_try_with_capacity_rejects_hostile_capacity() {
+        let result: Result<ConcurrentWeightStore<String, Vec<u8>, _>, _> =
+            ConcurrentWeightStore::try_with_capacity(usize::MAX, usize::MAX, |v: &Vec<u8>| v.len());
+        assert!(
+            result.is_err(),
+            "try_with_capacity(usize::MAX, ...) must return Err, got Ok"
+        );
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_clear_attributes_removes() {
+        let store: ConcurrentWeightStore<u32, String, _> =
+            ConcurrentWeightStore::with_capacity(4, 1_024, weight_by_len);
+        for i in 0..4u32 {
+            store
+                .try_insert(i, Arc::new(format!("v{i}")))
+                .expect("insert should succeed");
+        }
+        assert_eq!(store.len(), 4);
+        let before = store.metrics();
+
+        store.clear();
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.total_weight(), 0);
+        assert_eq!(
+            store.metrics().removes,
+            before.removes + 4,
+            "clear() must count each removed entry"
+        );
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_weight_store_clear_panic_leaves_empty_logical_state() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomOrder};
+
+        static SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
+
+        struct PanicOnDrop(#[allow(dead_code)] u64);
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    return;
+                }
+                if SHOULD_PANIC.swap(false, AtomOrder::SeqCst) {
+                    panic!("intentional drop panic for test");
+                }
+            }
+        }
+
+        SHOULD_PANIC.store(false, AtomOrder::SeqCst);
+
+        let store: ConcurrentWeightStore<u64, PanicOnDrop, _> =
+            ConcurrentWeightStore::with_capacity(10, 1_000, |_: &PanicOnDrop| 10);
+        for i in 0..5u64 {
+            store
+                .try_insert(i, Arc::new(PanicOnDrop(i)))
+                .expect("insert should succeed");
+        }
+        assert_eq!(store.total_weight(), 50);
+
+        SHOULD_PANIC.store(true, AtomOrder::SeqCst);
+        let _ = catch_unwind(AssertUnwindSafe(|| store.clear()));
+
+        assert_eq!(store.len(), 0, "post-panic len must be zero");
+        assert_eq!(
+            store.total_weight(),
+            0,
+            "post-panic total_weight must be zero"
+        );
+
+        store
+            .try_insert(999, Arc::new(PanicOnDrop(999)))
+            .expect("post-panic insert should succeed");
+        assert_eq!(store.total_weight(), 10);
     }
 }
