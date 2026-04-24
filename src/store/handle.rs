@@ -124,6 +124,21 @@
 //! - [`HandleStore`] is **not** thread-safe (uses `Cell` for metrics)
 //! - [`ConcurrentHandleStore`] is `Send + Sync` via `parking_lot::RwLock`
 //!
+//! ## Security Considerations
+//!
+//! - **Hasher:** backed by `FxHashMap`, which is fast but **not** HashDoS-resistant.
+//!   Handles (`H`) must come from a trusted source — typically a
+//!   [`KeyInterner`](crate::ds::KeyInterner) producing monotonic `u64` IDs.
+//!   Passing attacker-controlled hashable values directly as handles is
+//!   unsupported.
+//! - **Capacity:** [`HandleStore::new`] panics on allocator failure. Use
+//!   [`HandleStore::try_new`] (and the concurrent equivalent) when `capacity`
+//!   originates from untrusted input.
+//! - **Sensitive values:** dropped values are not zeroed. Wrap `V` in
+//!   `zeroize::Zeroizing` (or equivalent) when caching secrets.
+//! - **Lock poisoning:** `parking_lot::RwLock` does not poison on panic.
+//!   Under `panic = "unwind"`, avoid panicking `Drop` impls on `V`.
+//!
 //! ## Implementation Notes
 //!
 //! - Handles must remain stable for the lifetime of stored entries
@@ -197,6 +212,10 @@ impl StoreCounters {
         self.removes.set(self.removes.get() + 1);
     }
 
+    fn add_removes(&self, n: u64) {
+        self.removes.set(self.removes.get().saturating_add(n));
+    }
+
     fn inc_eviction(&self) {
         self.evictions.set(self.evictions.get() + 1);
     }
@@ -254,6 +273,10 @@ impl ConcurrentStoreCounters {
 
     fn inc_remove(&self) {
         self.removes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn add_removes(&self, n: u64) {
+        self.removes.fetch_add(n, Ordering::Relaxed);
     }
 
     fn inc_eviction(&self) {
@@ -317,6 +340,9 @@ where
 {
     /// Creates a new handle store with the specified maximum capacity.
     ///
+    /// Panics on allocator failure. Use [`try_new`](Self::try_new) when
+    /// `capacity` is derived from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -332,6 +358,35 @@ where
             capacity,
             metrics: StoreCounters::default(),
         }
+    }
+
+    /// Fallible constructor for [`new`](Self::new).
+    ///
+    /// Reserves space for `capacity` entries without panicking on allocator
+    /// failure. Preferred when `capacity` comes from configuration, RPC input,
+    /// or any source that is not fully trusted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve capacity for `capacity` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::handle::HandleStore;
+    ///
+    /// let store: HandleStore<u64, i32> = HandleStore::try_new(1000).unwrap();
+    /// assert_eq!(store.capacity(), 1000);
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        let mut map: FxHashMap<H, Arc<V>> = FxHashMap::with_hasher(Default::default());
+        map.try_reserve(capacity)?;
+        Ok(Self {
+            map,
+            capacity,
+            metrics: StoreCounters::default(),
+        })
     }
 
     /// Returns a clone of the value for the given handle.
@@ -471,9 +526,12 @@ where
 
     /// Removes all entries from the store.
     ///
-    /// Does not update metrics. Capacity remains unchanged.
+    /// Attributes the cleared entries to the `removes` metric so audit trails
+    /// reflect that entries left the store. Capacity remains unchanged.
     pub fn clear(&mut self) {
+        let removed = self.map.len() as u64;
         self.map.clear();
+        self.metrics.add_removes(removed);
     }
 
     /// Returns the current number of entries.
@@ -616,6 +674,9 @@ where
 {
     /// Creates a new concurrent handle store with the specified capacity.
     ///
+    /// Panics on allocator failure. Use [`try_new`](Self::try_new) when
+    /// `capacity` is derived from untrusted input.
+    ///
     /// # Example
     ///
     /// ```
@@ -635,6 +696,37 @@ where
             capacity,
             metrics: ConcurrentStoreCounters::default(),
         }
+    }
+
+    /// Fallible constructor for [`new`](Self::new).
+    ///
+    /// Reserves space for `capacity` entries without panicking on allocator
+    /// failure. Preferred when `capacity` comes from configuration, RPC input,
+    /// or any source that is not fully trusted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryReserveError`](std::collections::TryReserveError) if the
+    /// allocator cannot reserve capacity for `capacity` entries.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::store::handle::ConcurrentHandleStore;
+    /// use cachekit::store::traits::ConcurrentStoreRead;
+    ///
+    /// let store: ConcurrentHandleStore<u64, String> =
+    ///     ConcurrentHandleStore::try_new(1000).unwrap();
+    /// assert_eq!(store.capacity(), 1000);
+    /// ```
+    pub fn try_new(capacity: usize) -> Result<Self, std::collections::TryReserveError> {
+        let mut map: FxHashMap<H, Arc<V>> = FxHashMap::with_hasher(Default::default());
+        map.try_reserve(capacity)?;
+        Ok(Self {
+            map: RwLock::new(map),
+            capacity,
+            metrics: ConcurrentStoreCounters::default(),
+        })
     }
 
     /// Records an eviction in the metrics.
@@ -758,9 +850,13 @@ where
 
     /// Removes all entries.
     ///
-    /// Acquires a write lock. Does not update metrics.
+    /// Acquires a write lock. Attributes the cleared entries to the `removes`
+    /// metric so audit trails reflect that entries left the store.
     fn clear(&self) {
-        self.map.write().clear();
+        let mut map = self.map.write();
+        let removed = map.len() as u64;
+        map.clear();
+        self.metrics.add_removes(removed);
     }
 }
 
@@ -841,6 +937,53 @@ mod tests {
         assert_eq!(store.capacity(), 2);
         assert_eq!(store.remove(&1u64), Some(value));
         assert!(!store.contains(&1u64));
+    }
+
+    #[test]
+    fn handle_store_clear_attributes_removes() {
+        let mut store: HandleStore<u64, ()> = HandleStore::new(4);
+        store.try_insert(1u64, Arc::new(())).unwrap();
+        store.try_insert(2u64, Arc::new(())).unwrap();
+        store.try_insert(3u64, Arc::new(())).unwrap();
+
+        store.clear();
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.metrics().removes, 3);
+    }
+
+    #[test]
+    fn handle_store_try_new_reserves_capacity() {
+        let store: HandleStore<u64, ()> = HandleStore::try_new(0).expect("try_new(0)");
+        assert_eq!(store.capacity(), 0);
+        assert_eq!(store.len(), 0);
+
+        let store: HandleStore<u64, ()> = HandleStore::try_new(128).expect("try_new(128)");
+        assert_eq!(store.capacity(), 128);
+        assert_eq!(store.len(), 0);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_handle_store_clear_attributes_removes() {
+        let store: ConcurrentHandleStore<u64, ()> = ConcurrentHandleStore::new(4);
+        store.try_insert(1u64, Arc::new(())).unwrap();
+        store.try_insert(2u64, Arc::new(())).unwrap();
+        store.try_insert(3u64, Arc::new(())).unwrap();
+
+        store.clear();
+
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.metrics().removes, 3);
+    }
+
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_handle_store_try_new_reserves_capacity() {
+        let store: ConcurrentHandleStore<u64, ()> =
+            ConcurrentHandleStore::try_new(128).expect("try_new(128)");
+        assert_eq!(store.capacity(), 128);
+        assert_eq!(store.len(), 0);
     }
 
     #[test]
