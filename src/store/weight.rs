@@ -102,7 +102,7 @@
 //!
 //! **Costs:**
 //! - Weight function called on every insert/update
-//! - Uses `Arc<V>` even for single-threaded store (needed for weight_fn)
+//! - Uses `Arc<V>` even for single-threaded store (cheap shared ownership for returned values)
 //! - Slightly more state to track than simple HashMap stores
 //!
 //! ## When to Use
@@ -299,7 +299,8 @@ impl StoreCounters {
 ///
 /// Enforces both a maximum number of entries and a maximum total weight.
 /// Weight is computed via a caller-provided function and cached per entry.
-/// Uses `Arc<V>` for values to enable weight function access.
+/// Uses `Arc<V>` for values to allow cheap shared ownership without requiring
+/// `V: Clone`.
 ///
 /// # Type Parameters
 ///
@@ -446,6 +447,8 @@ where
         capacity_weight: usize,
         weight_fn: F,
     ) -> Result<Self, std::collections::TryReserveError> {
+        // Build the map empty, then reserve fallibly so allocation errors are
+        // returned instead of panicking in an infallible capacity constructor.
         let mut map: FxHashMap<K, WeightEntry<V>> = FxHashMap::with_hasher(Default::default());
         map.try_reserve(capacity_entries)?;
         Ok(Self {
@@ -739,7 +742,7 @@ where
             let base_total = self
                 .total_weight
                 .checked_sub(entry.weight)
-                .expect("WeightStore invariant violated: checked_sub failed after invariant check");
+                .expect("WeightStore invariant violated: total_weight must be >= entry.weight");
             let next_total = base_total.checked_add(new_weight).ok_or(StoreFull)?;
             if next_total > self.capacity_weight {
                 return Err(StoreFull);
@@ -806,7 +809,7 @@ where
         self.total_weight = self
             .total_weight
             .checked_sub(entry.weight)
-            .expect("WeightStore invariant violated: checked_sub failed after invariant check");
+            .expect("WeightStore invariant violated: total_weight must be >= entry.weight");
         self.metrics.inc_remove();
         Some(entry.value)
     }

@@ -423,7 +423,9 @@ fn generate_policy_guide() -> String {
     md.push_str(
         "| **Scan-heavy workloads** | S3-FIFO, Heap-LFU | Scan-resistant, protect hot entries |\n",
     );
-    md.push_str("| **Low latency required** | LRU, Clock | Fastest operations, O(1) overhead |\n");
+    md.push_str(
+        "| **Low latency required** | LRU, Clock | Fast operations, near O(1) average overhead |\n",
+    );
     md.push_str("| **Memory constrained** | LRU, Clock | Minimal metadata overhead |\n");
     md.push_str("| **Frequency-aware** | LFU, Heap-LFU, LRU-K | Track access frequency for better decisions |\n");
     md.push_str("| **Shifting patterns** | S3-FIFO, 2Q | Adapt to changing access patterns |\n");
