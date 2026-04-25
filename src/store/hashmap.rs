@@ -1208,6 +1208,9 @@ where
     }
 
     /// Computes the shard index for a key.
+    ///
+    /// Sharded operations pay one extra hash to choose the target shard before
+    /// the within-shard `HashMap` lookup.
     fn shard_index(&self, key: &K) -> usize {
         (self.hasher.hash_one(key) as usize) % self.shards.len()
     }
@@ -1330,7 +1333,12 @@ where
                     }
                     if self
                         .size
-                        .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+                        .compare_exchange_weak(
+                            current,
+                            current + 1,
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
                         .is_ok()
                     {
                         break;
@@ -1342,6 +1350,8 @@ where
                 struct SizeGuard<'a>(&'a AtomicUsize);
                 impl Drop for SizeGuard<'_> {
                     fn drop(&mut self) {
+                        // `size` is only a capacity counter; shard locks guard
+                        // entries, so rollback does not publish data.
                         self.0.fetch_sub(1, Ordering::Relaxed);
                     }
                 }

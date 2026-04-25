@@ -461,6 +461,7 @@
                     scores.push(result.metrics.scan_resistance.resistance_score);
                 }
             });
+            const scanResistanceMax = Math.max(1.0, ...scores) * 1.05;
 
             new Chart(document.getElementById('scanResistanceChart'), {
                 type: 'bar',
@@ -481,7 +482,7 @@
                     scales: {
                         x: {
                             beginAtZero: true,
-                            max: 1.0,
+                            max: scanResistanceMax,
                             title: {
                                 display: true,
                                 text: 'Score (1.0 = perfect)'

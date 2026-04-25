@@ -759,7 +759,9 @@ where
             // `panic = "unwind"` build). Assert loudly in debug; in release,
             // heal by dropping the stale index entry so we fall into the
             // new-key path without panicking.
-            debug_assert!(false, "slab store index/entries desync at slot {}", id.0);
+            #[cfg(debug_assertions)]
+            panic!("slab store index/entries desync at slot {}", id.0);
+            #[cfg(not(debug_assertions))]
             self.index.remove(&key);
         }
 
@@ -1245,11 +1247,12 @@ where
             // or out of bounds. Assert loudly in debug; in release, heal by
             // dropping the stale index entry so the new-key path can take
             // over without blindly counting a logical-update as an insert.
-            debug_assert!(
-                false,
+            #[cfg(debug_assertions)]
+            panic!(
                 "concurrent slab store index/entries desync at slot {}",
                 id.0
             );
+            #[cfg(not(debug_assertions))]
             inner.index.remove(&key);
         }
 
