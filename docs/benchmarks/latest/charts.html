@@ -461,6 +461,11 @@
                     scores.push(result.metrics.scan_resistance.resistance_score);
                 }
             });
+
+            if (!results || results.length === 0 || scores.length === 0) {
+                return;
+            }
+
             const scanResistanceMax = Math.max(1.0, ...scores) * 1.05;
 
             new Chart(document.getElementById('scanResistanceChart'), {
