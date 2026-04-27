@@ -1,21 +1,29 @@
 <!DOCTYPE html>
 <!--
-  `class="no-js"` is removed by charts.js as its first action. With scripting
-  disabled the class persists, and `.no-js #loading { display: none; }` in
-  charts.css hides the misleading "Loading..." placeholder so the <noscript>
-  block carries the message instead.
+  `class="no-js"` is removed by the parser-blocking inline script below as
+  the first thing the browser executes. With scripting disabled the class
+  persists, and `.no-js #loading { display: none; }` in charts.css hides the
+  misleading "Loading..." placeholder so the <noscript> block carries the
+  message instead.
 -->
 <html lang="en" class="no-js">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!--
-      CSP posture: no inline scripts, no inline styles, no eval, no
-      clickjacking. Chart.js is pinned via SRI; `script-src` lists both the
-      sha384 hash (CSP3, Chrome 95+/Firefox 84+/Safari 16+) and the
-      jsdelivr host so older browsers that don't honor hash-source for
-      external scripts still load it. charts.js + charts.css are served
-      from the same origin.
+      Provenance: substituted at render time from CARGO_PKG_NAME +
+      CARGO_PKG_VERSION (and an optional RENDER_DOCS_GIT_SHA build env
+      var). Restricted to a safe character set so it can be interpolated
+      verbatim into this attribute without HTML escaping.
+    -->
+    <meta name="generator" content="@RENDERER_STAMP@">
+    <!--
+      CSP posture: no eval, no clickjacking, exactly one tiny inline script
+      pinned by hash-source (the no-js remover below), and no inline styles.
+      Chart.js is pinned via SRI; `script-src` lists both the sha384 hash
+      (CSP3, Chrome 95+/Firefox 84+/Safari 16+) and the jsdelivr host so
+      older browsers that don't honor hash-source for external scripts
+      still load it. charts.js + charts.css are served from the same origin.
 
       This <meta> CANNOT relax an HTTP `Content-Security-Policy` header —
       the browser intersects them and the strictest wins. Treat this as
@@ -24,7 +32,7 @@
     -->
     <meta http-equiv="Content-Security-Policy"
           content="default-src 'none';
-                   script-src 'self' 'sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4' https://cdn.jsdelivr.net;
+                   script-src 'self' '@NO_JS_REMOVER_HASH@' '@CHART_JS_SRI@' https://cdn.jsdelivr.net;
                    style-src 'self';
                    img-src 'self' data:;
                    connect-src 'self';
@@ -34,12 +42,25 @@
     <title>Cachekit Benchmark Charts</title>
     <link rel="stylesheet" href="charts.css">
     <!--
+      Parser-blocking no-js remover: runs before <body> is parsed, so the
+      "Loading…" placeholder becomes visible immediately for JS-enabled
+      users (instead of waiting for the deferred charts.js to execute).
+
+      The script body sentinel and the CSP hash-source sentinel above
+      are substituted by render_docs::render_charts_html from one Rust
+      constant; the hash is computed at render time, so the script body
+      and the CSP entry that authorizes it cannot drift.
+    -->
+    <script>@NO_JS_REMOVER_BODY@</script>
+    <!--
       Chart.js is loaded with `defer` so it downloads in parallel with charts.js
       and runs after parsing; document order guarantees `Chart` is defined
-      before charts.js executes.
+      before charts.js executes. Version + integrity are pinned by Rust
+      constants and substituted by render_docs::render_charts_html so the
+      URL, integrity attribute, and CSP hash-source can never drift apart.
     -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
-            integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@@CHART_JS_VERSION@/dist/chart.umd.min.js"
+            integrity="@CHART_JS_SRI@"
             crossorigin="anonymous"
             referrerpolicy="no-referrer"
             defer></script>

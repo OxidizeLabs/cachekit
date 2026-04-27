@@ -1,15 +1,28 @@
-// Restore the loading placeholder that `<html class="no-js">` + the
-// `.no-js #loading { display: none }` rule in charts.css hide by default.
-// Coupled with the <noscript> block in charts.html: JS-disabled users see
-// the "JavaScript is required" message; JS-enabled users see "Loading...".
-document.documentElement.classList.remove('no-js');
+// The `no-js` class is stripped by a parser-blocking inline script in
+// charts.html's <head> (gated by 'sha256-…' in script-src) so the loading
+// placeholder is visible the moment <body> paints. Don't duplicate it here —
+// charts.js is `defer`red and runs after <body>, so any toggle would be too
+// late to prevent the flash.
 
-Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-Chart.defaults.plugins.legend.position = 'bottom';
-Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+// Chart.js loads from a CDN with SRI pinning. If the request fails
+// (offline, CDN outage, ad-blocker, SRI mismatch after a CDN re-publish)
+// the browser refuses to expose `Chart` and any unconditional reference
+// would throw a synchronous ReferenceError — *before* the `.catch` below
+// has been registered. Detect the absence here and route the failure
+// through the same error-banner path as a fetch error.
+const chartReady = typeof Chart !== 'undefined';
+if (chartReady) {
+    Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    Chart.defaults.plugins.legend.position = 'bottom';
+    Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+}
 
-// Must match SCHEMA_VERSION in bench-support/src/json_results.rs.
-const EXPECTED_SCHEMA_MAJOR = '1';
+// Substituted by render_docs from bench_support::json_results::SCHEMA_VERSION
+// (the @SCHEMA_MAJOR@ sentinel below is replaced with a quoted string at
+// render time). The unsubstituted template parses but rejects every real
+// artifact, so a missing substitution surfaces as a runtime error in the
+// browser instead of silently accepting the wrong schema.
+const EXPECTED_SCHEMA_MAJOR = /* @SCHEMA_MAJOR@ */ '0';
 
 // Substituted by render_docs from bench_support::registry::POLICIES
 // (the @POLICY_COLORS@ sentinel below is replaced with a JSON literal).
@@ -100,7 +113,10 @@ function makeReferenceLinePlugin(value, label, axis = 'x') {
     };
 }
 
-fetch('results.json')
+// `credentials: 'omit'` keeps cookies out of the same-origin JSON request
+// (defensive against future hosting changes). `cache: 'no-store'` makes
+// page reloads always fetch a fresh report instead of a stale cache copy.
+fetch('results.json', { credentials: 'omit', cache: 'no-store' })
     .then(response => {
         if (!response.ok) {
             throw new Error(`Failed to load results.json (HTTP ${response.status})`);
@@ -108,6 +124,14 @@ fetch('results.json')
         return response.json();
     })
     .then(data => {
+        if (!chartReady) {
+            throw new Error(
+                'Chart.js failed to load. The page expected it from cdn.jsdelivr.net; ' +
+                'check your network connection, browser extensions, or any proxy ' +
+                'that may be blocking the CDN or rewriting the response (Subresource ' +
+                'Integrity will reject a modified file).'
+            );
+        }
         if (data && data.schema_version) {
             const major = String(data.schema_version).split('.')[0];
             if (major !== EXPECTED_SCHEMA_MAJOR) {

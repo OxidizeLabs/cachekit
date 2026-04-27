@@ -1,15 +1,17 @@
 /*!
  * charts.css — sibling stylesheet for charts.html.
- * Extracted so the page can run under `style-src 'self'` (no 'unsafe-inline').
+ * Sized to run under `style-src 'self'` with no 'unsafe-inline'.
  *
  * Coordinated tokens with charts.html:
- *   - `.no-js #loading { display: none; }` cooperates with charts.js, which
- *     removes the `no-js` class on <html> as its first action so the loading
- *     placeholder is hidden when scripting is disabled (a <noscript> block
- *     handles the "JS required" messaging).
- *   - `.hidden { display: none; }` replaces what used to be inline
- *     `style="display: none"` attributes on #error and #content; the JS path
- *     toggles via `classList`/`style.display` (DOM mutation, not CSP-gated).
+ *   - `.no-js #loading { display: none; }` cooperates with the parser-
+ *     blocking inline script in <head>, which strips the `no-js` class
+ *     before <body> paints so JS-enabled users immediately see the
+ *     "Loading…" placeholder. JS-disabled users keep the class and the
+ *     <noscript> block carries the "JavaScript is required" messaging.
+ *   - `.hidden { display: none; }` is the class-based replacement for
+ *     `style="display: none"` attributes on #error and #content; the JS
+ *     path toggles via `classList`/`style.display` (DOM mutation, which
+ *     CSP does not gate).
  */
 
 * {
@@ -149,17 +151,18 @@ h1 {
     text-align: center;
 }
 
-/* Initially-hidden elements; replaces inline style="display: none" so the
-   page works under `style-src 'self'`. JS toggles via element.style.display
-   (a DOM property mutation, which CSP does not gate). */
+/* Class-based hiding for elements that start invisible (#error, #content);
+   pairs with `style-src 'self'` since `style="display: none"` would require
+   'unsafe-inline'. JS toggles via element.style.display (a DOM property
+   mutation, which CSP does not gate). */
 .hidden {
     display: none;
 }
 
 /* When scripting is disabled, hide the misleading "Loading..." placeholder
-   and let the <noscript> error block carry the message. charts.js removes
-   the `no-js` class from <html> on entry, restoring the placeholder for the
-   brief window between DOMContentLoaded and the first fetch resolution. */
+   and let the <noscript> error block carry the message. The parser-blocking
+   inline script in charts.html's <head> removes `no-js` from <html> before
+   <body> paints, so JS-enabled users never see this rule applied. */
 .no-js #loading {
     display: none;
 }
