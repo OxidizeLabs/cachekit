@@ -8,11 +8,12 @@
 //! ## Value construction convention
 //!
 //! Benchmark entry points take a `value_for_key: Fn(u64) -> Arc<V>` so callers
-//! choose what to store. We pass [`Arc::new`] directly, which the compiler
-//! resolves to `fn(u64) -> Arc<u64>`, i.e. the value is the key itself wrapped
-//! in `Arc`. Cache-policy measurements (hit/miss, eviction, latency) don't
-//! depend on payload contents, so the cheapest possible payload keeps the
-//! workload focused on policy behavior rather than allocator/clone cost.
+//! choose what to store. To keep policy comparisons fair, we pre-allocate one
+//! `Arc<u64>` per key before running the measured loop and pass a closure that
+//! returns a cheap `Arc::clone` (refcount bump) instead of `Arc::new` (heap
+//! allocation). This isolates policy behavior — hit/miss, eviction order,
+//! latency — from allocator noise that would otherwise vary run-to-run and
+//! between policies that differ in insert frequency.
 
 use bench_support as common;
 use bench_support::for_each_policy;
@@ -20,6 +21,7 @@ use bench_support::for_each_policy;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 
 use chrono::Utc;
 use common::json_results::{
@@ -38,6 +40,16 @@ const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
 const OPS: usize = 200_000;
 const SEED: u64 = 42;
+
+/// Pre-allocate one `Arc<u64>` per key in the universe.
+///
+/// Reused across policies and workloads so the measured loop only pays the
+/// cost of an `Arc::clone` (atomic refcount bump) per insert rather than a
+/// fresh heap allocation. This isolates policy hit/miss/eviction behavior
+/// from allocator variance.
+fn preallocate_values() -> Vec<Arc<u64>> {
+    (0..UNIVERSE).map(Arc::new).collect()
+}
 
 fn main() {
     println!("=== CacheKit Benchmark Runner ===");
@@ -215,6 +227,8 @@ fn create_output_directory(run_id: &str) -> PathBuf {
 fn run_hit_rate_benchmarks(artifact: &mut BenchmarkArtifact) {
     println!("[1/4] Running hit rate benchmarks...");
 
+    let values = preallocate_values();
+
     for workload_case in STANDARD_WORKLOADS {
         print!("  Workload: {:<20} ", workload_case.id);
 
@@ -224,7 +238,13 @@ fn run_hit_rate_benchmarks(artifact: &mut BenchmarkArtifact) {
                 let mut generator = workload_case.with_params(UNIVERSE, SEED).generator();
 
                 let mut op_model = ReadThrough::new(1.0, SEED);
-                let stats = run_operations(&mut cache, &mut generator, OPS, &mut op_model, Arc::new);
+                let stats = run_operations(
+                    &mut cache,
+                    &mut generator,
+                    OPS,
+                    &mut op_model,
+                    |key| Arc::clone(&values[key as usize]),
+                );
 
                 let hit_rate = stats.hit_rate();
                 artifact.add_result(ResultRow {
@@ -262,12 +282,19 @@ fn run_hit_rate_benchmarks(artifact: &mut BenchmarkArtifact) {
 fn run_scan_resistance_benchmarks(artifact: &mut BenchmarkArtifact) {
     println!("[2/4] Running scan resistance benchmarks...");
 
+    let values = preallocate_values();
+
     for_each_policy! {
         with |policy_id, policy_name, make_cache| {
             print!("  Policy: {:<12} ", policy_name);
 
             let mut cache = make_cache(CAPACITY);
-            let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            let result = measure_scan_resistance(
+                &mut cache,
+                CAPACITY,
+                UNIVERSE,
+                |key| Arc::clone(&values[key as usize]),
+            );
 
             artifact.add_result(ResultRow {
                 policy_id: policy_id.to_string(),
@@ -296,12 +323,19 @@ fn run_scan_resistance_benchmarks(artifact: &mut BenchmarkArtifact) {
 fn run_adaptation_benchmarks(artifact: &mut BenchmarkArtifact) {
     println!("[3/4] Running adaptation speed benchmarks...");
 
+    let values = preallocate_values();
+
     for_each_policy! {
         with |policy_id, policy_name, make_cache| {
             print!("  Policy: {:<12} ", policy_name);
 
             let mut cache = make_cache(CAPACITY);
-            let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            let result = measure_adaptation_speed(
+                &mut cache,
+                CAPACITY,
+                UNIVERSE,
+                |key| Arc::clone(&values[key as usize]),
+            );
 
             artifact.add_result(ResultRow {
                 policy_id: policy_id.to_string(),
@@ -339,6 +373,8 @@ fn run_comprehensive_benchmarks(artifact: &mut BenchmarkArtifact) {
         WorkloadCase::by_id(STANDARD_WORKLOADS, "hotset_90_10"),
     ];
 
+    let values = preallocate_values();
+
     for workload_case in &comprehensive_workloads {
         print!("  Workload: {:<20} ", workload_case.id);
 
@@ -356,7 +392,9 @@ fn run_comprehensive_benchmarks(artifact: &mut BenchmarkArtifact) {
                     max_latency_samples: 10_000,
                 };
 
-                let result = run_benchmark(policy_id, &mut cache, &config, Arc::new);
+                let result = run_benchmark(policy_id, &mut cache, &config, |key| {
+                    Arc::clone(&values[key as usize])
+                });
 
                 artifact.add_result(ResultRow {
                     policy_id: policy_id.to_string(),
