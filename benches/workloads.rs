@@ -11,6 +11,15 @@
 //! For micro-ops (get/insert latency), see: `cargo bench --bench ops`
 //! For policy-specific operations, see: `cargo bench --bench policy_*`
 //! For external crate comparison, see: `cargo bench --bench comparison`
+//!
+//! ## Value construction convention
+//!
+//! Benchmark entry points take a `value_for_key: Fn(u64) -> Arc<V>` so callers
+//! choose what to store. We pass [`Arc::new`] directly, which the compiler
+//! resolves to `fn(u64) -> Arc<u64>`, i.e. the value is the key itself wrapped
+//! in `Arc`. Cache-policy measurements (hit/miss, eviction, latency) don't
+//! depend on payload contents, so the cheapest possible payload keeps the
+//! workload focused on policy behavior rather than allocator/clone cost.
 
 use bench_support as common;
 use bench_support::for_each_policy;
