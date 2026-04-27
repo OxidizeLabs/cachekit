@@ -6,9 +6,9 @@
 
 ## Environment
 
-- **Date**: 2026-04-22T13:20:21.379493295+00:00
-- **Commit**: `912976fa61db267346e4a572a90d6f47f4ee8e7f`
-- **Branch**: `HEAD`
+- **Date**: 2026-04-27T02:02:03.446581168+00:00
+- **Commit**: `e313874e12b4da8186c219190e96533f8826e246`
+- **Branch**: `main`
 - **Dirty**: false
 - **Rustc**: rustc 1.95.0 (59807616e 2026-04-14)
 - **Host**: x86_64-unknown-linux-gnu
@@ -45,41 +45,41 @@
 
 | Policy | HotSet 90/10 | Uniform | Zipfian 1.0 |
 |--------|-------:|-------:|-------:|
-| **2Q** | 11.62 | 16.35 | 8.36 |
-| **Clock** | 11.32 | 12.36 | 7.92 |
-| **Clock-Pro** | 12.05 | 10.00 | 7.96 |
-| **FIFO** | 11.19 | 11.50 | 7.88 |
-| **Heap-LFU** | 7.95 | 7.30 | 6.01 |
-| **LFU** | 7.48 | 8.24 | 5.46 |
-| **LIFO** | 13.93 | 20.61 | 9.43 |
-| **LRU** | 10.93 | 15.03 | 8.20 |
-| **LRU-K** | 9.34 | 11.28 | 7.17 |
-| **MFU** | 9.75 | 10.26 | 7.82 |
-| **MRU** | 15.34 | 16.92 | 11.11 |
-| **NRU** | 12.75 | 0.68 | 7.25 |
-| **Random** | 13.65 | 16.25 | 9.13 |
-| **S3-FIFO** | 11.16 | 11.27 | 7.80 |
-| **SLRU** | 11.61 | 16.15 | 8.37 |
+| **2Q** | 11.71 | 16.21 | 8.41 |
+| **Clock** | 11.51 | 12.39 | 7.92 |
+| **Clock-Pro** | 12.21 | 10.01 | 8.01 |
+| **FIFO** | 11.30 | 11.68 | 7.94 |
+| **Heap-LFU** | 7.98 | 7.51 | 6.02 |
+| **LFU** | 7.54 | 8.24 | 5.46 |
+| **LIFO** | 14.05 | 20.50 | 9.45 |
+| **LRU** | 11.15 | 15.48 | 8.24 |
+| **LRU-K** | 9.41 | 11.33 | 7.15 |
+| **MFU** | 9.86 | 10.47 | 7.85 |
+| **MRU** | 15.13 | 16.86 | 11.04 |
+| **NRU** | 12.92 | 0.68 | 7.22 |
+| **Random** | 13.74 | 16.36 | 9.08 |
+| **S3-FIFO** | 11.25 | 11.17 | 7.79 |
+| **SLRU** | 11.71 | 16.17 | 8.42 |
 
 ## Latency P99 (nanoseconds)
 
 | Policy | HotSet 90/10 | Uniform | Zipfian 1.0 |
 |--------|-------:|-------:|-------:|
-| **2Q** | 81 | 131 | 110 |
-| **Clock** | 141 | 190 | 180 |
-| **Clock-Pro** | 210 | 320 | 271 |
-| **FIFO** | 161 | 201 | 190 |
-| **Heap-LFU** | 260 | 391 | 321 |
-| **LFU** | 190 | 361 | 211 |
-| **LIFO** | 60 | 81 | 80 |
-| **LRU** | 101 | 130 | 110 |
-| **LRU-K** | 141 | 211 | 161 |
-| **MFU** | 200 | 240 | 210 |
-| **MRU** | 91 | 130 | 100 |
-| **NRU** | 160 | 10980 | 510 |
-| **Random** | 101 | 130 | 111 |
-| **S3-FIFO** | 160 | 231 | 200 |
-| **SLRU** | 80 | 140 | 110 |
+| **2Q** | 80 | 130 | 101 |
+| **Clock** | 150 | 200 | 171 |
+| **Clock-Pro** | 210 | 321 | 291 |
+| **FIFO** | 161 | 210 | 180 |
+| **Heap-LFU** | 261 | 351 | 311 |
+| **LFU** | 191 | 380 | 220 |
+| **LIFO** | 61 | 81 | 80 |
+| **LRU** | 90 | 130 | 111 |
+| **LRU-K** | 150 | 201 | 160 |
+| **MFU** | 201 | 220 | 210 |
+| **MRU** | 100 | 130 | 101 |
+| **NRU** | 160 | 10420 | 521 |
+| **Random** | 100 | 130 | 120 |
+| **S3-FIFO** | 151 | 231 | 200 |
+| **SLRU** | 80 | 140 | 100 |
 
 ## Scan Resistance
 
@@ -131,7 +131,7 @@
 |----------|-------------------|-----|
 | **General purpose, skewed workloads** | LRU, LFU, S3-FIFO | Best hit rates on Zipfian/skewed patterns |
 | **Scan-heavy workloads** | S3-FIFO, Heap-LFU | Scan-resistant, protect hot entries |
-| **Low latency required** | LRU, Clock | Fastest operations, O(1) overhead |
+| **Low latency required** | LRU, Clock | Fast operations, near O(1) average overhead |
 | **Memory constrained** | LRU, Clock | Minimal metadata overhead |
 | **Frequency-aware** | LFU, Heap-LFU, LRU-K | Track access frequency for better decisions |
 | **Shifting patterns** | S3-FIFO, 2Q | Adapt to changing access patterns |
