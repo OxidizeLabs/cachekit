@@ -23,7 +23,7 @@ use common::metrics::{
     run_benchmark,
 };
 use common::operation::{ReadThrough, run_operations};
-use common::registry::{EXTENDED_WORKLOADS, STANDARD_WORKLOADS};
+use common::registry::{EXTENDED_WORKLOADS, STANDARD_WORKLOADS, WorkloadCase};
 
 const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
@@ -264,8 +264,9 @@ fn run_comprehensive_comparison() {
 fn run_detailed_single_benchmark() {
     println!("\n=== Detailed Benchmark Results ===\n");
 
-    // Use first workload from standard suite (zipfian 1.0)
-    let workload_case = &STANDARD_WORKLOADS[3]; // zipfian_1.0
+    // Look up by stable id so reordering STANDARD_WORKLOADS can't silently
+    // change which workload this report runs against.
+    let workload_case = WorkloadCase::by_id(STANDARD_WORKLOADS, "zipfian_1.0");
     let spec = workload_case.with_params(UNIVERSE, SEED);
 
     let config = BenchmarkConfig {

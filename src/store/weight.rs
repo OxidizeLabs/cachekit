@@ -1183,9 +1183,8 @@ mod tests {
 
     use proptest::prelude::*;
 
-    #[allow(clippy::ptr_arg)]
-    fn weight_by_len(value: &String) -> usize {
-        value.len()
+    fn weight_by_len() -> impl Fn(&String) -> usize + Copy + Send + Sync {
+        |value: &String| value.len()
     }
 
     fn sum_entry_weights<K, V, F>(store: &WeightStore<K, V, F>) -> usize
@@ -1247,7 +1246,7 @@ mod tests {
 
     #[test]
     fn weight_store_tracks_weight() {
-        let mut store = WeightStore::with_capacity(3, 10, weight_by_len);
+        let mut store = WeightStore::with_capacity(3, 10, weight_by_len());
         assert_eq!(store.total_weight(), 0);
         assert_eq!(store.try_insert("k1", Arc::new("aa".to_string())), Ok(None));
         assert_eq!(store.total_weight(), 2);
@@ -1262,7 +1261,7 @@ mod tests {
 
     #[test]
     fn weight_store_enforces_capacity() {
-        let mut store = WeightStore::with_capacity(10, 5, weight_by_len);
+        let mut store = WeightStore::with_capacity(10, 5, weight_by_len());
         assert_eq!(
             store.try_insert("k1", Arc::new("aaaaa".to_string())),
             Ok(None)
@@ -1275,7 +1274,7 @@ mod tests {
 
     #[test]
     fn weight_store_update_adjusts_weight() {
-        let mut store = WeightStore::with_capacity(10, 10, weight_by_len);
+        let mut store = WeightStore::with_capacity(10, 10, weight_by_len());
         assert_eq!(store.try_insert("k1", Arc::new("aa".to_string())), Ok(None));
         assert_eq!(store.total_weight(), 2);
         assert_eq!(
@@ -1287,7 +1286,7 @@ mod tests {
 
     #[test]
     fn weight_store_update_rejected_when_new_weight_exceeds_capacity() {
-        let mut store = WeightStore::with_capacity(4, 5, weight_by_len);
+        let mut store = WeightStore::with_capacity(4, 5, weight_by_len());
         assert_eq!(store.try_insert("k1", Arc::new("aa".to_string())), Ok(None));
         assert_eq!(store.try_insert("k2", Arc::new("bb".to_string())), Ok(None));
         assert_eq!(store.total_weight(), 4);
@@ -1315,7 +1314,7 @@ mod tests {
 
     #[test]
     fn weight_store_remove_missing_does_not_mutate_weight_or_metrics() {
-        let mut store = WeightStore::with_capacity(4, 20, weight_by_len);
+        let mut store = WeightStore::with_capacity(4, 20, weight_by_len());
         assert_eq!(store.try_insert("k1", Arc::new("aa".to_string())), Ok(None));
         let before_weight = store.total_weight();
         let before_metrics = store.metrics();
@@ -1327,7 +1326,7 @@ mod tests {
 
     #[test]
     fn weight_store_clear_resets_contents_but_preserves_counters() {
-        let mut store = WeightStore::with_capacity(4, 20, weight_by_len);
+        let mut store = WeightStore::with_capacity(4, 20, weight_by_len());
         assert_eq!(store.try_insert("k1", Arc::new("aa".to_string())), Ok(None));
         assert_eq!(
             store.try_insert("k2", Arc::new("bbb".to_string())),
@@ -1355,7 +1354,7 @@ mod tests {
 
     #[test]
     fn weight_store_api_surface_and_peek_semantics() {
-        let mut store = WeightStore::with_capacity(3, 9, weight_by_len);
+        let mut store = WeightStore::with_capacity(3, 9, weight_by_len());
         assert_eq!(store.capacity(), 3);
         assert_eq!(store.capacity_weight(), 9);
         assert!(store.is_empty());
@@ -1635,7 +1634,7 @@ mod tests {
     #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_weight_store_basic_ops() {
-        let store = ConcurrentWeightStore::with_capacity(2, 10, weight_by_len);
+        let store = ConcurrentWeightStore::with_capacity(2, 10, weight_by_len());
         let value = Arc::new("aa".to_string());
         assert_eq!(store.try_insert("k1", value.clone()), Ok(None));
         assert_eq!(store.get(&"k1"), Some(value.clone()));
@@ -1683,7 +1682,7 @@ mod tests {
     #[cfg(feature = "concurrency")]
     #[test]
     fn concurrent_weight_store_failed_ops_do_not_increment_success_counters() {
-        let store = Arc::new(ConcurrentWeightStore::with_capacity(1, 1, weight_by_len));
+        let store = Arc::new(ConcurrentWeightStore::with_capacity(1, 1, weight_by_len()));
         assert_eq!(
             store.try_insert("seed".to_string(), Arc::new("x".to_string())),
             Ok(None)
@@ -1760,7 +1759,7 @@ mod tests {
     #[test]
     fn concurrent_weight_store_metrics_track_inserts() {
         let store: ConcurrentWeightStore<&str, String, _> =
-            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len());
 
         store.try_insert("k1", Arc::new("v1".into())).unwrap();
         store.try_insert("k2", Arc::new("v2".into())).unwrap();
@@ -1774,7 +1773,7 @@ mod tests {
     #[test]
     fn concurrent_weight_store_metrics_track_updates() {
         let store: ConcurrentWeightStore<&str, String, _> =
-            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len());
 
         store.try_insert("k1", Arc::new("v1".into())).unwrap();
         store.try_insert("k1", Arc::new("updated".into())).unwrap();
@@ -1787,7 +1786,7 @@ mod tests {
     #[test]
     fn concurrent_weight_store_metrics_track_removes() {
         let store: ConcurrentWeightStore<&str, String, _> =
-            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len());
 
         store.try_insert("k1", Arc::new("v1".into())).unwrap();
         store.remove(&"k1");
@@ -1800,7 +1799,7 @@ mod tests {
     #[test]
     fn concurrent_weight_store_metrics_track_hits_misses() {
         let store: ConcurrentWeightStore<&str, String, _> =
-            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len);
+            ConcurrentWeightStore::with_capacity(100, 100_000, weight_by_len());
 
         store.try_insert("k1", Arc::new("v1".into())).unwrap();
         let _ = store.get(&"k1");
@@ -1818,7 +1817,7 @@ mod tests {
     #[test]
     fn weight_store_try_with_capacity_reserves_capacity() {
         let store: WeightStore<&str, String, _> =
-            WeightStore::try_with_capacity(16, 1_024, weight_by_len)
+            WeightStore::try_with_capacity(16, 1_024, weight_by_len())
                 .expect("try_with_capacity(16, ...) should succeed");
         assert_eq!(store.capacity(), 16);
         assert_eq!(store.capacity_weight(), 1_024);
@@ -1846,7 +1845,7 @@ mod tests {
         // immediately-full store. Matches the semantics of
         // `with_capacity(0, ...)`.
         let store: WeightStore<&str, String, _> =
-            WeightStore::try_with_capacity(0, 1_024, weight_by_len)
+            WeightStore::try_with_capacity(0, 1_024, weight_by_len())
                 .expect("try_with_capacity(0, ...) should succeed");
         assert_eq!(store.capacity(), 0);
         assert!(store.is_empty());
@@ -1854,7 +1853,7 @@ mod tests {
 
     #[test]
     fn weight_store_clear_attributes_removes() {
-        let mut store = WeightStore::with_capacity(4, 1_024, weight_by_len);
+        let mut store = WeightStore::with_capacity(4, 1_024, weight_by_len());
         for i in 0..4u32 {
             store
                 .try_insert(i, Arc::new(format!("v{i}")))
@@ -1935,7 +1934,7 @@ mod tests {
     #[test]
     fn concurrent_weight_store_try_with_capacity_reserves_capacity() {
         let store: ConcurrentWeightStore<&str, String, _> =
-            ConcurrentWeightStore::try_with_capacity(16, 1_024, weight_by_len)
+            ConcurrentWeightStore::try_with_capacity(16, 1_024, weight_by_len())
                 .expect("try_with_capacity(16, ...) should succeed");
         assert_eq!(store.capacity(), 16);
         assert_eq!(store.capacity_weight(), 1_024);
@@ -1958,7 +1957,7 @@ mod tests {
     #[test]
     fn concurrent_weight_store_clear_attributes_removes() {
         let store: ConcurrentWeightStore<u32, String, _> =
-            ConcurrentWeightStore::with_capacity(4, 1_024, weight_by_len);
+            ConcurrentWeightStore::with_capacity(4, 1_024, weight_by_len());
         for i in 0..4u32 {
             store
                 .try_insert(i, Arc::new(format!("v{i}")))
