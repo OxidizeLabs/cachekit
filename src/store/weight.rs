@@ -1159,8 +1159,9 @@ where
     /// Removes all entries and resets total weight.
     ///
     /// Acquires write lock. Attributes the cleared entries to the outer
-    /// `removes` metric. Inner-store counters are ignored here so the
-    /// public metrics surface counts each bulk clear exactly once.
+    /// `removes` metric. Inner-store metrics counters are not consulted
+    /// here; removal count is derived from `store.map.len()` so the public
+    /// metrics surface counts each bulk clear exactly once.
     fn clear(&self) {
         let mut store = self.inner.write();
         let removed = store.map.len() as u64;
