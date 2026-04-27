@@ -15,15 +15,23 @@
 //! ## Value construction convention
 //!
 //! Benchmark entry points take a `value_for_key: Fn(u64) -> Arc<V>` so callers
-//! choose what to store. We pass [`Arc::new`] directly, which the compiler
-//! resolves to `fn(u64) -> Arc<u64>`, i.e. the value is the key itself wrapped
-//! in `Arc`. Cache-policy measurements (hit/miss, eviction, latency) don't
-//! depend on payload contents, so the cheapest possible payload keeps the
-//! workload focused on policy behavior rather than allocator/clone cost.
+//! choose what to store. To keep `Arc::new` allocations out of the timed
+//! region, we pre-build the values once per benchmark and the closure just
+//! clones a handle:
+//!
+//! - Workloads that revisit keys (hit-rate, comprehensive) use a per-key
+//!   [`Arc<u64>`] pool indexed by key, so repeated accesses share the same
+//!   allocation.
+//! - Scan-resistance and adaptation tests touch each key at most once and
+//!   don't depend on payload contents, so they share a single [`Arc<u64>`].
+//!
+//! This isolates policy behavior from allocator noise on hot paths that
+//! issue millions of operations.
 
 use bench_support as common;
 use bench_support::for_each_policy;
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use common::metrics::{
@@ -48,6 +56,13 @@ fn make_generator(workload: Workload) -> WorkloadGenerator {
     .generator()
 }
 
+/// Pre-built `Arc<u64>` per key in `0..universe`. Sharing one pool across all
+/// benchmark iterations keeps `Arc::new` out of the timed region so we measure
+/// policy behavior rather than allocator latency.
+fn build_value_pool(universe: u64) -> Arc<[Arc<u64>]> {
+    (0..universe).map(Arc::new).collect::<Vec<_>>().into()
+}
+
 // ============================================================================
 // Hit Rate Benchmarks
 // ============================================================================
@@ -55,6 +70,7 @@ fn make_generator(workload: Workload) -> WorkloadGenerator {
 fn bench_hit_rates(c: &mut Criterion) {
     let mut group = c.benchmark_group("hit_rate");
     group.throughput(Throughput::Elements(OPS as u64));
+    let value_pool = build_value_pool(UNIVERSE);
 
     for workload_case in STANDARD_WORKLOADS {
         let workload = workload_case.workload;
@@ -78,7 +94,7 @@ fn bench_hit_rates(c: &mut Criterion) {
                                     &mut generator,
                                     OPS,
                                     &mut op_model,
-                                    Arc::new,
+                                    |k| Arc::clone(&value_pool[k as usize]),
                                 );
                                 total += start.elapsed();
                             }
@@ -99,6 +115,7 @@ fn bench_hit_rates(c: &mut Criterion) {
 
 fn bench_scan_resistance(c: &mut Criterion) {
     let mut group = c.benchmark_group("scan_resistance");
+    let shared_value: Arc<u64> = Arc::new(0);
 
     for_each_policy! {
         with |policy_id, _display_name, make_cache| {
@@ -108,7 +125,12 @@ fn bench_scan_resistance(c: &mut Criterion) {
                     for _ in 0..iters {
                         let mut cache = make_cache(CAPACITY);
                         let start = Instant::now();
-                        let _ = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+                        let _ = measure_scan_resistance(
+                            &mut cache,
+                            CAPACITY,
+                            UNIVERSE,
+                            |_| Arc::clone(&shared_value),
+                        );
                         total += start.elapsed();
                     }
                     total
@@ -126,6 +148,7 @@ fn bench_scan_resistance(c: &mut Criterion) {
 
 fn bench_adaptation_speed(c: &mut Criterion) {
     let mut group = c.benchmark_group("adaptation_speed");
+    let shared_value: Arc<u64> = Arc::new(0);
 
     for_each_policy! {
         with |policy_id, _display_name, make_cache| {
@@ -135,7 +158,12 @@ fn bench_adaptation_speed(c: &mut Criterion) {
                     for _ in 0..iters {
                         let mut cache = make_cache(CAPACITY);
                         let start = Instant::now();
-                        let _ = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+                        let _ = measure_adaptation_speed(
+                            &mut cache,
+                            CAPACITY,
+                            UNIVERSE,
+                            |_| Arc::clone(&shared_value),
+                        );
                         total += start.elapsed();
                     }
                     total
@@ -153,6 +181,7 @@ fn bench_adaptation_speed(c: &mut Criterion) {
 
 fn bench_comprehensive(c: &mut Criterion) {
     let mut group = c.benchmark_group("comprehensive");
+    let value_pool = build_value_pool(UNIVERSE);
 
     for workload_case in STANDARD_WORKLOADS {
         let config = BenchmarkConfig {
@@ -176,7 +205,12 @@ fn bench_comprehensive(c: &mut Criterion) {
                             for _ in 0..iters {
                                 let mut cache = make_cache(CAPACITY);
                                 let start = Instant::now();
-                                let _ = run_benchmark(policy_id, &mut cache, cfg, Arc::new);
+                                let _ = run_benchmark(
+                                    policy_id,
+                                    &mut cache,
+                                    cfg,
+                                    |key| Arc::clone(&value_pool[key as usize]),
+                                );
                                 total += start.elapsed();
                             }
                             total

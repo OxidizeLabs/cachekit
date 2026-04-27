@@ -24,8 +24,19 @@ use bench_support::registry::{POLICIES, PolicyMeta};
 /// Markdown table for the static policy selection guide.
 const POLICY_GUIDE_MD: &str = include_str!("policy_guide.md");
 
-/// HTML page that fetches `results.json` and renders interactive charts.
+/// HTML shell for the charts page. Loads Chart.js (CDN, SRI-pinned), the
+/// sibling `charts.js` script, and the sibling `charts.css` stylesheet.
+/// Inline scripts and inline styles were intentionally split out so the page
+/// can run under a strict CSP (no `unsafe-inline`, no `unsafe-eval`).
 const CHARTS_HTML: &str = include_str!("charts_template.html");
+
+/// Behavior for the charts page; sibling script of [`CHARTS_HTML`].
+const CHARTS_JS: &str = include_str!("charts_template.js");
+
+/// Presentation for the charts page; sibling stylesheet of [`CHARTS_HTML`].
+/// Carries `.no-js #loading` and `.hidden` rules that take the place of the
+/// previous inline `<style>` and `style="display: none"` attributes.
+const CHARTS_CSS: &str = include_str!("charts_template.css");
 
 fn main() -> ExitCode {
     match run() {
@@ -75,15 +86,25 @@ fn run() -> Result<(), Box<dyn Error>> {
     let json_dest = output_dir.join("results.json");
     copy_json(&json_path, &json_dest)?;
 
-    let charts_path = output_dir.join("charts.html");
-    let charts_html = inject_policy_colors(CHARTS_HTML, POLICIES)?;
-    fs::write(&charts_path, charts_html)
-        .map_err(|e| format!("writing {}: {e}", charts_path.display()))?;
+    let charts_html_path = output_dir.join("charts.html");
+    fs::write(&charts_html_path, CHARTS_HTML)
+        .map_err(|e| format!("writing {}: {e}", charts_html_path.display()))?;
+
+    let charts_css_path = output_dir.join("charts.css");
+    fs::write(&charts_css_path, CHARTS_CSS)
+        .map_err(|e| format!("writing {}: {e}", charts_css_path.display()))?;
+
+    let charts_js_path = output_dir.join("charts.js");
+    let charts_js = inject_policy_colors(CHARTS_JS, POLICIES)?;
+    fs::write(&charts_js_path, charts_js)
+        .map_err(|e| format!("writing {}: {e}", charts_js_path.display()))?;
 
     println!("Generated documentation:");
     println!("   - {}", index_path.display());
     println!("   - {}", json_dest.display());
-    println!("   - {}", charts_path.display());
+    println!("   - {}", charts_html_path.display());
+    println!("   - {}", charts_css_path.display());
+    println!("   - {}", charts_js_path.display());
     Ok(())
 }
 
@@ -141,16 +162,16 @@ fn copy_json(src: &Path, dest: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Sentinel substituted in the bundled charts HTML at render time.
+/// Sentinel substituted in the bundled charts script at render time.
 ///
 /// The exact byte sequence must match the placeholder in
-/// `charts_template.html`. Keeping it as a JS comment + empty object literal
+/// `charts_template.js`. Keeping it as a JS comment + empty object literal
 /// means the template is still syntactically valid (and would render with
 /// FNV fallback colors only) if substitution ever fails — but we'd rather
 /// fail loudly, hence the explicit `Err` below.
 const POLICY_COLORS_PLACEHOLDER: &str = "/* @POLICY_COLORS@ */ {}";
 
-/// Replace [`POLICY_COLORS_PLACEHOLDER`] in the charts template with a JS
+/// Replace [`POLICY_COLORS_PLACEHOLDER`] in the charts script with a JS
 /// object literal sourced from `policies`. Errors when the placeholder is
 /// missing (template malformed) or appears more than once (would lead to
 /// non-deterministic output).
@@ -895,15 +916,110 @@ mod tests {
     }
 
     #[test]
-    fn bundled_charts_template_contains_the_sentinel() {
-        // Cheap guard: the include_str! template must actually carry the
-        // sentinel. If someone hand-edits charts_template.html and removes it,
+    fn bundled_charts_script_contains_the_sentinel() {
+        // Cheap guard: the include_str! script must actually carry the
+        // sentinel. If someone hand-edits charts_template.js and removes it,
         // every render_docs run would fail at the substitution step; this test
         // catches the regression at `cargo test` time instead.
         assert!(
-            CHARTS_HTML.contains(POLICY_COLORS_PLACEHOLDER),
-            "charts_template.html no longer contains `{POLICY_COLORS_PLACEHOLDER}`",
+            CHARTS_JS.contains(POLICY_COLORS_PLACEHOLDER),
+            "charts_template.js no longer contains `{POLICY_COLORS_PLACEHOLDER}`",
         );
+        // The HTML, on the other hand, must NOT carry the sentinel — that
+        // would silently leave a `{}` literal in markup if the JS rename ever
+        // regressed, and break colors with no error.
+        assert!(
+            !CHARTS_HTML.contains(POLICY_COLORS_PLACEHOLDER),
+            "charts_template.html unexpectedly contains the sentinel; \
+             substitution should target charts_template.js only",
+        );
+    }
+
+    #[test]
+    fn bundled_charts_html_is_csp_safe() {
+        // The page must not ship inline scripts, inline styles, or
+        // string-eval patterns; it should pull in the sibling charts.js
+        // and charts.css instead. These checks pin the CSP posture so a
+        // future hand-edit can't silently reintroduce inline content or
+        // opt out of the protections.
+        assert!(
+            CHARTS_HTML.contains("src=\"charts.js\""),
+            "charts_template.html no longer references the external charts.js",
+        );
+        assert!(
+            CHARTS_HTML.contains("href=\"charts.css\""),
+            "charts_template.html no longer references the external charts.css",
+        );
+        assert!(
+            CHARTS_HTML.contains("Content-Security-Policy"),
+            "charts_template.html is missing its CSP <meta>",
+        );
+        // The CSP must include all the strict directives we rely on.
+        // `style-src 'self'` (without 'unsafe-inline') is the whole point of
+        // extracting charts.css; pin it here so a careless edit can't quietly
+        // re-add `'unsafe-inline'` to make a stray inline style "work".
+        for required in [
+            "default-src 'none'",
+            "frame-ancestors 'none'",
+            "style-src 'self'",
+        ] {
+            assert!(
+                CHARTS_HTML.contains(required),
+                "charts_template.html CSP no longer asserts `{required}`",
+            );
+        }
+        for forbidden in ["unsafe-eval", "unsafe-inline", "unsafe-hashes"] {
+            assert!(
+                !CHARTS_HTML.contains(forbidden),
+                "charts_template.html must not opt in to `{forbidden}`",
+            );
+        }
+        // script-src must allow Chart.js by both hash (CSP3, strict) and
+        // host (compat fallback for browsers that don't honor hash-source
+        // for external scripts). Either drift would silently break loads.
+        for required in [
+            "'sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4'",
+            "https://cdn.jsdelivr.net",
+        ] {
+            assert!(
+                CHARTS_HTML.contains(required),
+                "charts_template.html script-src no longer lists `{required}`",
+            );
+        }
+        // No inline <style> or <script> bodies, and no `style=""` attribute
+        // anywhere — those would all require `'unsafe-inline'` to load.
+        assert!(
+            !CHARTS_HTML.contains("<style>"),
+            "charts_template.html contains an inline <style> block",
+        );
+        assert!(
+            !CHARTS_HTML.contains("style=\""),
+            "charts_template.html contains an inline `style=\"...\"` attribute",
+        );
+
+        // Substring guards for string-eval patterns. Each canonical form is
+        // checked across all three quoting styles JS supports for the
+        // string argument (`"..."`, `'...'`, `` `...` ``). Substring matches
+        // can false-positive in comments — keep these out of the templates
+        // (mention them in render_docs.rs prose instead).
+        let string_eval_calls = ["setTimeout(", "setInterval(", "execScript("];
+        let quote_chars = ['"', '\'', '`'];
+        let mut forbidden_patterns: Vec<String> = vec!["eval(".into(), "new Function(".into()];
+        for call in string_eval_calls {
+            for q in quote_chars {
+                forbidden_patterns.push(format!("{call}{q}"));
+            }
+        }
+        for pat in &forbidden_patterns {
+            assert!(
+                !CHARTS_HTML.contains(pat.as_str()),
+                "charts_template.html contains string-eval pattern {pat:?}",
+            );
+            assert!(
+                !CHARTS_JS.contains(pat.as_str()),
+                "charts_template.js contains string-eval pattern {pat:?}",
+            );
+        }
     }
 
     #[test]

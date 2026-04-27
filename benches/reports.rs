@@ -6,11 +6,12 @@
 //! ## Value construction convention
 //!
 //! Benchmark entry points take a `value_for_key: Fn(u64) -> Arc<V>` so callers
-//! choose what to store. We pass [`Arc::new`] directly, which the compiler
-//! resolves to `fn(u64) -> Arc<u64>`, i.e. the value is the key itself wrapped
-//! in `Arc`. Cache-policy measurements (hit/miss, eviction, latency) don't
-//! depend on payload contents, so the cheapest possible payload keeps the
-//! workload focused on policy behavior rather than allocator/clone cost.
+//! choose what to store. To keep policy comparisons fair, we pre-allocate one
+//! `Arc<u64>` per key before running the measured loop and pass a closure that
+//! returns a cheap `Arc::clone` (refcount bump) instead of `Arc::new` (heap
+//! allocation). This isolates policy behavior — hit/miss, eviction order,
+//! latency — from allocator noise that would otherwise vary run-to-run and
+//! between policies that differ in insert frequency.
 
 use bench_support as common;
 use bench_support::for_each_policy;
@@ -79,11 +80,24 @@ fn main() {
 fn run_workload<C: Cache<u64, Arc<u64>>>(
     cache: &mut C,
     workload_case: &common::registry::WorkloadCase,
+    values: &[Arc<u64>],
 ) -> f64 {
     let mut generator = workload_case.with_params(UNIVERSE, SEED).generator();
     let mut op_model = ReadThrough::new(1.0, SEED);
-    let stats = run_operations(cache, &mut generator, OPS, &mut op_model, Arc::new);
+    let stats = run_operations(cache, &mut generator, OPS, &mut op_model, |key| {
+        Arc::clone(&values[key as usize])
+    });
     stats.hit_rate()
+}
+
+/// Pre-allocate one `Arc<u64>` per key in the universe.
+///
+/// Reused across policies and workloads so the measured loop only pays the
+/// cost of an `Arc::clone` (atomic refcount bump) per insert rather than a
+/// fresh heap allocation. This isolates policy hit/miss/eviction behavior
+/// from allocator variance.
+fn preallocate_values() -> Vec<Arc<u64>> {
+    (0..UNIVERSE).map(Arc::new).collect()
 }
 
 // ============================================================================
@@ -104,13 +118,17 @@ fn print_hit_rate_comparison() {
     println!();
     println!("{}", "-".repeat(12 + STANDARD_WORKLOADS.len() * 15));
 
-    // Print each policy row
+    let values = preallocate_values();
+
     for_each_policy! {
         with |_policy_id, display_name, make_cache| {
             print!("{:<12}", display_name);
             for workload_case in STANDARD_WORKLOADS {
                 let mut cache = make_cache(CAPACITY);
-                print!(" {:>13.2}%", run_workload(&mut cache, workload_case) * 100.0);
+                print!(
+                    " {:>13.2}%",
+                    run_workload(&mut cache, workload_case, &values) * 100.0
+                );
             }
             println!();
         }
@@ -122,6 +140,8 @@ fn print_extended_hit_rate_comparison() {
         "\n=== Extended Hit Rate Comparison (capacity={}, universe={}, ops={}) ===",
         CAPACITY, UNIVERSE, OPS
     );
+
+    let values = preallocate_values();
 
     for chunk in EXTENDED_WORKLOADS.chunks(6) {
         print!("{:<12}", "Policy");
@@ -136,7 +156,10 @@ fn print_extended_hit_rate_comparison() {
                 print!("{:<12}", display_name);
                 for workload_case in chunk {
                     let mut cache = make_cache(CAPACITY);
-                    print!(" {:>11.2}%", run_workload(&mut cache, workload_case) * 100.0);
+                    print!(
+                        " {:>11.2}%",
+                        run_workload(&mut cache, workload_case, &values) * 100.0
+                    );
                 }
                 println!();
             }
@@ -154,10 +177,17 @@ fn print_scan_resistance_comparison() {
     );
     println!("{}", "-".repeat(60));
 
+    let values = preallocate_values();
+
     for_each_policy! {
         with |_policy_id, display_name, make_cache| {
             let mut cache = make_cache(CAPACITY);
-            let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            let result = measure_scan_resistance(
+                &mut cache,
+                CAPACITY,
+                UNIVERSE,
+                |k| Arc::clone(&values[k as usize]),
+            );
             let score = match result.resistance_score {
                 Some(v) => format!("{v:.2}"),
                 None => "n/a".to_string(),
@@ -177,7 +207,12 @@ fn print_scan_resistance_comparison() {
     for_each_policy! {
         with |_policy_id, display_name, make_cache| {
             let mut cache = make_cache(CAPACITY);
-            let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            let result = measure_scan_resistance(
+                &mut cache,
+                CAPACITY,
+                UNIVERSE,
+                |k| Arc::clone(&values[k as usize]),
+            );
             println!("{:<10} {}", display_name, result.summary());
         }
     }
@@ -191,10 +226,17 @@ fn print_adaptation_comparison() {
     );
     println!("{}", "-".repeat(60));
 
+    let values = preallocate_values();
+
     for_each_policy! {
         with |_policy_id, display_name, make_cache| {
             let mut cache = make_cache(CAPACITY);
-            let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            let result = measure_adaptation_speed(
+                &mut cache,
+                CAPACITY,
+                UNIVERSE,
+                |k| Arc::clone(&values[k as usize]),
+            );
             println!(
                 "{:<12} {:>15} {:>15} {:>11.2}%",
                 display_name,
@@ -209,7 +251,12 @@ fn print_adaptation_comparison() {
     for_each_policy! {
         with |_policy_id, display_name, make_cache| {
             let mut cache = make_cache(CAPACITY);
-            let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            let result = measure_adaptation_speed(
+                &mut cache,
+                CAPACITY,
+                UNIVERSE,
+                |k| Arc::clone(&values[k as usize]),
+            );
             println!("{:<10} {}", display_name, result.summary());
         }
     }
@@ -220,7 +267,12 @@ fn print_adaptation_comparison() {
         with |policy_id, _display_name, make_cache| {
             if policy_id == "lru" {
                 let mut cache = make_cache(CAPACITY);
-                let result = measure_adaptation_speed(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+                let result = measure_adaptation_speed(
+                    &mut cache,
+                    CAPACITY,
+                    UNIVERSE,
+                    |k| Arc::clone(&values[k as usize]),
+                );
                 for (i, &rate) in result.hit_rate_curve.iter().enumerate() {
                     let bar_len = (rate * 40.0) as usize;
                     println!(
@@ -238,6 +290,8 @@ fn print_adaptation_comparison() {
 fn run_comprehensive_comparison() {
     println!("\n=== Comprehensive Policy Comparison ===\n");
 
+    let values = preallocate_values();
+
     for_each_policy! {
         with |policy_id, display_name, make_cache| {
             let mut comparison = PolicyComparison::new(display_name);
@@ -252,7 +306,12 @@ fn run_comprehensive_comparison() {
                     latency_sample_rate: 100,
                     max_latency_samples: 10_000,
                 };
-                let result = run_benchmark(policy_id, &mut cache, &config, Arc::new);
+                let result = run_benchmark(
+                    policy_id,
+                    &mut cache,
+                    &config,
+                    |k| Arc::clone(&values[k as usize]),
+                );
                 comparison.add_result(result);
             }
             comparison.print_table();
@@ -279,12 +338,19 @@ fn run_detailed_single_benchmark() {
         max_latency_samples: 10_000,
     };
 
+    let values = preallocate_values();
+
     // Run detailed benchmark for first policy (LRU)
     for_each_policy! {
         with |policy_id, display_name, make_cache| {
             if policy_id == "lru" {
                 let mut cache = make_cache(CAPACITY);
-                let result = run_benchmark(display_name, &mut cache, &config, Arc::new);
+                let result = run_benchmark(
+                    display_name,
+                    &mut cache,
+                    &config,
+                    |k| Arc::clone(&values[k as usize]),
+                );
 
                 println!("Summary: {}\n", result.summary());
 
