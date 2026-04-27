@@ -733,12 +733,6 @@ where
     pub fn try_insert(&mut self, key: K, value: Arc<V>) -> Result<Option<Arc<V>>, StoreFull> {
         let new_weight = self.compute_weight(value.as_ref());
         if let Some(entry) = self.map.get_mut(&key) {
-            assert!(
-                self.total_weight >= entry.weight,
-                "WeightStore invariant violated: total_weight ({}) is less than entry.weight ({})",
-                self.total_weight,
-                entry.weight
-            );
             let base_total = self
                 .total_weight
                 .checked_sub(entry.weight)
@@ -802,10 +796,6 @@ where
     /// ```
     pub fn remove(&mut self, key: &K) -> Option<Arc<V>> {
         let entry = self.map.remove(key)?;
-        assert!(
-            self.total_weight >= entry.weight,
-            "total_weight underflow in remove"
-        );
         self.total_weight = self
             .total_weight
             .checked_sub(entry.weight)
