@@ -39,7 +39,7 @@
 //! │   │                                                                      │  │
 //! │   │   Examples:                                                          │  │
 //! │   │   • |s: &String| s.len()           // String byte length             │  │
-//! │   │   • |v: &Vec<u8>| v.len()          // Vec capacity                   │  │
+//! │   │   • |v: &Vec<u8>| v.len()          // Vec byte length                │  │
 //! │   │   • |img: &Image| img.width * img.height * 4  // RGBA pixels         │  │
 //! │   │   • |_: &T| 1                      // Treat as entry-count only      │  │
 //! │   └──────────────────────────────────────────────────────────────────────┘  │
