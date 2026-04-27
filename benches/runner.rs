@@ -31,7 +31,7 @@ use common::metrics::{
     run_benchmark,
 };
 use common::operation::{ReadThrough, run_operations};
-use common::registry::STANDARD_WORKLOADS;
+use common::registry::{STANDARD_WORKLOADS, WorkloadCase};
 
 // Benchmark configuration constants
 const CAPACITY: usize = 4096;
@@ -330,11 +330,13 @@ fn run_adaptation_benchmarks(artifact: &mut BenchmarkArtifact) {
 fn run_comprehensive_benchmarks(artifact: &mut BenchmarkArtifact) {
     println!("[4/4] Running comprehensive benchmarks...");
 
-    // Use a subset of workloads for comprehensive benchmarks (they're slower)
+    // Use a subset of workloads for comprehensive benchmarks (they're slower).
+    // Look up by stable id so reordering STANDARD_WORKLOADS can't silently
+    // change which workloads are included in this report.
     let comprehensive_workloads = [
-        &STANDARD_WORKLOADS[0], // uniform
-        &STANDARD_WORKLOADS[3], // zipfian_1.0
-        &STANDARD_WORKLOADS[1], // hotset_90_10
+        WorkloadCase::by_id(STANDARD_WORKLOADS, "uniform"),
+        WorkloadCase::by_id(STANDARD_WORKLOADS, "zipfian_1.0"),
+        WorkloadCase::by_id(STANDARD_WORKLOADS, "hotset_90_10"),
     ];
 
     for workload_case in &comprehensive_workloads {

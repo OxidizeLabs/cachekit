@@ -479,14 +479,31 @@ pub const EXTENDED_WORKLOADS: &[WorkloadCase] = &[
     },
 ];
 
-/// Build a `WorkloadSpec` from a workload case and runtime parameters.
 impl WorkloadCase {
+    /// Build a [`WorkloadSpec`] from this case and runtime parameters.
     pub fn with_params(self, universe: u64, seed: u64) -> WorkloadSpec {
         WorkloadSpec {
             universe,
             workload: self.workload,
             seed,
         }
+    }
+
+    /// Look up a workload by its stable `id` in a suite slice.
+    ///
+    /// Use this instead of positional indexing into [`STANDARD_WORKLOADS`] or
+    /// [`EXTENDED_WORKLOADS`]; the order of those constants is not part of the
+    /// public contract and may change without notice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no workload in `suite` has the given `id`.
+    #[track_caller]
+    pub fn by_id<'a>(suite: &'a [WorkloadCase], id: &str) -> &'a WorkloadCase {
+        suite
+            .iter()
+            .find(|case| case.id == id)
+            .unwrap_or_else(|| panic!("workload `{id}` not found in suite"))
     }
 }
 
@@ -550,5 +567,36 @@ mod tests {
             name_count,
             "duplicate display_name in POLICIES",
         );
+    }
+
+    /// Pin the workload ids that benchmarks look up by name so renaming or
+    /// removing one fails compilation/tests instead of silently changing
+    /// which workload a report runs against.
+    #[test]
+    fn standard_workloads_expose_required_ids() {
+        for required in ["uniform", "hotset_90_10", "zipfian_1.0"] {
+            let case = WorkloadCase::by_id(STANDARD_WORKLOADS, required);
+            assert_eq!(case.id, required);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "workload `does_not_exist` not found in suite")]
+    fn by_id_panics_for_missing_workload() {
+        let _ = WorkloadCase::by_id(STANDARD_WORKLOADS, "does_not_exist");
+    }
+
+    #[test]
+    fn workload_ids_are_unique_within_each_suite() {
+        for (suite_name, suite) in [
+            ("STANDARD_WORKLOADS", STANDARD_WORKLOADS),
+            ("EXTENDED_WORKLOADS", EXTENDED_WORKLOADS),
+        ] {
+            let mut ids: Vec<&str> = suite.iter().map(|c| c.id).collect();
+            let total = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), total, "duplicate workload id in {suite_name}");
+        }
     }
 }

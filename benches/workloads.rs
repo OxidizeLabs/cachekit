@@ -31,13 +31,22 @@ use common::metrics::{
 };
 use common::operation::{ReadThrough, run_operations};
 use common::registry::STANDARD_WORKLOADS;
-use common::workload::WorkloadSpec;
+use common::workload::{Workload, WorkloadGenerator, WorkloadSpec};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
 const OPS: usize = 200_000;
 const SEED: u64 = 42;
+
+fn make_generator(workload: Workload) -> WorkloadGenerator {
+    WorkloadSpec {
+        universe: UNIVERSE,
+        workload,
+        seed: SEED,
+    }
+    .generator()
+}
 
 // ============================================================================
 // Hit Rate Benchmarks
@@ -61,12 +70,7 @@ fn bench_hit_rates(c: &mut Criterion) {
                             let mut total = std::time::Duration::default();
                             for _ in 0..iters {
                                 let mut cache = make_cache(CAPACITY);
-                                let mut generator = WorkloadSpec {
-                                    universe: UNIVERSE,
-                                    workload: wl,
-                                    seed: SEED,
-                                }
-                                .generator();
+                                let mut generator = make_generator(wl);
                                 let mut op_model = ReadThrough::new(1.0, SEED);
                                 let start = Instant::now();
                                 let _ = run_operations(
