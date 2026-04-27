@@ -56,11 +56,14 @@ fn make_generator(workload: Workload) -> WorkloadGenerator {
     .generator()
 }
 
-/// Pre-built `Arc<u64>` per key in `0..universe`. Sharing one pool across all
-/// benchmark iterations keeps `Arc::new` out of the timed region so we measure
-/// policy behavior rather than allocator latency.
-fn build_value_pool(universe: u64) -> Arc<[Arc<u64>]> {
-    (0..universe).map(Arc::new).collect::<Vec<_>>().into()
+/// Pre-allocate one `Arc<u64>` per key in the universe.
+///
+/// Reused across policies and workloads so the measured loop only pays the
+/// cost of an `Arc::clone` (atomic refcount bump) per insert rather than a
+/// fresh heap allocation. This isolates policy hit/miss/eviction behavior
+/// from allocator variance.
+fn preallocate_values() -> Vec<Arc<u64>> {
+    (0..UNIVERSE).map(Arc::new).collect()
 }
 
 // ============================================================================
@@ -70,7 +73,7 @@ fn build_value_pool(universe: u64) -> Arc<[Arc<u64>]> {
 fn bench_hit_rates(c: &mut Criterion) {
     let mut group = c.benchmark_group("hit_rate");
     group.throughput(Throughput::Elements(OPS as u64));
-    let value_pool = build_value_pool(UNIVERSE);
+    let value_pool = preallocate_values();
 
     for workload_case in STANDARD_WORKLOADS {
         let workload = workload_case.workload;
@@ -181,7 +184,7 @@ fn bench_adaptation_speed(c: &mut Criterion) {
 
 fn bench_comprehensive(c: &mut Criterion) {
     let mut group = c.benchmark_group("comprehensive");
-    let value_pool = build_value_pool(UNIVERSE);
+    let value_pool = preallocate_values();
 
     for workload_case in STANDARD_WORKLOADS {
         let config = BenchmarkConfig {
