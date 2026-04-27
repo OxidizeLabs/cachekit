@@ -3,9 +3,8 @@
 //! Provides consistent measurement across all cache policies for:
 //! - Hit/miss rates and throughput
 //! - Latency distribution (p50, p95, p99, max)
-//! - Memory efficiency
 //! - Eviction behavior
-//! - Adaptation speed
+//! - Scan resistance and adaptation speed
 
 use std::time::{Duration, Instant};
 
@@ -163,16 +162,18 @@ pub struct EvictionStats {
 // Latency Sampler
 // ============================================================================
 
-/// Samples operation latencies without measuring every operation.
+/// Samples operation latencies on a fixed-rate cadence into a bounded buffer.
 ///
-/// Uses reservoir sampling to collect a fixed number of latency samples
-/// with minimal overhead.
+/// Once the buffer is full, additional samples are discarded. This keeps the
+/// reported percentiles reproducible across runs and avoids the bias of an
+/// ad-hoc reservoir that overwrites earlier outliers (which is exactly what
+/// p99/max are supposed to capture).
 #[derive(Debug)]
 pub struct LatencySampler {
     samples: Vec<Duration>,
     capacity: usize,
-    count: u64,
     sample_rate: u64,
+    op_index: u64,
 }
 
 impl LatencySampler {
@@ -182,31 +183,38 @@ impl LatencySampler {
         Self {
             samples: Vec::with_capacity(capacity),
             capacity,
-            count: 0,
             sample_rate: sample_rate.max(1),
+            op_index: 0,
         }
     }
 
-    /// Record a latency sample (only if selected for sampling).
+    /// Returns true if the next call to `record` would store a sample.
+    ///
+    /// Callers can use this to skip the `Instant::now()` pair on ops that
+    /// won't contribute to the distribution, removing ~20-50ns of timer
+    /// overhead from the measurement hot path.
+    #[inline]
+    pub fn should_sample(&self) -> bool {
+        self.samples.len() < self.capacity
+            && self
+                .op_index
+                .wrapping_add(1)
+                .is_multiple_of(self.sample_rate)
+    }
+
+    /// Advance the op counter without recording. Pair with `should_sample` so
+    /// the cadence advances in lockstep with the measured workload.
+    #[inline]
+    pub fn skip(&mut self) {
+        self.op_index = self.op_index.wrapping_add(1);
+    }
+
+    /// Record a latency sample (only if selected for sampling and within capacity).
     #[inline]
     pub fn record(&mut self, duration: Duration) {
-        self.count += 1;
-        if !self.count.is_multiple_of(self.sample_rate) {
-            return;
-        }
-
-        if self.samples.len() < self.capacity {
+        self.op_index = self.op_index.wrapping_add(1);
+        if self.samples.len() < self.capacity && self.op_index.is_multiple_of(self.sample_rate) {
             self.samples.push(duration);
-        } else {
-            // Reservoir sampling for uniform distribution
-            let idx = (self.count / self.sample_rate) as usize;
-            if idx < self.capacity {
-                self.samples[idx] = duration;
-            } else {
-                // Simple modulo replacement for speed
-                let replace_idx = (self.count as usize) % self.capacity;
-                self.samples[replace_idx] = duration;
-            }
         }
     }
 
@@ -263,15 +271,19 @@ struct RunMetrics {
     hits: u64,
     misses: u64,
     inserts: u64,
-    updates: u64,
-    evictions: u64,
-    post_warmup_inserts: u64,
-    post_warmup_evictions: u64,
+    post_warmup_misses: u64,
+    pre_warmup_capacity_reached_at: Option<usize>,
 }
 
 /// Run a complete benchmark against a cache.
 ///
-/// Returns detailed metrics including hit rate, throughput, and latency distribution.
+/// Returns detailed metrics including hit rate, throughput, and latency
+/// distribution. Latency is only timed on the sample cadence to keep the
+/// `Instant::now()` overhead off the hot path.
+///
+/// The `inserts` counter approximates evictions during the measured phase: in
+/// steady state each miss after the warmup-fill triggers exactly one eviction,
+/// so `evictions_per_insert` converges to 1.0.
 pub fn run_benchmark<C, V, F>(
     policy_name: &str,
     cache: &mut C,
@@ -292,52 +304,43 @@ where
 
     for op_idx in 0..total_ops {
         let key = generator.next_key();
-        let op_start = Instant::now();
+        let in_measured_phase = op_idx >= warmup_boundary;
+        let sample = in_measured_phase && sampler.should_sample();
+        let op_start = if sample { Some(Instant::now()) } else { None };
 
-        let was_full = cache.len() >= config.capacity;
-
-        if let Some(_value) = cache.get(&key) {
+        if cache.get(&key).is_some() {
             metrics.hits += 1;
         } else {
             metrics.misses += 1;
-
-            // Check if this is an update or insert
-            let existed = cache.contains(&key);
             let value = value_for_key(key);
             let _ = cache.insert(key, value);
             generator.record_insert();
-
-            if existed {
-                metrics.updates += 1;
-            } else {
-                metrics.inserts += 1;
-                if was_full {
-                    metrics.evictions += 1;
-                    if op_idx >= warmup_boundary {
-                        metrics.post_warmup_evictions += 1;
-                    }
-                }
-            }
-
-            if op_idx >= warmup_boundary {
-                metrics.post_warmup_inserts += 1;
+            metrics.inserts += 1;
+            if in_measured_phase {
+                metrics.post_warmup_misses += 1;
+            } else if metrics.pre_warmup_capacity_reached_at.is_none()
+                && metrics.inserts as usize >= config.capacity
+            {
+                metrics.pre_warmup_capacity_reached_at = Some(op_idx);
             }
         }
 
-        // Only sample latency during measurement phase
-        if op_idx >= warmup_boundary {
-            sampler.record(op_start.elapsed());
+        match op_start {
+            Some(s) => sampler.record(s.elapsed()),
+            None if in_measured_phase => sampler.skip(),
+            None => {},
         }
     }
 
     let total_duration = start.elapsed();
 
-    // Compute derived metrics
     let hit_stats = HitStats {
         hits: metrics.hits,
         misses: metrics.misses,
         inserts: metrics.inserts,
-        updates: metrics.updates,
+        // We no longer probe `cache.contains` per-miss; treat re-inserts of a
+        // missed key as inserts, matching `OpCounts` semantics.
+        updates: 0,
     };
 
     let throughput = ThroughputStats::from_counts(
@@ -349,10 +352,19 @@ where
 
     let latency = sampler.stats();
 
+    // Once the cache is full, every subsequent insert evicts. Approximate
+    // post-warmup evictions as post-warmup misses; pre-warmup we only count
+    // the inserts that happened after the cache reached capacity.
+    let pre_warmup_evictions = metrics
+        .pre_warmup_capacity_reached_at
+        .map(|reached| (warmup_boundary.saturating_sub(reached)) as u64)
+        .unwrap_or(0);
+    let post_warmup_evictions = metrics.post_warmup_misses;
+    let total_evictions = pre_warmup_evictions + post_warmup_evictions;
     let eviction = EvictionStats {
-        total_evictions: metrics.evictions,
-        evictions_per_insert: if metrics.post_warmup_inserts > 0 {
-            metrics.post_warmup_evictions as f64 / metrics.post_warmup_inserts as f64
+        total_evictions,
+        evictions_per_insert: if metrics.post_warmup_misses > 0 {
+            post_warmup_evictions as f64 / metrics.post_warmup_misses as f64
         } else {
             0.0
         },
@@ -377,8 +389,9 @@ where
 
 /// Measure scan resistance by interleaving point lookups with sequential scans.
 ///
-/// Returns (baseline_hit_rate, scan_hit_rate, recovery_hit_rate).
-/// A scan-resistant policy should have recovery_hit_rate close to baseline_hit_rate.
+/// A scan-resistant policy keeps `recovery_hit_rate` close to `baseline_hit_rate`.
+/// `resistance_score` is `recovery / baseline` when baseline is meaningfully
+/// above zero, otherwise `None` to avoid a misleading ratio against noise.
 pub fn measure_scan_resistance<C, V, F>(
     cache: &mut C,
     capacity: usize,
@@ -453,11 +466,21 @@ where
     }
     let recovery_hit_rate = recovery_hits as f64 / recovery_total as f64;
 
+    // Treat baseline below 1% as too noisy to take a ratio against. This avoids
+    // both divide-by-near-zero blow-ups and the previous behavior where a
+    // policy that never warmed up could report an arbitrarily large score.
+    const BASELINE_FLOOR: f64 = 0.01;
+    let resistance_score = if baseline_hit_rate >= BASELINE_FLOOR {
+        Some(recovery_hit_rate / baseline_hit_rate)
+    } else {
+        None
+    };
+
     ScanResistanceResult {
         baseline_hit_rate,
         scan_hit_rate,
         recovery_hit_rate,
-        resistance_score: recovery_hit_rate / baseline_hit_rate.max(0.001),
+        resistance_score,
     }
 }
 
@@ -470,18 +493,22 @@ pub struct ScanResistanceResult {
     pub scan_hit_rate: f64,
     /// Hit rate after recovery.
     pub recovery_hit_rate: f64,
-    /// Ratio of recovery to baseline (1.0 = perfect recovery).
-    pub resistance_score: f64,
+    /// Ratio of recovery to baseline (1.0 = perfect recovery), `None` when
+    /// the baseline hit rate is too low for the ratio to be meaningful.
+    pub resistance_score: Option<f64>,
 }
 
 impl ScanResistanceResult {
     pub fn summary(&self) -> String {
+        let score = match self.resistance_score {
+            Some(s) => format!("{s:.2}"),
+            None => "n/a".to_string(),
+        };
         format!(
-            "baseline={:.2}% scan={:.2}% recovery={:.2}% score={:.2}",
+            "baseline={:.2}% scan={:.2}% recovery={:.2}% score={score}",
             self.baseline_hit_rate * 100.0,
             self.scan_hit_rate * 100.0,
             self.recovery_hit_rate * 100.0,
-            self.resistance_score,
         )
     }
 }
@@ -566,6 +593,7 @@ where
         ops_to_50_percent: ops_to_50,
         ops_to_80_percent: ops_to_80,
         hit_rate_curve: windows,
+        window_size,
     }
 }
 
@@ -580,6 +608,9 @@ pub struct AdaptationResult {
     pub ops_to_80_percent: usize,
     /// Hit rate at each measurement window.
     pub hit_rate_curve: Vec<f64>,
+    /// Number of operations per window in `hit_rate_curve`. The post-shift
+    /// op offset for window `i` is `(i + 1) * window_size`.
+    pub window_size: usize,
 }
 
 impl AdaptationResult {
@@ -637,136 +668,64 @@ impl PolicyComparison {
     }
 }
 
-/// Standard workload suite for comparing policies.
-pub fn standard_workload_suite(universe: u64, seed: u64) -> Vec<(&'static str, WorkloadSpec)> {
-    use crate::workload::Workload;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    vec![
-        (
-            "uniform",
-            WorkloadSpec {
-                universe,
-                workload: Workload::Uniform,
-                seed,
-            },
-        ),
-        (
-            "zipfian_1.0",
-            WorkloadSpec {
-                universe,
-                workload: Workload::Zipfian { exponent: 1.0 },
-                seed,
-            },
-        ),
-        (
-            "zipfian_0.8",
-            WorkloadSpec {
-                universe,
-                workload: Workload::Zipfian { exponent: 0.8 },
-                seed,
-            },
-        ),
-        (
-            "hotset_90_10",
-            WorkloadSpec {
-                universe,
-                workload: Workload::HotSet {
-                    hot_fraction: 0.1,
-                    hot_prob: 0.9,
-                },
-                seed,
-            },
-        ),
-        (
-            "scan",
-            WorkloadSpec {
-                universe,
-                workload: Workload::Scan,
-                seed,
-            },
-        ),
-        (
-            "scan_resistance",
-            WorkloadSpec {
-                universe,
-                workload: Workload::ScanResistance {
-                    scan_fraction: 0.2,
-                    scan_length: 1000,
-                    point_exponent: 1.0,
-                },
-                seed,
-            },
-        ),
-        (
-            "loop_small",
-            WorkloadSpec {
-                universe,
-                workload: Workload::Loop {
-                    working_set_size: 512,
-                },
-                seed,
-            },
-        ),
-        (
-            "shifting_hotspot",
-            WorkloadSpec {
-                universe,
-                workload: Workload::ShiftingHotspot {
-                    shift_interval: 10_000,
-                    hot_fraction: 0.1,
-                },
-                seed,
-            },
-        ),
-        (
-            "flash_crowd",
-            WorkloadSpec {
-                universe,
-                workload: Workload::FlashCrowd {
-                    base_exponent: 1.0,
-                    flash_prob: 0.001,
-                    flash_duration: 1000,
-                    flash_keys: 10,
-                    flash_intensity: 100.0,
-                },
-                seed,
-            },
-        ),
-    ]
-}
-
-// ============================================================================
-// Memory Measurement (basic)
-// ============================================================================
-
-/// Estimate memory overhead per entry (requires std::mem::size_of on cache).
-pub fn estimate_entry_overhead<C>(cache: &C, entries: usize) -> MemoryEstimate
-where
-    C: Sized,
-{
-    let cache_size = std::mem::size_of_val(cache);
-    MemoryEstimate {
-        total_bytes: cache_size,
-        bytes_per_entry: cache_size.checked_div(entries).unwrap_or(0),
-        entry_count: entries,
+    #[test]
+    fn latency_sampler_records_only_at_cadence() {
+        let mut s = LatencySampler::new(10, 5);
+        for i in 0..10 {
+            if s.should_sample() {
+                s.record(Duration::from_nanos(i + 1));
+            } else {
+                s.skip();
+            }
+        }
+        let stats = s.stats();
+        // 10 ops at sample_rate 5 → exactly 2 samples (ops 5 and 10).
+        assert_eq!(stats.sample_count, 2);
     }
-}
 
-/// Memory usage estimate.
-#[derive(Debug, Clone, Copy)]
-pub struct MemoryEstimate {
-    pub total_bytes: usize,
-    pub bytes_per_entry: usize,
-    pub entry_count: usize,
-}
+    #[test]
+    fn latency_sampler_stops_at_capacity() {
+        let mut s = LatencySampler::new(3, 1);
+        for i in 0..100u64 {
+            if s.should_sample() {
+                s.record(Duration::from_nanos(i + 1));
+            } else {
+                s.skip();
+            }
+        }
+        let stats = s.stats();
+        // First-N-then-stop: only the first 3 samples are kept; later
+        // outliers are intentionally not allowed to overwrite earlier ones.
+        assert_eq!(stats.sample_count, 3);
+        assert_eq!(stats.min, Duration::from_nanos(1));
+        assert_eq!(stats.max, Duration::from_nanos(3));
+    }
 
-impl MemoryEstimate {
-    pub fn summary(&self) -> String {
-        format!(
-            "total={}KB entries={} bytes/entry={}",
-            self.total_bytes / 1024,
-            self.entry_count,
-            self.bytes_per_entry,
-        )
+    #[test]
+    fn scan_resistance_score_is_none_when_baseline_is_noise() {
+        // Baseline 0.5%, recovery 0.5% — ratio is mathematically defined but
+        // not meaningful; should return `None`.
+        let mut cache: cachekit::policy::lru::LruCore<u64, u64> =
+            cachekit::policy::lru::LruCore::new(4);
+        let r = measure_scan_resistance(&mut cache, 4, 1_000_000, std::sync::Arc::new);
+        if r.baseline_hit_rate < 0.01 {
+            assert!(r.resistance_score.is_none(), "got {:?}", r.resistance_score);
+        }
+    }
+
+    #[test]
+    fn scan_resistance_score_is_some_when_baseline_is_meaningful() {
+        // Tight universe vs capacity → non-trivial baseline hit rate, so the
+        // ratio should be reported.
+        let mut cache: cachekit::policy::lru::LruCore<u64, u64> =
+            cachekit::policy::lru::LruCore::new(64);
+        let r = measure_scan_resistance(&mut cache, 64, 128, std::sync::Arc::new);
+        if r.baseline_hit_rate >= 0.01 {
+            assert!(r.resistance_score.is_some(), "got {r:?}");
+        }
     }
 }

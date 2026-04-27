@@ -6,8 +6,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::metrics;
+
 /// Version of the benchmark results schema.
-pub const SCHEMA_VERSION: &str = "1.0.0";
+///
+/// Bump the major when removing or renaming required fields. New optional
+/// fields can ship as a minor bump; the renderer accepts any matching major.
+pub const SCHEMA_VERSION: &str = "1.2.0";
+
+/// Stable identifiers for the benchmark cases the renderer knows how to display.
+///
+/// Use these constants instead of bare strings when populating
+/// [`ResultRow::case_id`] so a typo in a benchmark runner is caught at compile
+/// time rather than silently dropping a section from the rendered docs.
+pub mod case_id {
+    pub const HIT_RATE: &str = "hit_rate";
+    pub const COMPREHENSIVE: &str = "comprehensive";
+    pub const SCAN_RESISTANCE: &str = "scan_resistance";
+    pub const ADAPTATION: &str = "adaptation";
+}
 
 /// Complete benchmark run artifact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,8 +166,10 @@ pub struct ScanResistanceStats {
     pub scan_hit_rate: f64,
     /// Hit rate after recovery from scan.
     pub recovery_hit_rate: f64,
-    /// Resistance score (recovery/baseline, 1.0 = perfect).
-    pub resistance_score: f64,
+    /// Resistance score (recovery/baseline, 1.0 = perfect). `None` when
+    /// baseline hit rate is too low for the ratio to be meaningful.
+    #[serde(default)]
+    pub resistance_score: Option<f64>,
 }
 
 /// Adaptation speed measurement results.
@@ -162,6 +181,15 @@ pub struct AdaptationStats {
     pub ops_to_50_percent: usize,
     /// Operations needed to reach 80% of stable hit rate.
     pub ops_to_80_percent: usize,
+    /// Hit rate measured at each adaptation window after the workload shift,
+    /// in chronological order. Empty for artifacts written by schema < 1.2.
+    #[serde(default)]
+    pub hit_rate_curve: Vec<f64>,
+    /// Number of operations per window in `hit_rate_curve`. The post-shift
+    /// op offset for window `i` is `(i + 1) * window_size`. `0` for
+    /// artifacts written by schema < 1.2.
+    #[serde(default)]
+    pub window_size: usize,
 }
 
 impl BenchmarkArtifact {
@@ -211,4 +239,81 @@ impl BenchmarkArtifact {
 /// Helper to convert Duration to nanoseconds as u64.
 pub fn duration_to_nanos(d: std::time::Duration) -> u64 {
     d.as_nanos() as u64
+}
+
+// ----------------------------------------------------------------------------
+// Conversions from the runtime measurement types (Duration-based) to the
+// serialized artifact types (number-based). Centralizing these here keeps
+// runner.rs free of repetitive field-mapping.
+// ----------------------------------------------------------------------------
+
+impl From<metrics::HitStats> for HitStats {
+    fn from(s: metrics::HitStats) -> Self {
+        let hit_rate = s.hit_rate();
+        Self {
+            hits: s.hits,
+            misses: s.misses,
+            inserts: s.inserts,
+            updates: s.updates,
+            hit_rate,
+            miss_rate: 1.0 - hit_rate,
+        }
+    }
+}
+
+impl From<metrics::ThroughputStats> for ThroughputStats {
+    fn from(t: metrics::ThroughputStats) -> Self {
+        Self {
+            duration_ms: t.total_duration.as_secs_f64() * 1000.0,
+            ops_per_sec: t.ops_per_sec,
+            gets_per_sec: t.gets_per_sec,
+            inserts_per_sec: t.inserts_per_sec,
+        }
+    }
+}
+
+impl From<metrics::LatencyStats> for LatencyStats {
+    fn from(l: metrics::LatencyStats) -> Self {
+        Self {
+            sample_count: l.sample_count,
+            min_ns: duration_to_nanos(l.min),
+            p50_ns: duration_to_nanos(l.p50),
+            p95_ns: duration_to_nanos(l.p95),
+            p99_ns: duration_to_nanos(l.p99),
+            max_ns: duration_to_nanos(l.max),
+            mean_ns: duration_to_nanos(l.mean),
+        }
+    }
+}
+
+impl From<metrics::EvictionStats> for EvictionStats {
+    fn from(e: metrics::EvictionStats) -> Self {
+        Self {
+            total_evictions: e.total_evictions,
+            evictions_per_insert: e.evictions_per_insert,
+        }
+    }
+}
+
+impl From<metrics::ScanResistanceResult> for ScanResistanceStats {
+    fn from(r: metrics::ScanResistanceResult) -> Self {
+        Self {
+            baseline_hit_rate: r.baseline_hit_rate,
+            scan_hit_rate: r.scan_hit_rate,
+            recovery_hit_rate: r.recovery_hit_rate,
+            resistance_score: r.resistance_score,
+        }
+    }
+}
+
+impl From<&metrics::AdaptationResult> for AdaptationStats {
+    fn from(a: &metrics::AdaptationResult) -> Self {
+        Self {
+            stable_hit_rate: a.stable_hit_rate,
+            ops_to_50_percent: a.ops_to_50_percent,
+            ops_to_80_percent: a.ops_to_80_percent,
+            hit_rate_curve: a.hit_rate_curve.clone(),
+            window_size: a.window_size,
+        }
+    }
 }

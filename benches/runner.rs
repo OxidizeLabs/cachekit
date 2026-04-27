@@ -14,9 +14,8 @@ use std::process::Command;
 
 use chrono::Utc;
 use common::json_results::{
-    AdaptationStats, BenchmarkArtifact, BenchmarkConfig, EvictionStats, HitStats, LatencyStats,
-    Metrics, ResultRow, RunMetadata, SCHEMA_VERSION, ScanResistanceStats, ThroughputStats,
-    duration_to_nanos,
+    AdaptationStats, BenchmarkArtifact, BenchmarkConfig, HitStats, Metrics, ResultRow, RunMetadata,
+    SCHEMA_VERSION, ScanResistanceStats, case_id,
 };
 use common::metrics::{
     BenchmarkConfig as InternalConfig, measure_adaptation_speed, measure_scan_resistance,
@@ -218,20 +217,21 @@ fn run_hit_rate_benchmarks(artifact: &mut BenchmarkArtifact) {
                 let mut op_model = ReadThrough::new(1.0, SEED);
                 let stats = run_operations(&mut cache, &mut generator, OPS, &mut op_model, Arc::new);
 
+                let hit_rate = stats.hit_rate();
                 artifact.add_result(ResultRow {
                     policy_id: policy_id.to_string(),
                     policy_name: policy_name.to_string(),
                     workload_id: workload_case.id.to_string(),
                     workload_name: workload_case.display_name.to_string(),
-                    case_id: "hit_rate".to_string(),
+                    case_id: case_id::HIT_RATE.to_string(),
                     metrics: Metrics {
                         hit_stats: Some(HitStats {
                             hits: stats.hits,
                             misses: stats.misses,
                             inserts: stats.inserts,
                             updates: stats.updates,
-                            hit_rate: stats.hit_rate(),
-                            miss_rate: 1.0 - stats.hit_rate(),
+                            hit_rate,
+                            miss_rate: 1.0 - hit_rate,
                         }),
                         throughput: None,
                         latency: None,
@@ -265,18 +265,13 @@ fn run_scan_resistance_benchmarks(artifact: &mut BenchmarkArtifact) {
                 policy_name: policy_name.to_string(),
                 workload_id: "scan_resistance_test".to_string(),
                 workload_name: "Scan Resistance Test".to_string(),
-                case_id: "scan_resistance".to_string(),
+                case_id: case_id::SCAN_RESISTANCE.to_string(),
                 metrics: Metrics {
                     hit_stats: None,
                     throughput: None,
                     latency: None,
                     eviction: None,
-                    scan_resistance: Some(ScanResistanceStats {
-                        baseline_hit_rate: result.baseline_hit_rate,
-                        scan_hit_rate: result.scan_hit_rate,
-                        recovery_hit_rate: result.recovery_hit_rate,
-                        resistance_score: result.resistance_score,
-                    }),
+                    scan_resistance: Some(ScanResistanceStats::from(result)),
                     adaptation: None,
                 },
             });
@@ -304,18 +299,14 @@ fn run_adaptation_benchmarks(artifact: &mut BenchmarkArtifact) {
                 policy_name: policy_name.to_string(),
                 workload_id: "adaptation_test".to_string(),
                 workload_name: "Adaptation Test".to_string(),
-                case_id: "adaptation".to_string(),
+                case_id: case_id::ADAPTATION.to_string(),
                 metrics: Metrics {
                     hit_stats: None,
                     throughput: None,
                     latency: None,
                     eviction: None,
                     scan_resistance: None,
-                    adaptation: Some(AdaptationStats {
-                        stable_hit_rate: result.stable_hit_rate,
-                        ops_to_50_percent: result.ops_to_50_percent,
-                        ops_to_80_percent: result.ops_to_80_percent,
-                    }),
+                    adaptation: Some(AdaptationStats::from(&result)),
                 },
             });
 
@@ -361,35 +352,12 @@ fn run_comprehensive_benchmarks(artifact: &mut BenchmarkArtifact) {
                     policy_name: policy_name.to_string(),
                     workload_id: workload_case.id.to_string(),
                     workload_name: workload_case.display_name.to_string(),
-                    case_id: "comprehensive".to_string(),
+                    case_id: case_id::COMPREHENSIVE.to_string(),
                     metrics: Metrics {
-                        hit_stats: Some(HitStats {
-                            hits: result.hit_stats.hits,
-                            misses: result.hit_stats.misses,
-                            inserts: result.hit_stats.inserts,
-                            updates: result.hit_stats.updates,
-                            hit_rate: result.hit_stats.hit_rate(),
-                            miss_rate: result.hit_stats.miss_rate(),
-                        }),
-                        throughput: Some(ThroughputStats {
-                            duration_ms: result.throughput.total_duration.as_secs_f64() * 1000.0,
-                            ops_per_sec: result.throughput.ops_per_sec,
-                            gets_per_sec: result.throughput.gets_per_sec,
-                            inserts_per_sec: result.throughput.inserts_per_sec,
-                        }),
-                        latency: Some(LatencyStats {
-                            sample_count: result.latency.sample_count,
-                            min_ns: duration_to_nanos(result.latency.min),
-                            p50_ns: duration_to_nanos(result.latency.p50),
-                            p95_ns: duration_to_nanos(result.latency.p95),
-                            p99_ns: duration_to_nanos(result.latency.p99),
-                            max_ns: duration_to_nanos(result.latency.max),
-                            mean_ns: duration_to_nanos(result.latency.mean),
-                        }),
-                        eviction: Some(EvictionStats {
-                            total_evictions: result.eviction.total_evictions,
-                            evictions_per_insert: result.eviction.evictions_per_insert,
-                        }),
+                        hit_stats: Some(result.hit_stats.into()),
+                        throughput: Some(result.throughput.into()),
+                        latency: Some(result.latency.into()),
+                        eviction: Some(result.eviction.into()),
                         scan_resistance: None,
                         adaptation: None,
                     },

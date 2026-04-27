@@ -24,37 +24,18 @@ pub enum OpOutcome {
     Miss,
 }
 
+/// Pluggable cache access pattern.
+///
+/// Each iteration of the workload calls [`OpModel::next_op`] for the chosen
+/// key, executes that operation against the cache, and then calls
+/// [`OpModel::on_result`] which may emit at most one follow-up op (e.g. an
+/// insert after a read-through miss). Chains beyond a single follow-up are
+/// intentionally not supported — see `apply_op` for the bound.
 pub trait OpModel {
     fn next_op(&mut self, key: u64) -> Operation;
 
     fn on_result(&mut self, _key: u64, _op: &Operation, _outcome: OpOutcome) -> Option<Operation> {
         None
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum OpWorkload {
-    ReadOnly,
-    WriteOnly,
-    ReadThrough { admit_prob: f64 },
-    ReadWriteMix { read_fraction: f64 },
-    ReadModifyWrite { rmw_prob: f64, insert_on_miss: bool },
-}
-
-impl OpWorkload {
-    pub fn build(self, seed: u64) -> Box<dyn OpModel> {
-        match self {
-            OpWorkload::ReadOnly => Box::new(ReadOnly),
-            OpWorkload::WriteOnly => Box::new(WriteOnly),
-            OpWorkload::ReadThrough { admit_prob } => Box::new(ReadThrough::new(admit_prob, seed)),
-            OpWorkload::ReadWriteMix { read_fraction } => {
-                Box::new(ReadWriteMix::new(read_fraction, seed))
-            },
-            OpWorkload::ReadModifyWrite {
-                rmw_prob,
-                insert_on_miss,
-            } => Box::new(ReadModifyWrite::new(rmw_prob, insert_on_miss, seed)),
-        }
     }
 }
 
@@ -102,45 +83,57 @@ where
     counts
 }
 
+/// Maximum follow-up depth allowed for `OpModel::on_result`. A single
+/// follow-up is enough for the read-through and read-modify-write models
+/// shipped here; the cap exists to keep a buggy custom model from looping
+/// forever inside the benchmark inner loop.
+const MAX_FOLLOWUP_DEPTH: usize = 4;
+
 fn apply_op<C, V, F, M>(
     cache: &mut C,
     generator: &mut WorkloadGenerator,
     op_model: &mut M,
     value_for_key: &F,
     counts: &mut OpCounts,
-    op: Operation,
+    initial_op: Operation,
 ) where
     C: Cache<u64, Arc<V>>,
     F: Fn(u64) -> Arc<V>,
     M: OpModel,
 {
-    match op {
-        Operation::Get { key } => {
-            counts.gets += 1;
-            let outcome = if cache.get(&key).is_some() {
-                counts.hits += 1;
-                OpOutcome::Hit
-            } else {
-                counts.misses += 1;
-                OpOutcome::Miss
-            };
+    let mut op = initial_op;
+    for _ in 0..=MAX_FOLLOWUP_DEPTH {
+        match op {
+            Operation::Get { key } => {
+                counts.gets += 1;
+                let outcome = if cache.get(&key).is_some() {
+                    counts.hits += 1;
+                    OpOutcome::Hit
+                } else {
+                    counts.misses += 1;
+                    OpOutcome::Miss
+                };
 
-            if let Some(followup) = op_model.on_result(key, &op, outcome) {
-                apply_op(cache, generator, op_model, value_for_key, counts, followup);
-            }
-        },
-        Operation::Insert { key } => {
-            counts.inserts += 1;
-            let value = value_for_key(key);
-            let _ = cache.insert(key, value);
-            generator.record_insert();
-        },
-        Operation::Update { key } => {
-            counts.updates += 1;
-            let value = value_for_key(key);
-            let _ = cache.insert(key, value);
-            generator.record_insert();
-        },
+                match op_model.on_result(key, &op, outcome) {
+                    Some(next) => op = next,
+                    None => return,
+                }
+            },
+            Operation::Insert { key } => {
+                counts.inserts += 1;
+                let value = value_for_key(key);
+                let _ = cache.insert(key, value);
+                generator.record_insert();
+                return;
+            },
+            Operation::Update { key } => {
+                counts.updates += 1;
+                let value = value_for_key(key);
+                let _ = cache.insert(key, value);
+                generator.record_insert();
+                return;
+            },
+        }
     }
 }
 

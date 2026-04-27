@@ -20,12 +20,13 @@ use crate::workload::{Workload, WorkloadSpec};
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```no_run
+/// # const CAPACITY: usize = 1024;
+/// use bench_support::for_each_policy;
 /// for_each_policy! {
 ///     with |policy_id, display_name, make_cache| {
-///         // Your code here using the bindings
-///         let mut cache = make_cache(CAPACITY);
-///         // ... benchmark code ...
+///         let mut _cache = make_cache(CAPACITY);
+///         println!("{policy_id} ({display_name})");
 ///     }
 /// }
 /// ```
@@ -38,8 +39,11 @@ use crate::workload::{Workload, WorkloadSpec};
 #[macro_export]
 macro_rules! for_each_policy {
     (with |$policy_id:ident, $display_name:ident, $make_cache:ident| $body:block) => {{
+        use cachekit::policy::arc::ArcCore;
+        use cachekit::policy::car::CarCore;
         use cachekit::policy::clock::ClockCache;
         use cachekit::policy::clock_pro::ClockProCache;
+        use cachekit::policy::fast_lru::FastLru;
         use cachekit::policy::fifo::FifoCache;
         use cachekit::policy::heap_lfu::HeapLfuCache;
         use cachekit::policy::lfu::LfuCache;
@@ -59,6 +63,12 @@ macro_rules! for_each_policy {
             let $policy_id = "lru";
             let $display_name = "LRU";
             let $make_cache = |cap: usize| LruCore::<u64, u64>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "fast_lru";
+            let $display_name = "Fast-LRU";
+            let $make_cache = |cap: usize| FastLru::<u64, Arc<u64>>::new(cap);
             $body
         }
         {
@@ -145,8 +155,136 @@ macro_rules! for_each_policy {
             let $make_cache = |cap: usize| TwoQCore::<u64, Arc<u64>>::new(cap, 0.25);
             $body
         }
+        {
+            let $policy_id = "arc";
+            let $display_name = "ARC";
+            let $make_cache = |cap: usize| ArcCore::<u64, Arc<u64>>::new(cap);
+            $body
+        }
+        {
+            let $policy_id = "car";
+            let $display_name = "CAR";
+            let $make_cache = |cap: usize| CarCore::<u64, Arc<u64>>::new(cap);
+            $body
+        }
     }};
 }
+
+/// Display metadata for a policy registered with [`for_each_policy!`].
+///
+/// `for_each_policy!` is the source of truth for *constructors*, but
+/// downstream tooling (chart rendering, comparison tables, CLI flags) needs
+/// presentation data that doesn't fit in a macro: stable display name, chart
+/// color, etc. Keep one entry here per macro arm. The
+/// `policies_metadata_matches_macro` test fails loudly if the two drift.
+#[derive(Debug, Clone, Copy)]
+pub struct PolicyMeta {
+    /// Stable identifier (matches `policy_id` in `for_each_policy!`).
+    pub id: &'static str,
+    /// Human-readable name (matches `display_name` in `for_each_policy!`).
+    pub display_name: &'static str,
+    /// Hex color (`#rrggbb`) used when rendering this policy in charts.
+    /// Pick perceptually distinct hues; family members (e.g. LRU variants)
+    /// can share a hue at different lightness.
+    pub color: &'static str,
+}
+
+/// All policies, in the same order as [`for_each_policy!`].
+///
+/// Consumers that need both presentation data and constructors should iterate
+/// `POLICIES` here and look up runtime construction via `for_each_policy!`.
+pub const POLICIES: &[PolicyMeta] = &[
+    PolicyMeta {
+        id: "lru",
+        display_name: "LRU",
+        color: "#3498db",
+    },
+    PolicyMeta {
+        id: "fast_lru",
+        display_name: "Fast-LRU",
+        color: "#5dade2",
+    },
+    PolicyMeta {
+        id: "lru_k",
+        display_name: "LRU-K",
+        color: "#2ecc71",
+    },
+    PolicyMeta {
+        id: "lfu",
+        display_name: "LFU",
+        color: "#e74c3c",
+    },
+    PolicyMeta {
+        id: "heap_lfu",
+        display_name: "Heap-LFU",
+        color: "#f39c12",
+    },
+    PolicyMeta {
+        id: "mfu",
+        display_name: "MFU",
+        color: "#c0392b",
+    },
+    PolicyMeta {
+        id: "fifo",
+        display_name: "FIFO",
+        color: "#16a085",
+    },
+    PolicyMeta {
+        id: "lifo",
+        display_name: "LIFO",
+        color: "#8e44ad",
+    },
+    PolicyMeta {
+        id: "mru",
+        display_name: "MRU",
+        color: "#d35400",
+    },
+    PolicyMeta {
+        id: "nru",
+        display_name: "NRU",
+        color: "#2980b9",
+    },
+    PolicyMeta {
+        id: "random",
+        display_name: "Random",
+        color: "#7f8c8d",
+    },
+    PolicyMeta {
+        id: "clock",
+        display_name: "Clock",
+        color: "#9b59b6",
+    },
+    PolicyMeta {
+        id: "clock_pro",
+        display_name: "Clock-Pro",
+        color: "#27ae60",
+    },
+    PolicyMeta {
+        id: "s3_fifo",
+        display_name: "S3-FIFO",
+        color: "#1abc9c",
+    },
+    PolicyMeta {
+        id: "slru",
+        display_name: "SLRU",
+        color: "#34495e",
+    },
+    PolicyMeta {
+        id: "two_q",
+        display_name: "2Q",
+        color: "#e67e22",
+    },
+    PolicyMeta {
+        id: "arc",
+        display_name: "ARC",
+        color: "#117a65",
+    },
+    PolicyMeta {
+        id: "car",
+        display_name: "CAR",
+        color: "#b9770e",
+    },
+];
 
 // ============================================================================
 // Workload Registry
@@ -204,7 +342,7 @@ pub const STANDARD_WORKLOADS: &[WorkloadCase] = &[
         id: "scan_resistance",
         display_name: "Scan Resistance",
         workload: Workload::ScanResistance {
-            scan_fraction: 0.2,
+            scan_start_prob: 0.2,
             scan_length: 1000,
             point_exponent: 1.0,
         },
@@ -286,7 +424,7 @@ pub const EXTENDED_WORKLOADS: &[WorkloadCase] = &[
         id: "scan_resistance",
         display_name: "Scan Resistance",
         workload: Workload::ScanResistance {
-            scan_fraction: 0.2,
+            scan_start_prob: 0.2,
             scan_length: 1000,
             point_exponent: 1.0,
         },
@@ -349,5 +487,68 @@ impl WorkloadCase {
             workload: self.workload,
             seed,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Walk every `for_each_policy!` arm and assert that `POLICIES` matches
+    /// it position-by-position. If you add a policy to the macro, add a
+    /// `PolicyMeta` here too (or vice versa) — this test exists so a single
+    /// untracked addition can't silently regress chart colors.
+    #[test]
+    fn policies_metadata_matches_macro() {
+        let mut from_macro: Vec<(&'static str, &'static str)> = Vec::new();
+        for_each_policy! {
+            with |policy_id, display_name, _make_cache| {
+                from_macro.push((policy_id, display_name));
+            }
+        }
+        let from_const: Vec<(&'static str, &'static str)> =
+            POLICIES.iter().map(|p| (p.id, p.display_name)).collect();
+        assert_eq!(
+            from_macro, from_const,
+            "for_each_policy! and POLICIES drifted; \
+             update bench-support/src/registry.rs",
+        );
+    }
+
+    #[test]
+    fn policy_colors_are_well_formed_hex() {
+        for meta in POLICIES {
+            let bytes = meta.color.as_bytes();
+            assert!(
+                bytes.first() == Some(&b'#') && bytes.len() == 7,
+                "{}: color {:?} must be #rrggbb",
+                meta.id,
+                meta.color,
+            );
+            assert!(
+                bytes[1..].iter().all(|b| b.is_ascii_hexdigit()),
+                "{}: color {:?} has non-hex digits",
+                meta.id,
+                meta.color,
+            );
+        }
+    }
+
+    #[test]
+    fn policy_ids_and_names_are_unique() {
+        let mut ids: Vec<&str> = POLICIES.iter().map(|p| p.id).collect();
+        let mut names: Vec<&str> = POLICIES.iter().map(|p| p.display_name).collect();
+        ids.sort_unstable();
+        names.sort_unstable();
+        let id_count = ids.len();
+        let name_count = names.len();
+        ids.dedup();
+        names.dedup();
+        assert_eq!(ids.len(), id_count, "duplicate policy id in POLICIES");
+        assert_eq!(
+            names.len(),
+            name_count,
+            "duplicate display_name in POLICIES",
+        );
     }
 }

@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use cachekit::traits::Cache;
 use common::metrics::{
-    BenchmarkConfig, PolicyComparison, estimate_entry_overhead, measure_adaptation_speed,
-    measure_scan_resistance, run_benchmark, standard_workload_suite,
+    BenchmarkConfig, PolicyComparison, measure_adaptation_speed, measure_scan_resistance,
+    run_benchmark,
 };
 use common::operation::{ReadThrough, run_operations};
 use common::registry::{EXTENDED_WORKLOADS, STANDARD_WORKLOADS};
@@ -36,7 +36,6 @@ fn main() {
         println!("  scan          - Scan resistance comparison");
         println!("  adaptation    - Adaptation speed comparison");
         println!("  detailed      - Detailed single benchmark with all metrics");
-        println!("  memory        - Memory overhead comparison");
         println!("  comprehensive - Full policy comparison tables");
         println!("  all           - Run all reports");
         return;
@@ -48,7 +47,6 @@ fn main() {
         "scan" => print_scan_resistance_comparison(),
         "adaptation" => print_adaptation_comparison(),
         "detailed" => run_detailed_single_benchmark(),
-        "memory" => print_memory_overhead_comparison(),
         "comprehensive" => run_comprehensive_comparison(),
         "all" => {
             print_hit_rate_comparison();
@@ -56,7 +54,6 @@ fn main() {
             print_scan_resistance_comparison();
             print_adaptation_comparison();
             run_detailed_single_benchmark();
-            print_memory_overhead_comparison();
             run_comprehensive_comparison();
         },
         other => {
@@ -152,13 +149,17 @@ fn print_scan_resistance_comparison() {
         with |_policy_id, display_name, make_cache| {
             let mut cache = make_cache(CAPACITY);
             let result = measure_scan_resistance(&mut cache, CAPACITY, UNIVERSE, Arc::new);
+            let score = match result.resistance_score {
+                Some(v) => format!("{v:.2}"),
+                None => "n/a".to_string(),
+            };
             println!(
-                "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11.2}",
+                "{:<12} {:>11.2}% {:>11.2}% {:>11.2}% {:>11}",
                 display_name,
                 result.baseline_hit_rate * 100.0,
                 result.scan_hit_rate * 100.0,
                 result.recovery_hit_rate * 100.0,
-                result.resistance_score
+                score
             );
         }
     }
@@ -228,19 +229,17 @@ fn print_adaptation_comparison() {
 fn run_comprehensive_comparison() {
     println!("\n=== Comprehensive Policy Comparison ===\n");
 
-    let suite = standard_workload_suite(UNIVERSE, SEED);
-
     for_each_policy! {
         with |policy_id, display_name, make_cache| {
             let mut comparison = PolicyComparison::new(display_name);
-            for (workload_name, spec) in &suite {
+            for workload_case in STANDARD_WORKLOADS {
                 let mut cache = make_cache(CAPACITY);
                 let config = BenchmarkConfig {
-                    name: workload_name.to_string(),
+                    name: workload_case.id.to_string(),
                     capacity: CAPACITY,
                     operations: OPS,
                     warmup_ops: CAPACITY,
-                    workload: *spec,
+                    workload: workload_case.with_params(UNIVERSE, SEED),
                     latency_sample_rate: 100,
                     max_latency_samples: 10_000,
                 };
@@ -319,31 +318,4 @@ fn run_detailed_single_benchmark() {
             }
         }
     }
-}
-
-fn print_memory_overhead_comparison() {
-    println!("\n=== Memory Overhead Comparison ===");
-    println!(
-        "{:<12} {:>12} {:>15} {:>12}",
-        "Policy", "Total (B)", "Bytes/Entry", "Entries"
-    );
-    println!("{}", "-".repeat(55));
-
-    for_each_policy! {
-        with |_policy_id, display_name, make_cache| {
-            let mut cache = make_cache(CAPACITY);
-            for i in 0..CAPACITY as u64 {
-                cache.insert(i, Arc::new(i));
-            }
-            let estimate = estimate_entry_overhead(&cache, cache.len());
-            println!(
-                "{:<12} {:>12} {:>15} {:>12}",
-                display_name, estimate.total_bytes, estimate.bytes_per_entry, estimate.entry_count
-            );
-        }
-    }
-
-    println!(
-        "\nNote: These are shallow size estimates (size_of_val). Heap allocations not included."
-    );
 }
