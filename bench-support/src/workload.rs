@@ -1,8 +1,20 @@
 //! Workload generators for hit-rate benchmarks.
 //!
-//! Provides deterministic key streams for cache benchmarking.
-
-// Not all workload variants are used in every benchmark configuration.
+//! ## Architecture
+//!
+//! [`Workload`] is a parameter-only enum that travels in [`WorkloadSpec`] and
+//! describes which access pattern to run. At construction time
+//! [`WorkloadGenerator::new`] consumes the [`Workload`] and builds a
+//! per-variant [`GeneratorState`] which carries exactly the runtime state and
+//! pre-built distributions that this access pattern needs — nothing more. The
+//! per-op [`WorkloadGenerator::next_key`] then dispatches on `state` and runs
+//! a tight, allocation-free arm.
+//!
+//! Splitting state per variant keeps [`WorkloadGenerator`] small (Zipfian
+//! variants need ~80 bytes of state, not 200+) and makes each access pattern's
+//! invariants local: the scan-resistance state lives next to the
+//! scan-resistance code, and a new variant can't accidentally read another
+//! variant's stale state.
 
 use std::sync::Arc;
 
@@ -42,13 +54,23 @@ pub enum Workload {
     /// Exponential decay - popularity drops exponentially with key distance.
     /// Models time-series data where recent items are accessed more.
     /// `lambda`: decay rate (higher = steeper drop off, typical: 0.01-0.1).
+    /// Samples are scaled by `universe / 10` and clamped to the universe so
+    /// most accesses concentrate in the first ~10% of the key space.
     Exponential { lambda: f64 },
-    /// Pareto rule distribution - models cases where a small percentage of items receive the
-    /// vast majority of accesses.
+    /// Pareto distribution - heavy-tailed access; a small share of keys
+    /// receives the majority of accesses. Samples are scaled by
+    /// `universe / 10` and clamped to the universe (same convention as
+    /// `Exponential`).
     Pareto { shape: f64 },
-    /// Key differentiator for scan-resistant policies
+    /// Mixes Zipfian point lookups with sequential scans to exercise
+    /// scan-resistant policies.
+    ///
+    /// `scan_start_prob` is the per-operation probability of *starting* a new
+    /// scan when not already scanning; in steady state, the fraction of
+    /// operations that are scans is roughly
+    /// `scan_start_prob * scan_length / (1 + scan_start_prob * scan_length)`.
     ScanResistance {
-        scan_fraction: f64,
+        scan_start_prob: f64,
         scan_length: u64,
         point_exponent: f64,
     },
@@ -109,344 +131,426 @@ impl WorkloadSpec {
     }
 }
 
+/// Per-variant runtime state. Each variant only carries the parameters and
+/// mutable state its [`WorkloadGenerator::next_key`] arm reads or writes,
+/// avoiding the `Option<Distribution>` swamp that the previous god-struct
+/// allocated for every workload regardless of which one was active.
+#[derive(Debug, Clone)]
+enum GeneratorState {
+    Uniform,
+    HotSet {
+        hot_size: u64,
+        hot_prob: f64,
+    },
+    Scan {
+        pos: u64,
+    },
+    Zipfian {
+        zipf: Zipf<f64>,
+    },
+    ScrambledZipfian {
+        zipf: Zipf<f64>,
+    },
+    Latest {
+        zipf: Zipf<f64>,
+        insert_counter: u64,
+    },
+    ShiftingHotspot {
+        shift_interval: u64,
+        hot_size: u64,
+        op_count: u64,
+    },
+    Exponential {
+        exp: Exp<f64>,
+    },
+    Pareto {
+        pareto: ParetoDistr<f64>,
+    },
+    ScanResistance {
+        zipf: Zipf<f64>,
+        scan_start_prob: f64,
+        scan_length: u64,
+        in_scan: bool,
+        ops_remaining: u64,
+        start_key: u64,
+    },
+    Correlated {
+        stride: u64,
+        burst_len: u64,
+        burst_prob: f64,
+        burst_remaining: u64,
+        burst_start_key: u64,
+    },
+    Loop {
+        working_set_size: u64,
+        pos: u64,
+    },
+    WorkingSetChurn {
+        working_set_size: u64,
+        churn_rate: f64,
+        base: u64,
+    },
+    Bursty {
+        zipf: Zipf<f64>,
+        state_persistence: f64,
+        active: bool,
+    },
+    FlashCrowd {
+        zipf: Zipf<f64>,
+        flash_prob: f64,
+        flash_duration: u64,
+        flash_keys: u64,
+        flash_intensity: f64,
+        active: bool,
+        ops_remaining: u64,
+        base_key: u64,
+    },
+    Mixture {
+        scan_pos: u64,
+    },
+}
+
+impl GeneratorState {
+    fn build(universe: u64, workload: Workload) -> Self {
+        let make_zipf = |exponent: f64| {
+            Zipf::new(universe as f64, exponent).expect("Zipf parameters out of range")
+        };
+        let hot_size_of = |hot_fraction: f64| {
+            let hot_fraction = hot_fraction.clamp(0.0, 1.0);
+            ((universe as f64) * hot_fraction)
+                .round()
+                .clamp(1.0, universe as f64) as u64
+        };
+        match workload {
+            Workload::Uniform => Self::Uniform,
+            Workload::HotSet {
+                hot_fraction,
+                hot_prob,
+            } => Self::HotSet {
+                hot_size: hot_size_of(hot_fraction),
+                hot_prob: hot_prob.clamp(0.0, 1.0),
+            },
+            Workload::Scan => Self::Scan { pos: 0 },
+            Workload::Zipfian { exponent } => Self::Zipfian {
+                zipf: make_zipf(exponent),
+            },
+            Workload::ScrambledZipfian { exponent } => Self::ScrambledZipfian {
+                zipf: make_zipf(exponent),
+            },
+            Workload::Latest { exponent } => Self::Latest {
+                zipf: make_zipf(exponent),
+                insert_counter: 0,
+            },
+            Workload::ShiftingHotspot {
+                shift_interval,
+                hot_fraction,
+            } => Self::ShiftingHotspot {
+                shift_interval: shift_interval.max(1),
+                hot_size: hot_size_of(hot_fraction),
+                op_count: 0,
+            },
+            Workload::Exponential { lambda } => Self::Exponential {
+                exp: Exp::new(lambda).expect("Exp lambda out of range"),
+            },
+            Workload::Pareto { shape } => Self::Pareto {
+                pareto: ParetoDistr::new(1.0, shape).expect("Pareto shape out of range"),
+            },
+            Workload::ScanResistance {
+                scan_start_prob,
+                scan_length,
+                point_exponent,
+            } => Self::ScanResistance {
+                zipf: make_zipf(point_exponent),
+                scan_start_prob,
+                scan_length,
+                in_scan: false,
+                ops_remaining: 0,
+                start_key: 0,
+            },
+            Workload::Correlated {
+                stride,
+                burst_len,
+                burst_prob,
+            } => Self::Correlated {
+                stride,
+                burst_len,
+                burst_prob,
+                burst_remaining: 0,
+                burst_start_key: 0,
+            },
+            Workload::Loop { working_set_size } => Self::Loop {
+                working_set_size: working_set_size.max(1),
+                pos: 0,
+            },
+            Workload::WorkingSetChurn {
+                working_set_size,
+                churn_rate,
+            } => Self::WorkingSetChurn {
+                working_set_size: working_set_size.max(1),
+                churn_rate,
+                base: 0,
+            },
+            Workload::Bursty {
+                hurst,
+                base_exponent,
+            } => Self::Bursty {
+                zipf: make_zipf(base_exponent),
+                state_persistence: ((hurst - 0.5).max(0.0) * 2.0).clamp(0.0, 1.0),
+                active: false,
+            },
+            Workload::FlashCrowd {
+                base_exponent,
+                flash_prob,
+                flash_duration,
+                flash_keys,
+                flash_intensity,
+            } => Self::FlashCrowd {
+                zipf: make_zipf(base_exponent),
+                flash_prob,
+                flash_duration,
+                flash_keys: flash_keys.max(1),
+                flash_intensity,
+                active: false,
+                ops_remaining: 0,
+                base_key: 0,
+            },
+            Workload::Mixture => Self::Mixture { scan_pos: 0 },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkloadGenerator {
     universe: u64,
-    workload: Workload,
     rng: SmallRng,
-    scan_pos: u64,
-    operation_count: u64,
-    insert_counter: u64,
-    zipfian: Option<Zipf<f64>>,
-    exponential: Option<Exp<f64>>,
-    pareto: Option<ParetoDistr<f64>>,
-    // Correlated workload state
-    burst_remaining: u64,
-    burst_start_key: u64,
-    // Loop workload state
-    loop_pos: u64,
-    // WorkingSetChurn state
-    working_set_base: u64,
-    // Bursty workload state
-    bursty_zipfian: Option<Zipf<f64>>,
-    burst_active: bool,
-    // FlashCrowd state
-    flash_zipfian: Option<Zipf<f64>>,
-    flash_active: bool,
-    flash_ops_remaining: u64,
-    flash_base_key: u64,
-    // ScanResistance state
-    scan_resistance_zipfian: Option<Zipf<f64>>,
-    in_scan: bool,
-    scan_ops_remaining: u64,
-    scan_start_key: u64,
+    state: GeneratorState,
 }
 
 impl WorkloadGenerator {
     pub fn new(universe: u64, workload: Workload, seed: u64) -> Self {
         let universe = universe.max(1);
-        let zipfian = match workload {
-            Workload::Zipfian { exponent }
-            | Workload::ScrambledZipfian { exponent }
-            | Workload::Latest { exponent } => Some(Zipf::new(universe as f64, exponent).unwrap()),
-            _ => None,
-        };
-        let exponential = match workload {
-            Workload::Exponential { lambda } => Some(Exp::new(lambda).unwrap()),
-            _ => None,
-        };
-        let pareto = match workload {
-            Workload::Pareto { shape } => Some(ParetoDistr::new(1.0, shape).unwrap()),
-            _ => None,
-        };
-        let bursty_zipfian = match workload {
-            Workload::Bursty { base_exponent, .. } => {
-                Some(Zipf::new(universe as f64, base_exponent).unwrap())
-            },
-            _ => None,
-        };
-        let flash_zipfian = match workload {
-            Workload::FlashCrowd { base_exponent, .. } => {
-                Some(Zipf::new(universe as f64, base_exponent).unwrap())
-            },
-            _ => None,
-        };
-        let scan_resistance_zipfian = match workload {
-            Workload::ScanResistance { point_exponent, .. } => {
-                Some(Zipf::new(universe as f64, point_exponent).unwrap())
-            },
-            _ => None,
-        };
         Self {
             universe,
-            workload,
             rng: SmallRng::seed_from_u64(seed),
-            scan_pos: 0,
-            operation_count: 0,
-            insert_counter: 0,
-            zipfian,
-            exponential,
-            pareto,
-            burst_remaining: 0,
-            burst_start_key: 0,
-            loop_pos: 0,
-            working_set_base: 0,
-            bursty_zipfian,
-            burst_active: false,
-            flash_zipfian,
-            flash_active: false,
-            flash_ops_remaining: 0,
-            flash_base_key: 0,
-            scan_resistance_zipfian,
-            in_scan: false,
-            scan_ops_remaining: 0,
-            scan_start_key: 0,
+            state: GeneratorState::build(universe, workload),
         }
     }
 
-    /// Notify the generator that a key was inserted (for Latest workload).
+    /// Notify the generator that a key was inserted (for the `Latest` workload).
+    /// All other variants ignore inserts.
     pub fn record_insert(&mut self) {
-        self.insert_counter = self.insert_counter.wrapping_add(1);
+        if let GeneratorState::Latest { insert_counter, .. } = &mut self.state {
+            *insert_counter = insert_counter.wrapping_add(1);
+        }
     }
 
     pub fn next_key(&mut self) -> u64 {
-        self.operation_count = self.operation_count.wrapping_add(1);
+        let universe = self.universe;
+        match &mut self.state {
+            GeneratorState::Uniform => self.rng.random::<u64>() % universe,
 
-        match self.workload {
-            Workload::Uniform => self.rng.random::<u64>() % self.universe,
-
-            Workload::HotSet {
-                hot_fraction,
-                hot_prob,
-            } => {
-                let hot_fraction = hot_fraction.clamp(0.0, 1.0);
-                let hot_prob = hot_prob.clamp(0.0, 1.0);
-                let hot_size = ((self.universe as f64) * hot_fraction).round() as u64;
-                let hot_size = hot_size.max(1).min(self.universe);
-                if self.rng.random::<f64>() < hot_prob {
-                    self.rng.random::<u64>() % hot_size
-                } else if hot_size == self.universe {
-                    self.rng.random::<u64>() % self.universe
+            GeneratorState::HotSet { hot_size, hot_prob } => {
+                if self.rng.random::<f64>() < *hot_prob {
+                    self.rng.random::<u64>() % *hot_size
+                } else if *hot_size == universe {
+                    self.rng.random::<u64>() % universe
                 } else {
-                    hot_size + (self.rng.random::<u64>() % (self.universe - hot_size))
+                    *hot_size + (self.rng.random::<u64>() % (universe - *hot_size))
                 }
             },
 
-            Workload::Scan => {
-                let key = self.scan_pos;
-                self.scan_pos = (self.scan_pos + 1) % self.universe;
+            GeneratorState::Scan { pos } => {
+                let key = *pos;
+                *pos = (*pos + 1) % universe;
                 key
             },
 
-            Workload::Zipfian { .. } => {
-                let zipf = self.zipfian.as_ref().unwrap();
+            GeneratorState::Zipfian { zipf } => {
                 let sample: f64 = zipf.sample(&mut self.rng);
-                (sample as u64).saturating_sub(1).min(self.universe - 1)
+                (sample as u64).saturating_sub(1).min(universe - 1)
             },
 
-            Workload::ScrambledZipfian { .. } => {
-                let zipf = self.zipfian.as_ref().unwrap();
+            GeneratorState::ScrambledZipfian { zipf } => {
                 let sample: f64 = zipf.sample(&mut self.rng);
-                let key = (sample as u64).saturating_sub(1).min(self.universe - 1);
-                // FNV-1a hash to scramble the key
-                fnv_hash(key) % self.universe
+                let key = (sample as u64).saturating_sub(1).min(universe - 1);
+                fnv_hash(key) % universe
             },
 
-            Workload::Latest { .. } => {
-                let zipf = self.zipfian.as_ref().unwrap();
+            GeneratorState::Latest {
+                zipf,
+                insert_counter,
+            } => {
                 let sample: f64 = zipf.sample(&mut self.rng);
-                let offset = (sample as u64).saturating_sub(1).min(self.universe - 1);
-                // Access keys near the most recent insert, wrapping around
-                self.insert_counter.wrapping_sub(offset) % self.universe
+                let offset = (sample as u64).saturating_sub(1).min(universe - 1);
+                insert_counter.wrapping_sub(offset) % universe
             },
 
-            Workload::ShiftingHotspot {
+            GeneratorState::ShiftingHotspot {
                 shift_interval,
-                hot_fraction,
+                hot_size,
+                op_count,
             } => {
-                let hot_fraction = hot_fraction.clamp(0.0, 1.0);
-                let hot_size = ((self.universe as f64) * hot_fraction).round() as u64;
-                let hot_size = hot_size.max(1).min(self.universe);
-
-                // Shift the hotspot base periodically
-                let shift_count = self.operation_count / shift_interval.max(1);
-                let hotspot_base = (shift_count * hot_size) % self.universe;
-
-                // 80% of accesses go to the current hotspot
+                *op_count = op_count.wrapping_add(1);
+                let shift_count = *op_count / *shift_interval;
+                let hotspot_base = (shift_count * *hot_size) % universe;
                 if self.rng.random::<f64>() < 0.8 {
-                    hotspot_base + (self.rng.random::<u64>() % hot_size)
+                    let offset = self.rng.random::<u64>() % *hot_size;
+                    // Wrap modulo universe so a hotspot that straddles the
+                    // end of the key space stays in-bounds.
+                    (hotspot_base + offset) % universe
                 } else {
-                    self.rng.random::<u64>() % self.universe
+                    self.rng.random::<u64>() % universe
                 }
             },
 
-            Workload::Exponential { .. } => {
-                let exp = self.exponential.as_ref().unwrap();
+            GeneratorState::Exponential { exp } => {
                 let sample: f64 = exp.sample(&mut self.rng);
-                // Map exponential sample to key space, favoring lower keys
-                let key = (sample * (self.universe as f64 / 10.0)) as u64;
-                key.min(self.universe - 1)
+                let key = (sample * (universe as f64 / 10.0)) as u64;
+                key.min(universe - 1)
             },
 
-            Workload::Pareto { .. } => {
-                let pareto = self.pareto.as_ref().unwrap();
+            GeneratorState::Pareto { pareto } => {
                 let sample: f64 = pareto.sample(&mut self.rng);
-                // Pareto samples start at scale (1.0), map to key space
-                let key = ((sample - 1.0) * (self.universe as f64 / 10.0)) as u64;
-                key.min(self.universe - 1)
+                let key = ((sample - 1.0) * (universe as f64 / 10.0)) as u64;
+                key.min(universe - 1)
             },
 
-            Workload::ScanResistance {
-                scan_fraction,
+            GeneratorState::ScanResistance {
+                zipf,
+                scan_start_prob,
                 scan_length,
-                ..
+                in_scan,
+                ops_remaining,
+                start_key,
             } => {
-                // Check if we should start a scan
-                if !self.in_scan && self.rng.random::<f64>() < scan_fraction {
-                    self.in_scan = true;
-                    self.scan_ops_remaining = scan_length;
-                    self.scan_start_key = self.rng.random::<u64>() % self.universe;
+                if !*in_scan && self.rng.random::<f64>() < *scan_start_prob {
+                    *in_scan = true;
+                    *ops_remaining = *scan_length;
+                    *start_key = self.rng.random::<u64>() % universe;
                 }
-
-                if self.in_scan {
-                    let key = (self.scan_start_key + (scan_length - self.scan_ops_remaining))
-                        % self.universe;
-                    self.scan_ops_remaining -= 1;
-                    if self.scan_ops_remaining == 0 {
-                        self.in_scan = false;
+                if *in_scan {
+                    let key = (*start_key + (*scan_length - *ops_remaining)) % universe;
+                    *ops_remaining -= 1;
+                    if *ops_remaining == 0 {
+                        *in_scan = false;
                     }
                     key
                 } else {
-                    // Point lookup with Zipfian distribution
-                    let zipf = self.scan_resistance_zipfian.as_ref().unwrap();
                     let sample: f64 = zipf.sample(&mut self.rng);
-                    (sample as u64).saturating_sub(1).min(self.universe - 1)
+                    (sample as u64).saturating_sub(1).min(universe - 1)
                 }
             },
 
-            Workload::Correlated {
+            GeneratorState::Correlated {
                 stride,
                 burst_len,
                 burst_prob,
+                burst_remaining,
+                burst_start_key,
             } => {
-                // Check if we're in a burst
-                if self.burst_remaining > 0 {
-                    let key = (self.burst_start_key + (burst_len - self.burst_remaining) * stride)
-                        % self.universe;
-                    self.burst_remaining -= 1;
+                if *burst_remaining > 0 {
+                    let key =
+                        (*burst_start_key + (*burst_len - *burst_remaining) * *stride) % universe;
+                    *burst_remaining -= 1;
                     key
-                } else if self.rng.random::<f64>() < burst_prob {
-                    // Start a new burst
-                    self.burst_remaining = burst_len.saturating_sub(1);
-                    self.burst_start_key = self.rng.random::<u64>() % self.universe;
-                    self.burst_start_key
+                } else if self.rng.random::<f64>() < *burst_prob {
+                    *burst_remaining = burst_len.saturating_sub(1);
+                    *burst_start_key = self.rng.random::<u64>() % universe;
+                    *burst_start_key
                 } else {
-                    // Random access
-                    self.rng.random::<u64>() % self.universe
+                    self.rng.random::<u64>() % universe
                 }
             },
 
-            Workload::Loop { working_set_size } => {
-                let key = self.loop_pos % working_set_size.max(1);
-                self.loop_pos = self.loop_pos.wrapping_add(1);
+            GeneratorState::Loop {
+                working_set_size,
+                pos,
+            } => {
+                let key = *pos % *working_set_size;
+                *pos = pos.wrapping_add(1);
                 key
             },
 
-            Workload::WorkingSetChurn {
+            GeneratorState::WorkingSetChurn {
                 working_set_size,
                 churn_rate,
+                base,
             } => {
-                let working_set_size = working_set_size.max(1);
-                // Occasionally shift the working set base
-                if self.rng.random::<f64>() < churn_rate {
-                    self.working_set_base =
-                        (self.working_set_base + 1) % (self.universe - working_set_size + 1).max(1);
+                if self.rng.random::<f64>() < *churn_rate {
+                    let span = (universe - *working_set_size + 1).max(1);
+                    *base = (*base + 1) % span;
                 }
-                // Access within current working set
-                let offset = self.rng.random::<u64>() % working_set_size;
-                (self.working_set_base + offset) % self.universe
+                let offset = self.rng.random::<u64>() % *working_set_size;
+                (*base + offset) % universe
             },
 
-            Workload::Bursty { hurst, .. } => {
-                // Simplified bursty model using Hurst parameter to control burst probability
-                // Higher hurst = more likely to stay in current state (bursty or quiet)
-                let state_persistence = (hurst - 0.5).max(0.0) * 2.0; // 0.0 to 1.0
-
-                if self.burst_active {
-                    if self.rng.random::<f64>() > state_persistence {
-                        self.burst_active = false;
+            GeneratorState::Bursty {
+                zipf,
+                state_persistence,
+                active,
+            } => {
+                if *active {
+                    if self.rng.random::<f64>() > *state_persistence {
+                        *active = false;
                     }
-                } else if self.rng.random::<f64>() < (1.0 - state_persistence) * 0.1 {
-                    self.burst_active = true;
+                } else if self.rng.random::<f64>() < (1.0 - *state_persistence) * 0.1 {
+                    *active = true;
                 }
-
-                // During bursts, concentrate on fewer keys; otherwise use full distribution
-                let zipf = self.bursty_zipfian.as_ref().unwrap();
                 let sample: f64 = zipf.sample(&mut self.rng);
-                let key = (sample as u64).saturating_sub(1).min(self.universe - 1);
-
-                if self.burst_active {
-                    // Concentrate on a subset during bursts
-                    key % (self.universe / 10).max(1)
+                let key = (sample as u64).saturating_sub(1).min(universe - 1);
+                if *active {
+                    key % (universe / 10).max(1)
                 } else {
                     key
                 }
             },
 
-            Workload::FlashCrowd {
+            GeneratorState::FlashCrowd {
+                zipf,
                 flash_prob,
                 flash_duration,
                 flash_keys,
                 flash_intensity,
-                ..
+                active,
+                ops_remaining,
+                base_key,
             } => {
-                // Check if flash event should start
-                if !self.flash_active && self.rng.random::<f64>() < flash_prob {
-                    self.flash_active = true;
-                    self.flash_ops_remaining = flash_duration;
-                    self.flash_base_key = self.rng.random::<u64>() % self.universe;
+                if !*active && self.rng.random::<f64>() < *flash_prob {
+                    *active = true;
+                    *ops_remaining = *flash_duration;
+                    *base_key = self.rng.random::<u64>() % universe;
                 }
-
-                if self.flash_active {
-                    self.flash_ops_remaining -= 1;
-                    if self.flash_ops_remaining == 0 {
-                        self.flash_active = false;
+                if *active {
+                    *ops_remaining -= 1;
+                    if *ops_remaining == 0 {
+                        *active = false;
                     }
-
-                    // During flash, heavily favor the flash keys
-                    if self.rng.random::<f64>() < flash_intensity / (flash_intensity + 1.0) {
-                        let flash_keys = flash_keys.max(1);
-                        self.flash_base_key + (self.rng.random::<u64>() % flash_keys)
+                    if self.rng.random::<f64>() < *flash_intensity / (*flash_intensity + 1.0) {
+                        let offset = self.rng.random::<u64>() % *flash_keys;
+                        (*base_key + offset) % universe
                     } else {
-                        // Occasional normal access
-                        let zipf = self.flash_zipfian.as_ref().unwrap();
                         let sample: f64 = zipf.sample(&mut self.rng);
-                        (sample as u64).saturating_sub(1).min(self.universe - 1)
+                        (sample as u64).saturating_sub(1).min(universe - 1)
                     }
                 } else {
-                    // Normal operation
-                    let zipf = self.flash_zipfian.as_ref().unwrap();
                     let sample: f64 = zipf.sample(&mut self.rng);
-                    (sample as u64).saturating_sub(1).min(self.universe - 1)
+                    (sample as u64).saturating_sub(1).min(universe - 1)
                 }
             },
 
-            Workload::Mixture => {
-                // Default mixture: 70% Zipfian, 20% Scan-like, 10% Uniform
+            GeneratorState::Mixture { scan_pos } => {
+                // Default mixture: 70% Pareto-1 (proxy for skewed traffic),
+                // 20% sequential scan, 10% uniform random.
                 let r = self.rng.random::<f64>();
                 if r < 0.7 {
-                    // Zipfian-like with manual calculation
-                    let rank =
-                        (1.0 / self.rng.random::<f64>().max(0.001)).min(self.universe as f64);
-                    (rank as u64).saturating_sub(1).min(self.universe - 1)
+                    let rank = (1.0 / self.rng.random::<f64>().max(0.001)).min(universe as f64);
+                    (rank as u64).saturating_sub(1).min(universe - 1)
                 } else if r < 0.9 {
-                    // Sequential scan behavior
-                    let key = self.scan_pos;
-                    self.scan_pos = (self.scan_pos + 1) % self.universe;
+                    let key = *scan_pos;
+                    *scan_pos = (*scan_pos + 1) % universe;
                     key
                 } else {
-                    // Uniform random
-                    self.rng.random::<u64>() % self.universe
+                    self.rng.random::<u64>() % universe
                 }
             },
         }
@@ -503,5 +607,142 @@ where
     HitRate {
         hits: counts.hits,
         misses: counts.misses,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_gen(universe: u64, workload: Workload) -> WorkloadGenerator {
+        WorkloadSpec {
+            universe,
+            workload,
+            seed: 1,
+        }
+        .generator()
+    }
+
+    #[test]
+    fn keys_stay_within_universe() {
+        let universe = 1024;
+        let workloads = [
+            Workload::Uniform,
+            Workload::Scan,
+            Workload::HotSet {
+                hot_fraction: 0.1,
+                hot_prob: 0.9,
+            },
+            Workload::Zipfian { exponent: 1.0 },
+            Workload::ScrambledZipfian { exponent: 1.0 },
+            Workload::Latest { exponent: 1.0 },
+            Workload::ShiftingHotspot {
+                shift_interval: 100,
+                hot_fraction: 0.1,
+            },
+            Workload::Exponential { lambda: 0.05 },
+            Workload::Pareto { shape: 1.5 },
+            Workload::ScanResistance {
+                scan_start_prob: 0.1,
+                scan_length: 16,
+                point_exponent: 1.0,
+            },
+            Workload::Correlated {
+                stride: 1,
+                burst_len: 16,
+                burst_prob: 0.1,
+            },
+            Workload::Loop {
+                working_set_size: 64,
+            },
+            Workload::WorkingSetChurn {
+                working_set_size: 64,
+                churn_rate: 0.01,
+            },
+            Workload::Bursty {
+                hurst: 0.7,
+                base_exponent: 1.0,
+            },
+            Workload::FlashCrowd {
+                base_exponent: 1.0,
+                flash_prob: 0.05,
+                flash_duration: 8,
+                flash_keys: 4,
+                flash_intensity: 10.0,
+            },
+            Workload::Mixture,
+        ];
+        for workload in workloads {
+            let mut g = make_gen(universe, workload);
+            for _ in 0..2_000 {
+                let k = g.next_key();
+                assert!(
+                    k < universe,
+                    "{workload:?} produced key {k} outside [0, {universe})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scan_walks_universe_in_order() {
+        let mut g = make_gen(8, Workload::Scan);
+        let seq: Vec<u64> = (0..16).map(|_| g.next_key()).collect();
+        assert_eq!(seq, vec![0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn record_insert_only_affects_latest() {
+        // For a non-Latest workload, record_insert should be a no-op and
+        // not perturb the deterministic key stream.
+        let mut g1 = make_gen(64, Workload::Zipfian { exponent: 1.0 });
+        let mut g2 = make_gen(64, Workload::Zipfian { exponent: 1.0 });
+        for _ in 0..50 {
+            g2.record_insert();
+            assert_eq!(g1.next_key(), g2.next_key());
+        }
+    }
+
+    #[test]
+    fn scan_resistance_emits_contiguous_run_during_scan() {
+        // Pin scan_start_prob=1.0 so the very first call enters scan mode and
+        // produces `scan_length` consecutive keys (mod universe).
+        let mut g = make_gen(
+            1024,
+            Workload::ScanResistance {
+                scan_start_prob: 1.0,
+                scan_length: 8,
+                point_exponent: 1.0,
+            },
+        );
+        let first = g.next_key();
+        for offset in 1..8u64 {
+            assert_eq!(g.next_key(), (first + offset) % 1024);
+        }
+    }
+
+    #[test]
+    fn generator_size_is_reasonable() {
+        // The previous god-struct was ~360+ bytes per generator (5 Option<Distribution>
+        // fields plus per-variant scratch state for every workload). Per-variant
+        // state should keep this well under that. The exact threshold is host-
+        // and rustc-version-dependent, so we just guard against a major regression.
+        let size = std::mem::size_of::<WorkloadGenerator>();
+        assert!(
+            size <= 200,
+            "WorkloadGenerator grew to {size} bytes; expected <= 200",
+        );
+    }
+
+    #[test]
+    fn loop_cycles_through_working_set() {
+        let mut g = make_gen(
+            1024,
+            Workload::Loop {
+                working_set_size: 4,
+            },
+        );
+        let seq: Vec<u64> = (0..10).map(|_| g.next_key()).collect();
+        assert_eq!(seq, vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1]);
     }
 }

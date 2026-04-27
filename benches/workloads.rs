@@ -19,7 +19,6 @@ use std::time::Instant;
 
 use common::metrics::{
     BenchmarkConfig, measure_adaptation_speed, measure_scan_resistance, run_benchmark,
-    standard_workload_suite,
 };
 use common::operation::{ReadThrough, run_operations};
 use common::registry::STANDARD_WORKLOADS;
@@ -141,15 +140,14 @@ fn bench_adaptation_speed(c: &mut Criterion) {
 
 fn bench_comprehensive(c: &mut Criterion) {
     let mut group = c.benchmark_group("comprehensive");
-    let suite = standard_workload_suite(UNIVERSE, SEED);
 
-    for (workload_name, spec) in &suite {
+    for workload_case in STANDARD_WORKLOADS {
         let config = BenchmarkConfig {
-            name: workload_name.to_string(),
+            name: workload_case.id.to_string(),
             capacity: CAPACITY,
             operations: OPS,
             warmup_ops: CAPACITY,
-            workload: *spec,
+            workload: workload_case.with_params(UNIVERSE, SEED),
             latency_sample_rate: 100,
             max_latency_samples: 10_000,
         };
@@ -157,7 +155,7 @@ fn bench_comprehensive(c: &mut Criterion) {
         for_each_policy! {
             with |policy_id, _display_name, make_cache| {
                 group.bench_with_input(
-                    BenchmarkId::new(policy_id, workload_name),
+                    BenchmarkId::new(policy_id, workload_case.id),
                     &config,
                     |b, cfg| {
                         b.iter_custom(|iters| {
