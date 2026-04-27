@@ -811,8 +811,7 @@ where
     ///
     /// `total_weight` is reset *before* dropping the map contents so that
     /// under `panic = "unwind"` a panicking `V::Drop` still leaves the
-    /// store in a self-consistent state (`map.len() == 0`, the hashbrown
-    /// `ClearOnDrop` guard guarantees this; `total_weight == 0`).
+    /// store in a self-consistent state (`map.len() == 0`; `total_weight == 0`).
     /// Remaining values may leak via the unwinding drop, but no stale
     /// weight baseline can inflate future capacity checks.
     ///
@@ -1159,8 +1158,9 @@ where
     /// Removes all entries and resets total weight.
     ///
     /// Acquires write lock. Attributes the cleared entries to the outer
-    /// `removes` metric. Inner-store counters are ignored here so the
-    /// public metrics surface counts each bulk clear exactly once.
+    /// `removes` metric. Inner-store metrics counters are not consulted
+    /// here; removal count is derived from `store.map.len()` so the public
+    /// metrics surface counts each bulk clear exactly once.
     fn clear(&self) {
         let mut store = self.inner.write();
         let removed = store.map.len() as u64;
