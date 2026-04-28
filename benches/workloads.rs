@@ -46,6 +46,8 @@ const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
 const OPS: usize = 200_000;
 const SEED: u64 = 42;
+/// Read-through probability used by the operation model (1.0 = always read-through).
+const READ_THROUGH_RATIO: f64 = 1.0;
 
 fn make_generator(workload: Workload) -> WorkloadGenerator {
     WorkloadSpec {
@@ -90,7 +92,7 @@ fn bench_hit_rates(c: &mut Criterion) {
                             for _ in 0..iters {
                                 let mut cache = make_cache(CAPACITY);
                                 let mut generator = make_generator(wl);
-                                let mut op_model = ReadThrough::new(1.0, SEED);
+                                let mut op_model = ReadThrough::new(READ_THROUGH_RATIO, SEED);
                                 let start = Instant::now();
                                 let _ = run_operations(
                                     &mut cache,
