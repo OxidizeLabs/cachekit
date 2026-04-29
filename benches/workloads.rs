@@ -99,7 +99,13 @@ fn bench_hit_rates(c: &mut Criterion) {
                                     &mut generator,
                                     OPS,
                                     &mut op_model,
-                                    |k| Arc::clone(&value_pool[k as usize]),
+                                    |k| {
+                                        Arc::clone(
+                                            value_pool
+                                                .get(k as usize)
+                                                .expect("generator produced key outside configured UNIVERSE"),
+                                        )
+                                    },
                                 );
                                 total += start.elapsed();
                             }
