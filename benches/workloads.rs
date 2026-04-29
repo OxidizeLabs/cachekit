@@ -214,7 +214,16 @@ fn bench_comprehensive(c: &mut Criterion) {
                                     policy_id,
                                     &mut cache,
                                     cfg,
-                                    |key| Arc::clone(&value_pool[key as usize]),
+                                    |key| {
+                                        let idx = key as usize;
+                                        Arc::clone(value_pool.get(idx).unwrap_or_else(|| {
+                                            panic!(
+                                                "workload key {} out of range for value_pool (len {}, expected < UNIVERSE)",
+                                                key,
+                                                value_pool.len()
+                                            )
+                                        }))
+                                    },
                                 );
                                 total += start.elapsed();
                             }
