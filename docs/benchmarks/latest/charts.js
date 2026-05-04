@@ -400,7 +400,7 @@ function renderAdaptationCurveChart(canvasId, results) {
                 backgroundColor: colorForPolicy(policy),
                 // Connect across any null tail so a short curve doesn't
                 // visually drop to zero at the end.
-                spanGaps: true,
+                spanGaps: false,
                 tension: 0.2,
                 pointRadius: 2,
                 borderWidth: 2,
