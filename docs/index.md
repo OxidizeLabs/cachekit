@@ -12,6 +12,13 @@ Key features:
 - [Quickstart](getting-started/quickstart.md) — Install and build your first cache
 - [Integration guide](getting-started/integration.md) — CacheBuilder API, policy selection, thread safety
 - [Design overview](design/design.md) — Architectural decisions and performance principles
+- [Cache trait hierarchy](design/trait-hierarchy.md) — Kernel trait, capability traits, read/mutate split
+- [Concurrency](design/concurrency.md) — `Concurrent*` wrappers, lock discipline, sharded primitives
+- [Builder and runtime dispatch](design/builder-and-dyn-dispatch.md) — `CachePolicy`, `DynCache`, enum dispatch
+- [Weighted eviction](design/weighted-eviction.md) — `WeightStore`, dual limits, GDS/GDSF pre-staging
+- [Metrics](design/metrics.md) — Recorder / snapshot / exporter split, Prometheus integration
+- [Error model](design/error-model.md) — Panic vs `Result` discipline, four error types
+- [TTL design](design/ttl.md) — Worked example of every principle in one feature
 - [API surface](guides/api-surface.md) — Module map and entrypoints
 
 ## Policies
