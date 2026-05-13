@@ -1221,7 +1221,7 @@ mod ttl_support {
 
     use super::{CachePolicy, DynCache};
 
-    /// Builder produced by [`CacheBuilder::with_default_ttl`].
+    /// Builder produced by [`super::CacheBuilder::with_default_ttl`].
     ///
     /// Identical to [`CacheBuilder`](super::CacheBuilder) except that
     /// [`build`](ExpiringBuilder::build) returns a [`DynExpiringCache`]

@@ -18,7 +18,7 @@
 //! ## Key Components
 //!
 //! [`ExpirationIndex`] is a thin wrapper around
-//! [`LazyMinHeap`](crate::ds::LazyMinHeap)`<K, u64>` with `auto_rebuild`
+//! [`LazyMinHeap`]`<K, u64>` with `auto_rebuild`
 //! enabled. The wrapper hides the score type (always a `u64` deadline in
 //! the cache's tick unit) and exposes operations specialised for TTL:
 //!

@@ -42,7 +42,7 @@
 //! the `ExpirationIndex`. A panic in inner removal leaves the index
 //! pointing at a key the cache still holds (next `pop_expired` is a
 //! no-op). The reverse order would silently lose the deadline. The
-//! ordering is enforced by [`Expiring::purge_one`] and the `Cache` /
+//! ordering is enforced by `purge_one` and the `Cache` /
 //! `ExpiringCache` impls below.
 //!
 //! ## Thread Safety
