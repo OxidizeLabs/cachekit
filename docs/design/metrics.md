@@ -164,10 +164,10 @@ Two questions this design avoided:
 - **"Why not just `AtomicU64` for everything?"** Because counters
   on `&mut self` paths (the majority — `insert`, `get`, `evict`)
   do not need atomic semantics; the policy already holds exclusive
-  access. Using `AtomicU64` everywhere would impose memory-fence
-  cost on the hot path for no concurrency benefit. The split
-  reserves atomic-ish behaviour (`MetricsCell` + external lock) for
-  read paths only.
+  access. However, `MetricsCell` is only sound when `&self` metric
+  increments are protected by exclusive synchronization or are known
+  to be single-threaded. It is **not** a substitute for atomics under
+  shared `RwLock::read` access.
 
 ## `MetricsCell`: interior mutability under external lock
 
@@ -180,18 +180,20 @@ unsafe impl Sync for MetricsCell {}
 unsafe impl Send for MetricsCell {}
 ```
 
-This is the only `unsafe impl Sync` in the metrics surface. The
-contract:
+This is the only `unsafe impl Sync` in the metrics surface, so its
+contract must be narrow:
 
-- **External synchronization is required.** `MetricsCell` lives
-  inside a policy struct that is itself behind an `RwLock` in any
-  concurrent wrapper (see [`concurrency.md`](concurrency.md)). The
-  read lock serializes concurrent `&self` access; the cell is
-  manipulated under that lock.
-- **The cell is observation-only.** Lost increments are
-  acceptable; the worst-case outcome is undercounting a metric,
-  which is a precision issue, not a correctness one. Cache hits and
-  evictions still behave correctly.
+- **Exclusive external synchronization is required.** A shared
+  `RwLock::read` guard does **not** serialize readers, so it is not
+  sufficient protection for `Cell<u64>`. `MetricsCell` may be used
+  on single-threaded policy paths, or behind a write lock / mutex,
+  but not for counters mutated concurrently through read-locked
+  `&self` methods.
+- **Observation-only does not relax Rust's aliasing rules.** It is
+  acceptable for metrics to be approximate; it is not acceptable for
+  approximation to be implemented as unsynchronized `Cell` mutation.
+  Concurrent read-path counters must use `AtomicU64`, take an
+  exclusive lock, or be disabled for that path.
 - **`pub(crate)`.** The type does not escape the crate.
   Down-stream code can read counters through the snapshot API but
   cannot construct `MetricsCell` itself, which prevents misuse from
@@ -200,14 +202,15 @@ contract:
 The alternatives considered and rejected:
 
 - `Mutex<u64>` — cost dominates the counter increment.
-- `AtomicU64` — works, but imposes fence cost where no concurrency
-  exists for the increment itself.
+- `AtomicU64` — the correct choice for counters that can be
+  incremented concurrently through shared references; unnecessary
+  for single-threaded or exclusively locked counters.
 - `RefCell<u64>` — runtime borrow checking with panic on contention;
   not desirable on a metrics increment path.
 
-`MetricsCell` is the smallest tool that says "we know about the
-sync requirement; trust the external lock; pay no per-increment
-cost beyond a `Cell::set`."
+`MetricsCell` is the smallest tool for single-threaded or exclusively
+locked metric counters. Any policy or wrapper that records metrics
+from a read-locked path must not rely on `MetricsCell` for soundness.
 
 ## Snapshots: cheap, copyable, optionally serializable
 
@@ -482,11 +485,11 @@ What it does **not** guarantee:
   sequentially. A reader can observe `hits = 100, misses = 99`
   while a concurrent writer is mid-update; the next snapshot may
   show `hits = 100, misses = 101`. There is no "snapshot epoch."
-- **Lossless recording under contention.** `MetricsCell`
-  increments under a held read lock are safe; multiple read locks
-  are not serialized against each other. Concurrent `&self`
-  recorder calls on the same `MetricsCell` can lose increments.
-  This is the "best-effort observability" caveat.
+- **Concurrent `MetricsCell` recording.** `MetricsCell` must not be
+  incremented from multiple read-locked callers. Shared read locks do
+  not serialize readers, so those paths must use atomics or acquire an
+  exclusive lock before recording. Metrics may be best-effort, but
+  the implementation still has to be data-race-free.
 - **Wrap-safe arithmetic in release.** Release profile sets
   `overflow-checks = false`. Counters wrap silently. At one billion
   events per second, `u64` wraps in ~585 years — practically a
@@ -498,8 +501,8 @@ What it does **not** guarantee:
   principles level
 - [Cache trait hierarchy](trait-hierarchy.md) — `&self` / `&mut self`
   split that drives the read-vs-mutate recorder fork
-- [Concurrency](concurrency.md) — read/write lock model behind
-  `MetricsCell`'s soundness
+- [Concurrency](concurrency.md) — read/write lock model that
+  constrains where `MetricsCell` may be used
 - [Error model](error-model.md) — panic discipline shared by the
   exporter's poisoning behaviour
 - [`src/metrics/`](../../src/metrics) — the canonical implementation

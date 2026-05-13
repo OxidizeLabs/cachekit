@@ -181,7 +181,7 @@ the module documentation.
 
 ## Why weight is at the **store** layer, not the policy layer
 
-The 17 implemented policies in `src/policy/` are all weight-unaware.
+The 18 implemented policies in `src/policy/` are all weight-unaware.
 They count entries and evict by entry. `WeightStore` is below them in
 the layering:
 

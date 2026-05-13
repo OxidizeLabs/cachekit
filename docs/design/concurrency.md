@@ -23,48 +23,70 @@ and where the gaps are.
 
 ## The dominant pattern: sequential core, concurrent wrapper
 
-Every concurrent type in cachekit follows the same shape:
+cachekit's concurrent types all keep the sequential core unaware of locking,
+but they do **not** all have the same struct shape. There are three families.
+
+### Cloneable policy handles
+
+Policy-level wrappers are shared handles around a locked policy core:
 
 ```text
-ConcurrentX<K, V> { inner: Arc<RwLock<X<K, V>>> }
+ConcurrentPolicy<K, V> { inner: Arc<RwLock<Policy<K, V>>> }
 ```
 
-where `X` is the single-threaded core (`LruCore`, `FifoCache`,
-`S3FifoCache`, `SlotArena`, `IntrusiveList`, `ClockRing`,
-`HashMapStore`, `SlabStore`, `WeightStore`, `HandleStore`,
-`FrequencyBuckets`). The wrapper:
-
-1. holds the core behind an `Arc<RwLock<…>>`,
-2. presents owned/`Arc<V>` returns instead of borrowed `&V`,
-3. is `Clone` via `Arc::clone` so callers can hand copies to threads,
-4. is `Send + Sync` because the inner core's `Send + Sync` impls
-   auto-derive through `Arc<RwLock<…>>`.
-
-The pattern is verbose but consistent and was chosen for three reasons:
-
-- **No `&mut self` in the public API.** Sharing requires interior
-  mutability; an `RwLock` is the cheapest tool that exposes both shared
-  reads and exclusive writes through `&self`.
-- **The sequential core stays unaware of locking.** Policy code under
-  [`src/policy/`](../../src/policy) is single-threaded and easier to
-  reason about. The locking discipline lives in one place per type.
-- **The lock is replaceable.** Swapping `parking_lot::RwLock` for a
-  different primitive (`std::sync::RwLock`, a sharded lock, a seqlock)
-  is a local change because the inner core has no opinion on it.
-
-The 11 concurrent wrappers shipped today live in:
+This shape is used by:
 
 - `ConcurrentLruCache` — [`src/policy/lru.rs`](../../src/policy/lru.rs)
 - `ConcurrentFifoCache` — [`src/policy/fifo.rs`](../../src/policy/fifo.rs)
 - `ConcurrentS3FifoCache` — [`src/policy/s3_fifo.rs`](../../src/policy/s3_fifo.rs)
+
+These types implement `Clone` via `Arc::clone`, so callers can hand cheap
+handles to threads. They expose owned / `Arc<V>` returns instead of borrowed
+`&V` because no reference can safely outlive the lock guard it came from.
+
+### Owning store and data-structure wrappers
+
+Store and data-structure wrappers usually own the lock directly:
+
+```text
+ConcurrentX<K, V> { inner: RwLock<X<K, V>>, ... }
+```
+
+Examples:
+
 - `ConcurrentHashMapStore`, `ShardedHashMapStore` — [`src/store/hashmap.rs`](../../src/store/hashmap.rs)
 - `ConcurrentSlabStore` — [`src/store/slab.rs`](../../src/store/slab.rs)
 - `ConcurrentWeightStore` — [`src/store/weight.rs`](../../src/store/weight.rs)
 - `ConcurrentHandleStore` — [`src/store/handle.rs`](../../src/store/handle.rs)
-- `ConcurrentSlotArena`, `ShardedSlotArena` — [`src/ds/slot_arena.rs`](../../src/ds/slot_arena.rs)
+- `ConcurrentSlotArena` — [`src/ds/slot_arena.rs`](../../src/ds/slot_arena.rs)
 - `ConcurrentIntrusiveList` — [`src/ds/intrusive_list.rs`](../../src/ds/intrusive_list.rs)
 - `ConcurrentClockRing` — [`src/ds/clock_ring.rs`](../../src/ds/clock_ring.rs)
+
+These wrappers are not necessarily cloneable handles. If a caller wants shared
+ownership, they can wrap the whole type in `Arc<_>`. Keeping the `Arc` out of
+the struct avoids an unnecessary refcount on users who only need a single owner.
+
+### Sharded primitives
+
+Sharded types own multiple independently locked shards:
+
+```text
+ShardedX<K, V> {
+    shards: Vec<RwLock<ShardState<K, V>>>,
+    selector: ShardSelector,
+}
+```
+
+Examples:
+
+- `ShardedSlotArena` — [`src/ds/slot_arena.rs`](../../src/ds/slot_arena.rs)
 - `ShardedFrequencyBuckets` — [`src/ds/frequency_buckets.rs`](../../src/ds/frequency_buckets.rs)
+- `ShardedHashMapStore` — [`src/store/hashmap.rs`](../../src/store/hashmap.rs)
+
+The common design is not "`Arc<RwLock<_>>` everywhere"; it is **lock at the
+wrapper boundary and keep the sequential core lock-free**. The exact ownership
+shape depends on whether the type is intended to be a cloneable cache handle,
+an owning concurrent store, or a sharded primitive.
 
 ## Why `Concurrent*` does not implement `Cache<K, V>`
 
@@ -271,8 +293,8 @@ When sharding is **not** what you want:
 
 ## Concurrent policy coverage
 
-Of the 17 implemented policies, **3 ship with a `Concurrent*` wrapper
-today**: LRU, FIFO, S3-FIFO. The remaining 14 require external locking
+Of the 18 implemented policies, **3 ship with a `Concurrent*` wrapper
+today**: LRU, FIFO, S3-FIFO. The remaining 15 require external locking
 by the caller — typically `Arc<parking_lot::RwLock<CacheCore>>`. The
 relevant rustdoc on those policies (e.g. `LfuCache`, `HeapLfuCache`,
 `MfuCache`) calls this out.
@@ -282,7 +304,7 @@ mechanical: wrap the sequential core in `Arc<RwLock<…>>`, expose the
 `&self` API with `Arc<V>` returns, decide read-lock vs. write-lock per
 method, implement `Clone` via `Arc::clone`, and implement
 `unsafe impl ConcurrentCache`. The work is bounded; what's missing is
-the discipline to do it consistently across all 17 policies.
+the discipline to do it consistently across all 18 policies.
 
 ## Failure modes
 

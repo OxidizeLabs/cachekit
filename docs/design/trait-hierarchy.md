@@ -18,7 +18,7 @@ The trait surface optimizes for four things, roughly in order:
 
 1. **Code written against the kernel survives a policy swap.** Users
    writing `fn warm<C: Cache<K, V>>(c: &mut C, …)` can pick any of
-   the 17 implemented policies without changing call sites.
+   the 18 implemented concrete policies without changing call sites.
 2. **Optional behaviour is visible only when present.** A policy that
    doesn't track frequency should not have a `frequency()` method that
    returns garbage or panics. Capability traits exist so this remains

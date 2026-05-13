@@ -5,12 +5,14 @@
 > Companion to [`design.md`](design.md) §13, [`trait-hierarchy.md`](trait-hierarchy.md),
 > and [`concurrency.md`](concurrency.md).
 
-cachekit ships 17 implemented eviction policies. Most application code
-wants to pick one of them — possibly at runtime, based on configuration
-— without writing 17 monomorphized call sites. This document explains
-why that runtime choice is delivered through an enum dispatcher rather
-than a `Box<dyn Cache>`, what the user-visible cost is, and how to
-extend the surface when a new policy lands.
+cachekit ships 18 implemented eviction policies. The runtime dispatcher
+currently wires 17 of them; CAR exists as a concrete policy but is not yet a
+`CachePolicy` / `DynCache` variant. Most application code wants to pick a
+policy — possibly at runtime, based on configuration — without writing one
+monomorphized call site per policy. This document explains why that runtime
+choice is delivered through an enum dispatcher rather than a `Box<dyn Cache>`,
+what the user-visible cost is, and how to extend the surface when a new policy
+lands.
 
 ## The problem
 
@@ -22,8 +24,8 @@ cache.insert(key, value);
 cache.get(&key);
 ```
 
-without enumerating the 17 policies at every call site. The cache type
-must therefore be **uniform across policies** — the concrete type the
+without enumerating every builder-wired policy at each call site. The cache
+type must therefore be **uniform across policies** — the concrete type the
 caller holds cannot depend on which policy was chosen.
 
 Two Rust mechanisms give a uniform type:
@@ -157,6 +159,21 @@ enum CacheInner<K, V> /* same bounds */ {
 - Pattern-matching on the variant from outside the crate is
   impossible, which forces feature requests through method additions
   rather than match-arm proliferation in user code.
+
+### CAR builder gap
+
+CAR is implemented as a concrete policy (`src/policy/car.rs`) and has a
+`policy-car` feature flag, but this branch does **not** currently expose it
+through `CachePolicy` / `DynCache`. Users who want CAR instantiate the concrete
+`CarCore<K, V>` type directly. Closing the gap means adding a
+`CachePolicy::Car` variant, a `CacheInner::Car(CarCore<K, V>)` variant, and the
+usual method / builder / test arms listed in [Adding a new policy](#adding-a-new-policy).
+
+Until that lands, read "implemented policies" and "`DynCache` variants" as two
+different sets:
+
+- **Implemented concrete policies:** 18.
+- **Runtime-dispatch variants:** 17.
 
 ## Type bounds: heavier than `Cache<K, V>`
 
@@ -313,7 +330,8 @@ The dispatcher's runtime cost is small. The **maintenance** cost is
 real:
 
 - **17 inner variants** × **~10 `DynCache` methods** = **~170 match
-  arms** that must stay in sync.
+  arms** that must stay in sync today. CAR will make this 18 variants
+  once it is wired into the dispatcher.
 - A `Debug` impl, a `default()` (where applicable), and a
   `validate_policy` arm per variant.
 - A `Cargo.toml` feature flag per variant.
@@ -393,9 +411,9 @@ Distinctness makes `Expiring<Expiring<DynCache>>` structurally
 unrepresentable, which prevents the "two clocks, two indexes"
 double-wrapping bug at the type level.
 
-The duplication is real: a parallel ~170 arms for the expiring
-variant. It is bounded (one type per cross-cutting capability) and
-the trade favours type-level safety over deduplication.
+The duplication is real: a parallel ~170 arms today, rising with the
+dispatcher variant count. It is bounded (one type per cross-cutting
+capability) and the trade favours type-level safety over deduplication.
 
 ## When not to use `DynCache`
 
