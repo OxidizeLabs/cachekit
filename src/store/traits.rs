@@ -97,6 +97,7 @@ use std::sync::Arc;
 /// metrics.updates = 20;
 /// metrics.removes = 10;
 /// metrics.evictions = 40;
+/// metrics.expirations = 5;
 ///
 /// let hit_rate = metrics.hits as f64 / (metrics.hits + metrics.misses) as f64;
 /// assert!((hit_rate - 0.75).abs() < f64::EPSILON);
@@ -117,6 +118,14 @@ pub struct StoreMetrics {
     pub removes: u64,
     /// Number of entries evicted by the policy.
     pub evictions: u64,
+    /// Number of entries removed because their TTL deadline elapsed.
+    ///
+    /// Tracked separately from `evictions` so capacity-driven evictions
+    /// can be distinguished from time-driven expirations. Stays at `0`
+    /// for stores that do not own a TTL layer; the TTL count for an
+    /// `Expiring<…>` decorator is exposed via
+    /// `cachekit::policy::expiring::Expiring::expirations()`.
+    pub expirations: u64,
 }
 
 /// Error returned when inserting into a store at capacity.

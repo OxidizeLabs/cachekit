@@ -479,6 +479,92 @@ pub trait AsyncCacheFuture<K, V>: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// TTL (feature = "ttl")
+// ---------------------------------------------------------------------------
+
+/// Monotonic deadline expressed in the cache's tick unit.
+///
+/// The tick unit (typically milliseconds, set by the
+/// [`Clock`](crate::time::Clock) implementation) is intentionally hidden
+/// behind this newtype so it can change without breaking downstream code.
+/// Use [`Tick::as_u64`] to inspect the raw value when interop demands it.
+#[cfg(feature = "ttl")]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub struct Tick(pub(crate) u64);
+
+#[cfg(feature = "ttl")]
+impl Tick {
+    /// Returns the underlying tick value.
+    #[inline]
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// TTL state for a key in an [`ExpiringCache`].
+///
+/// Distinguishes between "no such key", "key present without a deadline",
+/// "key present but already past its deadline", and "key present and live".
+/// The decorator may purge expired entries lazily, so callers can observe
+/// [`TtlStatus::Expired`] for a brief window before physical cleanup.
+#[cfg(feature = "ttl")]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TtlStatus {
+    /// The key is not in the cache.
+    Missing,
+    /// The key is resident with no expiration deadline.
+    Immortal,
+    /// The key is resident but its deadline has already passed.
+    Expired,
+    /// The key is resident and live.
+    Live {
+        /// Time remaining until the entry expires.
+        remaining: std::time::Duration,
+        /// Absolute deadline in the cache's tick unit.
+        deadline: Tick,
+    },
+}
+
+/// Capability trait for caches that support time-based expiration.
+///
+/// Implemented by the `Expiring<C, K, T>` decorator and surfaced through
+/// `DynExpiringCache` when the `ttl` feature is enabled. See
+/// `docs/design/ttl.md` for the full semantic contract.
+///
+/// ## Semantic Highlights
+///
+/// - Per-entry TTL always wins over the cache's `default_ttl`, including
+///   [`Duration::ZERO`](std::time::Duration::ZERO) which means "expire
+///   immediately".
+/// - Reads on an expired-but-resident entry physically remove it and
+///   return as if the key were missing.
+/// - `set_ttl` returns `true` only if the entry was live at the moment of
+///   the call; expired-resident entries are purged and return `false`.
+#[cfg(feature = "ttl")]
+pub trait ExpiringCache<K, V>: Cache<K, V> {
+    /// Inserts `value` under `key` with an explicit per-entry TTL,
+    /// returning the previous value if it existed *and* was still live.
+    ///
+    /// Passing `Duration::ZERO` removes any existing entry without
+    /// inserting; the returned `Option<V>` follows the same live-only
+    /// rule.
+    fn insert_with_ttl(&mut self, key: K, value: V, ttl: std::time::Duration) -> Option<V>;
+
+    /// Returns the TTL state for `key` without mutating cache state.
+    fn ttl_status(&self, key: &K) -> TtlStatus;
+
+    /// Sets a new TTL on an existing live entry.
+    ///
+    /// Returns `true` if the entry was live at the time of the call. An
+    /// expired-but-resident entry is purged and `false` is returned.
+    fn set_ttl(&mut self, key: &K, ttl: std::time::Duration) -> bool;
+
+    /// Removes every entry whose deadline is `<= now`, returning the count
+    /// removed.
+    fn purge_expired(&mut self) -> usize;
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

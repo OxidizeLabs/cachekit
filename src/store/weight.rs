@@ -256,6 +256,7 @@ impl StoreCounters {
             updates: self.updates.load(Ordering::Relaxed),
             removes: self.removes.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
+            expirations: 0,
         }
     }
 

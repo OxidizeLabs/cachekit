@@ -912,6 +912,62 @@ where
     }
 }
 
+/// Trait impl that mirrors the inherent methods on [`DynCache`].
+///
+/// Enables generic code (and the `Expiring<DynCache>` decorator) to work
+/// against the same runtime-selected policy through the universal
+/// [`Cache`](crate::traits::Cache) trait.
+impl<K, V> crate::traits::Cache<K, V> for DynCache<K, V>
+where
+    K: Copy + Eq + Hash + Ord,
+    V: Clone + Debug,
+{
+    #[inline]
+    fn contains(&self, key: &K) -> bool {
+        DynCache::contains(self, key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        DynCache::len(self)
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        DynCache::is_empty(self)
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        DynCache::capacity(self)
+    }
+
+    #[inline]
+    fn peek(&self, key: &K) -> Option<&V> {
+        DynCache::peek(self, key)
+    }
+
+    #[inline]
+    fn get(&mut self, key: &K) -> Option<&V> {
+        DynCache::get(self, key)
+    }
+
+    #[inline]
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        DynCache::insert(self, key, value)
+    }
+
+    #[inline]
+    fn remove(&mut self, key: &K) -> Option<V> {
+        DynCache::remove(self, key)
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        DynCache::clear(self)
+    }
+}
+
 impl<K, V> fmt::Debug for DynCache<K, V>
 where
     K: Copy + Eq + Hash + Ord,
@@ -993,6 +1049,34 @@ impl CacheBuilder {
     /// ```
     pub fn new(capacity: usize) -> Self {
         Self { capacity }
+    }
+
+    /// Switches the builder into TTL mode with a default per-entry TTL.
+    ///
+    /// `build` on the returned builder produces a [`DynExpiringCache`]
+    /// rather than a [`DynCache`]. Per-entry TTLs supplied via
+    /// `insert_with_ttl` always override the default, including
+    /// `Duration::ZERO` for immediate expiry.
+    ///
+    /// Available with the `ttl` feature.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::builder::{CacheBuilder, CachePolicy};
+    /// use std::time::Duration;
+    ///
+    /// let mut cache = CacheBuilder::new(100)
+    ///     .with_default_ttl(Duration::from_secs(60))
+    ///     .build::<u64, String>(CachePolicy::FastLru);
+    /// cache.insert(1, "value".to_string());
+    /// ```
+    #[cfg(feature = "ttl")]
+    pub fn with_default_ttl(self, default_ttl: std::time::Duration) -> ExpiringBuilder {
+        ExpiringBuilder {
+            capacity: self.capacity,
+            default_ttl: Some(default_ttl),
+        }
     }
 
     /// Build a cache with the specified policy.
@@ -1119,6 +1203,224 @@ impl CacheBuilder {
         }
     }
 }
+
+// =============================================================================
+// TTL builder integration (`cfg(feature = "ttl")`).
+// =============================================================================
+
+#[cfg(feature = "ttl")]
+mod ttl_support {
+    use std::fmt;
+    use std::fmt::Debug;
+    use std::hash::Hash;
+    use std::time::Duration;
+
+    use crate::policy::expiring::Expiring;
+    use crate::time::StdClock;
+    use crate::traits::{Cache as CacheTrait, ExpiringCache, TtlStatus};
+
+    use super::{CachePolicy, DynCache};
+
+    /// Builder produced by [`super::CacheBuilder::with_default_ttl`].
+    ///
+    /// Identical to [`CacheBuilder`](super::CacheBuilder) except that
+    /// [`build`](ExpiringBuilder::build) returns a [`DynExpiringCache`]
+    /// pre-wrapped with the configured default TTL.
+    ///
+    /// `ExpiringBuilder` cannot be constructed from a `DynExpiringCache`;
+    /// the only entry point is `CacheBuilder::with_default_ttl(...)`.
+    /// This keeps the type system honest about the "only one TTL layer"
+    /// invariant documented in `docs/design/ttl.md` §1 Recommendation —
+    /// `Expiring<Expiring<DynCache>>` is unrepresentable through the
+    /// public API.
+    #[derive(Debug, Clone, Copy)]
+    pub struct ExpiringBuilder {
+        pub(super) capacity: usize,
+        pub(super) default_ttl: Option<Duration>,
+    }
+
+    impl ExpiringBuilder {
+        /// Sets the default TTL for entries inserted without an explicit
+        /// per-entry TTL.
+        pub fn default_ttl(mut self, default_ttl: Duration) -> Self {
+            self.default_ttl = Some(default_ttl);
+            self
+        }
+
+        /// Builds a [`DynExpiringCache`] with the configured policy.
+        ///
+        /// # Type Parameters
+        ///
+        /// - `K`: Key type, must be `Copy + Eq + Hash + Ord`
+        /// - `V`: Value type, must be `Clone + Debug`
+        ///
+        /// # Panics
+        ///
+        /// Same conditions as [`CacheBuilder::build`](super::CacheBuilder::build).
+        pub fn build<K, V>(self, policy: CachePolicy) -> DynExpiringCache<K, V>
+        where
+            K: Copy + Eq + Hash + Ord,
+            V: Clone + Debug,
+        {
+            let inner = super::CacheBuilder {
+                capacity: self.capacity,
+            }
+            .build::<K, V>(policy);
+            let wrapper = Expiring::with_default_ttl(inner, StdClock::new(), self.default_ttl);
+            DynExpiringCache { inner: wrapper }
+        }
+    }
+
+    /// Expiring cache returned by [`ExpiringBuilder::build`].
+    ///
+    /// Wraps an [`Expiring<DynCache<K, V>, K, V, StdClock>`](Expiring)
+    /// behind a private constructor; the inner [`DynCache`] dispatches to
+    /// the runtime-selected policy. Construct only via
+    /// `CacheBuilder::with_default_ttl(...).build(...)`.
+    pub struct DynExpiringCache<K, V>
+    where
+        K: Copy + Eq + Hash + Ord,
+        V: Clone + Debug,
+    {
+        inner: Expiring<DynCache<K, V>, K, V, StdClock>,
+    }
+
+    impl<K, V> DynExpiringCache<K, V>
+    where
+        K: Copy + Eq + Hash + Ord,
+        V: Clone + Debug,
+    {
+        // ---------- universal Cache surface (mirrors DynCache) ----------
+
+        /// Side-effect-free lookup; hides expired entries.
+        #[inline]
+        pub fn peek(&self, key: &K) -> Option<&V> {
+            CacheTrait::peek(&self.inner, key)
+        }
+
+        /// Policy-tracked lookup; physically purges an expired entry as a
+        /// side effect and returns `None`.
+        #[inline]
+        pub fn get(&mut self, key: &K) -> Option<&V> {
+            CacheTrait::get(&mut self.inner, key)
+        }
+
+        /// Inserts a key/value pair, returning the previous live value if
+        /// any. Applies the configured default TTL.
+        #[inline]
+        pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+            CacheTrait::insert(&mut self.inner, key, value)
+        }
+
+        /// Removes a key and returns the previous value if it was live.
+        #[inline]
+        pub fn remove(&mut self, key: &K) -> Option<V> {
+            CacheTrait::remove(&mut self.inner, key)
+        }
+
+        /// Logical membership; hides expired entries.
+        #[inline]
+        pub fn contains(&self, key: &K) -> bool {
+            CacheTrait::contains(&self.inner, key)
+        }
+
+        /// Physical occupancy. Use [`live_len`](Self::live_len) for the
+        /// exact count of non-expired entries.
+        #[inline]
+        pub fn len(&self) -> usize {
+            CacheTrait::len(&self.inner)
+        }
+
+        /// Returns `true` if the cache is physically empty.
+        #[inline]
+        pub fn is_empty(&self) -> bool {
+            CacheTrait::is_empty(&self.inner)
+        }
+
+        /// Returns the cache's capacity.
+        #[inline]
+        pub fn capacity(&self) -> usize {
+            CacheTrait::capacity(&self.inner)
+        }
+
+        /// Removes every entry from the cache.
+        #[inline]
+        pub fn clear(&mut self) {
+            CacheTrait::clear(&mut self.inner);
+        }
+
+        // ---------- TTL surface ----------
+
+        /// Inserts with an explicit per-entry TTL, overriding the default.
+        ///
+        /// Per-entry TTL always wins, including [`Duration::ZERO`] which
+        /// means "expire immediately".
+        #[inline]
+        pub fn insert_with_ttl(&mut self, key: K, value: V, ttl: Duration) -> Option<V> {
+            ExpiringCache::insert_with_ttl(&mut self.inner, key, value, ttl)
+        }
+
+        /// Reports the TTL state of `key`.
+        #[inline]
+        pub fn ttl_status(&self, key: &K) -> TtlStatus {
+            ExpiringCache::ttl_status(&self.inner, key)
+        }
+
+        /// Sets a new TTL on a live entry. Returns `true` if the entry was
+        /// live; an expired-resident entry is purged and `false` is
+        /// returned.
+        #[inline]
+        pub fn set_ttl(&mut self, key: &K, ttl: Duration) -> bool {
+            ExpiringCache::set_ttl(&mut self.inner, key, ttl)
+        }
+
+        /// Removes every entry whose deadline is `<= now`, returning the
+        /// count removed.
+        #[inline]
+        pub fn purge_expired(&mut self) -> usize {
+            ExpiringCache::purge_expired(&mut self.inner)
+        }
+
+        /// Exact count of currently-live entries.
+        #[inline]
+        pub fn live_len(&mut self) -> usize {
+            self.inner.live_len()
+        }
+
+        /// Returns the cache's configured default TTL, if any.
+        #[inline]
+        pub fn default_ttl(&self) -> Option<Duration> {
+            self.inner.default_ttl()
+        }
+
+        /// Cumulative count of entries removed because their TTL elapsed.
+        ///
+        /// Returns `0` unless the `metrics` feature is enabled.
+        #[inline]
+        pub fn expirations(&self) -> u64 {
+            self.inner.expirations()
+        }
+    }
+
+    impl<K, V> fmt::Debug for DynExpiringCache<K, V>
+    where
+        K: Copy + Eq + Hash + Ord,
+        V: Clone + Debug,
+    {
+        /// Reports the inner policy plus the default TTL without leaking
+        /// keys or deadlines.
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("DynExpiringCache")
+                .field("default_ttl", &self.inner.default_ttl())
+                .field("len", &CacheTrait::len(&self.inner))
+                .field("capacity", &CacheTrait::capacity(&self.inner))
+                .finish_non_exhaustive()
+        }
+    }
+}
+
+#[cfg(feature = "ttl")]
+pub use ttl_support::{DynExpiringCache, ExpiringBuilder};
 
 #[cfg(test)]
 mod tests {

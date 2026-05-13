@@ -874,6 +874,52 @@ where
         }
     }
 
+    /// Returns references to the minimum `(key, score)` without removing it.
+    ///
+    /// Stale heap roots are discarded in place so the returned reference always
+    /// points at a live entry. Takes `&mut self` for that reason — repeated
+    /// calls without intervening updates are O(1).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cachekit::ds::LazyMinHeap;
+    ///
+    /// let mut heap: LazyMinHeap<&str, i32> = LazyMinHeap::new();
+    /// heap.update("high", 1);
+    /// heap.update("low", 10);
+    ///
+    /// // peek does not consume.
+    /// assert_eq!(heap.peek_best(), Some((&"high", &1)));
+    /// assert_eq!(heap.peek_best(), Some((&"high", &1)));
+    /// assert_eq!(heap.len(), 2);
+    ///
+    /// // pop_best returns the same entry peek_best showed.
+    /// assert_eq!(heap.pop_best(), Some(("high", 1)));
+    /// assert_eq!(heap.peek_best(), Some((&"low", &10)));
+    /// ```
+    pub fn peek_best(&mut self) -> Option<(&K, &S)> {
+        loop {
+            match self.heap.peek() {
+                Some(Reverse(top)) => {
+                    let live = self.scores.get(&top.key).is_some_and(|current| {
+                        current.score == top.score && current.seq == top.seq
+                    });
+                    if live {
+                        break;
+                    }
+                },
+                None => return None,
+            }
+            self.heap.pop();
+        }
+
+        let Reverse(top) = self.heap.peek()?;
+        self.scores
+            .get_key_value(&top.key)
+            .map(|(k, entry)| (k, &entry.score))
+    }
+
     /// Rebuilds the heap from the authoritative `scores` map.
     ///
     /// Removes all stale entries. Call this periodically or when
@@ -1242,6 +1288,59 @@ mod tests {
         assert_eq!(heap.len(), 1);
         assert_eq!(heap.pop_best(), Some(("a", 2)));
         assert_eq!(heap.pop_best(), None);
+    }
+
+    #[test]
+    fn peek_best_returns_min_without_removing() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 5);
+        heap.update("b", 2);
+        heap.update("c", 9);
+
+        assert_eq!(heap.peek_best(), Some((&"b", &2)));
+        assert_eq!(heap.peek_best(), Some((&"b", &2)));
+        assert_eq!(heap.len(), 3);
+    }
+
+    #[test]
+    fn peek_best_skips_stale_roots() {
+        let mut heap = LazyMinHeap::new();
+        heap.update("a", 1);
+        heap.update("a", 5); // makes the (a, 1) entry stale
+        heap.update("b", 3);
+
+        // (a,1) was the old min but is stale; live min is (b, 3).
+        assert_eq!(heap.peek_best(), Some((&"b", &3)));
+        // Stale roots removed in place; subsequent pop matches.
+        assert_eq!(heap.pop_best(), Some(("b", 3)));
+        assert_eq!(heap.peek_best(), Some((&"a", &5)));
+    }
+
+    #[test]
+    fn peek_best_returns_none_when_empty() {
+        let mut heap: LazyMinHeap<&str, u32> = LazyMinHeap::new();
+        assert_eq!(heap.peek_best(), None);
+
+        heap.update("a", 1);
+        assert!(heap.peek_best().is_some());
+        heap.remove(&"a");
+        assert_eq!(heap.peek_best(), None);
+    }
+
+    #[test]
+    fn peek_best_matches_pop_best() {
+        let mut heap = LazyMinHeap::new();
+        for (k, s) in [("a", 5), ("b", 2), ("c", 9), ("d", 1), ("a", 3)] {
+            heap.update(k, s);
+        }
+        // Iterate peek/pop pairs and confirm peek predicts the next pop result.
+        let mut peeked = Vec::new();
+        let mut popped = Vec::new();
+        while let Some((k, s)) = heap.peek_best() {
+            peeked.push((*k, *s));
+            popped.push(heap.pop_best().unwrap());
+        }
+        assert_eq!(peeked, popped);
     }
 
     #[test]
