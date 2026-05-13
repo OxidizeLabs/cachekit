@@ -18,6 +18,11 @@ Key features:
 - [Weighted eviction](design/weighted-eviction.md) — `WeightStore`, dual limits, GDS/GDSF pre-staging
 - [Metrics](design/metrics.md) — Recorder / snapshot / exporter split, Prometheus integration
 - [Error model](design/error-model.md) — Panic vs `Result` discipline, four error types
+- [Benchmarking design](design/benchmarking.md) — Benchmark layers, policy registry, JSON artifacts
+- [Hashing and key identity](design/hashing.md) — Hasher choices, key interning, shard routing
+- [Sharding](design/sharding.md) — Sharded primitives, routing, capacity semantics
+- [Serialization](design/serialization.md) — `serde` surface and cache-state persistence boundaries
+- [Non-goals](design/non-goals.md) — Explicit boundaries and out-of-scope features
 - [TTL design](design/ttl.md) — Worked example of every principle in one feature
 - [API surface](guides/api-surface.md) — Module map and entrypoints
 

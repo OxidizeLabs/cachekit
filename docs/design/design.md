@@ -339,6 +339,16 @@ Design docs:
   `MetricsCell`, Prometheus exporter, feature gating
 - [Error model](error-model.md) — panic vs `Result` discipline,
   four error types, debug-only invariant checks
+- [Benchmarking](benchmarking.md) — benchmark layers, monomorphic policy
+  registry, JSON artifact schema, reproducibility rules
+- [Hashing and key identity](hashing.md) — hasher choices, `KeyInterner`,
+  `ShardSelector`, HashDoS trade-offs
+- [Sharding](sharding.md) — current sharded primitives, routing,
+  capacity semantics, roadmap for sharded caches
+- [Serialization](serialization.md) — current `serde` surface, cache-state
+  persistence boundaries, TTL and hash-seed rules
+- [Non-goals](non-goals.md) — explicit boundaries for what cachekit does
+  not try to be
 - [TTL](ttl.md) — applied example of every principle above
 - [Doc style guide](style-guide.md)
 
