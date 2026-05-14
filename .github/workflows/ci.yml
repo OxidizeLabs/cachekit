@@ -51,7 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --verbose
       - name: Run doc tests
@@ -76,7 +75,6 @@ jobs:
         with:
           toolchain: nightly
           components: miri
-      - uses: Swatinem/rust-cache@v2
       - name: Install Miri
         run: cargo miri setup
       - name: Test with Miri (core DS + light policies)
@@ -94,7 +92,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
       - name: Run property tests with increased cases
         run: PROPTEST_CASES=1000 cargo test --lib property_tests
         env:
@@ -111,6 +108,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
+          cache: false
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "fuzz -> target"
@@ -144,7 +142,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@v2
       - name: Build documentation
         run: cargo doc --no-deps --all-features
         env:
@@ -167,7 +164,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-deny
         run: cargo install --locked cargo-deny
       - name: Run cargo-deny checks
@@ -183,7 +179,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@v2
       - name: Run benchmarks
         run: cargo bench --no-fail-fast
 
@@ -196,6 +191,5 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.85.0  # MSRV for Rust 2024 edition
-      - uses: Swatinem/rust-cache@v2
       - name: Check MSRV
         run: cargo check --all-features
