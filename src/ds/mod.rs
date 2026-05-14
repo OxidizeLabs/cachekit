@@ -17,7 +17,9 @@ pub use clock_ring::{
     ValuesMut,
 };
 #[cfg(feature = "ttl")]
-pub use expiration_index::ExpirationIndex;
+pub use expiration_index::{
+    Deadline, ExpirationIndex, IntoIter as ExpirationIndexIntoIter, Iter as ExpirationIndexIter,
+};
 pub use fixed_history::{FixedHistory, MAX_K as FIXED_HISTORY_MAX_K};
 pub use frequency_buckets::{
     BucketEntries, BucketIds, DEFAULT_BUCKET_PREALLOC, FrequencyBucketEntryDebug,

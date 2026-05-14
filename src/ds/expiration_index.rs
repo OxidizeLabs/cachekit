@@ -6,12 +6,13 @@
 //!   ┌──────────────────────────────────────────────────────────────┐
 //!   │  ExpirationIndex<K>                                          │
 //!   │                                                              │
-//!   │    LazyMinHeap<K, u64>  (key -> deadline_ms)                 │
+//!   │    LazyMinHeap<K, Deadline>  (key -> deadline tick)           │
 //!   │      ▲                                                       │
 //!   │      ├── set_deadline(key, expires_at)                       │
 //!   │      ├── remove(key)                                         │
-//!   │      ├── peek_deadline()  -> earliest live (key, deadline)   │
-//!   │      └── pop_expired(now) -> earliest live if deadline <= now │
+//!   │      ├── next_deadline()   -> earliest live (key, deadline)  │
+//!   │      ├── pop_expired(now)  -> earliest if deadline <= now    │
+//!   │      └── drain_expired(now)-> iterator over all expired      │
 //!   └──────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -19,21 +20,23 @@
 //!
 //! [`ExpirationIndex`] is a thin wrapper around
 //! [`LazyMinHeap`]`<K, u64>` with `auto_rebuild`
-//! enabled. The wrapper hides the score type (always a `u64` deadline in
+//! enabled. The wrapper hides the score type (always a [`Deadline`] in
 //! the cache's tick unit) and exposes operations specialised for TTL:
 //!
 //! - [`set_deadline`](ExpirationIndex::set_deadline) updates an entry's
 //!   deadline, returning the previous deadline if any.
-//! - [`peek_deadline`](ExpirationIndex::peek_deadline) returns references
-//!   to the live entry with the earliest deadline.
+//! - [`next_deadline`](ExpirationIndex::next_deadline) returns references
+//!   to the live entry with the earliest deadline (may prune stale roots).
 //! - [`pop_expired`](ExpirationIndex::pop_expired) atomically peeks the
 //!   earliest entry and, if its deadline `<= now`, removes and returns it.
+//! - [`drain_expired`](ExpirationIndex::drain_expired) yields all entries
+//!   with deadline `<= now` in ascending order.
 //!
 //! ## Performance Trade-offs
 //!
 //! - Insertion is `O(log n)` plus one key clone (the heap and the
 //!   authoritative map both retain a copy).
-//! - `peek_deadline` discards stale heap roots in place, so it is
+//! - `next_deadline` discards stale heap roots in place, so it is
 //!   amortised `O(1)` between updates.
 //! - Auto-rebuild defaults to factor `2`: stale heap entries are bounded
 //!   at `2 * len()`. Callers that mutate every entry many times per
@@ -54,18 +57,25 @@
 //! idx.set_deadline("a", 100);
 //! idx.set_deadline("b", 50);
 //!
-//! assert_eq!(idx.peek_deadline(), Some((&"b", 50)));
+//! assert_eq!(idx.next_deadline(), Some((&"b", 50)));
 //! assert_eq!(idx.pop_expired(40), None);          // none yet expired
 //! assert_eq!(idx.pop_expired(60), Some(("b", 50))); // "b" expired at <=60
-//! assert_eq!(idx.peek_deadline(), Some((&"a", 100)));
+//! assert_eq!(idx.next_deadline(), Some((&"a", 100)));
 //! ```
 //!
 //! [`set_auto_rebuild`]: ExpirationIndex::set_auto_rebuild
 
 use std::borrow::Borrow;
 use std::hash::Hash;
+use std::iter::FusedIterator;
 
 use crate::ds::lazy_heap::LazyMinHeap;
+
+/// Opaque tick-based deadline (milliseconds by convention in `cachekit`).
+///
+/// The concrete unit is determined by the [`Clock`](crate::time::Clock)
+/// implementation the TTL decorator uses.
+pub type Deadline = u64;
 
 /// Default rebuild factor: bound stale heap growth to `2 * live_len`.
 ///
@@ -75,13 +85,13 @@ const DEFAULT_REBUILD_FACTOR: usize = 2;
 
 /// Min-priority deadline index keyed by `K`.
 ///
-/// Wraps a [`LazyMinHeap`]`<K, u64>` with auto-rebuild enabled. Deadlines
-/// are opaque `u64` ticks; the unit is determined by the
+/// Wraps a [`LazyMinHeap`]`<K, Deadline>` with auto-rebuild enabled.
+/// Deadlines are opaque ticks; the unit is determined by the
 /// [`Clock`](crate::time::Clock) the TTL decorator uses (conventionally
 /// milliseconds in `cachekit`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExpirationIndex<K> {
-    heap: LazyMinHeap<K, u64>,
+    heap: LazyMinHeap<K, Deadline>,
 }
 
 impl<K> ExpirationIndex<K>
@@ -89,6 +99,15 @@ where
     K: Eq + Hash + Clone,
 {
     /// Creates an empty index with the default rebuild factor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let idx: ExpirationIndex<String> = ExpirationIndex::new();
+    /// assert!(idx.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self {
             heap: LazyMinHeap::with_auto_rebuild(DEFAULT_REBUILD_FACTOR),
@@ -99,6 +118,16 @@ where
     /// distinct keys.
     ///
     /// Useful when the TTL decorator wraps a fixed-capacity cache.
+    /// Passing `0` is equivalent to [`new`](Self::new).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let idx: ExpirationIndex<u64> = ExpirationIndex::with_capacity(1024);
+    /// assert!(idx.is_empty());
+    /// ```
     pub fn with_capacity(capacity: usize) -> Self {
         let mut heap = LazyMinHeap::with_capacity(capacity);
         heap.set_auto_rebuild(Some(DEFAULT_REBUILD_FACTOR));
@@ -125,12 +154,33 @@ where
     /// `expires_at` is in the cache's tick unit (typically milliseconds).
     /// A previous deadline is replaced; no validation against the current
     /// clock happens here.
-    pub fn set_deadline(&mut self, key: K, expires_at: u64) -> Option<u64> {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// assert_eq!(idx.set_deadline("a", 100), None);
+    /// assert_eq!(idx.set_deadline("a", 200), Some(100)); // replaced
+    /// ```
+    pub fn set_deadline(&mut self, key: K, expires_at: Deadline) -> Option<Deadline> {
         self.heap.update(key, expires_at)
     }
 
     /// Returns the current deadline for `key`, if any.
-    pub fn deadline_of<Q>(&self, key: &Q) -> Option<u64>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// idx.set_deadline("a", 100);
+    /// assert_eq!(idx.deadline_of("a"), Some(100));
+    /// assert_eq!(idx.deadline_of("b"), None);
+    /// ```
+    pub fn deadline_of<Q>(&self, key: &Q) -> Option<Deadline>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -139,6 +189,17 @@ where
     }
 
     /// Returns `true` if `key` has a deadline tracked here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// idx.set_deadline("a", 100);
+    /// assert!(idx.contains("a"));
+    /// assert!(!idx.contains("b"));
+    /// ```
     pub fn contains<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
@@ -148,7 +209,18 @@ where
     }
 
     /// Removes `key` and returns its deadline, if any.
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<u64>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// idx.set_deadline("a", 100);
+    /// assert_eq!(idx.remove("a"), Some(100));
+    /// assert_eq!(idx.remove("a"), None); // already gone
+    /// ```
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<Deadline>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -158,9 +230,19 @@ where
 
     /// Returns the live entry with the earliest deadline without removing it.
     ///
-    /// Discards stale heap roots in place; takes `&mut self` for that
-    /// reason.
-    pub fn peek_deadline(&mut self) -> Option<(&K, u64)> {
+    /// May discard stale heap roots in place, hence `&mut self`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// idx.set_deadline("a", 100);
+    /// idx.set_deadline("b", 50);
+    /// assert_eq!(idx.next_deadline(), Some((&"b", 50)));
+    /// ```
+    pub fn next_deadline(&mut self) -> Option<(&K, Deadline)> {
         self.heap.peek_best().map(|(k, s)| (k, *s))
     }
 
@@ -169,18 +251,85 @@ where
     /// The comparison is `<=` (not `<`): a deadline equal to `now` is
     /// already past in the chosen tick unit, matching the algorithm
     /// described in `docs/design/ttl.md` §3.
-    pub fn pop_expired(&mut self, now: u64) -> Option<(K, u64)> {
-        match self.peek_deadline() {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// idx.set_deadline("a", 100);
+    ///
+    /// assert_eq!(idx.pop_expired(99), None);              // not yet
+    /// assert_eq!(idx.pop_expired(100), Some(("a", 100))); // expired at =100
+    /// assert_eq!(idx.pop_expired(200), None);             // already removed
+    /// ```
+    pub fn pop_expired(&mut self, now: Deadline) -> Option<(K, Deadline)> {
+        match self.next_deadline() {
             Some((_, deadline)) if deadline <= now => self.heap.pop_best(),
             _ => None,
+        }
+    }
+
+    /// Drains all entries with deadline `<= now` in ascending order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// idx.set_deadline("a", 100);
+    /// idx.set_deadline("b", 200);
+    /// idx.set_deadline("c", 300);
+    ///
+    /// let expired: Vec<_> = idx.drain_expired(250).collect();
+    /// assert_eq!(expired, vec![("a", 100), ("b", 200)]);
+    /// assert_eq!(idx.len(), 1); // "c" remains
+    /// ```
+    pub fn drain_expired(&mut self, now: Deadline) -> impl Iterator<Item = (K, Deadline)> + '_ {
+        std::iter::from_fn(move || self.pop_expired(now))
+    }
+
+    /// Returns a borrowing iterator over `(&K, Deadline)` pairs.
+    ///
+    /// Iteration order is arbitrary (hash-map order of the backing store).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx = ExpirationIndex::new();
+    /// idx.set_deadline("a", 100);
+    /// idx.set_deadline("b", 200);
+    ///
+    /// let mut entries: Vec<_> = idx.iter().collect();
+    /// entries.sort_by_key(|&(_, d)| d);
+    /// assert_eq!(entries, vec![(&"a", 100), (&"b", 200)]);
+    /// ```
+    pub fn iter(&self) -> Iter<'_, K> {
+        Iter {
+            inner: self.heap.iter(),
         }
     }
 
     /// Overrides the underlying heap's auto-rebuild factor.
     ///
     /// `None` disables auto-rebuild. Values below `1` are clamped to `1`.
-    pub fn set_auto_rebuild(&mut self, factor: Option<usize>) {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::ds::expiration_index::ExpirationIndex;
+    ///
+    /// let mut idx: ExpirationIndex<&str> = ExpirationIndex::with_capacity(64);
+    /// idx.set_auto_rebuild(Some(4))
+    ///    .set_deadline("a", 100);
+    /// ```
+    pub fn set_auto_rebuild(&mut self, factor: Option<usize>) -> &mut Self {
         self.heap.set_auto_rebuild(factor);
+        self
     }
 }
 
@@ -192,6 +341,129 @@ where
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Iterator types
+// ---------------------------------------------------------------------------
+
+/// Borrowing iterator over `(&K, Deadline)` pairs.
+///
+/// Created by [`ExpirationIndex::iter`].
+pub struct Iter<'a, K> {
+    inner: crate::ds::lazy_heap::Iter<'a, K, Deadline>,
+}
+
+impl<K: std::fmt::Debug> std::fmt::Debug for Iter<'_, K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Iter").finish_non_exhaustive()
+    }
+}
+
+impl<'a, K> Iterator for Iter<'a, K> {
+    type Item = (&'a K, Deadline);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, s)| (k, *s))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K> ExactSizeIterator for Iter<'_, K> {}
+impl<K> FusedIterator for Iter<'_, K> {}
+
+/// Owning iterator over `(K, Deadline)` pairs.
+///
+/// Created by the [`IntoIterator`] implementation on [`ExpirationIndex`].
+pub struct IntoIter<K> {
+    inner: crate::ds::lazy_heap::IntoIter<K, Deadline>,
+}
+
+impl<K: std::fmt::Debug> std::fmt::Debug for IntoIter<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntoIter").finish_non_exhaustive()
+    }
+}
+
+impl<K> Iterator for IntoIter<K> {
+    type Item = (K, Deadline);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K> ExactSizeIterator for IntoIter<K> {}
+impl<K> FusedIterator for IntoIter<K> {}
+
+// ---------------------------------------------------------------------------
+// IntoIterator
+// ---------------------------------------------------------------------------
+
+impl<K> IntoIterator for ExpirationIndex<K>
+where
+    K: Eq + Hash + Clone,
+{
+    type Item = (K, Deadline);
+    type IntoIter = IntoIter<K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            inner: self.heap.into_iter(),
+        }
+    }
+}
+
+impl<'a, K> IntoIterator for &'a ExpirationIndex<K>
+where
+    K: Eq + Hash + Clone,
+{
+    type Item = (&'a K, Deadline);
+    type IntoIter = Iter<'a, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FromIterator / Extend
+// ---------------------------------------------------------------------------
+
+impl<K> FromIterator<(K, Deadline)> for ExpirationIndex<K>
+where
+    K: Eq + Hash + Clone,
+{
+    fn from_iter<I: IntoIterator<Item = (K, Deadline)>>(iter: I) -> Self {
+        let mut idx = Self::new();
+        idx.extend(iter);
+        idx
+    }
+}
+
+impl<K> Extend<(K, Deadline)> for ExpirationIndex<K>
+where
+    K: Eq + Hash + Clone,
+{
+    fn extend<I: IntoIterator<Item = (K, Deadline)>>(&mut self, iter: I) {
+        for (key, deadline) in iter {
+            self.set_deadline(key, deadline);
+        }
+    }
+}
+
+const _: () = {
+    fn _assert_send_sync<T: Send + Sync>() {}
+    fn _check() {
+        _assert_send_sync::<ExpirationIndex<String>>();
+    }
+};
 
 #[cfg(test)]
 mod tests {
@@ -207,21 +479,21 @@ mod tests {
     }
 
     #[test]
-    fn peek_deadline_returns_earliest_live() {
+    fn next_deadline_returns_earliest_live() {
         let mut idx: ExpirationIndex<&str> = ExpirationIndex::new();
         idx.set_deadline("a", 100);
         idx.set_deadline("b", 50);
         idx.set_deadline("c", 75);
-        assert_eq!(idx.peek_deadline(), Some((&"b", 50)));
+        assert_eq!(idx.next_deadline(), Some((&"b", 50)));
     }
 
     #[test]
-    fn peek_deadline_skips_replaced_entries() {
+    fn next_deadline_skips_replaced_entries() {
         let mut idx: ExpirationIndex<&str> = ExpirationIndex::new();
         idx.set_deadline("a", 10);
         idx.set_deadline("a", 100); // earlier entry is stale
         idx.set_deadline("b", 50);
-        assert_eq!(idx.peek_deadline(), Some((&"b", 50)));
+        assert_eq!(idx.next_deadline(), Some((&"b", 50)));
     }
 
     #[test]
@@ -279,7 +551,7 @@ mod property_tests {
     use proptest::prelude::*;
 
     proptest! {
-        /// `peek_deadline` always returns the earliest live deadline.
+        /// `next_deadline` always returns the earliest live deadline.
         #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_peek_returns_earliest(
@@ -295,7 +567,7 @@ mod property_tests {
                 latest.insert(k, s);
             }
             let expected_min = latest.values().min().copied();
-            let actual_min = idx.peek_deadline().map(|(_, d)| d);
+            let actual_min = idx.next_deadline().map(|(_, d)| d);
             prop_assert_eq!(actual_min, expected_min);
         }
 
