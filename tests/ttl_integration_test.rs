@@ -202,7 +202,7 @@ fn dyn_expiring_cache_purge_expired_works_via_builder_path() {
 // ---------------------------------------------------------------------------
 
 mod proptests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::time::Duration;
 
     use cachekit::policy::expiring::Expiring;
@@ -220,10 +220,13 @@ mod proptests {
         Purge,
     }
 
-    /// Reference: key -> deadline (in ms). Keys with deadline <= now are
-    /// considered expired even before a `Purge` op.
+    /// Reference: same physical occupancy and LRU order as `FastLru`
+    /// (MRU at front of `lru`), plus deadlines mirroring
+    /// `Expiring::deadline_from`.
     #[derive(Default)]
     struct RefModel {
+        /// MRU at front, LRU at back — matches `FastLru` head/tail semantics.
+        lru: VecDeque<u8>,
         deadlines: HashMap<u8, u64>,
         now: u64,
         capacity: usize,
@@ -240,35 +243,77 @@ mod proptests {
         fn insert(&mut self, key: u8, ttl_ms: u32) {
             if ttl_ms == 0 {
                 self.deadlines.remove(&key);
+                self.lru.retain(|&k| k != key);
                 return;
             }
             // Saturating arithmetic mirrors `Expiring::deadline_from`.
             let deadline = self.now.saturating_add(ttl_ms as u64).min(u64::MAX - 1);
-            // Eviction model: FastLru with bounded capacity. Because we
-            // do not model LRU order precisely, we permit any key to be
-            // evicted; the assertion below is only on "is this key
-            // *definitely live*?", not on every absent key being expired.
-            self.deadlines.insert(key, deadline);
-            if self.deadlines.len() > self.capacity {
-                // Pick an arbitrary victim — we don't try to match the
-                // policy exactly; we only insist on liveness for keys
-                // that are present in BOTH the model and the cache.
-                let victim = *self.deadlines.keys().next().unwrap();
-                if victim != key {
-                    self.deadlines.remove(&victim);
-                }
+
+            let exists = self.lru.iter().any(|&k| k == key);
+            if exists {
+                self.deadlines.insert(key, deadline);
+                Self::touch_key(&mut self.lru, key);
+                return;
             }
+
+            if self.capacity == 0 {
+                return;
+            }
+
+            while self.lru.len() >= self.capacity {
+                let Some(victim) = self.lru.pop_back() else {
+                    break;
+                };
+                self.deadlines.remove(&victim);
+            }
+
+            self.deadlines.insert(key, deadline);
+            self.lru.push_front(key);
         }
 
         fn advance(&mut self, delta_ms: u32) {
             self.now = self.now.saturating_add(delta_ms as u64);
         }
 
-        /// `Some(true)` if the key is definitely live in the model;
-        /// `Some(false)` if it is definitely expired; `None` if its state
-        /// is undetermined (e.g. evicted under the FastLru policy in a
-        /// way the model doesn't track).
+        /// Mirror `Expiring::get` + `FastLru::get`: purge expired residents or
+        /// promote live hits to MRU.
+        fn observe_get(&mut self, key: u8) {
+            if !self.lru.iter().any(|&k| k == key) {
+                return;
+            }
+            let expired = match self.deadlines.get(&key) {
+                Some(&d) => d <= self.now,
+                None => {
+                    self.lru.retain(|&k| k != key);
+                    return;
+                },
+            };
+            if expired {
+                self.deadlines.remove(&key);
+                self.lru.retain(|&k| k != key);
+            } else {
+                Self::touch_key(&mut self.lru, key);
+            }
+        }
+
+        fn touch_key(lru: &mut VecDeque<u8>, key: u8) {
+            lru.retain(|&k| k != key);
+            lru.push_front(key);
+        }
+
+        /// Apply `purge_expired`-style removal for deadlines `<= now`.
+        fn purge_dead_expired(&mut self) {
+            let now = self.now;
+            self.deadlines.retain(|_, d| *d > now);
+            self.lru.retain(|k| self.deadlines.contains_key(k));
+        }
+
+        /// `Some(true)` if the key is physically resident with deadline `> now`;
+        /// `Some(false)` if resident but expired; `None` if not physically present.
         fn is_definitely_live(&self, key: u8) -> Option<bool> {
+            if !self.lru.iter().any(|&k| k == key) {
+                return None;
+            }
             match self.deadlines.get(&key) {
                 Some(&d) if d > self.now => Some(true),
                 Some(_) => Some(false),
@@ -319,6 +364,7 @@ mod proptests {
                                 "model says key {key} is expired but cache hit"
                             );
                         }
+                        model.observe_get(key);
                     }
                     Op::Advance { delta_ms } => {
                         cache.clock().advance(Duration::from_millis(delta_ms as u64));
@@ -326,9 +372,7 @@ mod proptests {
                     }
                     Op::Purge => {
                         let _ = cache.purge_expired();
-                        // Model side: drop everything <= now.
-                        let now = model.now;
-                        model.deadlines.retain(|_, d| *d > now);
+                        model.purge_dead_expired();
                     }
                 }
             }
