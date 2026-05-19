@@ -63,12 +63,7 @@ use std::time::{Duration, Instant};
 /// practice but the cast keeps the contract explicit.
 #[inline]
 pub(crate) fn duration_to_ticks(duration: Duration) -> u64 {
-    let ms = duration.as_millis();
-    if ms > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        ms as u64
-    }
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Monotonic millisecond clock consulted by the TTL layer.
@@ -76,7 +71,25 @@ pub(crate) fn duration_to_ticks(duration: Duration) -> u64 {
 /// Implementations must be monotonic non-decreasing across calls and should
 /// never return `u64::MAX`, which the TTL layer reserves as the "effectively
 /// never expires" sentinel.
-pub trait Clock: Send + Sync {
+///
+/// This trait is **object-safe** and can be used as `dyn Clock`.
+///
+/// # Examples
+///
+/// ```
+/// use cachekit::time::Clock;
+///
+/// #[derive(Debug)]
+/// struct FixedClock(u64);
+///
+/// impl Clock for FixedClock {
+///     fn now(&self) -> u64 { self.0 }
+/// }
+///
+/// let clock = FixedClock(42);
+/// assert_eq!(clock.now(), 42);
+/// ```
+pub trait Clock: Send + Sync + std::fmt::Debug {
     /// Returns the current tick.
     ///
     /// The tick unit is implementation-defined but is conventionally
@@ -104,13 +117,23 @@ pub trait Clock: Send + Sync {
 /// let b = clock.now();
 /// assert!(b >= a);
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StdClock {
     anchor: Instant,
 }
 
 impl StdClock {
     /// Creates a clock anchored at `Instant::now()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::time::{Clock, StdClock};
+    ///
+    /// let clock = StdClock::new();
+    /// let _tick = clock.now(); // ms since construction
+    /// ```
+    #[must_use]
     pub fn new() -> Self {
         Self {
             anchor: Instant::now(),
@@ -121,8 +144,28 @@ impl StdClock {
     ///
     /// Useful for tests that need to derive several clocks from a shared
     /// anchor without depending on wall-clock timing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::time::{Clock, StdClock};
+    /// use std::time::Instant;
+    ///
+    /// let anchor = Instant::now();
+    /// let clock_a = StdClock::with_anchor(anchor);
+    /// let clock_b = StdClock::with_anchor(anchor);
+    /// // Both clocks share the same epoch.
+    /// assert!(clock_b.now() >= clock_a.now() || clock_a.now() == clock_b.now());
+    /// ```
+    #[must_use]
     pub fn with_anchor(anchor: Instant) -> Self {
         Self { anchor }
+    }
+}
+
+impl From<Instant> for StdClock {
+    fn from(anchor: Instant) -> Self {
+        Self::with_anchor(anchor)
     }
 }
 
@@ -166,13 +209,41 @@ pub struct MockClock {
     now: AtomicU64,
 }
 
+impl Clone for MockClock {
+    fn clone(&self) -> Self {
+        Self {
+            now: AtomicU64::new(self.now.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl MockClock {
     /// Creates a clock anchored at tick `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::time::{Clock, MockClock};
+    ///
+    /// let clock = MockClock::new();
+    /// assert_eq!(clock.now(), 0);
+    /// ```
+    #[must_use]
     pub fn new() -> Self {
         Self::with_tick(0)
     }
 
     /// Creates a clock anchored at the supplied tick.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::time::{Clock, MockClock};
+    ///
+    /// let clock = MockClock::with_tick(500);
+    /// assert_eq!(clock.now(), 500);
+    /// ```
+    #[must_use]
     pub fn with_tick(tick: u64) -> Self {
         Self {
             now: AtomicU64::new(tick),
@@ -183,9 +254,20 @@ impl MockClock {
     ///
     /// Saturates one short of `u64::MAX` because the TTL layer reserves
     /// `u64::MAX` as the "effectively never expires" sentinel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::time::{Clock, MockClock};
+    /// use std::time::Duration;
+    ///
+    /// let clock = MockClock::new();
+    /// clock.advance(Duration::from_millis(100));
+    /// clock.advance(Duration::from_secs(1));
+    /// assert_eq!(clock.now(), 1_100);
+    /// ```
     pub fn advance(&self, delta: Duration) {
         let ticks = duration_to_ticks(delta);
-        // `fetch_add` would wrap; use a CAS loop to saturate explicitly.
         let mut current = self.now.load(Ordering::Relaxed);
         loop {
             let next = current.saturating_add(ticks).min(u64::MAX - 1);
@@ -205,8 +287,24 @@ impl MockClock {
     ///
     /// Callers are responsible for keeping the clock monotonic; setting a
     /// value lower than the current tick violates the `Clock` contract.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::time::{Clock, MockClock};
+    ///
+    /// let clock = MockClock::new();
+    /// clock.set(42);
+    /// assert_eq!(clock.now(), 42);
+    /// ```
     pub fn set(&self, tick: u64) {
         self.now.store(tick, Ordering::Relaxed);
+    }
+}
+
+impl From<u64> for MockClock {
+    fn from(tick: u64) -> Self {
+        Self::with_tick(tick)
     }
 }
 
@@ -216,6 +314,14 @@ impl Clock for MockClock {
         self.now.load(Ordering::Relaxed)
     }
 }
+
+const _: () = {
+    fn _assert_send_sync<T: Send + Sync>() {}
+    fn _check() {
+        _assert_send_sync::<StdClock>();
+        _assert_send_sync::<MockClock>();
+    }
+};
 
 #[cfg(test)]
 mod tests {

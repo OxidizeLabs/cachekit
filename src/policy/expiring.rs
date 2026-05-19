@@ -1,11 +1,11 @@
-//! `Expiring<C, K, T>` — decorator that adds time-based expiration to any
+//! `Expiring<C, K, V, T>` — decorator that adds time-based expiration to any
 //! `Cache<K, V>`.
 //!
 //! ## Architecture
 //!
 //! ```text
 //!   ┌─────────────────────────────────────────────────────────────────┐
-//!   │  Expiring<C, K, T = StdClock>                                   │
+//!   │  Expiring<C, K, V, T = StdClock>                                  │
 //!   │                                                                 │
 //!   │    inner: C                              ◀──── policy / storage │
 //!   │    index: ExpirationIndex<K>             ◀──── deadlines        │
@@ -47,7 +47,7 @@
 //!
 //! ## Thread Safety
 //!
-//! `Expiring<C, K, T>` is not itself thread-safe. The future
+//! `Expiring<C, K, V, T>` is not itself thread-safe. The future
 //! `ConcurrentExpiring<C>` wrapper (Phase 1.5 / Phase 2) holds the
 //! decorator behind a `parking_lot::RwLock` and returns owned/`Arc`
 //! values, per `docs/design/ttl.md` §4(e).
@@ -102,6 +102,25 @@ pub struct Expiring<C, K, V, T = StdClock> {
     _value: PhantomData<fn() -> V>,
 }
 
+impl<C, K, V, T> Clone for Expiring<C, K, V, T>
+where
+    C: Clone,
+    K: Clone,
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            index: self.index.clone(),
+            clock: self.clock.clone(),
+            default_ttl_ticks: self.default_ttl_ticks,
+            #[cfg(feature = "metrics")]
+            expirations: self.expirations,
+            _value: PhantomData,
+        }
+    }
+}
+
 impl<C, K, V> Expiring<C, K, V, StdClock>
 where
     C: Cache<K, V>,
@@ -109,6 +128,23 @@ where
 {
     /// Creates an expiring wrapper around `inner` using the system clock
     /// and no default TTL.
+    ///
+    /// Entries inserted via [`Cache::insert`] will never expire unless
+    /// a per-entry TTL is set through [`ExpiringCache::insert_with_ttl`]
+    /// or [`ExpiringCache::set_ttl`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::traits::Cache;
+    ///
+    /// let mut cache = Expiring::new(FastLru::<u64, String>::new(8));
+    /// cache.insert(1, "hello".into());
+    /// assert_eq!(cache.peek(&1), Some(&"hello".to_string()));
+    /// ```
+    #[must_use]
     pub fn new(inner: C) -> Self {
         Self::with_clock_and_default(inner, StdClock::new(), None)
     }
@@ -116,6 +152,21 @@ where
     /// Creates an expiring wrapper around `inner` using the system clock
     /// and a default TTL applied to entries inserted without an explicit
     /// TTL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use std::time::Duration;
+    ///
+    /// let cache = Expiring::with_default_ttl_std(
+    ///     FastLru::<u64, String>::new(8),
+    ///     Duration::from_secs(300),
+    /// );
+    /// assert_eq!(cache.default_ttl(), Some(Duration::from_secs(300)));
+    /// ```
+    #[must_use]
     pub fn with_default_ttl_std(inner: C, default_ttl: Duration) -> Self {
         Self::with_clock_and_default(inner, StdClock::new(), Some(default_ttl))
     }
@@ -129,6 +180,31 @@ where
 {
     /// Creates an expiring wrapper with an explicit clock and a default
     /// TTL (or `None` for no default).
+    ///
+    /// Pass a [`MockClock`] for deterministic tests, or any other
+    /// [`Clock`] implementation for custom tick sources.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::{Clock, MockClock};
+    /// use cachekit::traits::Cache;
+    /// use std::time::Duration;
+    ///
+    /// let clock = MockClock::new();
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8),
+    ///     clock,
+    ///     Some(Duration::from_secs(60)),
+    /// );
+    ///
+    /// cache.insert(1, "value".into());
+    /// cache.clock().advance(Duration::from_secs(61));
+    /// assert_eq!(cache.peek(&1), None); // expired
+    /// ```
+    #[must_use]
     pub fn with_default_ttl(inner: C, clock: T, default_ttl: Option<Duration>) -> Self {
         Self::with_clock_and_default(inner, clock, default_ttl)
     }
@@ -151,6 +227,22 @@ where
     ///
     /// Updated only when the `metrics` feature is enabled. Returns `0`
     /// otherwise so call sites compile regardless of the feature gate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::MockClock;
+    ///
+    /// let cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8),
+    ///     MockClock::new(),
+    ///     None,
+    /// );
+    /// assert_eq!(cache.expirations(), 0);
+    /// ```
+    #[must_use]
     pub fn expirations(&self) -> u64 {
         #[cfg(feature = "metrics")]
         {
@@ -163,24 +255,99 @@ where
     }
 
     /// Returns a reference to the inner cache.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::MockClock;
+    /// use cachekit::traits::Cache;
+    ///
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8),
+    ///     MockClock::new(),
+    ///     None,
+    /// );
+    /// cache.insert(1, "a".into());
+    /// assert_eq!(cache.inner().len(), 1);
+    /// ```
+    #[must_use]
     pub fn inner(&self) -> &C {
         &self.inner
     }
 
     /// Returns a mutable reference to the inner cache.
     ///
-    /// Bypassing the decorator with this can desync the expiration index;
-    /// use only when you understand the ordering invariant.
+    /// # Warning
+    ///
+    /// Mutations through this reference bypass the expiration index and
+    /// can desync deadlines. Use only when you understand the ordering
+    /// invariant documented at the module level.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::MockClock;
+    /// use cachekit::traits::Cache;
+    ///
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8),
+    ///     MockClock::new(),
+    ///     None,
+    /// );
+    /// cache.insert(1, "a".into());
+    /// // Direct inner access — use with care.
+    /// let _ = cache.inner_mut().remove(&1);
+    /// ```
     pub fn inner_mut(&mut self) -> &mut C {
         &mut self.inner
     }
 
     /// Returns a reference to the configured clock.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::{Clock, MockClock};
+    /// use std::time::Duration;
+    ///
+    /// let cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8),
+    ///     MockClock::new(),
+    ///     None,
+    /// );
+    /// assert_eq!(cache.clock().now(), 0);
+    /// cache.clock().advance(Duration::from_millis(100));
+    /// assert_eq!(cache.clock().now(), 100);
+    /// ```
+    #[must_use]
     pub fn clock(&self) -> &T {
         &self.clock
     }
 
     /// Returns the cache's default TTL as a `Duration`, if any.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::MockClock;
+    /// use std::time::Duration;
+    ///
+    /// let cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8),
+    ///     MockClock::new(),
+    ///     Some(Duration::from_secs(60)),
+    /// );
+    /// assert_eq!(cache.default_ttl(), Some(Duration::from_secs(60)));
+    /// ```
+    #[must_use]
     pub fn default_ttl(&self) -> Option<Duration> {
         self.default_ttl_ticks.map(Duration::from_millis)
     }
@@ -204,24 +371,38 @@ where
 
     /// Number of live (non-expired) entries.
     ///
-    /// Takes `&mut self` because draining stale roots from the
-    /// expiration index requires mutation. Returns an exact count, unlike
-    /// the conservative [`Cache::len`] which reports physical occupancy.
-    pub fn live_len(&mut self) -> usize {
+    /// Returns an exact count, unlike [`Cache::len`] which reports
+    /// physical occupancy (including expired-but-not-yet-purged entries).
+    /// Iterates the expiration index once — O(n) with no allocation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::{Clock, MockClock};
+    /// use cachekit::traits::{Cache, ExpiringCache};
+    /// use std::time::Duration;
+    ///
+    /// let clock = MockClock::new();
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8),
+    ///     clock,
+    ///     None,
+    /// );
+    ///
+    /// cache.insert_with_ttl(1, "short".into(), Duration::from_millis(50));
+    /// cache.insert_with_ttl(2, "long".into(), Duration::from_millis(500));
+    /// cache.clock().advance(Duration::from_millis(100));
+    ///
+    /// assert_eq!(cache.len(), 2);      // physical occupancy
+    /// assert_eq!(cache.live_len(), 1); // only "long" is still alive
+    /// ```
+    #[must_use]
+    pub fn live_len(&self) -> usize {
         let now = self.clock.now();
-        let mut expired: Vec<(K, u64)> = Vec::new();
-        while let Some(entry) = self.index.pop_expired(now) {
-            expired.push(entry);
-        }
-        let live = self.inner.len().saturating_sub(expired.len());
-        // Restore index entries so subsequent operations still see the
-        // deadlines; physical purge happens through `purge_expired` or a
-        // mutating access. `pop_expired` only ever yields entries with
-        // deadline <= now, so re-adding them keeps the state consistent.
-        for (k, deadline) in expired {
-            self.index.set_deadline(k, deadline);
-        }
-        live
+        let expired_count = self.index.iter().filter(|&(_, d)| d <= now).count();
+        self.inner.len().saturating_sub(expired_count)
     }
 
     /// Removes `key` from inner and index, honouring the ordering
@@ -252,19 +433,21 @@ where
     K: Eq + Hash + Clone,
     T: Clock,
 {
+    /// Returns `true` only if `key` is present **and** not expired.
     fn contains(&self, key: &K) -> bool {
         if !self.inner.contains(key) {
             return false;
         }
-        // Logical read: hide expired entries.
         match self.index.deadline_of(key) {
             Some(deadline) => deadline > self.clock.now(),
             None => true,
         }
     }
 
+    /// Physical entry count (includes expired-but-resident entries).
+    ///
+    /// Use [`live_len`](Self::live_len) for the logical count.
     fn len(&self) -> usize {
-        // Physical occupancy. See `live_len_value_aware` for the live count.
         self.inner.len()
     }
 
@@ -272,6 +455,8 @@ where
         self.inner.capacity()
     }
 
+    /// Side-effect-free lookup; returns `None` for expired entries
+    /// without purging them.
     fn peek(&self, key: &K) -> Option<&V> {
         let value = self.inner.peek(key)?;
         match self.index.deadline_of(key) {
@@ -280,6 +465,7 @@ where
         }
     }
 
+    /// Policy-tracked lookup; purges the entry on access if expired.
     fn get(&mut self, key: &K) -> Option<&V> {
         let now = self.clock.now();
         if self.is_expired_at(key, now) {
@@ -290,11 +476,11 @@ where
         self.inner.get(key)
     }
 
+    /// Inserts with the default TTL (if configured); replaces any
+    /// stale deadline. Returns `None` if the previous entry was expired.
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         let now = self.clock.now();
         let was_expired = self.is_expired_at(&key, now);
-
-        // Apply the default TTL (if any) to the new entry.
         if let Some(ttl_ticks) = self.default_ttl_ticks {
             let deadline = self.deadline_from(now, ttl_ticks);
             self.index.set_deadline(key.clone(), deadline);
@@ -313,6 +499,7 @@ where
         }
     }
 
+    /// Removes `key`; returns `None` if it was already expired.
     fn remove(&mut self, key: &K) -> Option<V> {
         let was_expired = self.is_expired_at(key, self.clock.now());
         let removed = self.purge_one(key);
@@ -324,6 +511,7 @@ where
         }
     }
 
+    /// Clears both the inner cache and the expiration index.
     fn clear(&mut self) {
         self.inner.clear();
         self.index.clear();
@@ -340,6 +528,26 @@ where
     K: Eq + Hash + Clone,
     T: Clock,
 {
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::{Clock, MockClock};
+    /// use cachekit::traits::{Cache, ExpiringCache};
+    /// use std::time::Duration;
+    ///
+    /// let clock = MockClock::new();
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8), clock, None,
+    /// );
+    ///
+    /// cache.insert_with_ttl(1, "a".into(), Duration::from_millis(100));
+    /// assert_eq!(cache.peek(&1), Some(&"a".to_string()));
+    ///
+    /// cache.clock().advance(Duration::from_millis(101));
+    /// assert_eq!(cache.get(&1), None); // expired and purged
+    /// ```
     fn insert_with_ttl(&mut self, key: K, value: V, ttl: Duration) -> Option<V> {
         let now = self.clock.now();
         let was_expired = self.is_expired_at(&key, now);
@@ -367,6 +575,28 @@ where
         }
     }
 
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::{Clock, MockClock};
+    /// use cachekit::traits::{Cache, ExpiringCache, TtlStatus};
+    /// use std::time::Duration;
+    ///
+    /// let clock = MockClock::new();
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8), clock, None,
+    /// );
+    ///
+    /// assert_eq!(cache.ttl_status(&1), TtlStatus::Missing);
+    ///
+    /// cache.insert(1, "immortal".into());
+    /// assert_eq!(cache.ttl_status(&1), TtlStatus::Immortal);
+    ///
+    /// cache.insert_with_ttl(2, "mortal".into(), Duration::from_millis(100));
+    /// assert!(matches!(cache.ttl_status(&2), TtlStatus::Live { .. }));
+    /// ```
     fn ttl_status(&self, key: &K) -> TtlStatus {
         if !self.inner.contains(key) {
             return TtlStatus::Missing;
@@ -382,6 +612,24 @@ where
         }
     }
 
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::{Clock, MockClock};
+    /// use cachekit::traits::{Cache, ExpiringCache};
+    /// use std::time::Duration;
+    ///
+    /// let clock = MockClock::new();
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8), clock, None,
+    /// );
+    ///
+    /// cache.insert_with_ttl(1, "a".into(), Duration::from_millis(100));
+    /// assert!(cache.set_ttl(&1, Duration::from_millis(5_000))); // extended
+    /// assert!(!cache.set_ttl(&99, Duration::from_millis(100))); // missing key
+    /// ```
     fn set_ttl(&mut self, key: &K, ttl: Duration) -> bool {
         let now = self.clock.now();
         if !self.inner.contains(key) {
@@ -403,6 +651,28 @@ where
         true
     }
 
+    /// # Examples
+    ///
+    /// ```
+    /// use cachekit::policy::expiring::Expiring;
+    /// use cachekit::policy::fast_lru::FastLru;
+    /// use cachekit::time::{Clock, MockClock};
+    /// use cachekit::traits::{Cache, ExpiringCache};
+    /// use std::time::Duration;
+    ///
+    /// let clock = MockClock::new();
+    /// let mut cache = Expiring::with_default_ttl(
+    ///     FastLru::<u64, String>::new(8), clock, None,
+    /// );
+    ///
+    /// cache.insert_with_ttl(1, "a".into(), Duration::from_millis(50));
+    /// cache.insert_with_ttl(2, "b".into(), Duration::from_millis(50));
+    /// cache.insert_with_ttl(3, "c".into(), Duration::from_millis(500));
+    ///
+    /// cache.clock().advance(Duration::from_millis(100));
+    /// assert_eq!(cache.purge_expired(), 2); // entries 1 and 2
+    /// assert_eq!(cache.len(), 1);           // only entry 3 remains
+    /// ```
     fn purge_expired(&mut self) -> usize {
         let now = self.clock.now();
         let mut count = 0;
@@ -413,7 +683,7 @@ where
         // To preserve the documented invariant we don't pop first; instead
         // we peek, remove inner, then remove from index.
         loop {
-            let key_clone = match self.index.peek_deadline() {
+            let key_clone = match self.index.next_deadline() {
                 Some((k, deadline)) if deadline <= now => k.clone(),
                 _ => break,
             };
@@ -428,6 +698,16 @@ where
         count
     }
 }
+
+const _: () = {
+    fn _assert_send<T: Send>() {}
+    fn _check() {
+        use crate::policy::fast_lru::FastLru;
+        // Rc<()> for V proves the PhantomData<fn() -> V> choice keeps V
+        // out of auto-trait bounds.
+        _assert_send::<Expiring<FastLru<String, String>, String, std::rc::Rc<()>, StdClock>>();
+    }
+};
 
 // Public alias: a clock-backed Expiring wrapper used by the builder.
 #[allow(dead_code)]
