@@ -411,5 +411,8 @@ GDS lands keeps the surface honest.
 - [Read-only traits](../guides/read-only-traits.md) — user-facing
   guidance on the `peek` / `get` split
 - [`src/traits.rs`](../../src/traits.rs) — the canonical definitions
-- [`src/store/traits.rs`](../../src/store/traits.rs) — parallel
-  trait family at the store layer (sequential + concurrent)
+- [Storage layer](storage.md) — parallel trait family at the store
+  layer (sequential + concurrent), with the same `&V` vs. `Arc<V>`
+  split reasoning
+- [`src/store/traits.rs`](../../src/store/traits.rs) — canonical
+  store-trait definitions

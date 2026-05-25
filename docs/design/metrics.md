@@ -378,6 +378,7 @@ is a **separate**, simpler structure that ships unconditionally
 store-layer implementation tracks:
 
 ```rust,ignore
+#[non_exhaustive]
 pub struct StoreMetrics {
     pub hits: u64,
     pub misses: u64,
@@ -385,13 +386,15 @@ pub struct StoreMetrics {
     pub updates: u64,
     pub removes: u64,
     pub evictions: u64,
+    pub expirations: u64,
 }
 ```
 
 The two systems coexist:
 
 - `StoreMetrics` is the store-layer baseline. Always present, always
-  cheap, six counters.
+  cheap, seven counters. `expirations` stays at `0` on stores that
+  do not own a TTL surface.
 - `src/metrics/` (feature-gated) is the policy-layer detailed
   metrics — recorder traits, snapshots, exporter, per-policy signals.
 

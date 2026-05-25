@@ -1,11 +1,13 @@
-# TTL / Time-Based Expiration — Design Exploration
+# TTL / Time-Based Expiration — Design Notes
 
-> Status: design exploration. Companion to the high-level stub at
+> Status: **Phase 1 implemented and shipped behind the `ttl` feature flag.**
+> Phase 2 (per-policy embedded `expires_at`, `ConcurrentExpiring`, timer-wheel
+> swap-in, `serde`) is deferred. Companion to the implementation tracker at
 > [`docs/policies/roadmap/ttl.md`](../policies/roadmap/ttl.md).
 
 TTL is **not** a replacement policy; it is an expiration rule that coexists
-with an eviction policy. This document explores how TTL can be introduced into
-`cachekit` while preserving the project's invariants:
+with an eviction policy. This document captures the rationale behind how TTL
+is wired into `cachekit` and preserves the project's invariants:
 
 - policy ↔ storage separation (see [`src/store/traits.rs`](../../src/store/traits.rs))
 - allocation-free hot paths
@@ -14,21 +16,47 @@ with an eviction policy. This document explores how TTL can be introduced into
 
 ## Current State
 
-- No TTL exists in source today (`rg ttl|expir|Instant` finds only docs and
-  benchmark labels).
-- A high-level stub already exists at
-  [`docs/policies/roadmap/ttl.md`](../policies/roadmap/ttl.md).
-- The `ds::LazyMinHeap` primitive at [`src/ds/lazy_heap.rs`](../../src/ds/lazy_heap.rs)
-  explicitly lists "TTL expiry heaps" as a use case.
-- The capability-trait pattern at [`src/traits.rs`](../../src/traits.rs)
-  (`RecencyTracking`, `FrequencyTracking`, `HistoryTracking`) gives a clean
-  injection point for an `ExpiringCache` trait.
-- The runtime-policy enum at [`src/builder.rs`](../../src/builder.rs)
-  (`DynCache` / `CacheInner`) makes a TTL wrapper composable in one variant
-  rather than 18 per-policy edits. Note: `CacheInner` currently wires
-  17 of the 18 policy modules under `src/policy/`; `policy::car` is not
-  yet a variant. Closing that gap is a prerequisite for "TTL works for
-  every policy via `DynCache`".
+Phase 1 is fully landed behind the `ttl` feature flag
+([`Cargo.toml`](../../Cargo.toml)):
+
+- [`src/time.rs`](../../src/time.rs) — `Clock` trait, `StdClock`, `MockClock`
+  (ms ticks; `&self`; `Send + Sync`; saturating arithmetic).
+- [`src/ds/expiration_index.rs`](../../src/ds/expiration_index.rs) —
+  `ExpirationIndex<K>` wrapping `LazyMinHeap<K, u64>` with auto-rebuild and
+  TTL-specialised operations (`set_deadline`, `next_deadline`, `pop_expired`,
+  `drain_expired`).
+- [`src/ds/lazy_heap.rs`](../../src/ds/lazy_heap.rs) — added
+  `LazyMinHeap::peek_best` so `ExpirationIndex` reads stale-tombstoned
+  roots in place without touching heap internals.
+- [`src/traits.rs`](../../src/traits.rs) — `Tick`, `TtlStatus`, and the
+  `ExpiringCache<K, V>` capability trait alongside `RecencyTracking` etc.
+- [`src/policy/expiring.rs`](../../src/policy/expiring.rs) —
+  `Expiring<C, K, V, T = StdClock>` decorator with the ordering invariant
+  and logical-read/physical-purge split.
+- [`src/builder.rs`](../../src/builder.rs) — `impl Cache<K, V>` for
+  `DynCache<K, V>`, `CacheBuilder::with_default_ttl(Duration)` returning
+  `ExpiringBuilder`, and `DynExpiringCache<K, V>` (private-constructor
+  wrapper around `Expiring<DynCache<K, V>, _, _, StdClock>`).
+- [`src/prelude.rs`](../../src/prelude.rs) — re-exports `Clock`,
+  `StdClock`, `MockClock`, `Tick`, `TtlStatus`, `ExpiringCache`,
+  `DynExpiringCache`, and `ExpiringBuilder` under the `ttl` feature.
+- [`tests/ttl_integration_test.rs`](../../tests/ttl_integration_test.rs) —
+  integration tests plus proptest invariants over expiry order.
+- [`benches/ttl_overhead.rs`](../../benches/ttl_overhead.rs) — Zipfian /
+  scan / mixed workloads comparing `LruCore<u64, u64>` against
+  `Expiring<LruCore<u64, u64>>` with a 60-second default TTL.
+
+Phase 2 has **not** landed:
+
+- Per-policy embedded `expires_at: u64` in `LruCore::Node` /
+  `S3FifoCache::Node` (gated on bench results from Phase 1).
+- `ConcurrentExpiring<C>` returning owned/`Arc<V>` values.
+- Timer-wheel swap-in for `ExpirationIndex`.
+- `serde` support for `Tick` / `TtlStatus`.
+
+`CacheInner` still wires only 17 of the 18 policy modules under
+`src/policy/`; `policy::car` is gated by `policy-car` but absent from
+`DynCache`. TTL-via-builder for CAR remains gated on closing that gap.
 
 ---
 
@@ -36,21 +64,25 @@ with an eviction policy. This document explores how TTL can be introduced into
 
 Five viable patterns, ordered roughly by invasiveness.
 
-### a) Decorator / wrapper cache
+### a) Decorator / wrapper cache (chosen)
 
-A new struct `Expiring<C>` owns an inner `C: Cache<K, V>` plus a per-key
-expiry index, intercepting `get` / `peek` / `insert` / `remove` to consult
-the index.
+A new struct `Expiring<C, K, V, T>` owns an inner `C: Cache<K, V>` plus a
+per-key expiry index, intercepting `get` / `peek` / `insert` / `remove` to
+consult the index. This is what shipped — see
+[`src/policy/expiring.rs`](../../src/policy/expiring.rs).
 
 ```rust
-pub struct Expiring<C, K, T = StdClock> {
+pub struct Expiring<C, K, V, T = StdClock> {
     inner: C,
     index: ExpirationIndex<K>,
     clock: T,
-    default_ttl: Option<Duration>,
+    default_ttl_ticks: Option<u64>,
+    #[cfg(feature = "metrics")]
+    expirations: u64,
+    _value: PhantomData<fn() -> V>,
 }
 
-impl<C, K, V, T> Cache<K, V> for Expiring<C, K, T>
+impl<C, K, V, T> Cache<K, V> for Expiring<C, K, V, T>
 where
     C: Cache<K, V>,
     K: Eq + Hash + Clone,
@@ -60,7 +92,9 @@ where
 
 `K` must appear as a type parameter on the wrapper itself because the index
 is keyed by `K`; threading it only through the `Cache<K, V>` impl is not
-enough.
+enough. `V` is recorded as `PhantomData<fn() -> V>` so the inner cache's
+value type is fixed at construction without dragging `V` into auto-trait
+bounds.
 
 - **Pros:** zero churn on the 18 existing policies; opt-in; composes with
   `DynCache`; matches the policy/storage separation rule in `.cursorrules`.
@@ -80,15 +114,15 @@ enough.
 - **Important semantic constraint:** today's [`Cache`](../../src/traits.rs)
   trait has `peek`, `contains`, and `len` as `&self` methods. A decorator
   cannot physically remove expired entries from those methods unless it adds
-  interior mutability. The first slice should define them as *logical* reads:
-  expired entries are invisible to `peek` / `contains`, while physical cleanup
-  happens on `get`, `insert`, `remove`, `clear`, or explicit
-  `purge_expired`. **Decision:** `Cache::len` returns physical occupancy
-  — it is cheaper, matches the underlying cache trait, and is the only
-  thing implementable through `&self`. Surprise after time advances is
-  mitigated by exposing `Expiring::live_len(&mut self) -> usize` as an
-  inherent method on the wrapper, which can amortize an internal sweep.
-  Document the distinction in both rustdocs.
+  interior mutability. Shipped behaviour: `peek` and `contains` are
+  *logical* reads — expired entries are invisible to them, while physical
+  cleanup happens on `get`, `insert`, `remove`, `clear`, or explicit
+  `purge_expired`. **Decision (shipped):** `Cache::len` returns physical
+  occupancy. `Expiring::live_len(&self) -> usize` is exposed as an
+  inherent method that walks the expiration index once (O(n), no
+  allocation, `&self` — no internal mutation needed because
+  `ExpirationIndex::iter` is borrow-only). The distinction is documented
+  on both `Cache::len` and `Expiring::live_len`.
 - **Mutation semantics:** expired-but-resident entries should behave as
   logically missing. `get` / `remove` should purge and return `None`;
   `insert` / `insert_with_ttl` should purge the stale value before inserting
@@ -157,23 +191,32 @@ A `Box<dyn ExpirationIndex>` injected into any policy. Conflicts with the
 .cursorrules guidance to "minimize Arc usage in hot paths" and "avoid heavy
 Rust ergonomics in hot loops (trait objects, …)".
 
-### Recommendation
+### Recommendation (shipped as Phase 1)
 
-Ship (a) first as a `ttl` feature, but be explicit that the wrapper gives
-logical expiration over the current `Cache` trait rather than a zero-overhead
-embedded TTL.
+(a) was shipped as the `ttl` feature, and the wrapper deliberately offers
+*logical* expiration over the current `Cache` trait rather than a
+zero-overhead embedded TTL.
 
-For builder integration, prefer a **separate `DynExpiringCache<K, V>`
-type** returned by a TTL-specific builder path over implementing
-`Cache<K, V>` for `DynCache<K, V>` and wrapping it. The decisive reason
-is that the first option permits `Expiring<Expiring<DynCache>>` to type-
-check — two clocks, two indexes, surprising semantics — and we have no
-clean way to disallow it at the type level once `DynCache: Cache`. A
-distinct expiring type makes double-wrapping impossible by construction.
-The cost is one extra public type and minor delegation boilerplate; the
-benefit is that the only TTL surface is the one the builder hands out.
+For builder integration, the shipped approach is a **hybrid of options
+(1) and (2)** from §4(c):
 
-Then, where profiling justifies it, embed `expires_at` into specific
+- `DynCache<K, V>` got an `impl Cache<K, V>` so `Expiring<DynCache, …>`
+  type-checks (option 1's mechanism — single delegation, no per-policy
+  match-arm duplication outside the existing `DynCache` boilerplate).
+- A separate public type `DynExpiringCache<K, V>` wraps
+  `Expiring<DynCache<K, V>, K, V, StdClock>` with the inner field
+  **private**; its only constructor is `ExpiringBuilder::build`
+  (option 2's surface — no public way to feed a `DynExpiringCache` back
+  into an `Expiring`).
+
+`DynExpiringCache` does **not** implement `Cache<K, V>`. Because
+`Expiring<C>` requires `C: Cache<K, V>`,
+`Expiring<DynExpiringCache>` is structurally unrepresentable, which
+restores the "one TTL layer" guarantee that pure option (1) couldn't
+give without a runtime check. The cost is one extra public type plus
+a thin mirror of `DynCache`'s inherent methods.
+
+Phase 2: where profiling justifies it, embed `expires_at` into specific
 policies (b) — LRU, FastLRU and S3-FIFO are the high-value targets. The
 embed must be opt-in per-node so non-TTL users do not pay 8 bytes per
 entry (see §6, step 7).
@@ -206,53 +249,53 @@ The codebase already owns most of the building blocks: `SlotArena`,
 `LazyMinHeap`, `IntrusiveList`, `GhostList`, `ClockRing`. Concrete options
 for the expiration index follow.
 
-### A) Lazy min-heap of `(expires_at, key)`
+### A) Lazy min-heap of `(expires_at, key)` (shipped)
 
-`ds::LazyMinHeap<K, S>` already exists at
-[`src/ds/lazy_heap.rs`](../../src/ds/lazy_heap.rs) and explicitly lists TTL
+`ds::LazyMinHeap<K, S>` already existed at
+[`src/ds/lazy_heap.rs`](../../src/ds/lazy_heap.rs) and explicitly listed TTL
 in its use cases. Insertion is O(log n); `pop_best` is amortized O(log n);
 `update` is O(log n) with `maybe_rebuild` to bound staleness.
 
-Used as a TTL index, this needs a thin `ExpirationIndex` wrapper over
-`LazyMinHeap` rather than using the heap directly. The wrapper should expose:
+The shipped `ExpirationIndex` wrapper lives at
+[`src/ds/expiration_index.rs`](../../src/ds/expiration_index.rs):
 
 ```rust
-pub struct ExpirationIndex<K> { /* LazyMinHeap<K, u64> */ }
+pub type Deadline = u64;
 
-impl<K> ExpirationIndex<K> {
-    pub fn set_deadline(&mut self, key: K, expires_at: u64) -> Option<u64> {
-        /* ... */
-    }
+pub struct ExpirationIndex<K> { /* LazyMinHeap<K, Deadline> */ }
 
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<u64>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        /* ... */
-    }
+impl<K: Eq + Hash + Clone> ExpirationIndex<K> {
+    pub fn new() -> Self;
+    pub fn with_capacity(capacity: usize) -> Self;
 
-    pub fn peek_deadline(&mut self) -> Option<(&K, u64)> {
-        /* ... */
-    }
+    pub fn set_deadline(&mut self, key: K, expires_at: Deadline) -> Option<Deadline>;
+    pub fn deadline_of<Q>(&self, key: &Q) -> Option<Deadline>
+    where K: Borrow<Q>, Q: Hash + Eq + ?Sized;
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<Deadline>
+    where K: Borrow<Q>, Q: Hash + Eq + ?Sized;
 
-    pub fn pop_expired(&mut self, now: u64) -> Option<(K, u64)> {
-        /* ... */
-    }
+    pub fn next_deadline(&mut self) -> Option<(&K, Deadline)>;
+    pub fn pop_expired(&mut self, now: Deadline) -> Option<(K, Deadline)>;
+    pub fn drain_expired(&mut self, now: Deadline)
+        -> impl Iterator<Item = (K, Deadline)> + '_;
+
+    pub fn iter(&self) -> Iter<'_, K>;
+    pub fn set_auto_rebuild(&mut self, factor: Option<usize>) -> &mut Self;
 }
 ```
 
-`LazyMinHeap` currently has destructive `pop_best` but no non-destructive
-live-minimum peek (verified against [`src/ds/lazy_heap.rs`](../../src/ds/lazy_heap.rs):
-only `update`, `pop_best`, `with_auto_rebuild`, `maybe_rebuild` are public).
-The first slice should **add a `peek_best` primitive to `LazyMinHeap`**
-rather than reimplementing live-minimum logic inside `ExpirationIndex`.
-The wrapper approach would have to inspect the heap's internal staleness
-state to skip popped entries, which couples `ExpirationIndex` to
-`LazyMinHeap`'s representation. A `peek_best(&mut self) -> Option<(&K, &S)>`
+Auto-rebuild defaults to factor 2 — stale heap entries are bounded at
+`2 * live_len()` — and callers that mutate every entry many times per
+epoch can tighten this via `set_auto_rebuild`.
+
+`LazyMinHeap` had destructive `pop_best` but no non-destructive
+live-minimum peek. Phase 1 added a
+`peek_best(&mut self) -> Option<(&K, &S)>` primitive to `LazyMinHeap`
 that drains stale-tombstoned roots in place (mutating because lazy
 deletion may need to advance past tombstones, immutable observation
-otherwise) is the right primitive and is reusable outside TTL.
+otherwise). `ExpirationIndex::next_deadline` is a thin wrapper around
+it, so the wrapper does not couple to the heap's internal staleness
+representation. The primitive is reusable outside TTL.
 
 - **Pros:** smallest delta — reuse an existing primitive, single allocation
   pool, no clock-tick budget.
@@ -366,8 +409,9 @@ pub trait Clock {
   replaced value. Replacing a live entry returns `Some(old_value)`; replacing
   an expired resident entry purges it first and returns `None`.
 - **Periodic (or on insert when full):**
-  while `peek_deadline()` returns a deadline `<= now`, call
-  `pop_expired(now)` and remove that key from the wrapped cache.
+  while `ExpirationIndex::next_deadline()` returns a deadline `<= now`,
+  call `pop_expired(now)` and remove that key from the wrapped cache.
+  This is exactly what `Expiring::purge_expired` does today.
 - **Eviction precedence:** "evict expired first, then policy victim" — the
   rule already documented in
   [`docs/policies/roadmap/ttl.md`](../policies/roadmap/ttl.md).
@@ -427,69 +471,89 @@ override" pattern is ambiguous in user code.
 
 ### b) `Clock` abstraction for testability
 
-A `Clock` parameter on `Expiring<C, K, T>` (default `StdClock`) and on any
-policy that embeds expiry. Mirrors how `RandomCore` keeps `rng_state`
-rather than calling `rand::thread_rng()` directly.
+A `Clock` parameter on `Expiring<C, K, V, T>` (default `StdClock`) and on
+any policy that embeds expiry. Mirrors how `RandomCore` keeps `rng_state`
+rather than calling `rand::thread_rng()` directly. The shipped
+[`Clock`](../../src/time.rs) trait is object-safe and requires
+`Send + Sync + Debug`, with `StdClock(Instant)` and `MockClock(AtomicU64)`
+covering production and test cases respectively.
 
-### c) Builder integration
+### c) Builder integration (shipped)
 
-Two complementary surfaces:
+The shipped surface:
 
 ```rust
+use cachekit::builder::{CacheBuilder, CachePolicy};
+use std::time::Duration;
+
 let mut cache = CacheBuilder::new(1000)
     .with_default_ttl(Duration::from_secs(60))
     .build::<u64, String>(CachePolicy::Lru);
 
-cache.insert_with_ttl(1, v, Duration::from_secs(5));
+cache.insert(1, "v".to_string());                              // uses default TTL
+cache.insert_with_ttl(2, "fast".into(), Duration::from_secs(5)); // overrides
 ```
 
-Internally, `with_default_ttl(Some(_))` switches the builder to produce
-a `DynExpiringCache<K, V>` (separate public type) rather than a
-`DynCache<K, V>`. The two paths considered were:
+`CacheBuilder::with_default_ttl(Duration)` returns an `ExpiringBuilder`
+whose `build::<K, V>(policy)` returns a `DynExpiringCache<K, V>` rather
+than a `DynCache<K, V>`. The two paths considered were:
 
-1. Add `impl Cache<K, V> for DynCache<K, V>` and store
-   `CacheInner::Ttl(Expiring<BoxedOrDynCache<K, V>>)` / an equivalent wrapper
-   around the already-built `DynCache`.
-2. Introduce a separate `DynExpiringCache<K, V>` returned by a TTL-specific
-   builder path, avoiding a recursive enum at the cost of another public type.
+1. Add `impl Cache<K, V> for DynCache<K, V>` and wrap the result in
+   `Expiring<DynCache<K, V>, …>` directly.
+2. Introduce a separate `DynExpiringCache<K, V>` returned by a
+   TTL-specific builder path, avoiding a recursive enum at the cost of
+   another public type.
 
-Option (2) is recommended (see §1 Recommendation). The deciding factor is
-that option (1) lets `Expiring<Expiring<DynCache>>` type-check, which is
-silently wrong (two clocks, two indexes). Option (2) makes double-
-wrapping unrepresentable: `Expiring<C>` is only constructed through the
-builder, and the builder never returns an inner expiring cache. The
-document's "one new variant, not 18" goal still holds — the new type
-delegates `Cache::insert` etc. via a single match arm per inner policy,
-identical to the existing `DynCache` boilerplate but with the expiry
-check threaded through. The duplication is real but bounded.
+The shipped code uses the **mechanism of (1) plus the surface of (2)**.
+`DynCache<K, V>` now implements `Cache<K, V>` (see
+[`builder.rs`](../../src/builder.rs)), so `Expiring<DynCache, …>` is
+internally type-checkable. `DynExpiringCache<K, V>` wraps that
+`Expiring<DynCache<K, V>, K, V, StdClock>` with the inner field
+**private**, and the `Cache` trait is **not** implemented on the public
+wrapper — therefore `Expiring<DynExpiringCache>` is structurally
+unrepresentable. The "one new variant, not 18" goal holds: the new type
+mirrors `DynCache`'s inherent methods (one delegation per method, not
+per policy) and adds the TTL surface.
 
-### d) Feature gating
+### d) Feature gating (shipped)
 
-A `ttl` feature; `chrono` is already a dev-dep (see [`Cargo.toml`](../../Cargo.toml)),
-but TTL itself should depend only on `std::time` and the existing
-`LazyMinHeap` / `SlotArena`. The `ExpirationIndex` lives at
-`src/ds/expiration_index.rs` but is gated behind `#[cfg(feature = "ttl")]`
-so the `ds` module does not grow a time abstraction when TTL is disabled.
-The new `Clock` trait at `src/time.rs` is similarly gated. Keep `metrics`
-integration lightweight: extend `LruMetrics` / `StoreMetrics` with
-`expirations: u64` behind `metrics`, similar to how `evictions` is tracked
-today (see [`src/store/traits.rs`](../../src/store/traits.rs) `StoreMetrics`).
+A `ttl` feature lives in [`Cargo.toml`](../../Cargo.toml). TTL depends
+only on `std::time` and the existing `LazyMinHeap` — no new runtime
+dependency. The following modules are gated behind
+`#[cfg(feature = "ttl")]`:
 
-### e) Concurrent variants
+- `src/time.rs` (`Clock`, `StdClock`, `MockClock`, `duration_to_ticks`)
+- `src/ds/expiration_index.rs` (`ExpirationIndex`, `Deadline`, iters)
+- `src/policy/expiring.rs` (`Expiring`)
+- `src/builder.rs::ttl_support` (`ExpiringBuilder`, `DynExpiringCache`)
+- `Tick` / `TtlStatus` / `ExpiringCache` items in `src/traits.rs`
+
+When `ttl` is off the `ds` module does not grow a time abstraction and
+`DynCache` reverts to its original surface.
+
+Metrics integration is a single counter — `Expiring::expirations: u64`
+behind `#[cfg(feature = "metrics")]`, with an accessor that returns 0
+when the feature is off so call sites compile unconditionally. Per-policy
+metrics structures (`LruMetrics`, `StoreMetrics`) were intentionally
+left alone — the decorator-owned counter is enough for Phase 1 because
+every TTL purge funnels through the wrapper.
+
+### e) Concurrent variants (Phase 2)
 
 The existing `Concurrent*` wrappers (`ConcurrentLruCache` in
 [`src/policy/lru.rs`](../../src/policy/lru.rs), `ConcurrentSlotArena` in
 [`src/ds/slot_arena.rs`](../../src/ds/slot_arena.rs),
 `ConcurrentClockRing` in [`src/ds/clock_ring.rs`](../../src/ds/clock_ring.rs))
-wrap their single-threaded core in `parking_lot::RwLock`. TTL follows that
-shape with two non-negotiable rules:
+wrap their single-threaded core in `parking_lot::RwLock`.
+`ConcurrentExpiring<C>` is **not** shipped yet; when it lands it must
+follow two non-negotiable rules:
 
 1. **Return owned/`Arc<V>`, not `&V`.** The `Cache::get(&mut self) -> Option<&V>`
    signature cannot be implemented safely on `ConcurrentExpiring<C>`
    without holding the write lock across the borrow, which serializes
    readers and defeats the point of `RwLock`. `ConcurrentExpiring<C>`
-   therefore exposes `fn get(&self, key: &K) -> Option<Arc<V>>` (and the
-   sibling mutators), and does **not** implement `Cache<K, V>`. It is a
+   should expose `fn get(&self, key: &K) -> Option<Arc<V>>` (and the
+   sibling mutators), and should **not** implement `Cache<K, V>`. It is a
    concrete type with its own API, mirroring how `ConcurrentLruCache`
    already deviates from `Cache<K, V>`.
 2. **Atomic expiry-and-removal.** The expiry check, policy removal, and
@@ -500,19 +564,33 @@ shape with two non-negotiable rules:
    read lock, escalate to write lock for the actual removal) is safe so
    long as the write-locked path re-checks the deadline before acting.
 
-### f) `DynCache` touchpoint
+Today, callers needing thread-safety wrap a `DynExpiringCache` in
+`Arc<RwLock<…>>` exactly as they would for any other `Cache`.
 
-With the `DynExpiringCache<K, V>` route chosen in §4(c), `DynCache` itself
-is **untouched** by TTL. The new type lives next to `DynCache` and mirrors
-its match-arm boilerplate one level out (the expiry check happens before
-delegating to the inner policy's `Cache::insert`/`get`/etc.). The `Debug`
-impl on `DynExpiringCache` should report TTL mode (default TTL, clock
-type) without exposing keys or deadlines.
+### f) `DynCache` touchpoint (shipped)
 
-### g) `prelude.rs`
+`DynCache<K, V>` gained an `impl Cache<K, V>` so that
+`Expiring<DynCache, K, V, StdClock>` type-checks — see
+[`src/builder.rs`](../../src/builder.rs). All other policy structs
+already implemented `Cache<K, V>`; this fills the last gap so the
+decorator works through the runtime-selected enum without a per-policy
+match arm.
 
-Re-export `ExpiringCache`, `Clock`, `StdClock`, `Expiring` so users get them
-via `use cachekit::prelude::*;`.
+`DynExpiringCache<K, V>` (also in `builder.rs`) lives next to `DynCache`
+and mirrors `DynCache`'s inherent methods plus the TTL surface
+(`insert_with_ttl`, `ttl_status`, `set_ttl`, `purge_expired`,
+`live_len`, `default_ttl`, `expirations`). Its `Debug` impl reports
+`default_ttl`, `len`, and `capacity` via `finish_non_exhaustive` —
+no keys or deadlines leak.
+
+### g) `prelude.rs` (shipped)
+
+[`src/prelude.rs`](../../src/prelude.rs) re-exports `Clock`, `StdClock`,
+`MockClock`, `Tick`, `TtlStatus`, `ExpiringCache`, `DynExpiringCache`,
+and `ExpiringBuilder` under `#[cfg(feature = "ttl")]`. `Expiring` itself
+is not re-exported — callers reach it through
+`cachekit::policy::expiring::Expiring` when they need the raw decorator,
+but most code should consume the builder-vended `DynExpiringCache`.
 
 ---
 
@@ -592,92 +670,145 @@ via `use cachekit::prelude::*;`.
 
 ---
 
-## 6. Recommended First Slice
+## 6. Phased Roadmap
 
-A pragmatic phased roadmap:
+### Phase 1 — landed
 
-1. New module `src/policy/expiring.rs` with `Expiring<C, K, T = StdClock>`
-   decorator. Define `peek` / `contains` as logical reads; `Cache::len`
-   reports physical occupancy; add an inherent `Expiring::live_len(&mut self)`
-   for callers that need the live count (see §1(a) Decision).
-2. New ds module `src/ds/expiration_index.rs` backed by
-   `LazyMinHeap<K, u64>` (cheap reuse) with auto-rebuild enabled to bound
-   stale heap growth. Add a `peek_best` primitive to `LazyMinHeap`
-   itself (see §3.A) so `ExpirationIndex` can implement
-   `peek_deadline` / `pop_expired(now)` without coupling to heap
-   internals. Leave the door open to swap in a timer wheel later. Both
-   files are gated behind `#[cfg(feature = "ttl")]`.
-3. `Clock` trait + `StdClock` / `MockClock` in a new `src/time.rs`.
-4. `ExpiringCache<K, V>` capability trait in `src/traits.rs`, using
-   `TtlStatus` for unambiguous status reporting.
-5. `CacheBuilder::with_default_ttl(Duration)` returns a separate
-   `DynExpiringCache<K, V>` (not `DynCache<K, V>`) — see §1 Recommendation
-   and §4(c). This makes `Expiring<Expiring<…>>` structurally
-   unrepresentable.
-6. Feature flag `ttl`; metrics field `expirations` (gated on `metrics`);
-   doctests + a fuzz seed; benchmark group `ttl_overhead` that compares
-   plain LRU vs. `Expiring<LRU>` under the existing Zipfian and scan
+All six items below are merged behind the `ttl` feature flag. The
+shipped sequence preserves policy/storage separation and keeps TTL
+opt-in, but the decorator does not preserve every hot-path invariant:
+inserts pay heap maintenance, the index clones keys, and expired entries
+may remain physically resident until a mutable operation purges them.
+The Phase 2 benchmark gate (step 7) is therefore part of the design,
+not optional cleanup.
+
+1. `src/policy/expiring.rs` — `Expiring<C, K, V, T = StdClock>`
+   decorator. `peek` / `contains` are logical reads; `Cache::len`
+   reports physical occupancy; `Expiring::live_len(&self)` walks the
+   index once for the live count (see §1(a) Decision). The shipped
+   signature is `&self`, not `&mut self`, because
+   `ExpirationIndex::iter` is borrow-only.
+2. `src/ds/expiration_index.rs` — `ExpirationIndex<K>` backed by
+   `LazyMinHeap<K, u64>` with auto-rebuild enabled (factor 2 by
+   default) to bound stale heap growth. The door is open to swap in a
+   timer wheel later. Added a `peek_best` primitive to `LazyMinHeap`
+   itself (see §3.A) so `ExpirationIndex::next_deadline` /
+   `pop_expired` / `drain_expired` do not couple to heap internals.
+3. `src/time.rs` — `Clock` trait + `StdClock` / `MockClock`. `Clock`
+   takes `&self`, is object-safe, and requires `Send + Sync + Debug`.
+4. `src/traits.rs` — `Tick`, `TtlStatus`, and the `ExpiringCache<K, V>`
+   capability trait (object-safe; sits alongside `RecencyTracking`,
+   `FrequencyTracking`, `HistoryTracking`).
+5. `CacheBuilder::with_default_ttl(Duration)` returns an
+   `ExpiringBuilder` whose `build` produces a `DynExpiringCache<K, V>`
+   (separate public type with a private inner field; cannot be wrapped
+   in another `Expiring`). To make this work without per-policy
+   plumbing, `DynCache<K, V>` gained an `impl Cache<K, V>` — see §1
+   Recommendation and §4(c).
+6. Feature flag `ttl`; counter `Expiring::expirations` (gated on
+   `metrics`, accessor returns 0 unconditionally so call sites
+   compile); doctests on every public item;
+   [`tests/ttl_integration_test.rs`](../../tests/ttl_integration_test.rs)
+   exercises the decorator and the builder path under proptest;
+   [`benches/ttl_overhead.rs`](../../benches/ttl_overhead.rs) compares
+   plain LRU vs. `Expiring<LRU>` under Zipfian / scan / mixed
    workloads.
-7. **Phase 2:** profile (a) and, if the extra hash hit shows up in
+
+### Phase 2 — deferred
+
+7. **Embedded `expires_at`.** Profile Phase 1 with the existing
+   `ttl_overhead` group and, if the extra hash hit shows up in
    flamegraphs, embed `expires_at: u64` into `LruCore::Node` and
-   `S3FifoCache::Node` (the two highest-traffic policies in the existing
-   benches at [`benches/`](../../benches)) — but **opt-in per node**, not
-   unconditionally. Two viable shapes:
+   `S3FifoCache::Node` (the two highest-traffic policies in the
+   existing benches at [`benches/`](../../benches)) — but **opt-in per
+   node**, not unconditionally. Two viable shapes:
    - A const generic `Node<K, V, const TTL: bool>` so non-TTL caches
      monomorphize to the slimmer layout.
    - A separate type `LruWithTtl<K, V>` (and `S3FifoWithTtl<K, V>`)
-     that wraps the slot arena with a parallel `Vec<u64>` keyed by slot
-     handle.
+     that wraps the slot arena with a parallel `Vec<u64>` keyed by
+     slot handle.
+
    Embedding `expires_at` unconditionally would add 8 bytes per node to
    every LRU and S3-FIFO instance — a 10–25% memory regression for the
    common case of fixed-size value caches — and would regress the very
-   benchmarks step 6 is using as a gate. The `.cursorrules` "keep
-   metadata tight" rule applies here.
-
-This sequence preserves policy/storage separation and keeps TTL opt-in, but
-the decorator does not preserve every hot-path invariant: inserts pay heap
-maintenance, the index clones keys, and expired entries may remain physically
-resident until a mutable operation purges them. The benchmark gate in step 6
-is therefore part of the design, not optional cleanup.
+   benchmarks Phase 1 uses as a gate. The `.cursorrules` "keep metadata
+   tight" rule applies here.
+8. **`ConcurrentExpiring<C>`** following §4(e) (owned/`Arc<V>` return,
+   atomic expiry-and-removal).
+9. **Timer-wheel swap-in** as an alternative `ExpirationIndex` backend
+   when TTL is uniform and high-throughput (see §3.B/§3.C).
+10. **`serde`** support for `Tick` / `TtlStatus`, with the relative-
+    duration serialization rule from §5 (API trade-offs).
+11. **CAR in `DynCache`.** TTL-via-builder for CAR is blocked until
+    `policy::car` becomes a `CacheInner` variant.
 
 ---
 
 ## 7. Open Questions
 
-- Should `purge_expired` be exposed publicly, run on a background thread,
-  triggered on insert-when-full, or all three (configurable)?
-- Should the `Clock` trait live in a top-level `time` module or inside `ds`?
-  Step 6.3 currently picks `src/time.rs`; revisit if `no_std` support
-  becomes a constraint.
-- How should serialization (under `serde` feature) handle `expires_at` —
-  the current recommendation is relative remaining duration, but restoring
-  long-lived caches may need wall-clock deadlines. Open until a
-  serialization API is proposed.
-- Is there demand for *negative* TTL (entries that become valid only after
-  a delay)? Probably no, but worth confirming before locking the API.
-- Should `purge_expired` return a `usize` count, the evicted `(K, V)`
-  pairs, or both (via separate methods)? The current trait sketch returns
-  `usize`; users who need the values can iterate `pop_expired` directly
-  through a lower-level API.
+Still open:
 
-Resolved during this design pass (kept here for posterity):
-- `len` reports physical occupancy (matches `Cache::len`'s `&self`
-  constraint); add `live_len(&mut self)` if/when the wrapper grows a
-  mutable counterpart — see §1(a).
-- Builder integration uses a separate `DynExpiringCache<K, V>` rather
-  than `impl Cache for DynCache` — see §1 Recommendation and §4(c).
+- Should `purge_expired` only be exposed publicly (as today), or also
+  fire on a background thread or on insert-when-full? Phase 1 ships the
+  pull-only API and lets the caller drive cadence; configurable
+  background sweepers may follow once we have data on what's actually
+  needed.
+- How should serialization (under `serde` feature) handle `expires_at` —
+  the current §5 recommendation is relative remaining duration, but
+  restoring long-lived caches may need wall-clock deadlines. Open
+  until a serialization API is proposed.
+- Is there demand for *negative* TTL (entries that become valid only
+  after a delay)? Probably no, but worth confirming before locking the
+  API.
+- Should `purge_expired` continue to return only a `usize` count, or
+  also offer a variant that yields the evicted `(K, V)` pairs? Phase 1
+  trait method returns `usize`; users who need the values can build on
+  the lower-level `ExpirationIndex::drain_expired` iterator paired with
+  manual cache removals.
+
+Resolved during the Phase 1 design pass (kept here for posterity):
+
+- `Cache::len` reports physical occupancy. `Expiring::live_len(&self)`
+  walks the index once to give the exact live count; `&self` suffices
+  because `ExpirationIndex::iter` is borrow-only — see §1(a).
+- Builder integration uses a separate `DynExpiringCache<K, V>` with a
+  private inner field plus an `impl Cache<K, V> for DynCache<K, V>`,
+  combining option (1)'s plumbing with option (2)'s surface — see §1
+  Recommendation and §4(c). `Expiring<DynExpiringCache>` is
+  structurally unrepresentable.
+- The `Clock` trait lives at `src/time.rs` (top-level), not inside
+  `ds`. Revisit if `no_std` support becomes a constraint.
+- `Tick` is exposed as a newtype rather than a bare `u64` — keeps the
+  tick unit (ms today) private to the `Clock` implementation.
 
 ---
 
 ## References
 
-- [`docs/policies/roadmap/ttl.md`](../policies/roadmap/ttl.md) — high-level
-  stub
+### Shipped source
+
+- [`src/time.rs`](../../src/time.rs) — `Clock`, `StdClock`, `MockClock`
+- [`src/ds/expiration_index.rs`](../../src/ds/expiration_index.rs) —
+  `ExpirationIndex`
+- [`src/ds/lazy_heap.rs`](../../src/ds/lazy_heap.rs) — `LazyMinHeap`
+  (with the Phase 1 `peek_best` addition)
+- [`src/traits.rs`](../../src/traits.rs) — `Tick`, `TtlStatus`,
+  `ExpiringCache`
+- [`src/policy/expiring.rs`](../../src/policy/expiring.rs) — `Expiring`
+  decorator
+- [`src/builder.rs`](../../src/builder.rs) — `impl Cache for DynCache`,
+  `ExpiringBuilder`, `DynExpiringCache`
+- [`src/prelude.rs`](../../src/prelude.rs) — re-exports
+- [`tests/ttl_integration_test.rs`](../../tests/ttl_integration_test.rs)
+- [`benches/ttl_overhead.rs`](../../benches/ttl_overhead.rs)
+
+### Supporting docs
+
+- [`docs/policies/roadmap/ttl.md`](../policies/roadmap/ttl.md) —
+  implementation tracker and Quick Start
 - [`docs/policy-ds/lazy-heap.md`](../policy-ds/lazy-heap.md) — lazy heap
   primitive used as the index
-- [`src/ds/lazy_heap.rs`](../../src/ds/lazy_heap.rs) — implementation that
-  already lists TTL as a use case
-- [`src/traits.rs`](../../src/traits.rs) — capability-trait pattern this
-  design extends
-- [`src/builder.rs`](../../src/builder.rs) — `DynCache` integration point
+
+### External
+
 - [Wikipedia: Cache replacement policies](https://en.wikipedia.org/wiki/Cache_replacement_policies)

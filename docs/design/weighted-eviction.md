@@ -379,6 +379,9 @@ store already follows.
 - [Cache trait hierarchy](trait-hierarchy.md) — future
   `WeightTracking` capability trait sketched in
   "Future capability traits"
+- [Storage layer](storage.md) — store trait family and the
+  rationale for `WeightStore`'s deliberate divergence from
+  `StoreCore` / `StoreMut`
 - [Stores](../stores/README.md) and [`weight.md`](../stores/weight.md)
   — reference docs for the runtime behaviour
 - [Error model](error-model.md) — `StoreFull` semantics
