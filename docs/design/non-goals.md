@@ -106,6 +106,17 @@ text exporter. It does not provide:
 Use your monitoring stack for those. cachekit exposes enough counters to make
 policy tuning possible without making the cache own observability.
 
+`MetricsCell` (the crate-private interior-mutability wrapper used by
+`&self` recorder paths) is **not** a substitute for `AtomicU64`. It is
+sound only when increments happen under exclusive external
+synchronization — single-threaded, `&mut self`, or behind a write
+lock / `Mutex`. A shared `RwLock::read` guard does not serialize
+readers and so is not sufficient protection. Counters reachable from a
+read-locked `&self` path must use `AtomicU64` (or escalate to a write
+lock before recording). The contract is restated on the `unsafe impl
+Sync` block in [`src/metrics/cell.rs`](../../src/metrics/cell.rs) and
+in the [Metrics design](metrics.md#metricscell-interior-mutability-under-external-lock).
+
 ## Not a Policy Research Playground at the Cost of Hot Paths
 
 New policies are welcome, but they must fit the crate's constraints:

@@ -359,8 +359,11 @@ Tracked roughly in priority order:
 - [TTL design](ttl.md) — applied case for `ConcurrentExpiring<C>`
 - [Cache trait hierarchy](trait-hierarchy.md) — read/mutate split and
   object-safety rationale
-- [Stores](../stores/README.md) — `ConcurrentStoreRead` /
-  `ConcurrentStore` trait family
+- [Storage layer](storage.md) — `ConcurrentStoreRead` /
+  `ConcurrentStore` trait family rationale and the
+  sequential/concurrent split
+- [Stores](../stores/README.md) — runtime-behaviour reference for
+  each concrete store
 - [`src/store/traits.rs`](../../src/store/traits.rs) — concurrent
   store traits
 - [`src/traits.rs`](../../src/traits.rs) — `ConcurrentCache` marker

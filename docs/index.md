@@ -21,6 +21,7 @@ Key features:
 - [Benchmarking design](design/benchmarking.md) — Benchmark layers, policy registry, JSON artifacts
 - [Hashing and key identity](design/hashing.md) — Hasher choices, key interning, shard routing
 - [Sharding](design/sharding.md) — Sharded primitives, routing, capacity semantics
+- [Storage layer](design/storage.md) — Store trait family, concrete stores, `StoreMetrics` baseline
 - [Serialization](design/serialization.md) — `serde` surface and cache-state persistence boundaries
 - [Non-goals](design/non-goals.md) — Explicit boundaries and out-of-scope features
 - [TTL design](design/ttl.md) — Worked example of every principle in one feature
