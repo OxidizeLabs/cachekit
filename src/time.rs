@@ -155,7 +155,7 @@ impl StdClock {
     /// let clock_a = StdClock::with_anchor(anchor);
     /// let clock_b = StdClock::with_anchor(anchor);
     /// // Both clocks share the same epoch.
-    /// assert!(clock_b.now() >= clock_a.now() || clock_a.now() == clock_b.now());
+    /// assert!(clock_b.now() >= clock_a.now());
     /// ```
     #[must_use]
     pub fn with_anchor(anchor: Instant) -> Self {
