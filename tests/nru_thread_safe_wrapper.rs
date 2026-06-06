@@ -1,5 +1,11 @@
+//! External `Arc<Mutex<NruCache>>` wrapper tests.
+//!
+//! Documents the recommended pattern for serializing access to `NruCache` when
+//! no native concurrent type exists. These tests exercise Rust's `Mutex`, not
+//! a library-provided concurrent implementation.
+
 // ==============================================
-// NRU CONCURRENCY TESTS (integration)
+// NRU THREAD-SAFE WRAPPER TESTS (integration)
 // ==============================================
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

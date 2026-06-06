@@ -6,8 +6,6 @@
 //! [`Expiring<…>`](cachekit::policy::expiring::Expiring) decorator wrapped
 //! around a couple of concrete policies.
 
-#![cfg(feature = "ttl")]
-
 use std::time::Duration;
 
 use cachekit::builder::{CacheBuilder, CachePolicy};
@@ -197,6 +195,57 @@ fn dyn_expiring_cache_purge_expired_works_via_builder_path() {
     assert_eq!(cache.live_len(), 3);
 }
 
+mod common;
+
+#[test]
+fn builder_all_enabled_policies_smoke() {
+    for policy in common::all_enabled_policies() {
+        let mut cache = CacheBuilder::new(4)
+            .with_default_ttl(Duration::from_secs(60))
+            .build::<u64, String>(policy);
+        cache.insert(1, "value".into());
+        assert_eq!(cache.peek(&1), Some(&"value".to_string()));
+        assert_eq!(cache.get(&1), Some(&"value".to_string()));
+    }
+}
+
+#[test]
+#[cfg(feature = "policy-s3-fifo")]
+fn ttl_plus_eviction_with_s3_fifo() {
+    use cachekit::policy::s3_fifo::S3FifoCache;
+
+    let clock = MockClock::new();
+    let inner = S3FifoCache::<u64, String>::new(3);
+    let mut cache = Expiring::with_default_ttl(inner, clock, None);
+
+    cache.insert_with_ttl(1, "expired".into(), Duration::from_millis(5));
+    cache.insert_with_ttl(2, "live_a".into(), Duration::from_secs(60));
+    cache.insert_with_ttl(3, "live_b".into(), Duration::from_secs(60));
+
+    cache.clock().advance(Duration::from_millis(10));
+    assert!(cache.get(&1).is_none());
+    assert_eq!(cache.live_len(), 2);
+
+    cache.insert(4, "replacement".into());
+    assert!(cache.len() <= 3);
+    assert!(cache.contains(&4));
+}
+
+#[test]
+#[cfg(feature = "policy-lru")]
+fn dyn_expiring_lru_remove_and_peek() {
+    let mut cache = CacheBuilder::new(4)
+        .with_default_ttl(Duration::from_secs(60))
+        .build::<u64, String>(CachePolicy::Lru);
+
+    cache.insert(1, "a".into());
+    cache.insert(2, "b".into());
+    assert_eq!(cache.peek(&1), Some(&"a".to_string()));
+    assert_eq!(cache.remove(&1), Some("a".to_string()));
+    assert!(!cache.contains(&1));
+    assert_eq!(cache.live_len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Property test: random op sequence against a reference model.
 // ---------------------------------------------------------------------------
@@ -261,10 +310,10 @@ mod proptests {
             }
 
             while self.lru.len() >= self.capacity {
-                let Some(victim) = self.lru.pop_back() else {
+                let Some(_victim) = self.lru.pop_back() else {
                     break;
                 };
-                self.deadlines.remove(&victim);
+                // Inner eviction does not remove index entries in `Expiring`.
             }
 
             self.deadlines.insert(key, deadline);
@@ -306,6 +355,14 @@ mod proptests {
             let now = self.now;
             self.deadlines.retain(|_, d| *d > now);
             self.lru.retain(|k| self.deadlines.contains_key(k));
+        }
+
+        /// Mirrors `Expiring::live_len`: physical occupancy minus index entries
+        /// whose deadline is `<= now` (including ghosts left after inner eviction).
+        fn live_count(&self) -> usize {
+            let now = self.now;
+            let expired_in_index = self.deadlines.values().filter(|d| **d <= now).count();
+            self.lru.len().saturating_sub(expired_in_index)
         }
 
         /// `Some(true)` if the key is physically resident with deadline `> now`;
@@ -375,6 +432,11 @@ mod proptests {
                         model.purge_dead_expired();
                     }
                 }
+                prop_assert_eq!(
+                    cache.live_len(),
+                    model.live_count(),
+                    "live_len diverged from reference model"
+                );
             }
         }
     }

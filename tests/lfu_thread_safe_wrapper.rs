@@ -1,5 +1,11 @@
+//! External `Arc<Mutex<LfuCache>>` wrapper tests.
+//!
+//! Documents the recommended pattern for serializing access to `LfuCache` when
+//! no native concurrent type exists. These tests exercise Rust's `Mutex`, not
+//! a library-provided concurrent implementation.
+
 // ==============================================
-// LFU CONCURRENCY TESTS (integration)
+// LFU THREAD-SAFE WRAPPER TESTS (integration)
 // ==============================================
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -977,6 +983,7 @@ mod stress_testing {
     }
 
     #[test]
+    #[ignore = "long-running stress; run with cargo test --test lfu_thread_safe_wrapper -- --ignored"]
     fn test_long_running_stability() {
         // Test stability over extended periods with continuous load
         let cache: ThreadSafeLfuCache<String, i64> = Arc::new(Mutex::new(LfuCache::new(200)));

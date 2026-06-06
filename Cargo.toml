@@ -160,6 +160,30 @@ path = "benches/ttl_overhead.rs"
 harness = false
 required-features = ["ttl"]
 
+[[test]]
+name = "ttl_integration_test"
+path = "tests/ttl_integration_test.rs"
+required-features = ["ttl"]
+
+[[test]]
+name = "slab_concurrency"
+path = "tests/slab_concurrency.rs"
+required-features = ["concurrency"]
+
+[[test]]
+name = "store_concurrency"
+path = "tests/store_concurrency.rs"
+required-features = ["concurrency"]
+
+[[test]]
+name = "policy_concurrency"
+path = "tests/policy_concurrency.rs"
+required-features = ["concurrency", "policy-fifo", "policy-lru", "policy-s3-fifo"]
+
+[[test]]
+name = "builder_integration_test"
+path = "tests/builder_integration_test.rs"
+
 # Development profile - optimized for fast compilation and good debugging
 [profile.dev]
 opt-level = 0

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ca1495000b8b9b234f4ec5d5f8c1b88cf6a423d899c1f8537c902b90dbd13006 # shrinks to ops = [Insert { key: 0, ttl_ms: 1 }, Insert { key: 0, ttl_ms: 1 }, Insert { key: 0, ttl_ms: 1 }, Insert { key: 0, ttl_ms: 1 }, Insert { key: 1, ttl_ms: 1 }, Insert { key: 8, ttl_ms: 1 }, Insert { key: 70, ttl_ms: 1 }, Insert { key: 9, ttl_ms: 1 }, Insert { key: 2, ttl_ms: 1 }, Insert { key: 10, ttl_ms: 1 }, Insert { key: 11, ttl_ms: 1 }, Insert { key: 12, ttl_ms: 1 }, Insert { key: 13, ttl_ms: 1 }, Insert { key: 14, ttl_ms: 1 }, Insert { key: 15, ttl_ms: 1 }, Insert { key: 16, ttl_ms: 1 }, Insert { key: 3, ttl_ms: 1 }, Insert { key: 17, ttl_ms: 1 }, Insert { key: 0, ttl_ms: 1 }, Insert { key: 18, ttl_ms: 1 }, Insert { key: 0, ttl_ms: 1 }, Insert { key: 19, ttl_ms: 497 }, Advance { delta_ms: 1 }]

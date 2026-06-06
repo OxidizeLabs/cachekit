@@ -1,10 +1,16 @@
+//! External `Arc<Mutex<LrukCache>>` wrapper tests.
+//!
+//! Documents the recommended pattern for serializing access to `LrukCache` when
+//! no native concurrent type exists. These tests exercise Rust's `Mutex`, not
+//! a library-provided concurrent implementation.
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 // ==============================================
-// LRU-K CONCURRENCY TESTS (integration)
+// LRU-K THREAD-SAFE WRAPPER TESTS (integration)
 // ==============================================
 
 // Thread Safety Tests
@@ -312,6 +318,7 @@ mod stress_testing {
     }
 
     #[test]
+    #[ignore = "long-running stress; run with cargo test --test lru_k_thread_safe_wrapper -- --ignored"]
     fn test_long_running_stability() {
         let cache: ThreadSafeLRUK<u64, u64> = Arc::new(Mutex::new(LrukCache::with_k(80, 2)));
         let threads = 6;

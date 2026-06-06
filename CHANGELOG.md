@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Integration test suite expansion: `builder_integration_test`, `store_concurrency`, `policy_concurrency`, and shared `tests/common` helpers.
+- Cross-policy capacity-0 invariant tests for all 18 eviction policies in `policy_invariants.rs`.
+- TTL integration tests for all builder-enabled policies, S3-FIFO eviction interaction, and extended proptest `live_len` checks.
+
+### Changed
+- Renamed Mutex-wrapper tests to `*_thread_safe_wrapper.rs` with module documentation; removed misleading `*_concurrency` naming for non-native concurrent policies.
+- Deleted `fifo_concurrency.rs` and `lru_concurrency.rs`; native concurrent policy tests consolidated in `policy_concurrency.rs`.
+- `lru_integration_test.rs` scoped to Arc/zero-copy smoke (multi-thread stress moved to `policy_concurrency.rs`).
+- Explicit `[[test]] required-features` in `Cargo.toml` for TTL and concurrency integration binaries.
+- Updated `tests/README.md` with feature requirements, file responsibilities, and capacity-0 contract documentation.
+
+## [0.8.0] - 2026-04-22
+
+### Added
 - **`ttl` feature flag** — opt-in time-based expiration via the `Expiring<C>` decorator, wrapping any policy that implements `Cache<K, V>`. Enable with `features = ["ttl"]`; see `docs/design/ttl.md` for the full semantic contract (#132).
 - **`ExpiringCache` capability trait** — `insert_with_ttl`, `ttl_status`, `set_ttl`, and `purge_expired`, with `TtlStatus` (`Missing` / `Immortal` / `Expired` / `Live { remaining, deadline }`) and opaque `Tick` deadline type. Re-exported from `cachekit::traits` and `cachekit::prelude` when `ttl` is enabled (#132).
 - **`Expiring<C, K, V, T>` decorator** (`cachekit::policy::expiring`) — per-entry and default TTLs, lazy purge on read, and `purge_expired` for proactive cleanup. Works with any inner cache and pluggable clock (#132).

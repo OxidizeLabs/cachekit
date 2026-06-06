@@ -5,8 +5,6 @@
 // Tests for race conditions and atomicity issues in ConcurrentSlabStore.
 // These require multi-threaded execution and cannot live inline.
 
-#![cfg(feature = "concurrency")]
-
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
