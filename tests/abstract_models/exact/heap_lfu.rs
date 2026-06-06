@@ -1,8 +1,11 @@
-//! Heap-LFU reference model — mirrors `HeapLfuCache` heap + peek scan semantics.
+//! Heap-LFU reference model — mirrors `HeapLfuCache` heap eviction semantics.
 //!
 //! **Tier:** exact.
+//! **Source:** [`docs/testing/specs/heap-lfu.md`](../../../docs/testing/specs/heap-lfu.md) ·
+//! [matrix.md](../../../docs/testing/specs/matrix.md)
+//! **Cross-model sibling:** [`reference/heap_lfu.rs`](../reference/heap_lfu.rs) (`NaiveHeapLfuModel`).
 //! **Victim:** lowest frequency; `Ord` tie-break on key when frequencies tie.
-//! **Peek:** scans `freq` map for min frequency (matches implementation peek path).
+//! **Peek:** min `(freq, key)` over `freq` map (Ord tie-break; aligns with heap `pop_lfu`).
 //! **Tests:** `policy_semantics/heap_lfu_tests.rs` — residency only (heap stale entries).
 //! **Op strategy:** [`standard_op_list`](super::super::standard_op_list) (not `mfu_safe`; heap
 //! rebuild handles staleness on insert/evict).
@@ -77,10 +80,9 @@ where
     }
 
     fn peek_lfu_key(&self) -> Option<K> {
-        let min_freq = *self.freq.values().min()?;
         self.freq
             .iter()
-            .find(|(_, f)| **f == min_freq)
+            .min_by(|(k1, f1), (k2, f2)| f1.cmp(f2).then(k1.cmp(k2)))
             .map(|(k, _)| k.clone())
     }
 

@@ -7,7 +7,7 @@ use cachekit::policy::nru::NruCache;
 use cachekit::traits::Cache;
 use proptest::prelude::*;
 
-use crate::abstract_models::driver::probe_resident;
+use crate::abstract_models::driver::assert_dual_run_step_no_victim;
 use crate::abstract_models::exact::nru::NruModel;
 use crate::abstract_models::{Op, PolicyModel, short_op_list_no_evict, standard_capacity};
 
@@ -29,8 +29,7 @@ fn run_ops(cache: &mut NruCache<u8, u8>, model: &mut NruModel<u8>, ops: &[Op<u8>
                 cache.remove(k);
             },
         }
-        let resident = probe_resident(|k| cache.contains(k));
-        assert_eq!(resident, step.resident);
+        assert_dual_run_step_no_victim(cache, model, &step, |k| cache.contains(k), |_, _, _| {});
     }
 }
 

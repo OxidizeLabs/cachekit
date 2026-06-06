@@ -1,7 +1,9 @@
 //! LRU occupancy model (MRU at front, LRU at back).
 //!
 //! **Tier:** exact.
-//! **Source:** `FastLru` / `LruCore` list order — victim is tail (LRU).
+//! **Source:** [`docs/testing/specs/lru.md`](../../../docs/testing/specs/lru.md) ·
+//! [fast-lru.md](../../../docs/testing/specs/fast-lru.md) ·
+//! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Recency:** rank 0 = MRU; used by `assert_recency_rank` in LRU and Fast-LRU tests.
 //! **Tests:** `policy_semantics/lru_tests.rs`, `fast_lru_tests.rs`; also composed in
 //! `ttl_integration_test.rs`.
@@ -11,6 +13,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;
 
+use crate::abstract_models::driver::ModelRecencyRank;
 use crate::abstract_models::{HitMiss, ModelStep, Op, OracleExpectation, PolicyModel};
 
 /// MRU-first deque matching `FastLru` head/tail semantics.
@@ -146,6 +149,15 @@ where
 
         step.resident = self.collect_resident();
         step
+    }
+}
+
+impl<K> ModelRecencyRank<K> for LruOccupancyModel<K>
+where
+    K: Clone + Eq + Hash,
+{
+    fn model_recency_rank(&self, key: &K) -> Option<usize> {
+        self.recency_rank(key)
     }
 }
 

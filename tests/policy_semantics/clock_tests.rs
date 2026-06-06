@@ -7,7 +7,7 @@ use cachekit::policy::clock::ClockCache;
 use cachekit::traits::{Cache, EvictingCache};
 use proptest::prelude::*;
 
-use crate::abstract_models::driver::probe_resident;
+use crate::abstract_models::driver::assert_dual_run_step_no_victim;
 use crate::abstract_models::exact::clock::ClockModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
@@ -32,11 +32,17 @@ fn run_ops(cache: &mut ClockCache<u8, ()>, model: &mut ClockModel<u8, ()>, ops: 
                 let _ = cache.evict_one();
             },
         }
-        let resident = probe_resident(|k| cache.contains(k));
-        assert_eq!(resident, step.resident, "after {op:?}");
-        if let Some(e) = step.evicted_on_insert {
-            assert!(!cache.contains(&e));
-        }
+        assert_dual_run_step_no_victim(
+            cache,
+            model,
+            &step,
+            |k| cache.contains(k),
+            |cache, _, step| {
+                if let Some(e) = &step.evicted_on_insert {
+                    assert!(!cache.contains(e));
+                }
+            },
+        );
     }
 }
 

@@ -1,7 +1,9 @@
 //! MRU reference model (victim = most recently used / head).
 //!
 //! **Tier:** exact.
-//! **Source:** `MruCache` — victim is head (most recently touched/inserted key).
+//! **Source:** [`docs/testing/specs/mru.md`](../../../docs/testing/specs/mru.md) ·
+//! [matrix.md](../../../docs/testing/specs/matrix.md)
+//! **Cross-model sibling:** [`reference/mru.rs`](../reference/mru.rs) (`NaiveMruModel`).
 //! **Tests:** `policy_semantics/mru_tests.rs` — `EvictingCache` (no `VictimInspectable`).
 //! **Op strategy:** [`op_strategy`](super::super::op_strategy).
 

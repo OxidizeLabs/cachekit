@@ -7,7 +7,7 @@
 //! `TwoQCore`, `SlruCore`) rather than a simplified abstract rule. Use when behavior is
 //! defined by the DS layout.
 //!
-//! See the [policy matrix](README.md#policy-coverage) for per-policy model types.
+//! See the [policy matrix](../../../docs/testing/specs/matrix.md) for per-policy model types.
 //!
 //! Each submodule is gated by the matching `policy-*` feature (plus `ttl` for `lru`).
 

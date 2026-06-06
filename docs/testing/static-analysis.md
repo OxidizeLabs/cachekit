@@ -27,6 +27,36 @@ This harness is a **test-side abstract interpreter** for eviction policies. It r
 
 See [trait hierarchy](../design/trait-hierarchy.md) for `peek` vs `get` vs `touch` semantics asserted by the harness.
 
+## Spec-first oracles
+
+Operational specs in [`specs/`](specs/) are the source of truth. **Canonical policy index:** [matrix.md](specs/matrix.md) (tier, harness mode, models, op strategy, traits).
+
+```text
+spec doc → reference/ PolicyModel (optional) → exact/ PolicyModel → implementation dual-run
+```
+
+| Harness mode | Tier | Oracle |
+|--------------|------|--------|
+| DualRun | exact, mirror, composed | `exact/` vs impl |
+| CrossModel | exact (all policies with `reference/` models) | `reference/` vs `exact/` |
+| InvariantOnly | bounded | structural invariants on impl |
+
+**FIFO + LRU worked example:**
+
+| Layer | FIFO | LRU |
+|-------|------|-----|
+| Spec | [fifo.md](specs/fifo.md) | [lru.md](specs/lru.md) |
+| Reference | `NaiveFifoModel` | `NaiveLruModel` |
+| Exact | `FifoModel` | `LruOccupancyModel` |
+| Cross-model | `prop_fifo_naive_matches_current_model` | `prop_lru_naive_matches_current_model` |
+| Impl dual-run | `prop_fifo_matches_model` | `prop_lru_core_matches_model` |
+
+All exact-tier policies in [matrix.md](specs/matrix.md) now have reference models (LRU-K completes the set). Mirror and bounded policies remain `stub` maturity with invariant-only or dual-run harnesses.
+
+**Failure interpretation:** reference ≠ exact → fix spec or `exact/` model; reference = exact but impl fails → fix implementation or adapter.
+
+FIFO and LRU include optional [TLA+](specs/Fifo.tla) specs (manual TLC, not CI). Read [tla-guide.md](specs/tla-guide.md); run [`scripts/run-fifo-tlc.sh`](../../scripts/run-fifo-tlc.sh), [`scripts/run-lru-tlc.sh`](../../scripts/run-lru-tlc.sh), or [`scripts/run-tlc.sh`](../../scripts/run-tlc.sh). Runbooks: [fifo-tlc.md](specs/fifo-tlc.md), [lru-tlc.md](specs/lru-tlc.md).
+
 ## Architecture
 
 ```mermaid
@@ -117,7 +147,7 @@ See also the [abstract_models contributor checklist](../../tests/abstract_models
 2. Cite tie-break / mirror source in the module `//!` doc.
 3. Add `tests/policy_semantics/<policy>_tests.rs` with dual-run or invariant-only `run_ops`, plus `smoke_*` + `prop_*`.
 4. Gate the module in `tests/policy_semantics/main.rs` with `#[cfg(feature = "policy-…")]`.
-5. Append a row to the matrix above.
+5. Append a row to [matrix.md](specs/matrix.md).
 
 Use `op_strategy_no_evict()` when the policy lacks [`EvictingCache`](../../src/traits.rs).
 
@@ -151,6 +181,7 @@ Use `op_strategy_no_evict()` when the policy lacks [`EvictingCache`](../../src/t
 
 ## Related documentation
 
+- [Operational policy specs](specs/README.md) — spec-first source of truth
 - [Abstract models README](../../tests/abstract_models/README.md) — directory layout and policy matrix
 - [Testing strategy](testing.md) — four test layers including policy semantics
 - [Trait hierarchy](../design/trait-hierarchy.md) — capability traits used as oracles

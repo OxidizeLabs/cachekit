@@ -1,8 +1,11 @@
-//! MFU reference model — mirrors `MfuCore` heap eviction and peek scan.
+//! MFU reference model — mirrors `MfuCore` heap eviction semantics.
 //!
 //! **Tier:** exact.
-//! **Victim:** highest frequency; sequence-number tie-break (older heap entry wins).
-//! **Peek:** `FxHashMap` scan for max frequency (matches implementation peek path).
+//! **Source:** [`docs/testing/specs/mfu.md`](../../../docs/testing/specs/mfu.md) ·
+//! [matrix.md](../../../docs/testing/specs/matrix.md)
+//! **Cross-model sibling:** [`reference/mfu.rs`](../reference/mfu.rs) (`NaiveMfuModel`).
+//! **Victim:** highest frequency; sequence-number tie-break (newest heap entry evicted first).
+//! **Peek:** max valid `HeapEntry` in heap (aligns with `pop_mfu` tie-break).
 //! **Tests:** `policy_semantics/mfu_tests.rs` — residency only.
 //! **Op strategy:** [`op_strategy_mfu_safe`](super::super::op_strategy_mfu_safe) — skips
 //! `Remove`/`EvictOne` because stale heap entries break `debug_validate_invariants`.
@@ -113,15 +116,11 @@ where
     }
 
     fn peek_mfu_key(&self) -> Option<K> {
-        let mut max_freq = 0u64;
-        let mut max_key: Option<&K> = None;
-        for (key, &f) in &self.freq {
-            if f > max_freq {
-                max_freq = f;
-                max_key = Some(key);
-            }
-        }
-        max_key.cloned()
+        self.heap
+            .iter()
+            .filter(|entry| self.freq.get(&entry.key) == Some(&entry.freq))
+            .max()
+            .map(|entry| entry.key.clone())
     }
 
     fn bump_freq(&mut self, key: K) {

@@ -2,13 +2,19 @@
 //!
 //! **Model:** `MruModel` · **Op strategy:** `standard_op_list`
 //! **Asserted:** residency, insert eviction
+//!
+//! Cross-model: `NaiveMruModel` vs `MruModel`. naive ≠ exact → fix spec or model; naive = exact
+//! but impl fails → fix implementation or adapter.
 
 use cachekit::policy::mru::MruCore;
 use cachekit::traits::EvictingCache;
 use proptest::prelude::*;
 
-use crate::abstract_models::driver::probe_resident;
+use crate::abstract_models::driver::{
+    assert_dual_run_step_no_victim, assert_models_agree, probe_resident,
+};
 use crate::abstract_models::exact::mru::MruModel;
+use crate::abstract_models::reference::mru::NaiveMruModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
 fn run_ops(cache: &mut MruCore<u8, u8>, model: &mut MruModel<u8>, ops: &[Op<u8>]) {
@@ -33,13 +39,19 @@ fn run_ops(cache: &mut MruCore<u8, u8>, model: &mut MruModel<u8>, ops: &[Op<u8>]
                 cache.remove(k);
             },
         }
-        let after = probe_resident(|k| cache.contains(k));
-        assert_eq!(after, step.resident, "after {op:?}");
-        if let (Op::Insert(k), Some(evicted)) = (&op, &step.evicted_on_insert) {
-            if !before.contains(k) {
-                assert!(!after.contains(evicted));
-            }
-        }
+        assert_dual_run_step_no_victim(
+            cache,
+            model,
+            &step,
+            |k| cache.contains(k),
+            |cache, _, step| {
+                if let (Op::Insert(k), Some(evicted)) = (op, &step.evicted_on_insert) {
+                    if !before.contains(k) {
+                        assert!(!cache.contains(evicted));
+                    }
+                }
+            },
+        );
     }
 }
 
@@ -48,11 +60,36 @@ proptest! {
 
     #[cfg_attr(miri, ignore)]
     #[test]
+    fn prop_mru_naive_matches_current_model(
+        capacity in standard_capacity(),
+        ops in standard_op_list(),
+    ) {
+        let mut naive = NaiveMruModel::new(capacity);
+        let mut current = MruModel::new(capacity);
+        assert_models_agree(&mut naive, &mut current, &ops);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
     fn prop_mru_matches_model(capacity in standard_capacity(), ops in standard_op_list()) {
         let mut cache = MruCore::new(capacity);
         let mut model = MruModel::new(capacity);
         run_ops(&mut cache, &mut model, &ops);
     }
+}
+
+#[test]
+fn smoke_mru_naive_agreement() {
+    let ops = [
+        Op::Insert(1),
+        Op::Get(1),
+        Op::Insert(2),
+        Op::Insert(3),
+        Op::Insert(4),
+    ];
+    let mut naive = NaiveMruModel::new(3);
+    let mut current = MruModel::new(3);
+    assert_models_agree(&mut naive, &mut current, &ops);
 }
 
 #[test]

@@ -21,7 +21,16 @@ access trace ──► PolicyModel::apply(op) ──► ModelStep
 ```
 abstract_models/
 ├── mod.rs          # Op, HitMiss, PolicyModel, ModelStep, proptest strategies
-├── driver.rs       # Shared assertion helpers (assert_peek_victim, probe_resident, …)
+├── driver.rs       # Shared assertion helpers (assert_peek_victim, assert_models_agree, …)
+├── reference/      # Spec-derived models (transcribed from docs/testing/specs/)
+│   ├── fifo.rs     # NaiveFifoModel
+│   ├── heap_lfu.rs # NaiveHeapLfuModel
+│   ├── mfu.rs      # NaiveMfuModel
+│   ├── lru.rs      # NaiveLruModel (timestamp formulation)
+│   ├── lifo.rs     # NaiveLifoModel
+│   ├── lfu.rs      # NaiveLfuModel
+│   ├── lru_k.rs    # NaiveLruKModel
+│   └── mru.rs      # NaiveMruModel
 ├── exact/          # Deterministic victims and residency
 │   ├── lru.rs      # LruOccupancyModel (LRU, Fast-LRU, TTL layer)
 │   ├── fifo.rs     # FifoModel
@@ -54,6 +63,24 @@ The harness is compiled into two integration test crates via `#[path]`:
 
 ## Model tiers
 
+### Reference (`reference/`)
+
+Spec-first oracles transcribed from [operational specs](../../docs/testing/specs/). Independent formulation from `exact/` models (e.g. LRU timestamps vs deque). Cross-model tests in `policy_semantics/` assert `reference/` agrees with `exact/` on the same traces.
+
+| Policy | Reference model | Spec | Cross-model signal |
+|--------|-----------------|------|-------------------|
+| FIFO | `NaiveFifoModel` | [fifo.md](../../docs/testing/specs/fifo.md) | Drift guard (low day-one — `FifoModel` is already spec-shaped) |
+| LRU | `NaiveLruModel` | [lru.md](../../docs/testing/specs/lru.md) | High — deque vs timestamp independence |
+| Fast-LRU | `NaiveLruModel` (shared) | [fast-lru.md](../../docs/testing/specs/fast-lru.md) | Same reference; `op_strategy_with_get_mut` cross-model |
+| LIFO | `NaiveLifoModel` | [lifo.md](../../docs/testing/specs/lifo.md) | Drift guard — `Vec` stack vs `VecDeque` exact |
+| LFU | `NaiveLfuModel` | [lfu.md](../../docs/testing/specs/lfu.md) | High — `first_seen` log vs `FrequencyBuckets` |
+| MRU | `NaiveMruModel` | [mru.md](../../docs/testing/specs/mru.md) | Drift guard — `Vec` index-0 vs `VecDeque` exact |
+| Heap-LFU | `NaiveHeapLfuModel` | [heap-lfu.md](../../docs/testing/specs/heap-lfu.md) | High — `HashMap` Ord-min vs `BinaryHeap` exact |
+| MFU | `NaiveMfuModel` | [mfu.md](../../docs/testing/specs/mfu.md) | High — `last_seq` map vs `BinaryHeap` exact |
+| LRU-K | `NaiveLruKModel` | [lru-k.md](../../docs/testing/specs/lru-k.md) | High — `Vec` segments vs `VecDeque` exact |
+
+FIFO and LRU have [TLA+ pilots](../../docs/testing/specs/Fifo.tla) ([`Lru.tla`](../../docs/testing/specs/Lru.tla)) — read [tla-guide.md](../../docs/testing/specs/tla-guide.md); run [`scripts/run-fifo-tlc.sh`](../../scripts/run-fifo-tlc.sh) or [`scripts/run-lru-tlc.sh`](../../scripts/run-lru-tlc.sh) (manual, not CI).
+
 ### Exact (`exact/`)
 
 Residency, victim, and recency rank (where applicable) must match the implementation exactly.
@@ -77,27 +104,21 @@ Adaptive or scan-resistant policies where the victim is not uniquely determined 
 
 Examples: ARC, CAR, Clock-PRO, S3-FIFO. Sibling files (`arc.rs`, etc.) are **documentation stubs** only; real checks live in `policy_semantics/*_tests.rs`. Submodules are gated by matching `policy-*` features (same as `exact/`).
 
+## Harness modes
+
+| Mode | Tests | Helper |
+|------|-------|--------|
+| **DualRun** | `prop_*_matches_model` | [`assert_dual_run_step`](driver.rs) or [`assert_dual_run_step_no_victim`](driver.rs) |
+| **CrossModel** | `prop_*_naive_matches_current` | [`assert_models_agree`](driver.rs) |
+| **InvariantOnly** | `prop_*_invariants` | [`run_invariant_trace`](driver.rs) |
+
+Metadata and contributor checklist: [`spec_harness.rs`](spec_harness.rs).
+
 ## Policy coverage
 
-| Policy | Model | Tier | Module |
-|--------|-------|------|--------|
-| LRU / Fast-LRU | `LruOccupancyModel` | exact | `exact/lru.rs` |
-| FIFO | `FifoModel` | exact | `exact/fifo.rs` |
-| LIFO | `LifoModel` | exact | `exact/lifo.rs` |
-| MRU | `MruModel` | exact | `exact/mru.rs` |
-| LFU | `LfuModel` | exact | `exact/lfu.rs` |
-| Heap-LFU | `HeapLfuModel` | exact | `exact/heap_lfu.rs` |
-| MFU | `MfuModel` | exact | `exact/mfu.rs` |
-| LRU-K | `LruKModel` | exact | `exact/lru_k.rs` |
-| Clock | `ClockModel` | mirror | `exact/clock.rs` |
-| 2Q | `TwoQModel` | mirror | `exact/two_q.rs` |
-| SLRU | `SlruModel` | mirror | `exact/slru.rs` |
-| NRU | `NruModel` | mirror | `exact/nru.rs` |
-| S3-FIFO | bounded checks | bounded | `bounded/s3_fifo.rs` |
-| ARC | bounded checks | bounded | `bounded/arc.rs` |
-| CAR | bounded checks | bounded | `bounded/car.rs` |
-| Clock-PRO | bounded checks | bounded | `bounded/clock_pro.rs` |
-| TTL | `LruOccupancyModel` + deadlines | composed | `ttl_integration_test.rs` |
+**Canonical index:** [matrix.md](../../docs/testing/specs/matrix.md) (spec maturity, tier, harness mode, op strategy, traits).
+
+Onboard a new policy using [template.md](../../docs/testing/specs/template.md).
 
 ## Proptest strategies
 
@@ -134,33 +155,62 @@ Proptests use `#[cfg_attr(miri, ignore)]`; Miri runs hand-written `smoke_*` trac
 
 ## Adding a new model
 
-1. **Choose a tier.** Simple deterministic eviction → `exact/`. Behavior tied to internal DS → mirror in `exact/`. Adaptive victim → `bounded/`.
-2. **Add model code or doc stub:**
-   - exact/mirror → implement `PolicyModel<K>` in `exact/<policy>.rs`
-   - bounded → add a `//!` doc stub in `bounded/<policy>.rs` (no `PolicyModel` required today)
-3. **Document tie-breaks** in the module `//!` doc (cite the implementation source, e.g. `LruCore` list order).
-4. **Add tests** in `policy_semantics/<policy>_tests.rs`:
-   - exact/mirror: `run_ops` dual-run adapter, `smoke_*`, `prop_*`
-   - bounded: invariant-only `run_ops`, `smoke_*`, `prop_*` calling `debug_validate_invariants` / `check_invariants`
-5. **Gate** the test module in `policy_semantics/main.rs` with `#[cfg(feature = "policy-…")]`.
-6. **Update** the policy matrix in [static-analysis.md](../../docs/testing/static-analysis.md).
+**Spec-first flow (recommended for exact policies):**
+
+1. Write operational spec in [`docs/testing/specs/`](../../docs/testing/specs/) (state, per-`Op` rules, tie-breaks).
+2. Implement `reference/<policy>.rs` from the spec only (independent formulation).
+3. Implement or align `exact/<policy>.rs`; cite the spec doc in `//!` header.
+4. Add cross-model tests: `prop_<policy>_naive_matches_current_model` using `assert_models_agree`.
+5. Add impl dual-run: `run_ops`, `smoke_*`, `prop_*_matches_model`.
+6. Gate features and append a row to [matrix.md](../../docs/testing/specs/matrix.md).
+
+**Tier choice:** Simple deterministic eviction → `exact/`. Behavior tied to internal DS → mirror in `exact/`. Adaptive victim → `bounded/` (doc stub + invariant-only tests).
+
+**Bounded policies:** add a `//!` doc stub in `bounded/<policy>.rs` (no `PolicyModel` required today); invariant-only `run_ops` in `policy_semantics/`.
 
 Use `op_strategy_no_evict()` when the policy does not implement [`EvictingCache`](../../src/traits.rs).
 
 ### Dual-run pattern
 
+All `policy_semantics/*_tests.rs` dual-run loops use shared helpers (except [`dual_impl_tests.rs`](../policy_semantics/dual_impl_tests.rs)).
+
+Minimal (LIFO): [`lifo_tests.rs`](../policy_semantics/lifo_tests.rs)
+
 ```rust
-fn run_ops(cache: &mut LruCore<u8, u8>, model: &mut LruOccupancyModel<u8>, ops: &[Op<u8>]) {
-    for op in ops {
-        let step = model.apply(op.clone());
-        // apply op to cache …
-        assert_eq!(resident_set(cache), step.resident);
-        assert_peek_victim(cache, model);
-    }
-}
+assert_dual_run_step(cache, model, &step, |k| cache.contains(k), |_, _, _| {});
 ```
 
-Shared helpers live in [`driver.rs`](driver.rs): `assert_peek_victim`, `assert_recency_rank`, and `probe_resident`.
+No `VictimInspectable` (MRU, mirror policies): use [`assert_dual_run_step_no_victim`](driver.rs) — see [`mru_tests.rs`](../policy_semantics/mru_tests.rs).
+
+### Dual-run extra closure
+
+Policy-specific oracles go in the `extra` closure:
+
+- **LFU frequency:** [`lfu_tests.rs`](../policy_semantics/lfu_tests.rs)
+- **LRU recency / peek:** [`lru_tests.rs`](../policy_semantics/lru_tests.rs), [`fast_lru_tests.rs`](../policy_semantics/fast_lru_tests.rs)
+- **LRU-K access count:** [`lru_k_tests.rs`](../policy_semantics/lru_k_tests.rs)
+
+```rust
+assert_dual_run_step(cache, model, &step, |k| cache.contains(k), |cache, model, step| {
+    for k in &step.resident {
+        assert_eq!(cache.frequency(k), model.frequency(k));
+    }
+});
+```
+
+### Invariant-only pattern
+
+Bounded tier — see [`arc_tests.rs`](../policy_semantics/arc_tests.rs):
+
+```rust
+run_invariant_trace(cache, ops, apply_arc_op, |cache| {
+    cache.debug_validate_invariants();
+});
+```
+
+For S3-FIFO, wrap `check_invariants` in `#[cfg(debug_assertions)]` inside the `check` closure.
+
+Shared helpers live in [`driver.rs`](driver.rs): `assert_dual_run_step`, `assert_dual_run_step_no_victim`, `run_invariant_trace`, `assert_peek_victim`, `assert_recency_rank`, `assert_models_agree`, `assert_models_agree_with_recency`, and `probe_resident`.
 
 ## Debugging failures
 
@@ -171,6 +221,8 @@ Shared helpers live in [`driver.rs`](driver.rs): `assert_peek_victim`, `assert_r
 
 ## Related documentation
 
+- [Policy spec matrix](../../docs/testing/specs/matrix.md)
+- [Operational policy specs](../../docs/testing/specs/README.md)
 - [Policy semantic testing (full harness)](../../docs/testing/static-analysis.md)
 - [Testing strategy](../../docs/testing/testing.md)
 - [Trait hierarchy](../../docs/design/trait-hierarchy.md)

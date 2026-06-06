@@ -1,6 +1,8 @@
 //! SLRU reference model — mirrors `SlruCore` segment caps and LRU ordering.
 //!
 //! **Tier:** mirror.
+//! **Source:** [`docs/testing/specs/slru.md`](../../../docs/testing/specs/slru.md) ·
+//! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Victim:** LRU in probationary segment; promote to protected on re-access.
 //! **Tests:** `policy_semantics/slru_tests.rs` — residency only (no `EvictingCache`).
 //! **Op strategy:** [`standard_op_list_no_evict`](super::super::standard_op_list_no_evict).

@@ -10,7 +10,8 @@
 //! Op trace ──► PolicyModel::apply ──► ModelStep ──► assert vs cache
 //! ```
 //!
-//! Models live under [`exact`] (deterministic victims) and [`bounded`] (doc stubs).
+//! Models live under [`reference`] (spec-derived), [`exact`] (deterministic victims),
+//! and [`bounded`] (doc stubs).
 //! Submodules and op strategies are gated by matching `policy-*` features.
 //! Assertion helpers are in [`driver`].
 //!
@@ -30,7 +31,9 @@
 //!
 //! ## Further reading
 //!
-//! - [README](README.md) — directory layout, policy matrix, contributor checklist
+//! - [README](README.md) — directory layout, harness modes, contributor checklist
+//! - [spec_harness](spec_harness.rs) — tier/mode metadata
+//! - [matrix.md](../../docs/testing/specs/matrix.md) — canonical policy index
 //! - [Policy semantic testing](../../docs/testing/static-analysis.md) — full harness design and CI
 //!
 //! ## Multi-crate usage
@@ -48,6 +51,21 @@
 pub mod bounded;
 pub mod driver;
 pub mod exact;
+pub mod spec_harness;
+
+#[cfg(any(
+    feature = "policy-fifo",
+    feature = "policy-heap-lfu",
+    feature = "policy-lfu",
+    feature = "policy-lifo",
+    feature = "policy-mfu",
+    feature = "policy-mru",
+    feature = "policy-lru",
+    feature = "policy-fast-lru",
+    feature = "policy-lru-k",
+    feature = "ttl"
+))]
+pub mod reference;
 
 use std::collections::HashSet;
 use std::hash::Hash;
