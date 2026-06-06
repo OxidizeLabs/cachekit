@@ -1,8 +1,8 @@
 # LRU TLA+ runbook
 
-**Read first:** [tla-guide.md](tla-guide.md) (LRU worked example; glossary, invariants).
+**Read first:** [tla-guide.md](../../tla-guide.md) (LRU worked example; glossary, invariants).
 
-Manual optional check for [`Lru.tla`](Lru.tla) against [`lru.md`](lru.md) and `NaiveLruModel`.
+Manual optional check for [`Lru.tla`](Lru.tla) against [`lru.md`](../../policies/exact/lru.md) and `NaiveLruModel`.
 
 ## Prerequisites
 
@@ -14,6 +14,8 @@ From repo root:
 
 ```bash
 ./scripts/run-lru-tlc.sh
+# or:
+./scripts/run-tlc.sh lru
 ```
 
 Or from this directory:
@@ -32,7 +34,7 @@ Module name is `Lru` — TLC requires file `Lru.tla`. On case-insensitive volume
 
 Re-run TLC and update the alignment log when any of these change:
 
-- [`lru.md`](lru.md)
+- [`lru.md`](../../policies/exact/lru.md)
 - [`Lru.tla`](Lru.tla)
 - [`lru.cfg`](lru.cfg)
 - `NaiveLruModel` promotion / eviction logic

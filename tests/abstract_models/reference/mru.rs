@@ -1,6 +1,6 @@
 //! Spec-derived MRU reference model.
 //!
-//! **Source:** [`docs/testing/specs/mru.md`](../../../docs/testing/specs/mru.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/mru.md`](../../../docs/testing/specs/policies/exact/mru.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `Vec<K>` with index `0` = MRU victim; independent of `VecDeque` exact model.

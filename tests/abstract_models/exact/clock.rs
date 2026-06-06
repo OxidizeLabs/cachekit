@@ -1,7 +1,7 @@
 //! Clock reference model — mirrors [`ClockRing`](cachekit::ds::ClockRing) semantics.
 //!
 //! **Tier:** mirror (wraps the real `ClockRing` DS rather than an abstract rule).
-//! **Source:** [`docs/testing/specs/clock.md`](../../../docs/testing/specs/clock.md) ·
+//! **Source:** [`docs/testing/specs/policies/mirror/clock.md`](../../../docs/testing/specs/policies/mirror/clock.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Victim:** first unreferenced slot on the clock hand; referenced entries survive a sweep.
 //! **Tests:** `policy_semantics/clock_tests.rs` — residency via [`PolicyModel`].

@@ -69,5 +69,5 @@ Last-In-First-Out cache replacement: evict the **most recently inserted** key (t
 
 ## References
 
-- CacheKit: [`LifoCore`](../../src/policy/lifo.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`LifoCore`](../../../../src/policy/lifo.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

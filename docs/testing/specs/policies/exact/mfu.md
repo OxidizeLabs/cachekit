@@ -53,5 +53,5 @@ Most Frequently Used cache replacement: evict the key with **maximum frequency**
 
 ## References
 
-- CacheKit: [`MfuCore`](../../src/policy/mfu.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`MfuCore`](../../../../src/policy/mfu.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

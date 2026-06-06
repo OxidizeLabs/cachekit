@@ -2,8 +2,9 @@
 (*
   LRU cache — formal structural spec (deque formulation).
 
-  Human spec:  docs/testing/specs/lru.md
-  Reader doc:  docs/testing/specs/lru-tla-guide.md
+  Human spec:  docs/testing/specs/policies/exact/lru.md
+  Reader doc:  docs/testing/specs/tla-guide.md
+  Runbook:     docs/testing/specs/formal/lru/tlc.md
   Rust oracle: tests/abstract_models/reference/lru.rs (NaiveLruModel)
 
   Structural Op mapping (harness Op<K> in policy_semantics):

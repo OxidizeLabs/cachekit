@@ -1,7 +1,7 @@
 //! LFU reference model using [`FrequencyBuckets`](cachekit::ds::FrequencyBuckets).
 //!
 //! **Tier:** exact.
-//! **Source:** [`docs/testing/specs/lfu.md`](../../../docs/testing/specs/lfu.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lfu.md`](../../../docs/testing/specs/policies/exact/lfu.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Cross-model sibling:** [`reference/lfu.rs`](../reference/lfu.rs) (`NaiveLfuModel`).
 //! **Victim:** minimum frequency; FIFO tie-break within the min bucket.

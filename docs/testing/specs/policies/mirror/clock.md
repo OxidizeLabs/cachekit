@@ -2,7 +2,7 @@
 
 > **Spec maturity:** stub
 >
-> **Executable oracle:** `tests/abstract_models/exact/clock.rs` (`ClockModel`) — mirrors [`ClockRing`](../../src/ds/clock_ring.rs) until an independent `reference/` model exists.
+> **Executable oracle:** `tests/abstract_models/exact/clock.rs` (`ClockModel`) — mirrors [`ClockRing`](../../../../src/ds/clock_ring.rs) until an independent `reference/` model exists.
 
 Clock (second-chance): circular buffer with reference bits; evict first **unreferenced** slot on the clock hand.
 
@@ -47,5 +47,5 @@ Clock (second-chance): circular buffer with reference bits; evict first **unrefe
 
 ## References
 
-- CacheKit: [`ClockCache`](../../src/policy/clock.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`ClockCache`](../../../../src/policy/clock.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

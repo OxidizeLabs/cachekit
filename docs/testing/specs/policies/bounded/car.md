@@ -2,7 +2,7 @@
 
 > **Spec maturity:** stub
 >
-> **Executable oracle:** invariant checks on [`CarCore`](../../src/policy/car.rs); no full `PolicyModel` yet.
+> **Executable oracle:** invariant checks on [`CarCore`](../../../../src/policy/car.rs); no full `PolicyModel` yet.
 
 Clock with Adaptive Replacement (CAR): clock-based scan with adaptive hand and ghost entries. Victim is **not** uniquely determined from residency alone.
 
@@ -30,7 +30,7 @@ Clock with Adaptive Replacement (CAR): clock-based scan with adaptive hand and g
 
 ## References
 
-- CacheKit: [`CarCore`](../../src/policy/car.rs)
+- CacheKit: [`CarCore`](../../../../src/policy/car.rs)
 - Tests: `policy_semantics/car_tests.rs`
 - Bounded module: `tests/abstract_models/bounded/car.rs`
-- Policy matrix: [matrix.md](matrix.md)
+- Policy matrix: [matrix.md](../../matrix.md)

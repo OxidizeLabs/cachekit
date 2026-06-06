@@ -1,6 +1,6 @@
 //! Spec-derived LRU-K reference model.
 //!
-//! **Source:** [`docs/testing/specs/lru-k.md`](../../../docs/testing/specs/lru-k.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lru-k.md`](../../../docs/testing/specs/policies/exact/lru-k.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `Vec<K>` cold/hot segments + `HashMap` step history; independent of

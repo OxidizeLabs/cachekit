@@ -15,20 +15,27 @@ Start with a human operational spec ([template.md](template.md)) before writing 
 
 ## File layout
 
+Human operational specs live under `policies/<tier>/`. TLA+ artifacts live under `formal/<policy>/`:
+
 ```text
 docs/testing/specs/
-├── <Policy>.tla      # MODULE name must match filename (case-sensitive on Linux)
-├── <policy>.cfg      # TLC constants, INVARIANT, CONSTRAINT
-├── <policy>-tlc.md   # Runbook + alignment checklist (optional)
-└── tla-guide.md      # This file
+├── policies/exact/<policy>.md   # human source of truth
+├── formal/<policy>/
+│   ├── <Policy>.tla             # MODULE name must match filename (case-sensitive on Linux)
+│   ├── <policy>.cfg             # TLC constants, INVARIANT, CONSTRAINT
+│   └── tlc.md                   # Runbook + alignment checklist
+├── tla-guide.md                 # This file
+└── formal/README.md             # Formal specs index
 ```
 
 Run TLC via the generic wrapper:
 
 ```bash
-./scripts/run-tlc.sh Fifo fifo.cfg
-# or FIFO alias:
+./scripts/run-tlc.sh fifo
+# or aliases:
 ./scripts/run-fifo-tlc.sh
+./scripts/run-tlc.sh lru
+./scripts/run-lru-tlc.sh
 ```
 
 TLC is **manual only** — not run in CI.
@@ -45,7 +52,7 @@ TLC is **manual only** — not run in CI.
 
 4. **Set `CHECK_DEADLOCK FALSE`** when exploration constraints can stall the state graph.
 
-5. **Document alignment** in a runbook (`*-tlc.md`) with a change log when spec or `.tla` changes.
+5. **Document alignment** in `formal/<policy>/tlc.md` with a change log when spec or `.tla` changes.
 
 6. **macOS filename note** — TLC requires filename to match `MODULE` name. On case-insensitive volumes `Fifo.tla` may appear as `fifo.tla`; do not create duplicates.
 
@@ -53,19 +60,19 @@ TLC is **manual only** — not run in CI.
 
 ## Worked example: FIFO
 
-FIFO is the reference TLA+ pilot. Human spec: [fifo.md](fifo.md). Runbook: [fifo-tlc.md](fifo-tlc.md).
+FIFO is the reference TLA+ pilot. Human spec: [fifo.md](policies/exact/fifo.md). Runbook: [formal/fifo/tlc.md](formal/fifo/tlc.md).
 
 ### Purpose
 
 | Artifact | What it proves |
 |----------|----------------|
-| [fifo.md](fifo.md) | Human-readable source of truth |
-| [Fifo.tla](Fifo.tla) + TLC | Structural FIFO invariants on **all reachable states** for a tiny finite instance |
+| [fifo.md](policies/exact/fifo.md) | Human-readable source of truth |
+| [Fifo.tla](formal/fifo/Fifo.tla) + TLC | Structural FIFO invariants on **all reachable states** for a tiny finite instance |
 | `NaiveFifoModel` + proptest | Step-wise observables on **long random traces** (`u8` keys, capacity `1..=16`) |
 
 ### State variables glossary
 
-| TLA+ | [fifo.md](fifo.md) | `NaiveFifoModel` |
+| TLA+ | [fifo.md](policies/exact/fifo.md) | `NaiveFifoModel` |
 |------|-------------------|------------------|
 | `cache` | `store` | `store: HashSet<K>` |
 | `queue` | `insertion_order` | `insertion_order: VecDeque<K>` |
@@ -128,29 +135,29 @@ OldestLive = k2             ← first queue element still in cache
 
 | File | Role |
 |------|------|
-| [Fifo.tla](Fifo.tla) | Machine-readable spec (module `Fifo`) |
-| [fifo.cfg](fifo.cfg) | TLC constants and `INVARIANT SemanticOK` |
-| [fifo-tlc.md](fifo-tlc.md) | FIFO runbook and alignment log |
-| [fifo.md](fifo.md) | Human operational spec |
+| [Fifo.tla](formal/fifo/Fifo.tla) | Machine-readable spec (module `Fifo`) |
+| [fifo.cfg](formal/fifo/fifo.cfg) | TLC constants and `INVARIANT SemanticOK` |
+| [formal/fifo/tlc.md](formal/fifo/tlc.md) | FIFO runbook and alignment log |
+| [fifo.md](policies/exact/fifo.md) | Human operational spec |
 | [scripts/run-fifo-tlc.sh](../../../scripts/run-fifo-tlc.sh) | One-command TLC runner |
 
 ---
 
 ## Worked example: LRU
 
-Second TLA+ pilot. Human spec: [lru.md](lru.md). Runbook: [lru-tlc.md](lru-tlc.md).
+Second TLA+ pilot. Human spec: [lru.md](policies/exact/lru.md). Runbook: [formal/lru/tlc.md](formal/lru/tlc.md).
 
 ### Purpose
 
 | Artifact | What it proves |
 |----------|----------------|
-| [lru.md](lru.md) | Human-readable source of truth |
-| [Lru.tla](Lru.tla) + TLC | Structural LRU invariants on **all reachable states** for a tiny finite instance |
+| [lru.md](policies/exact/lru.md) | Human-readable source of truth |
+| [Lru.tla](formal/lru/Lru.tla) + TLC | Structural LRU invariants on **all reachable states** for a tiny finite instance |
 | `NaiveLruModel` + cross-model / proptest | Step-wise observables on **long random traces** |
 
 ### State variables glossary
 
-| TLA+ | [lru.md](lru.md) | `NaiveLruModel` |
+| TLA+ | [lru.md](policies/exact/lru.md) | `NaiveLruModel` |
 |------|------------------|-----------------|
 | `order` | `order` (MRU-first deque) | `access` timestamps (equivalent oracle) |
 | `LruKey` | `peek_victim` (back of deque) | `lru_victim()` / `peek_victim_key()` |
@@ -186,8 +193,8 @@ No `ExplorationOK` queue cap is needed — deque length is bounded by `Capacity`
 
 | File | Role |
 |------|------|
-| [Lru.tla](Lru.tla) | Machine-readable spec (module `Lru`) |
-| [lru.cfg](lru.cfg) | TLC constants and `INVARIANT SemanticOK` |
-| [lru-tlc.md](lru-tlc.md) | LRU runbook and alignment log |
-| [lru.md](lru.md) | Human operational spec |
+| [Lru.tla](formal/lru/Lru.tla) | Machine-readable spec (module `Lru`) |
+| [lru.cfg](formal/lru/lru.cfg) | TLC constants and `INVARIANT SemanticOK` |
+| [formal/lru/tlc.md](formal/lru/tlc.md) | LRU runbook and alignment log |
+| [lru.md](policies/exact/lru.md) | Human operational spec |
 | [scripts/run-lru-tlc.sh](../../../scripts/run-lru-tlc.sh) | One-command TLC runner |

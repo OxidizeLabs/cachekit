@@ -97,7 +97,7 @@ cargo test --test policy_semantics --all-features
 PROPTEST_CASES=1000 cargo test --test policy_semantics --all-features
 ```
 
-See [Policy semantic testing (static analysis oracles)](static-analysis.md) for architecture, policy matrix, and contributor checklist. FIFO and LRU include [operational specs](specs/README.md) with spec-derived reference models (`reference/`) cross-checked against `exact/` oracles before impl dual-run.
+See [Policy semantic testing (static analysis oracles)](static-analysis.md) for architecture, policy matrix, and contributor checklist. Operational specs live under [specs/policies/](specs/policies/README.md) by tier; FIFO and LRU also have [formal/](specs/formal/README.md) TLA+ pilots. Spec-derived `reference/` models are cross-checked against `exact/` oracles before impl dual-run.
 
 ### 4. Fuzz Tests
 

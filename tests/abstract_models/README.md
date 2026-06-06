@@ -69,17 +69,17 @@ Spec-first oracles transcribed from [operational specs](../../docs/testing/specs
 
 | Policy | Reference model | Spec | Cross-model signal |
 |--------|-----------------|------|-------------------|
-| FIFO | `NaiveFifoModel` | [fifo.md](../../docs/testing/specs/fifo.md) | Drift guard (low day-one — `FifoModel` is already spec-shaped) |
-| LRU | `NaiveLruModel` | [lru.md](../../docs/testing/specs/lru.md) | High — deque vs timestamp independence |
-| Fast-LRU | `NaiveLruModel` (shared) | [fast-lru.md](../../docs/testing/specs/fast-lru.md) | Same reference; `op_strategy_with_get_mut` cross-model |
-| LIFO | `NaiveLifoModel` | [lifo.md](../../docs/testing/specs/lifo.md) | Drift guard — `Vec` stack vs `VecDeque` exact |
-| LFU | `NaiveLfuModel` | [lfu.md](../../docs/testing/specs/lfu.md) | High — `first_seen` log vs `FrequencyBuckets` |
-| MRU | `NaiveMruModel` | [mru.md](../../docs/testing/specs/mru.md) | Drift guard — `Vec` index-0 vs `VecDeque` exact |
-| Heap-LFU | `NaiveHeapLfuModel` | [heap-lfu.md](../../docs/testing/specs/heap-lfu.md) | High — `HashMap` Ord-min vs `BinaryHeap` exact |
-| MFU | `NaiveMfuModel` | [mfu.md](../../docs/testing/specs/mfu.md) | High — `last_seq` map vs `BinaryHeap` exact |
-| LRU-K | `NaiveLruKModel` | [lru-k.md](../../docs/testing/specs/lru-k.md) | High — `Vec` segments vs `VecDeque` exact |
+| FIFO | `NaiveFifoModel` | [fifo.md](../../docs/testing/specs/policies/exact/fifo.md) | Drift guard (low day-one — `FifoModel` is already spec-shaped) |
+| LRU | `NaiveLruModel` | [lru.md](../../docs/testing/specs/policies/exact/lru.md) | High — deque vs timestamp independence |
+| Fast-LRU | `NaiveLruModel` (shared) | [fast-lru.md](../../docs/testing/specs/policies/exact/fast-lru.md) | Same reference; `op_strategy_with_get_mut` cross-model |
+| LIFO | `NaiveLifoModel` | [lifo.md](../../docs/testing/specs/policies/exact/lifo.md) | Drift guard — `Vec` stack vs `VecDeque` exact |
+| LFU | `NaiveLfuModel` | [lfu.md](../../docs/testing/specs/policies/exact/lfu.md) | High — `first_seen` log vs `FrequencyBuckets` |
+| MRU | `NaiveMruModel` | [mru.md](../../docs/testing/specs/policies/exact/mru.md) | Drift guard — `Vec` index-0 vs `VecDeque` exact |
+| Heap-LFU | `NaiveHeapLfuModel` | [heap-lfu.md](../../docs/testing/specs/policies/exact/heap-lfu.md) | High — `HashMap` Ord-min vs `BinaryHeap` exact |
+| MFU | `NaiveMfuModel` | [mfu.md](../../docs/testing/specs/policies/exact/mfu.md) | High — `last_seq` map vs `BinaryHeap` exact |
+| LRU-K | `NaiveLruKModel` | [lru-k.md](../../docs/testing/specs/policies/exact/lru-k.md) | High — `Vec` segments vs `VecDeque` exact |
 
-FIFO and LRU have [TLA+ pilots](../../docs/testing/specs/Fifo.tla) ([`Lru.tla`](../../docs/testing/specs/Lru.tla)) — read [tla-guide.md](../../docs/testing/specs/tla-guide.md); run [`scripts/run-fifo-tlc.sh`](../../scripts/run-fifo-tlc.sh) or [`scripts/run-lru-tlc.sh`](../../scripts/run-lru-tlc.sh) (manual, not CI).
+FIFO and LRU have [TLA+ pilots](../../docs/testing/specs/formal/fifo/Fifo.tla) ([`Lru.tla`](../../docs/testing/specs/formal/lru/Lru.tla)) — read [tla-guide.md](../../docs/testing/specs/tla-guide.md); run [`scripts/run-fifo-tlc.sh`](../../scripts/run-fifo-tlc.sh) or [`scripts/run-lru-tlc.sh`](../../scripts/run-lru-tlc.sh) (manual, not CI).
 
 ### Exact (`exact/`)
 
@@ -157,7 +157,7 @@ Proptests use `#[cfg_attr(miri, ignore)]`; Miri runs hand-written `smoke_*` trac
 
 **Spec-first flow (recommended for exact policies):**
 
-1. Write operational spec in [`docs/testing/specs/`](../../docs/testing/specs/) (state, per-`Op` rules, tie-breaks).
+1. Write operational spec in [`docs/testing/specs/policies/<tier>/`](../../docs/testing/specs/policies/README.md) (state, per-`Op` rules, tie-breaks).
 2. Implement `reference/<policy>.rs` from the spec only (independent formulation).
 3. Implement or align `exact/<policy>.rs`; cite the spec doc in `//!` header.
 4. Add cross-model tests: `prop_<policy>_naive_matches_current_model` using `assert_models_agree`.

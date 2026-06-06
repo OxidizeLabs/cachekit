@@ -63,24 +63,15 @@
 
 ## Harness `Op` mapping
 
-| `Op` | Cache API | Side effects |
-|------|-----------|--------------|
-| `Insert(k)` | `insert(k, v)` | |
-| `Get(k)` | `get(k)` | |
-| `Peek(k)` | `peek(k)` | |
-| `GetMut(k)` | — | |
-| `Touch(k)` | `touch(k)` | |
-| `Remove(k)` | `remove(k)` | |
-| `EvictOne` | `evict_one()` | |
-
-Align with [trait hierarchy](../../design/trait-hierarchy.md): `Peek` must not change `recency_rank` on LRU-family policies.
+See [_includes/harness-op-mapping.md](_includes/harness-op-mapping.md) for the standard table. Adjust side effects per policy above.
 
 ## Formal spec (optional)
 
-Machine-readable spec: `&lt;Policy&gt;.tla` (if present). See [tla-guide.md](tla-guide.md).
+If present: `formal/&lt;policy&gt;/&lt;Policy&gt;.tla` + `tlc.md`. See [tla-guide.md](tla-guide.md) and [formal/README.md](formal/README.md).
 
 ## References
 
 - Literature / algorithm source (if applicable)
-- CacheKit: [`&lt;Impl&gt;`](../../src/policy/&lt;module&gt;.rs) must refine this spec
+- CacheKit: [`&lt;Impl&gt;`](../../../src/policy/&lt;module&gt;.rs) must refine this spec
 - Policy matrix: [matrix.md](matrix.md)
+- Tier index: [policies/README.md](policies/README.md)

@@ -1,8 +1,8 @@
 # FIFO TLA+ runbook
 
-**Read first:** [tla-guide.md](tla-guide.md) (FIFO worked example; glossary, invariants).
+**Read first:** [tla-guide.md](../../tla-guide.md) (FIFO worked example; glossary, invariants).
 
-Manual optional check for [`Fifo.tla`](Fifo.tla) against [`fifo.md`](fifo.md) and `NaiveFifoModel`.
+Manual optional check for [`Fifo.tla`](Fifo.tla) against [`fifo.md`](../../policies/exact/fifo.md) and `NaiveFifoModel`.
 
 ## Prerequisites
 
@@ -14,6 +14,8 @@ From repo root:
 
 ```bash
 ./scripts/run-fifo-tlc.sh
+# or:
+./scripts/run-tlc.sh fifo
 ```
 
 Or from this directory:
@@ -32,7 +34,7 @@ Module name is `Fifo` — TLC requires file `Fifo.tla`. On case-insensitive volu
 
 Re-run TLC and update the alignment log when any of these change:
 
-- [`fifo.md`](fifo.md)
+- [`fifo.md`](../../policies/exact/fifo.md)
 - [`Fifo.tla`](Fifo.tla)
 - [`fifo.cfg`](fifo.cfg)
 - `OldestLive`, `PopThroughVictim`, or `NaiveFifoModel` eviction logic
@@ -71,4 +73,4 @@ Semantic invariants (`PeekVictimOK`, `VictimInCache`) align with `peek_victim_ke
 | Date | TLC result | Notes |
 |------|------------|-------|
 | 2026-06-06 | Pass | Initial pilot: `PopThroughVictim`, `CacheKeysInQueue`, `Keys={k1,k2}` |
-| 2026-06-06 | Pass | Hardening: `SemanticOK`/`ExplorationOK`, `PeekVictimOK`, `fifo-tla-guide.md`, `run-fifo-tlc.sh` |
+| 2026-06-06 | Pass | Hardening: `SemanticOK`/`ExplorationOK`, `PeekVictimOK`, `run-fifo-tlc.sh` |

@@ -2,7 +2,7 @@
 
 > **Spec maturity:** stub
 >
-> **Executable oracle:** invariant checks on [`S3FifoCache`](../../src/policy/s3_fifo.rs); no full `PolicyModel` yet.
+> **Executable oracle:** invariant checks on [`S3FifoCache`](../../../../src/policy/s3_fifo.rs); no full `PolicyModel` yet.
 
 S3-FIFO: three FIFO queues (small, main, ghost) for scan resistance. Victim selection depends on queue roles — not uniquely determined here.
 
@@ -34,4 +34,4 @@ S3-FIFO: three FIFO queues (small, main, ghost) for scan resistance. Victim sele
 - Yang et al., *S3-FIFO: A Simple and Scalable FIFO-based Cache Admission and Eviction Policy*
 - Tests: `policy_semantics/s3_fifo_tests.rs`
 - Bounded module: `tests/abstract_models/bounded/s3_fifo.rs`
-- Policy matrix: [matrix.md](matrix.md)
+- Policy matrix: [matrix.md](../../matrix.md)

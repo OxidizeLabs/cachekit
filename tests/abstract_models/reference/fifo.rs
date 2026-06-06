@@ -1,8 +1,8 @@
 //! Spec-derived FIFO reference model.
 //!
-//! **Source:** [`docs/testing/specs/fifo.md`](../../../docs/testing/specs/fifo.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/fifo.md`](../../../docs/testing/specs/policies/exact/fifo.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
-//! **Formal spec:** [`docs/testing/specs/Fifo.tla`](../../../docs/testing/specs/Fifo.tla) (see
+//! **Formal spec:** [`docs/testing/specs/formal/fifo/Fifo.tla`](../../../docs/testing/specs/formal/fifo/Fifo.tla) (see
 //! [tla-guide.md](../../../docs/testing/specs/tla-guide.md))
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `HashSet` + append-only `VecDeque` insertion log with stale skips.

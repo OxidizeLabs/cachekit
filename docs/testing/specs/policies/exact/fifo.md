@@ -79,9 +79,9 @@ First-In-First-Out cache replacement: evict the **oldest live insertion** when s
 
 ## Formal spec (TLA+)
 
-Machine-readable structural spec: [`Fifo.tla`](Fifo.tla). Reader guide: [tla-guide.md](tla-guide.md) (FIFO example). Run TLC: [`scripts/run-fifo-tlc.sh`](../../../scripts/run-fifo-tlc.sh) (checks `SemanticOK` invariants; manual, not CI).
+Machine-readable structural spec: [`Fifo.tla`](../../formal/fifo/Fifo.tla). Reader guide: [tla-guide.md](../../tla-guide.md) (FIFO example). Run TLC: [`scripts/run-fifo-tlc.sh`](../../../../../scripts/run-fifo-tlc.sh) (checks `SemanticOK` invariants; manual, not CI). Runbook: [formal/fifo/tlc.md](../../formal/fifo/tlc.md).
 
 ## References
 
 - Johnson, T. & Shasha, D. *2Q: A Low Overhead High Performance Buffer Management Replacement Algorithm.* (FIFO as baseline insertion-order policy.)
-- CacheKit: [`FifoCache`](../../src/policy/fifo.rs) must refine this spec.
+- CacheKit: [`FifoCache`](../../../../src/policy/fifo.rs) must refine this spec.

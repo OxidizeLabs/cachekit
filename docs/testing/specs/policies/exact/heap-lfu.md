@@ -57,5 +57,5 @@ Heap-backed LFU: evict the key with **minimum frequency**; tie-break by **key or
 
 ## References
 
-- CacheKit: [`HeapLfuCache`](../../src/policy/heap_lfu.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`HeapLfuCache`](../../../../src/policy/heap_lfu.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

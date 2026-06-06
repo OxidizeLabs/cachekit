@@ -24,11 +24,11 @@ Same per-`Op` transitions as [lru.md](lru.md).
 |--------|----------|-----------------|
 | `GetMut(k)` | Applied via `get_mut` (promotes on hit) | No-op in adapter |
 | Op strategy | `op_strategy_with_get_mut` | `standard_op_list` |
-| Impl | [`FastLru`](../../src/policy/fast_lru.rs) | [`LruCore`](../../src/policy/lru.rs) |
+| Impl | [`FastLru`](../../../../src/policy/fast_lru.rs) | [`LruCore`](../../../../src/policy/lru.rs) |
 
 Dual-impl equivalence: `dual_impl_tests.rs` asserts `LruCore` vs `FastLru` agree on `contains`, `peek_victim`, `recency_rank`.
 
 ## References
 
 - Base spec: [lru.md](lru.md)
-- Policy matrix: [matrix.md](matrix.md)
+- Policy matrix: [matrix.md](../../matrix.md)

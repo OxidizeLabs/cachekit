@@ -1,7 +1,7 @@
 //! Heap-LFU reference model — mirrors `HeapLfuCache` heap eviction semantics.
 //!
 //! **Tier:** exact.
-//! **Source:** [`docs/testing/specs/heap-lfu.md`](../../../docs/testing/specs/heap-lfu.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/heap-lfu.md`](../../../docs/testing/specs/policies/exact/heap-lfu.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Cross-model sibling:** [`reference/heap_lfu.rs`](../reference/heap_lfu.rs) (`NaiveHeapLfuModel`).
 //! **Victim:** lowest frequency; `Ord` tie-break on key when frequencies tie.

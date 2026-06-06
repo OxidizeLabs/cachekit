@@ -1,6 +1,6 @@
 //! Spec-derived LRU reference model (timestamp formulation).
 //!
-//! **Source:** [`docs/testing/specs/lru.md`](../../../docs/testing/specs/lru.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lru.md`](../../../docs/testing/specs/policies/exact/lru.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `HashMap<K, u64>` access times + monotonic clock; independent of deque model.

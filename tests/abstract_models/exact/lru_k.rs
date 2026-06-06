@@ -1,7 +1,7 @@
 //! LRU-K reference model (step-counter time, cold/hot segments).
 //!
 //! **Tier:** exact.
-//! **Source:** [`docs/testing/specs/lru-k.md`](../../../docs/testing/specs/lru-k.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lru-k.md`](../../../docs/testing/specs/policies/exact/lru-k.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Cross-model sibling:** [`reference/lru_k.rs`](../reference/lru_k.rs) (`NaiveLruKModel`).
 //! **Victim:** LRU in cold segment; promote to hot after K-th access (step-counter history).

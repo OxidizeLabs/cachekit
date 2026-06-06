@@ -59,5 +59,5 @@ LRU-K: track last **K** access times per key; evict from **cold** segment using 
 ## References
 
 - O'Neil, O'Neil & Weikum, *The LRU-K Page Replacement Algorithm*
-- CacheKit: [`LruKCache`](../../src/policy/lru_k.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`LruKCache`](../../../../src/policy/lru_k.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

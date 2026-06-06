@@ -2,7 +2,7 @@
 
 > **Spec maturity:** stub
 >
-> **Executable oracle:** invariant checks on [`ArcCore`](../../src/policy/arc.rs); no full `PolicyModel` yet.
+> **Executable oracle:** invariant checks on [`ArcCore`](../../../../src/policy/arc.rs); no full `PolicyModel` yet.
 
 Adaptive Replacement Cache: dynamically balances recency (T1) and frequency (T2) lists. Victim selection is **adaptive** — not uniquely determined from residency alone.
 
@@ -42,4 +42,4 @@ ARC maintains T1, T2, B1, B2 ghost lists and adaptation parameter `p`. Exact vic
 - Megiddo & Modha, *ARC: A Self-Tuning, Low Overhead Replacement Cache*
 - Tests: `policy_semantics/arc_tests.rs`
 - Bounded module: `tests/abstract_models/bounded/arc.rs`
-- Policy matrix: [matrix.md](matrix.md)
+- Policy matrix: [matrix.md](../../matrix.md)

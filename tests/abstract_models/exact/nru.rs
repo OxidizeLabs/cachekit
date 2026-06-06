@@ -1,7 +1,7 @@
 //! NRU reference model (swap-remove eviction, new inserts start unreferenced).
 //!
 //! **Tier:** mirror.
-//! **Source:** [`docs/testing/specs/nru.md`](../../../docs/testing/specs/nru.md) ·
+//! **Source:** [`docs/testing/specs/policies/mirror/nru.md`](../../../docs/testing/specs/policies/mirror/nru.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Victim:** first unreferenced key in insertion order; swap-remove on eviction.
 //! **Tests:** `policy_semantics/nru_tests.rs` — residency only (no `EvictingCache`).

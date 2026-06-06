@@ -1,8 +1,8 @@
 //! LRU occupancy model (MRU at front, LRU at back).
 //!
 //! **Tier:** exact.
-//! **Source:** [`docs/testing/specs/lru.md`](../../../docs/testing/specs/lru.md) ·
-//! [fast-lru.md](../../../docs/testing/specs/fast-lru.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lru.md`](../../../docs/testing/specs/policies/exact/lru.md) ·
+//! [fast-lru.md](../../../docs/testing/specs/policies/exact/fast-lru.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Recency:** rank 0 = MRU; used by `assert_recency_rank` in LRU and Fast-LRU tests.
 //! **Tests:** `policy_semantics/lru_tests.rs`, `fast_lru_tests.rs`; also composed in

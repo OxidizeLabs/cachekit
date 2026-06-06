@@ -50,5 +50,5 @@ Not Recently Used: track reference bit per key in insertion order; evict first *
 
 ## References
 
-- CacheKit: [`NruCache`](../../src/policy/nru.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`NruCache`](../../../../src/policy/nru.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

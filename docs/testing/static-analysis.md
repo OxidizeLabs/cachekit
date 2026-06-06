@@ -45,7 +45,7 @@ spec doc → reference/ PolicyModel (optional) → exact/ PolicyModel → implem
 
 | Layer | FIFO | LRU |
 |-------|------|-----|
-| Spec | [fifo.md](specs/fifo.md) | [lru.md](specs/lru.md) |
+| Spec | [fifo.md](specs/policies/exact/fifo.md) | [lru.md](specs/policies/exact/lru.md) |
 | Reference | `NaiveFifoModel` | `NaiveLruModel` |
 | Exact | `FifoModel` | `LruOccupancyModel` |
 | Cross-model | `prop_fifo_naive_matches_current_model` | `prop_lru_naive_matches_current_model` |
@@ -55,7 +55,7 @@ All exact-tier policies in [matrix.md](specs/matrix.md) now have reference model
 
 **Failure interpretation:** reference ≠ exact → fix spec or `exact/` model; reference = exact but impl fails → fix implementation or adapter.
 
-FIFO and LRU include optional [TLA+](specs/Fifo.tla) specs (manual TLC, not CI). Read [tla-guide.md](specs/tla-guide.md); run [`scripts/run-fifo-tlc.sh`](../../scripts/run-fifo-tlc.sh), [`scripts/run-lru-tlc.sh`](../../scripts/run-lru-tlc.sh), or [`scripts/run-tlc.sh`](../../scripts/run-tlc.sh). Runbooks: [fifo-tlc.md](specs/fifo-tlc.md), [lru-tlc.md](specs/lru-tlc.md).
+FIFO and LRU include optional [TLA+](specs/formal/fifo/Fifo.tla) specs (manual TLC, not CI). Read [tla-guide.md](specs/tla-guide.md); run [`scripts/run-fifo-tlc.sh`](../../scripts/run-fifo-tlc.sh), [`scripts/run-lru-tlc.sh`](../../scripts/run-lru-tlc.sh), or [`scripts/run-tlc.sh`](../../scripts/run-tlc.sh). Runbooks: [formal/fifo/tlc.md](specs/formal/fifo/tlc.md), [formal/lru/tlc.md](specs/formal/lru/tlc.md).
 
 ## Architecture
 

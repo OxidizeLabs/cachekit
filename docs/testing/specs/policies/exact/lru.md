@@ -2,7 +2,7 @@
 
 > **Spec maturity:** reference, tla
 >
-> **Executable oracle:** `tests/abstract_models/exact/lru.rs` (`LruOccupancyModel`); independent reference: `reference/lru.rs` (`NaiveLruModel`). Optional TLA+: [`Lru.tla`](Lru.tla) — run [`scripts/run-lru-tlc.sh`](../../../scripts/run-lru-tlc.sh); see [lru-tlc.md](lru-tlc.md).
+> **Executable oracle:** `tests/abstract_models/exact/lru.rs` (`LruOccupancyModel`); independent reference: `reference/lru.rs` (`NaiveLruModel`). Optional TLA+: [`Lru.tla`](../../formal/lru/Lru.tla) — run [`scripts/run-lru-tlc.sh`](../../../../../scripts/run-lru-tlc.sh); see [formal/lru/tlc.md](../../formal/lru/tlc.md).
 
 Least Recently Used cache replacement: evict the key whose **most recent access is oldest** when space is needed. This spec is independent of `LruCore` / `FastLru` internals; implementations must refine it.
 
@@ -80,9 +80,9 @@ This document uses deque notation; the reference model uses timestamps.
 | `Remove(k)` | `remove(k)` | Remove |
 | `EvictOne` | `evict_one()` | Evict LRU |
 
-Align with [trait hierarchy](../../design/trait-hierarchy.md): `Peek` must not change `recency_rank`.
+Align with [trait hierarchy](../../../design/trait-hierarchy.md): `Peek` must not change `recency_rank`.
 
 ## References
 
 - Standard LRU semantics (Douglas & Thies, *LRU-K* and related literature).
-- CacheKit: [`LruCore`](../../src/policy/lru.rs), [`FastLru`](../../src/policy/fast_lru.rs) must refine this spec.
+- CacheKit: [`LruCore`](../../../../src/policy/lru.rs), [`FastLru`](../../../../src/policy/fast_lru.rs) must refine this spec.

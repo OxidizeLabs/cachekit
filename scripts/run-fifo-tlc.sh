@@ -5,4 +5,4 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-exec "${ROOT}/scripts/run-tlc.sh" Fifo fifo.cfg
+exec "${ROOT}/scripts/run-tlc.sh" fifo

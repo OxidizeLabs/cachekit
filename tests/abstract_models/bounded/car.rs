@@ -1,6 +1,6 @@
 //! CAR bounded oracle — structural invariant checks on `CarCore`.
 //!
-//! **Source:** [`docs/testing/specs/car.md`](../../../docs/testing/specs/car.md) ·
+//! **Source:** [`docs/testing/specs/policies/bounded/car.md`](../../../docs/testing/specs/policies/bounded/car.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** bounded. Clock-with-adaptation victim is not modeled exactly.
 //! **Checks:** `len <= capacity`, `CarCore::debug_validate_invariants` after every op.

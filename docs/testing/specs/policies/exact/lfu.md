@@ -77,5 +77,5 @@ Least Frequently Used cache replacement: evict the key with **minimum access fre
 
 ## References
 
-- CacheKit: [`LfuCache`](../../src/policy/lfu.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`LfuCache`](../../../../src/policy/lfu.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

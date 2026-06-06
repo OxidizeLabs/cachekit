@@ -1,7 +1,7 @@
 //! LIFO reference model (victim = newest / top of stack).
 //!
 //! **Tier:** exact.
-//! **Source:** [`docs/testing/specs/lifo.md`](../../../docs/testing/specs/lifo.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lifo.md`](../../../docs/testing/specs/policies/exact/lifo.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Cross-model sibling:** [`reference/lifo.rs`](../reference/lifo.rs) (`NaiveLifoModel`).
 //! **Tests:** `policy_semantics/lifo_tests.rs` — `VictimInspectable`, `EvictingCache`.

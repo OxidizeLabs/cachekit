@@ -1,6 +1,6 @@
 //! Clock-PRO bounded oracle — structural invariant checks.
 //!
-//! **Source:** [`docs/testing/specs/clock-pro.md`](../../../docs/testing/specs/clock-pro.md) ·
+//! **Source:** [`docs/testing/specs/policies/bounded/clock-pro.md`](../../../docs/testing/specs/policies/bounded/clock-pro.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** bounded. Hot/cold/non-resident lists make exact victim prediction impractical.
 //! **Checks:** `len <= capacity`, `ClockProCache::debug_validate_invariants` after every op.

@@ -72,5 +72,5 @@ Most Recently Used cache replacement: evict the **most recently used** key (head
 
 ## References
 
-- CacheKit: [`MruCache`](../../src/policy/mru.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`MruCache`](../../../../src/policy/mru.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

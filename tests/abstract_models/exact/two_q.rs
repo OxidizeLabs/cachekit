@@ -1,7 +1,7 @@
 //! 2Q reference model — mirrors `TwoQCore` queue caps and eviction order.
 //!
 //! **Tier:** mirror.
-//! **Source:** [`docs/testing/specs/two-q.md`](../../../docs/testing/specs/two-q.md) ·
+//! **Source:** [`docs/testing/specs/policies/mirror/two-q.md`](../../../docs/testing/specs/policies/mirror/two-q.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Queues:** probation (A1) and protected (Am); victim is LRU in probation.
 //! **Tests:** `policy_semantics/two_q_tests.rs` — residency only (no `EvictingCache`).

@@ -67,9 +67,9 @@ docs/benchmarks/*/*
 !docs/benchmarks/*/index.md
 !docs/benchmarks/*/results.json
 
-# TLA+ TLC run artifacts (manual model checking — see docs/testing/specs/).
-# Spec sources (Fifo.tla, fifo.cfg) stay tracked; TLC writes these on each run.
-docs/testing/specs/states/
-docs/testing/specs/**/*_TTrace_*.bin
-docs/testing/specs/**/*_TTrace_*.tla
-docs/testing/specs/**/*.tlc
+# TLA+ TLC run artifacts (manual model checking — see docs/testing/specs/formal/).
+# Spec sources (*.tla, *.cfg) stay tracked; TLC writes these on each run.
+docs/testing/specs/formal/**/states/
+docs/testing/specs/formal/**/*_TTrace_*.bin
+docs/testing/specs/formal/**/*_TTrace_*.tla
+docs/testing/specs/formal/**/*.tlc

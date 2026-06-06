@@ -51,5 +51,5 @@ Segmented LRU: probationary and protected segments; evict LRU from probationary;
 
 ## References
 
-- CacheKit: [`SlruCore`](../../src/policy/slru.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`SlruCore`](../../../../src/policy/slru.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

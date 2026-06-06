@@ -36,7 +36,7 @@ Expiring<InnerCache> + MockClock
 
 ## References
 
-- CacheKit: [`Expiring`](../../src/policy/expiring.rs), [`CacheBuilder`](../../src/builder.rs)
-- Tests: [`ttl_integration_test.rs`](../../../tests/ttl_integration_test.rs)
+- CacheKit: [`Expiring`](../../../../src/policy/expiring.rs), [`CacheBuilder`](../../../../src/builder.rs)
+- Tests: [`ttl_integration_test.rs`](../../../../../tests/ttl_integration_test.rs)
 - Base LRU spec: [lru.md](lru.md)
-- Policy matrix: [matrix.md](matrix.md)
+- Policy matrix: [matrix.md](../../matrix.md)

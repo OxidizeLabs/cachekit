@@ -1,6 +1,6 @@
 //! Spec-derived LIFO reference model.
 //!
-//! **Source:** [`docs/testing/specs/lifo.md`](../../../docs/testing/specs/lifo.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lifo.md`](../../../docs/testing/specs/policies/exact/lifo.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `Vec<K>` stack (`push`/`pop` end); independent of `VecDeque` exact model.

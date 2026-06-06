@@ -1,6 +1,6 @@
 //! Spec-derived MFU reference model.
 //!
-//! **Source:** [`docs/testing/specs/mfu.md`](../../../docs/testing/specs/mfu.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/mfu.md`](../../../docs/testing/specs/policies/exact/mfu.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `HashMap<K, u64>` frequencies + per-key sequence numbers for heap tie-break;

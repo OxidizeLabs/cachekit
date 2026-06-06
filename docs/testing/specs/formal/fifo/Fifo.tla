@@ -2,8 +2,9 @@
 (*
   FIFO cache — formal structural spec.
 
-  Human spec:  docs/testing/specs/fifo.md
-  Reader doc:  docs/testing/specs/fifo-tla-guide.md
+  Human spec:  docs/testing/specs/policies/exact/fifo.md
+  Reader doc:  docs/testing/specs/tla-guide.md
+  Runbook:     docs/testing/specs/formal/fifo/tlc.md
   Rust oracle: tests/abstract_models/reference/fifo.rs (NaiveFifoModel)
 
   Structural Op mapping (harness Op<K> in policy_semantics):

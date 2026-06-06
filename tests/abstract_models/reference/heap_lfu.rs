@@ -1,6 +1,6 @@
 //! Spec-derived Heap-LFU reference model.
 //!
-//! **Source:** [`docs/testing/specs/heap-lfu.md`](../../../docs/testing/specs/heap-lfu.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/heap-lfu.md`](../../../docs/testing/specs/policies/exact/heap-lfu.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `HashMap<K, u64>` with `Ord` tie-break on key at min frequency;

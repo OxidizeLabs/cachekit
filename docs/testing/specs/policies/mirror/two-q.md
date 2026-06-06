@@ -52,5 +52,5 @@
 ## References
 
 - Johnson & Shasha, *2Q: A Low Overhead High Performance Buffer Management Replacement Algorithm*
-- CacheKit: [`TwoQCore`](../../src/policy/two_q.rs)
-- Policy matrix: [matrix.md](matrix.md)
+- CacheKit: [`TwoQCore`](../../../../src/policy/two_q.rs)
+- Policy matrix: [matrix.md](../../matrix.md)

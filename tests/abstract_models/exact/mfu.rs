@@ -1,7 +1,7 @@
 //! MFU reference model — mirrors `MfuCore` heap eviction semantics.
 //!
 //! **Tier:** exact.
-//! **Source:** [`docs/testing/specs/mfu.md`](../../../docs/testing/specs/mfu.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/mfu.md`](../../../docs/testing/specs/policies/exact/mfu.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Cross-model sibling:** [`reference/mfu.rs`](../reference/mfu.rs) (`NaiveMfuModel`).
 //! **Victim:** highest frequency; sequence-number tie-break (newest heap entry evicted first).

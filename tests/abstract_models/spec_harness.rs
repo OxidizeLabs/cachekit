@@ -7,11 +7,11 @@
 //!
 //! When a policy spec changes, update in order:
 //!
-//! 1. Operational spec in `docs/testing/specs/<policy>.md`
+//! 1. Operational spec in `docs/testing/specs/policies/<tier>/<policy>.md`
 //! 2. `reference/<policy>.rs` (if a reference model exists)
 //! 3. Cross-model test expectations (if behavior changed)
 //! 4. `exact/<policy>.rs` if the exact model was wrong
-//! 5. TLA+ module and alignment notes (if applicable)
+//! 5. `formal/<policy>/` TLA+ module and `tlc.md` alignment notes (if applicable)
 //! 6. Row in `docs/testing/specs/matrix.md`
 //!
 //! ## Harness modes
@@ -35,8 +35,14 @@
 //! - [template.md](../../docs/testing/specs/template.md) — new policy spec skeleton
 //! - [tla-guide.md](../../docs/testing/specs/tla-guide.md) — optional TLA+ specs
 
-/// Root path for operational specs (grep-friendly).
+/// Root path for spec hub docs (grep-friendly).
 pub const SPEC_ROOT: &str = "docs/testing/specs";
+
+/// Human operational specs by tier (`exact/`, `mirror/`, `bounded/`, `composed/`).
+pub const POLICIES_ROOT: &str = "docs/testing/specs/policies";
+
+/// TLA+ modules and TLC runbooks (`<policy>/Policy.tla`, `tlc.md`).
+pub const FORMAL_ROOT: &str = "docs/testing/specs/formal";
 
 /// Model tier in the harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

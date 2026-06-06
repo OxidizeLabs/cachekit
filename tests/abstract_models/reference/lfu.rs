@@ -1,6 +1,6 @@
 //! Spec-derived LFU reference model.
 //!
-//! **Source:** [`docs/testing/specs/lfu.md`](../../../docs/testing/specs/lfu.md) ·
+//! **Source:** [`docs/testing/specs/policies/exact/lfu.md`](../../../docs/testing/specs/policies/exact/lfu.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
 //! **Formulation:** `HashMap<K, u64>` + append-only `first_seen` log for FIFO tie-break;
