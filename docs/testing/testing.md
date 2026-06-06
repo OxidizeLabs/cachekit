@@ -88,7 +88,7 @@ PROPTEST_CASES=10000 cargo test prop_len_within_capacity
 
 **Location**: `tests/abstract_models/`, `tests/policy_semantics/`
 
-**Purpose**: Dual-run reference models against policy implementations to catch semantic drift in eviction, residency, and rank behavior.
+**Purpose**: Catch semantic drift in eviction, residency, and rank behavior. Exact and mirror policies use dual-run reference models; bounded policies (ARC, CAR, Clock-PRO, S3-FIFO) use invariant-only structural checks.
 
 **Run**:
 

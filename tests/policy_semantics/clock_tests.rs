@@ -1,11 +1,13 @@
-//! Clock cache semantic oracle tests.
-
-use std::collections::HashSet;
+//! Clock dual-run semantic oracle tests.
+//!
+//! **Model:** `ClockModel` · **Op strategy:** `standard_op_list`
+//! **Asserted:** residency, insert eviction
 
 use cachekit::policy::clock::ClockCache;
 use cachekit::traits::{Cache, EvictingCache};
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::exact::clock::ClockModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
@@ -30,7 +32,7 @@ fn run_ops(cache: &mut ClockCache<u8, ()>, model: &mut ClockModel<u8, ()>, ops: 
                 let _ = cache.evict_one();
             },
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident, "after {op:?}");
         if let Some(e) = step.evicted_on_insert {
             assert!(!cache.contains(&e));

@@ -1,4 +1,9 @@
 //! MRU reference model (victim = most recently used / head).
+//!
+//! **Tier:** exact.
+//! **Source:** `MruCache` — victim is head (most recently touched/inserted key).
+//! **Tests:** `policy_semantics/mru_tests.rs` — `EvictingCache` (no `VictimInspectable`).
+//! **Op strategy:** [`op_strategy`](super::super::op_strategy).
 
 use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;

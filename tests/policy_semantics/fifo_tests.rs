@@ -1,12 +1,13 @@
-//! FIFO semantic oracle tests.
-
-use std::collections::HashSet;
+//! FIFO dual-run semantic oracle tests.
+//!
+//! **Model:** `FifoModel` · **Op strategy:** `standard_op_list`
+//! **Asserted:** residency, `peek_victim`, insert eviction
 
 use cachekit::policy::fifo::FifoCache;
 use cachekit::traits::{Cache, EvictingCache};
 use proptest::prelude::*;
 
-use crate::abstract_models::driver::assert_peek_victim;
+use crate::abstract_models::driver::{assert_peek_victim, probe_resident};
 use crate::abstract_models::exact::fifo::FifoModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
@@ -31,7 +32,7 @@ fn run_ops(cache: &mut FifoCache<u8, u8>, model: &mut FifoModel<u8>, ops: &[Op<u
                 let _ = cache.evict_one();
             },
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident, "after {op:?}");
         assert!(cache.len() <= cache.capacity());
         if let Some(e) = step.evicted_on_insert {

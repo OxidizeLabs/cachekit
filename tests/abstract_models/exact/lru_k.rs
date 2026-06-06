@@ -1,4 +1,9 @@
 //! LRU-K reference model (step-counter time, cold/hot segments).
+//!
+//! **Tier:** exact.
+//! **Victim:** LRU in cold segment; promote to hot after K-th access (step-counter history).
+//! **Tests:** `policy_semantics/lru_k_tests.rs` — `HistoryTracking`, `EvictingCache`.
+//! **Op strategy:** [`op_strategy`](super::super::op_strategy).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;

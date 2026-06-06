@@ -1,10 +1,12 @@
-//! S3-FIFO bounded semantic tests (residency + invariants).
-
-use std::collections::HashSet;
+//! S3-FIFO invariant-only semantic tests (no `PolicyModel` dual-run).
+//!
+//! **Model:** none · **Op strategy:** `op_strategy_with_get_mut` (0..80)
+//! **Asserted:** `len <= capacity`, `check_invariants`, smoke residency bound
 
 use cachekit::policy::s3_fifo::S3FifoCache;
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::{Op, op_strategy_with_get_mut, standard_capacity};
 
 fn run_ops(cache: &mut S3FifoCache<u8, u8>, ops: &[Op<u8>]) {
@@ -58,6 +60,6 @@ fn smoke_s3_fifo() {
     ];
     let mut cache = S3FifoCache::new(3);
     run_ops(&mut cache, &ops);
-    let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+    let resident = probe_resident(|k| cache.contains(k));
     assert!(resident.len() <= 3);
 }

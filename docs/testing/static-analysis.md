@@ -6,8 +6,8 @@ This harness is a **test-side abstract interpreter** for eviction policies. It r
 
 **What it is**
 
-- Reference models under `tests/abstract_models/` that predict residency, hit/miss, and victims from access traces
-- Integration tests in `tests/policy_semantics/` that dual-run models against real policy implementations
+- Reference models under [`tests/abstract_models/`](../../tests/abstract_models/) that predict residency, hit/miss, and victims from access traces ([README](../../tests/abstract_models/README.md))
+- Integration tests in `tests/policy_semantics/` that **dual-run** exact/mirror models against real implementations, or run **invariant-only** checks for bounded policies (ARC, CAR, Clock-PRO, S3-FIFO)
 - Complements unit tests, in-module property tests, and fuzz targets (correctness only; not bench workloads)
 
 **What it is not**
@@ -23,7 +23,7 @@ This harness is a **test-side abstract interpreter** for eviction policies. It r
 | LRU ages (0 = MRU) | Exact `LruOccupancyModel` and `recency_rank` assertions |
 | Interval / legal victims | `OracleExpectation::Legal` for adaptive policies (Phase 3b) |
 | Must / may hit-miss | `HitMiss::{MustHit,MustMiss,MayHitOrMiss}` |
-| Path-sensitive traces | Deferred (`path_sensitive.rs`); dual-impl equivalence ships first |
+| Path-sensitive traces | Future work (not yet implemented); dual-impl equivalence ships first |
 
 See [trait hierarchy](../design/trait-hierarchy.md) for `peek` vs `get` vs `touch` semantics asserted by the harness.
 
@@ -83,6 +83,8 @@ flowchart TB
 | Random | none | — | — | deferred |
 | Expiring/TTL | composed | `ttl_integration_test.rs` | `LruOccupancyModel` + deadlines | done |
 
+Bounded **Module** column entries (`bounded/*.rs`) are documentation stubs; tests live in `policy_semantics/*_tests.rs`.
+
 ## Running the harness
 
 ```bash
@@ -109,9 +111,11 @@ Proptests use `#[cfg_attr(miri, ignore)]`; Miri runs only `smoke_*` hand-written
 
 ## Adding a new policy model
 
-1. Add `tests/abstract_models/exact/<policy>.rs` (or `bounded/`) implementing `PolicyModel<K>`.
+See also the [abstract_models contributor checklist](../../tests/abstract_models/README.md#adding-a-new-model).
+
+1. Add model code by tier: exact/mirror → `tests/abstract_models/exact/<policy>.rs` implementing `PolicyModel<K>`; bounded → `tests/abstract_models/bounded/<policy>.rs` doc stub (no `PolicyModel` required today).
 2. Cite tie-break / mirror source in the module `//!` doc.
-3. Add `tests/policy_semantics/<policy>_tests.rs` with `run_ops` adapter and `smoke_*` + `prop_*`.
+3. Add `tests/policy_semantics/<policy>_tests.rs` with dual-run or invariant-only `run_ops`, plus `smoke_*` + `prop_*`.
 4. Gate the module in `tests/policy_semantics/main.rs` with `#[cfg(feature = "policy-…")]`.
 5. Append a row to the matrix above.
 
@@ -123,7 +127,7 @@ Use `op_strategy_no_evict()` when the policy lacks [`EvictingCache`](../../src/t
 
 **Mirror** — full queue/segment state transcribed from implementation (`TwoQCore`, `SlruCore`, `ClockRing`).
 
-**Bounded** — assert `len <= capacity`, residency after inserts, and `debug_validate_invariants` / `check_invariants`; victim may be a legal set (future).
+**Bounded** — invariant-only tests assert `len <= capacity` and `debug_validate_invariants` / `check_invariants`. Sibling `bounded/*.rs` files are doc stubs; [`ResidencyBoundedModel`](../../tests/abstract_models/bounded/mod.rs) is an optional future residency oracle (not yet wired). Victim may be a legal set (future).
 
 ## Dual-impl equivalence
 
@@ -147,6 +151,7 @@ Use `op_strategy_no_evict()` when the policy lacks [`EvictingCache`](../../src/t
 
 ## Related documentation
 
+- [Abstract models README](../../tests/abstract_models/README.md) — directory layout and policy matrix
 - [Testing strategy](testing.md) — four test layers including policy semantics
 - [Trait hierarchy](../design/trait-hierarchy.md) — capability traits used as oracles
 - [Policy catalog](../policies/README.md) — semantic oracle column

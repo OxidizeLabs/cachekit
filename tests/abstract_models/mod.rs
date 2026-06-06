@@ -1,6 +1,36 @@
 //! Policy semantic test harness (abstract interpretation oracles).
 //!
-//! See [`docs/testing/static-analysis.md`](../../docs/testing/static-analysis.md).
+//! ## Architecture
+//!
+//! Reference models predict cache observables from access traces. Integration tests in
+//! [`policy_semantics`](../policy_semantics/) dual-run each [`PolicyModel`] against the real
+//! policy implementation step by step.
+//!
+//! ```text
+//! Op trace ──► PolicyModel::apply ──► ModelStep ──► assert vs cache
+//! ```
+//!
+//! Models live under [`exact`] (deterministic victims) and [`bounded`] (legal victim sets +
+//! structural checks). Assertion helpers are in [`driver`].
+//!
+//! ## Key components
+//!
+//! - [`Op`] — unified trace alphabet (`Insert`, `Get`, `Peek`, `GetMut`, `Touch`, `Remove`, `EvictOne`)
+//! - [`HitMiss`] — `MustHit` / `MustMiss` / `MayHitOrMiss` (bounded and TTL only)
+//! - [`ModelStep`] — residency, hit classification, victim expectation, insert eviction
+//! - [`OracleExpectation`] — `Exact(key)`, `Legal(set)`, or `None`
+//! - [`PolicyModel`] — `apply`, `peek_victim_key`, `resident_set`, `capacity`
+//!
+//! ## Proptest strategies
+//!
+//! Use [`op_strategy_no_evict`] for policies without [`EvictingCache`](../../src/traits.rs).
+//! Use [`op_strategy_with_get_mut`] for Fast-LRU and S3-FIFO. Use [`op_strategy_mfu_safe`] when
+//! `Remove`/`EvictOne` would leave a stale heap (MFU, Heap-LFU).
+//!
+//! ## Further reading
+//!
+//! - [README](README.md) — directory layout, policy matrix, contributor checklist
+//! - [Policy semantic testing](../../docs/testing/static-analysis.md) — full harness design and CI
 
 #![allow(dead_code)]
 
@@ -14,6 +44,9 @@ use std::hash::Hash;
 use proptest::prelude::*;
 
 /// Unified trace alphabet for policy semantic tests.
+///
+/// Maps to cache API calls in each `policy_semantics/*_tests.rs` adapter. `Peek` must not
+/// promote recency; `Get`, `GetMut`, and `Touch` do on LRU-family policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op<K> {
     Insert(K),
@@ -26,6 +59,9 @@ pub enum Op<K> {
 }
 
 /// Hit/miss classification for the current operation.
+///
+/// Exact models use `MustHit` / `MustMiss`. Bounded models and TTL checks may use
+/// `MayHitOrMiss` when knowledge is partial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitMiss {
     MustHit,
@@ -35,6 +71,9 @@ pub enum HitMiss {
 }
 
 /// Expected victim from the reference model.
+///
+/// `Exact` — deterministic victim (exact-tier models). `Legal` — any resident key is
+/// admissible (bounded-tier). `None` — no victim expectation for this step.
 #[derive(Debug, Clone)]
 pub enum OracleExpectation<K> {
     Exact(K),
@@ -56,6 +95,8 @@ impl<K: Eq + Hash> PartialEq for OracleExpectation<K> {
 impl<K: Eq + Hash> Eq for OracleExpectation<K> {}
 
 /// Observables produced by applying one op to the reference model.
+///
+/// Dual-run tests compare each field against the real cache after the same op.
 #[derive(Debug, Clone)]
 pub struct ModelStep<K> {
     pub resident: HashSet<K>,
@@ -76,6 +117,9 @@ impl<K> ModelStep<K> {
 }
 
 /// Reference semantics for a cache policy.
+///
+/// Each implementation encodes one policy's eviction rule. See [`exact`] and [`bounded`] modules
+/// and the [README](README.md) for the per-policy model matrix.
 pub trait PolicyModel<K> {
     fn capacity(&self) -> usize;
     fn resident_set(&self) -> HashSet<K>;
@@ -117,11 +161,6 @@ pub fn op_strategy_with_get_mut() -> impl Strategy<Value = Op<u8>> {
         2 => any::<u8>().prop_map(Op::Remove),
         1 => Just(Op::EvictOne),
     ]
-}
-
-/// Shorter traces for O(n) eviction policies (NRU).
-pub fn op_strategy_short() -> impl Strategy<Value = Op<u8>> {
-    op_strategy()
 }
 
 pub fn standard_capacity() -> impl Strategy<Value = usize> {

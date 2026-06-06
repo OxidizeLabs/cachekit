@@ -1,4 +1,11 @@
 //! MFU reference model — mirrors `MfuCore` heap eviction and peek scan.
+//!
+//! **Tier:** exact.
+//! **Victim:** highest frequency; sequence-number tie-break (older heap entry wins).
+//! **Peek:** `FxHashMap` scan for max frequency (matches implementation peek path).
+//! **Tests:** `policy_semantics/mfu_tests.rs` — residency only.
+//! **Op strategy:** [`op_strategy_mfu_safe`](super::super::op_strategy_mfu_safe) — skips
+//! `Remove`/`EvictOne` because stale heap entries break `debug_validate_invariants`.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};

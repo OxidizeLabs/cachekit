@@ -1,6 +1,12 @@
 //! LRU occupancy model (MRU at front, LRU at back).
 //!
-//! Tie-break source: `FastLru` / `LruCore` list order.
+//! **Tier:** exact.
+//! **Source:** `FastLru` / `LruCore` list order — victim is tail (LRU).
+//! **Recency:** rank 0 = MRU; used by `assert_recency_rank` in LRU and Fast-LRU tests.
+//! **Tests:** `policy_semantics/lru_tests.rs`, `fast_lru_tests.rs`; also composed in
+//! `ttl_integration_test.rs`.
+//! **Op strategy:** [`op_strategy`](super::super::op_strategy) (LRU);
+//! [`op_strategy_with_get_mut`](super::super::op_strategy_with_get_mut) (Fast-LRU).
 
 use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;

@@ -1,4 +1,11 @@
 //! Heap-LFU reference model — mirrors `HeapLfuCache` heap + peek scan semantics.
+//!
+//! **Tier:** exact.
+//! **Victim:** lowest frequency; `Ord` tie-break on key when frequencies tie.
+//! **Peek:** scans `freq` map for min frequency (matches implementation peek path).
+//! **Tests:** `policy_semantics/heap_lfu_tests.rs` — residency only (heap stale entries).
+//! **Op strategy:** [`standard_op_list`](super::super::standard_op_list) (not `mfu_safe`; heap
+//! rebuild handles staleness on insert/evict).
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};

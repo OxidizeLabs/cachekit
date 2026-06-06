@@ -1,4 +1,7 @@
-//! Dual-implementation equivalence tests.
+//! Dual-implementation equivalence tests (no reference model).
+//!
+//! **Pairs:** `LruCore` vs `FastLru`, `ClockCache` vs `ClockRing`
+//! **Asserted:** residency, `peek_victim`, `recency_rank` agreement
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -13,6 +16,7 @@ use cachekit::policy::fast_lru::FastLru;
 use cachekit::policy::lru::LruCore;
 use cachekit::traits::{Cache, EvictingCache, VictimInspectable};
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::{Op, op_strategy};
 
 #[cfg(all(feature = "policy-lru", feature = "policy-fast-lru"))]
@@ -113,7 +117,7 @@ fn dual_clock_cache_vs_clock_ring() {
             },
             _ => {},
         }
-        let cache_r: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let cache_r = probe_resident(|k| cache.contains(k));
         let ring_r: HashSet<u8> = ring.keys().copied().collect();
         assert_eq!(cache_r, ring_r, "after {op:?}");
     }

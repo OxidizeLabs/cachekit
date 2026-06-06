@@ -1,4 +1,10 @@
-//! LFU reference model using `FrequencyBuckets` (FIFO tie-break in min bucket).
+//! LFU reference model using [`FrequencyBuckets`](cachekit::ds::FrequencyBuckets).
+//!
+//! **Tier:** exact.
+//! **Victim:** minimum frequency; FIFO tie-break within the min bucket.
+//! **Tests:** `policy_semantics/lfu_tests.rs` — `VictimInspectable`, `FrequencyTracking`,
+//! `EvictingCache`.
+//! **Op strategy:** [`op_strategy`](super::super::op_strategy).
 
 use std::collections::HashSet;
 use std::hash::Hash;

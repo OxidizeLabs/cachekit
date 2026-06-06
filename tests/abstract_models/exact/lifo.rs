@@ -1,4 +1,9 @@
 //! LIFO reference model (victim = newest / top of stack).
+//!
+//! **Tier:** exact.
+//! **Source:** `LifoCache` — MRU-first stack; victim is the most recently inserted key.
+//! **Tests:** `policy_semantics/lifo_tests.rs` — `VictimInspectable`, `EvictingCache`.
+//! **Op strategy:** [`op_strategy`](super::super::op_strategy).
 
 use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;

@@ -1,4 +1,19 @@
-//! Bounded reference models (legal victim sets + structural checks).
+//! Bounded reference models for adaptive and scan-resistant policies.
+//!
+//! When a victim is not uniquely determined from residency alone (ARC, CAR, Clock-PRO,
+//! S3-FIFO), models assert structural invariants and residency rather than an exact victim key.
+//! [`ResidencyBoundedModel`] is a minimal fallback that tracks occupancy and emits
+//! [`OracleExpectation::Legal`] victim sets on eviction.
+//!
+//! Per-policy bounded checks live in the sibling modules; integration tests call
+//! `debug_validate_invariants` / `check_invariants` on the real cache.
+//!
+//! Sibling modules (`arc`, `car`, `clock_pro`, `s3_fifo`) are **documentation stubs** only;
+//! they contain no `PolicyModel` implementation. Real invariant checks live in
+//! `policy_semantics/*_tests.rs`.
+//!
+//! [`ResidencyBoundedModel`] is a **future** residency oracle (implemented here but not yet
+//! wired into bounded tests).
 
 #![allow(dead_code)]
 

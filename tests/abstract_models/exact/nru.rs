@@ -1,4 +1,10 @@
 //! NRU reference model (swap-remove eviction, new inserts start unreferenced).
+//!
+//! **Tier:** mirror.
+//! **Victim:** first unreferenced key in insertion order; swap-remove on eviction.
+//! **Tests:** `policy_semantics/nru_tests.rs` — residency only (no `EvictingCache`).
+//! **Op strategy:** [`short_op_list_no_evict`](super::super::short_op_list_no_evict) — O(n)
+//! eviction scans; no explicit `EvictOne`.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;

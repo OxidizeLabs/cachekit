@@ -1,4 +1,9 @@
 //! 2Q reference model — mirrors `TwoQCore` queue caps and eviction order.
+//!
+//! **Tier:** mirror.
+//! **Queues:** probation (A1) and protected (Am); victim is LRU in probation.
+//! **Tests:** `policy_semantics/two_q_tests.rs` — residency only (no `EvictingCache`).
+//! **Op strategy:** [`standard_op_list_no_evict`](super::super::standard_op_list_no_evict).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;

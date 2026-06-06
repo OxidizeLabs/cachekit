@@ -1,11 +1,13 @@
-//! NRU semantic oracle tests.
-
-use std::collections::HashSet;
+//! NRU dual-run semantic oracle tests.
+//!
+//! **Model:** `NruModel` · **Op strategy:** `short_op_list_no_evict`
+//! **Asserted:** residency only (O(n) eviction; no `EvictingCache`)
 
 use cachekit::policy::nru::NruCache;
 use cachekit::traits::Cache;
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::exact::nru::NruModel;
 use crate::abstract_models::{Op, PolicyModel, short_op_list_no_evict, standard_capacity};
 
@@ -27,7 +29,7 @@ fn run_ops(cache: &mut NruCache<u8, u8>, model: &mut NruModel<u8>, ops: &[Op<u8>
                 cache.remove(k);
             },
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident);
     }
 }

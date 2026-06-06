@@ -1,10 +1,12 @@
-//! 2Q semantic oracle tests.
-
-use std::collections::HashSet;
+//! 2Q dual-run semantic oracle tests.
+//!
+//! **Model:** `TwoQModel` · **Op strategy:** `standard_op_list_no_evict`
+//! **Asserted:** residency only (no `EvictingCache`)
 
 use cachekit::policy::two_q::TwoQCore;
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::exact::two_q::TwoQModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list_no_evict};
 
@@ -28,7 +30,7 @@ fn run_ops(cache: &mut TwoQCore<u8, u8>, model: &mut TwoQModel<u8>, ops: &[Op<u8
                 cache.remove(k);
             },
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident, "after {op:?}");
     }
 }

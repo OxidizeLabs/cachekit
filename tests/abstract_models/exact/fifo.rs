@@ -1,4 +1,10 @@
-//! FIFO reference model (insertion-order queue with stale skips, like `FifoCache`).
+//! FIFO reference model (insertion-order queue with stale skips).
+//!
+//! **Tier:** exact.
+//! **Source:** `FifoCache` — victim is oldest *live* key in the insertion-order deque.
+//! **Tie-break:** stale deque entries (removed keys) are skipped on eviction.
+//! **Tests:** `policy_semantics/fifo_tests.rs` — `VictimInspectable`, `EvictingCache`.
+//! **Op strategy:** [`op_strategy`](super::super::op_strategy).
 
 use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;

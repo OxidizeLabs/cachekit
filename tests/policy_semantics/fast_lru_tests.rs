@@ -1,12 +1,13 @@
-//! Fast-LRU semantic oracle tests.
-
-use std::collections::HashSet;
+//! Fast-LRU dual-run semantic oracle tests.
+//!
+//! **Model:** `LruOccupancyModel` · **Op strategy:** `op_strategy_with_get_mut` (0..120)
+//! **Asserted:** residency, `peek_victim`, recency rank
 
 use cachekit::policy::fast_lru::FastLru;
 use cachekit::traits::{EvictingCache, VictimInspectable};
 use proptest::prelude::*;
 
-use crate::abstract_models::driver::{assert_peek_victim, assert_recency_rank};
+use crate::abstract_models::driver::{assert_peek_victim, assert_recency_rank, probe_resident};
 use crate::abstract_models::exact::lru::LruOccupancyModel;
 use crate::abstract_models::{Op, PolicyModel, op_strategy_with_get_mut, standard_capacity};
 
@@ -45,7 +46,7 @@ fn run_ops(cache: &mut FastLru<u8, u8>, model: &mut LruOccupancyModel<u8>, ops: 
             },
         }
 
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident, "after {op:?}");
         assert!(cache.len() <= cache.capacity());
 

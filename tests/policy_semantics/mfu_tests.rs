@@ -1,12 +1,14 @@
-//! MFU semantic oracle tests.
-
-use std::collections::HashSet;
+//! MFU dual-run semantic oracle tests.
+//!
+//! **Model:** `MfuModel` · **Op strategy:** `standard_op_list_mfu_safe`
+//! **Asserted:** residency only (skips `Remove`/`EvictOne` to avoid stale heap)
 
 use cachekit::policy::mfu::MfuCore;
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::exact::mfu::MfuModel;
-use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list_no_evict};
+use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list_mfu_safe};
 
 fn run_ops(cache: &mut MfuCore<u8, u8>, model: &mut MfuModel<u8>, ops: &[Op<u8>]) {
     for op in ops {
@@ -21,13 +23,9 @@ fn run_ops(cache: &mut MfuCore<u8, u8>, model: &mut MfuModel<u8>, ops: &[Op<u8>]
             Op::Peek(k) => {
                 let _ = cache.peek(k);
             },
-            Op::GetMut(_) | Op::Touch(_) => {},
-            Op::Remove(k) => {
-                cache.remove(k);
-            },
-            Op::EvictOne => {},
+            Op::GetMut(_) | Op::Touch(_) | Op::Remove(_) | Op::EvictOne => {},
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident, "after {op:?}");
     }
 }
@@ -37,7 +35,7 @@ proptest! {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn prop_mfu_matches_model(capacity in standard_capacity(), ops in standard_op_list_no_evict()) {
+    fn prop_mfu_matches_model(capacity in standard_capacity(), ops in standard_op_list_mfu_safe()) {
         let mut cache = MfuCore::new(capacity);
         let mut model = MfuModel::new(capacity);
         run_ops(&mut cache, &mut model, &ops);

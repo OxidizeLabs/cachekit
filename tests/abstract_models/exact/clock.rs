@@ -1,4 +1,9 @@
-//! Clock reference model — mirrors `ClockRing` semantics.
+//! Clock reference model — mirrors [`ClockRing`](cachekit::ds::ClockRing) semantics.
+//!
+//! **Tier:** mirror (wraps the real `ClockRing` DS rather than an abstract rule).
+//! **Victim:** first unreferenced slot on the clock hand; referenced entries survive a sweep.
+//! **Tests:** `policy_semantics/clock_tests.rs` — residency via [`PolicyModel`].
+//! **Op strategy:** [`op_strategy`](super::super::op_strategy) (includes `EvictOne`).
 
 use std::collections::HashSet;
 use std::hash::Hash;

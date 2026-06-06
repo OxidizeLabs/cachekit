@@ -1,7 +1,16 @@
 //! Policy semantic proptests (abstract interpretation oracles).
 //!
-//! Run: `cargo test --test policy_semantics --all-features`
-//! High cases: `PROPTEST_CASES=1000 cargo test --test policy_semantics --all-features`
+//! Two test styles:
+//! - **Dual-run** (exact/mirror) — `PolicyModel::apply` vs real cache each step
+//! - **Invariant-only** (bounded) — `debug_validate_invariants` / `check_invariants` only
+//!
+//! See [`abstract_models/README.md`](../abstract_models/README.md) for the policy matrix.
+//!
+//! ```bash
+//! cargo test --test policy_semantics --all-features
+//! PROPTEST_CASES=1000 cargo test --test policy_semantics --all-features
+//! cargo miri test --test policy_semantics --all-features smoke_ -- --test-threads=1
+//! ```
 
 #[path = "../abstract_models/mod.rs"]
 mod abstract_models;

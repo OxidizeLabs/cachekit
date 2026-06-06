@@ -1,10 +1,12 @@
-//! SLRU semantic oracle tests.
-
-use std::collections::HashSet;
+//! SLRU dual-run semantic oracle tests.
+//!
+//! **Model:** `SlruModel` · **Op strategy:** `standard_op_list_no_evict`
+//! **Asserted:** residency only (no `EvictingCache`)
 
 use cachekit::policy::slru::SlruCore;
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::exact::slru::SlruModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list_no_evict};
 
@@ -28,7 +30,7 @@ fn run_ops(cache: &mut SlruCore<u8, u8>, model: &mut SlruModel<u8>, ops: &[Op<u8
                 cache.remove(k);
             },
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident);
     }
 }

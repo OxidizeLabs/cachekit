@@ -1,13 +1,15 @@
-//! LRU (`LruCore`) semantic oracle tests.
+//! LRU (`LruCore`) dual-run semantic oracle tests.
+//!
+//! **Model:** `LruOccupancyModel` · **Op strategy:** `standard_op_list`
+//! **Asserted:** residency, `peek_victim`, recency rank (peek must not promote)
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use cachekit::policy::lru::LruCore;
 use cachekit::traits::{Cache, EvictingCache, VictimInspectable};
 use proptest::prelude::*;
 
-use crate::abstract_models::driver::{assert_peek_victim, assert_recency_rank};
+use crate::abstract_models::driver::{assert_peek_victim, assert_recency_rank, probe_resident};
 use crate::abstract_models::exact::lru::LruOccupancyModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
@@ -48,7 +50,7 @@ fn run_ops(cache: &mut LruCore<u8, u8>, model: &mut LruOccupancyModel<u8>, ops: 
             },
         }
 
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident, "residency mismatch after {op:?}");
         assert!(cache.len() <= cache.capacity());
 

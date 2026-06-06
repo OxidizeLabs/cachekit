@@ -1,11 +1,13 @@
-//! ARC bounded semantic tests.
-
-use std::collections::HashSet;
+//! ARC invariant-only semantic tests (no `PolicyModel` dual-run).
+//!
+//! **Model:** none · **Op strategy:** `standard_op_list` (`GetMut`/`Touch`/`EvictOne` no-op)
+//! **Asserted:** `len <= capacity`, `debug_validate_invariants`
 
 use cachekit::policy::arc::ArcCore;
 use cachekit::traits::Cache;
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::{Op, standard_capacity, standard_op_list};
 
 fn run_ops(cache: &mut ArcCore<u8, u8>, ops: &[Op<u8>]) {
@@ -46,5 +48,5 @@ fn smoke_arc() {
     let ops = [Op::Insert(1), Op::Get(1), Op::Insert(2), Op::Insert(3)];
     let mut cache = ArcCore::new(4);
     run_ops(&mut cache, &ops);
-    let _: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+    let _ = probe_resident(|k| cache.contains(k));
 }

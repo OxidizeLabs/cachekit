@@ -1,17 +1,19 @@
-//! MRU semantic oracle tests.
-
-use std::collections::HashSet;
+//! MRU dual-run semantic oracle tests.
+//!
+//! **Model:** `MruModel` · **Op strategy:** `standard_op_list`
+//! **Asserted:** residency, insert eviction
 
 use cachekit::policy::mru::MruCore;
 use cachekit::traits::EvictingCache;
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::exact::mru::MruModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
 fn run_ops(cache: &mut MruCore<u8, u8>, model: &mut MruModel<u8>, ops: &[Op<u8>]) {
     for op in ops {
-        let before: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let before = probe_resident(|k| cache.contains(k));
         let step = model.apply(op.clone());
         match op {
             Op::Insert(k) => {
@@ -31,7 +33,7 @@ fn run_ops(cache: &mut MruCore<u8, u8>, model: &mut MruModel<u8>, ops: &[Op<u8>]
                 cache.remove(k);
             },
         }
-        let after: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let after = probe_resident(|k| cache.contains(k));
         assert_eq!(after, step.resident, "after {op:?}");
         if let (Op::Insert(k), Some(evicted)) = (&op, &step.evicted_on_insert) {
             if !before.contains(k) {

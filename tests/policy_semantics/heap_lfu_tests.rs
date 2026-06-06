@@ -1,12 +1,15 @@
-//! Heap-LFU semantic oracle tests.
+//! Heap-LFU dual-run semantic oracle tests.
+//!
+//! **Model:** `HeapLfuModel` · **Op strategy:** `standard_op_list`
+//! **Asserted:** residency only (heap rebuild handles staleness)
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use cachekit::policy::heap_lfu::HeapLfuCache;
 use cachekit::traits::{Cache, EvictingCache};
 use proptest::prelude::*;
 
+use crate::abstract_models::driver::probe_resident;
 use crate::abstract_models::exact::heap_lfu::HeapLfuModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
@@ -34,7 +37,7 @@ fn run_ops(cache: &mut HeapLfuCache<u8, u8>, model: &mut HeapLfuModel<u8>, ops: 
                 let _ = cache.evict_one();
             },
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident, "after {op:?}");
     }
 }

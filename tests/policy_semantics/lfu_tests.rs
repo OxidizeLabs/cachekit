@@ -1,13 +1,15 @@
-//! LFU semantic oracle tests.
+//! LFU dual-run semantic oracle tests.
+//!
+//! **Model:** `LfuModel` · **Op strategy:** `standard_op_list`
+//! **Asserted:** residency, frequency, `peek_victim`
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use cachekit::policy::lfu::LfuCache;
 use cachekit::traits::{Cache, EvictingCache};
 use proptest::prelude::*;
 
-use crate::abstract_models::driver::assert_peek_victim;
+use crate::abstract_models::driver::{assert_peek_victim, probe_resident};
 use crate::abstract_models::exact::lfu::LfuModel;
 use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
 
@@ -35,7 +37,7 @@ fn run_ops(cache: &mut LfuCache<u8, u8>, model: &mut LfuModel<u8>, ops: &[Op<u8>
                 let _ = cache.evict_one();
             },
         }
-        let resident: HashSet<u8> = (0..=255u8).filter(|k| cache.contains(k)).collect();
+        let resident = probe_resident(|k| cache.contains(k));
         assert_eq!(resident, step.resident);
         for k in &resident {
             assert_eq!(cache.frequency(k), model.frequency(k));
