@@ -78,6 +78,7 @@ Success: no `SemanticOK` violation on the bundled config. Runbooks: [formal/fifo
 
 ## Related documentation
 
+- [Testing catalog](../catalog.md) — test types, current coverage, and gaps
 - [Policy matrix](matrix.md) — canonical index
 - [Policy specs by tier](policies/README.md)
 - [Spec template](template.md) — new policy skeleton

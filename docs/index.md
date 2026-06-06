@@ -59,5 +59,6 @@ Key features:
 ## Testing and Fuzzing
 
 - [Testing strategy](testing/testing.md)
+- [Testing catalog](testing/catalog.md) — test types, current coverage, and gaps
 - [Policy semantic testing](testing/static-analysis.md)
 - [Adding fuzz targets](testing/adding-fuzz-targets.md)

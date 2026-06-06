@@ -198,6 +198,10 @@ Use conventional commit format for PR titles:
 
 ## Testing Guidelines
 
+### Testing overview
+
+For a full taxonomy of test types, what CacheKit runs today, coverage gaps, and suggested priorities, see the [Testing catalog](docs/testing/catalog.md).
+
 ### Unit Tests
 
 - Write tests for each public function

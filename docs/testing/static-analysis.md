@@ -181,6 +181,7 @@ Use `op_strategy_no_evict()` when the policy lacks [`EvictingCache`](../../src/t
 
 ## Related documentation
 
+- [Testing catalog](catalog.md) — test types, current coverage, and gaps
 - [Operational policy specs](specs/README.md) — spec-first source of truth
 - [Abstract models README](../../tests/abstract_models/README.md) — directory layout and policy matrix
 - [Testing strategy](testing.md) — four test layers including policy semantics

@@ -1,6 +1,6 @@
 # Test Organization
 
-This directory contains all integration and regression tests for cachekit.
+This directory contains all integration and regression tests for cachekit. For a full map of test types, CI coverage, and gaps, see the [Testing catalog](../docs/testing/catalog.md).
 
 ## Test Files
 

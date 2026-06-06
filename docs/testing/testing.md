@@ -283,6 +283,7 @@ fuzz_target!(|data: &[u8]| {
 
 ## Related Documentation
 
+- [Testing catalog](catalog.md) — test types, current coverage, and gaps
 - [Contributing Guide](../../CONTRIBUTING.md)
 - [Fuzz Testing](../../fuzz/README.md)
 - [Benchmarking](../../benches/README.md)
