@@ -127,7 +127,7 @@ Use `op_strategy_no_evict()` when the policy lacks [`EvictingCache`](../../src/t
 
 **Mirror** — full queue/segment state transcribed from implementation (`TwoQCore`, `SlruCore`, `ClockRing`).
 
-**Bounded** — invariant-only tests assert `len <= capacity` and `debug_validate_invariants` / `check_invariants`. Sibling `bounded/*.rs` files are doc stubs; [`ResidencyBoundedModel`](../../tests/abstract_models/bounded/mod.rs) is an optional future residency oracle (not yet wired). Victim may be a legal set (future).
+**Bounded** — invariant-only tests assert `len <= capacity` and `debug_validate_invariants` / `check_invariants`. Sibling `bounded/*.rs` files are feature-gated doc stubs. Victim may be a legal set (future).
 
 ## Dual-impl equivalence
 

@@ -21,14 +21,14 @@ access trace ──► PolicyModel::apply(op) ──► ModelStep
 ```
 abstract_models/
 ├── mod.rs          # Op, HitMiss, PolicyModel, ModelStep, proptest strategies
-├── driver.rs       # Shared assertion helpers (assert_step, assert_peek_victim, …)
+├── driver.rs       # Shared assertion helpers (assert_peek_victim, probe_resident, …)
 ├── exact/          # Deterministic victims and residency
 │   ├── lru.rs      # LruOccupancyModel (LRU, Fast-LRU, TTL layer)
 │   ├── fifo.rs     # FifoModel
 │   ├── lfu.rs      # LfuModel
 │   └── …           # One module per exact/mirror policy
-└── bounded/        # Invariant-only oracles (doc stubs + shared fallback)
-    ├── mod.rs      # ResidencyBoundedModel (implemented, not yet wired)
+└── bounded/        # Invariant-only oracles (feature-gated doc stubs)
+    ├── mod.rs      # re-exports bounded policy stubs
     ├── arc.rs      # doc stub — tests in policy_semantics/arc_tests.rs
     ├── car.rs      # doc stub
     ├── clock_pro.rs
@@ -75,7 +75,7 @@ Adaptive or scan-resistant policies where the victim is not uniquely determined 
 - `debug_validate_invariants` / `check_invariants` on the real cache
 - `OracleExpectation::Legal` victim sets (future: full legal-set checks)
 
-Examples: ARC, CAR, Clock-PRO, S3-FIFO. Sibling files (`arc.rs`, etc.) are **documentation stubs** only; real checks live in `policy_semantics/*_tests.rs`. [`ResidencyBoundedModel`](bounded/mod.rs) in `bounded/mod.rs` is implemented as a future residency fallback but is **not yet wired** into bounded tests.
+Examples: ARC, CAR, Clock-PRO, S3-FIFO. Sibling files (`arc.rs`, etc.) are **documentation stubs** only; real checks live in `policy_semantics/*_tests.rs`. Submodules are gated by matching `policy-*` features (same as `exact/`).
 
 ## Policy coverage
 
@@ -160,7 +160,7 @@ fn run_ops(cache: &mut LruCore<u8, u8>, model: &mut LruOccupancyModel<u8>, ops: 
 }
 ```
 
-Shared helpers live in [`driver.rs`](driver.rs): `assert_peek_victim`, `assert_recency_rank`, `probe_resident`, and `assert_step` (consolidated helper for new tests).
+Shared helpers live in [`driver.rs`](driver.rs): `assert_peek_victim`, `assert_recency_rank`, and `probe_resident`.
 
 ## Debugging failures
 

@@ -8,18 +8,30 @@
 //! defined by the DS layout.
 //!
 //! See the [policy matrix](README.md#policy-coverage) for per-policy model types.
+//!
+//! Each submodule is gated by the matching `policy-*` feature (plus `ttl` for `lru`).
 
-#![allow(dead_code)]
-
+#[cfg(feature = "policy-clock")]
 pub mod clock;
+#[cfg(feature = "policy-fifo")]
 pub mod fifo;
+#[cfg(feature = "policy-heap-lfu")]
 pub mod heap_lfu;
+#[cfg(feature = "policy-lfu")]
 pub mod lfu;
+#[cfg(feature = "policy-lifo")]
 pub mod lifo;
+#[cfg(any(feature = "policy-lru", feature = "policy-fast-lru", feature = "ttl"))]
 pub mod lru;
+#[cfg(feature = "policy-lru-k")]
 pub mod lru_k;
+#[cfg(feature = "policy-mfu")]
 pub mod mfu;
+#[cfg(feature = "policy-mru")]
 pub mod mru;
+#[cfg(feature = "policy-nru")]
 pub mod nru;
+#[cfg(feature = "policy-slru")]
 pub mod slru;
+#[cfg(feature = "policy-two-q")]
 pub mod two_q;

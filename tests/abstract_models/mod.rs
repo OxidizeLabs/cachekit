@@ -10,8 +10,9 @@
 //! Op trace ──► PolicyModel::apply ──► ModelStep ──► assert vs cache
 //! ```
 //!
-//! Models live under [`exact`] (deterministic victims) and [`bounded`] (legal victim sets +
-//! structural checks). Assertion helpers are in [`driver`].
+//! Models live under [`exact`] (deterministic victims) and [`bounded`] (doc stubs).
+//! Submodules and op strategies are gated by matching `policy-*` features.
+//! Assertion helpers are in [`driver`].
 //!
 //! ## Key components
 //!
@@ -31,9 +32,19 @@
 //!
 //! - [README](README.md) — directory layout, policy matrix, contributor checklist
 //! - [Policy semantic testing](../../docs/testing/static-analysis.md) — full harness design and CI
-
+//!
+//! ## Multi-crate usage
+//!
+//! `#[path]`-included by `policy_semantics` (full matrix) and `ttl_integration_test` (LRU
+//! subset). Each integration-test binary uses a different subset of models and helpers.
 #![allow(dead_code)]
 
+#[cfg(any(
+    feature = "policy-arc",
+    feature = "policy-car",
+    feature = "policy-clock-pro",
+    feature = "policy-s3-fifo"
+))]
 pub mod bounded;
 pub mod driver;
 pub mod exact;
@@ -77,6 +88,7 @@ pub enum HitMiss {
 #[derive(Debug, Clone)]
 pub enum OracleExpectation<K> {
     Exact(K),
+    /// Reserved for future bounded-tier legal victim sets.
     Legal(HashSet<K>),
     None,
 }
@@ -128,6 +140,11 @@ pub trait PolicyModel<K> {
 }
 
 /// Op strategy without `EvictOne` (policies lacking [`EvictingCache`]).
+#[cfg(any(
+    feature = "policy-two-q",
+    feature = "policy-slru",
+    feature = "policy-nru"
+))]
 pub fn op_strategy_no_evict() -> impl Strategy<Value = Op<u8>> {
     prop_oneof![
         any::<u8>().prop_map(Op::Insert),
@@ -151,6 +168,7 @@ pub fn op_strategy() -> impl Strategy<Value = Op<u8>> {
 }
 
 /// Op strategy including `GetMut` (Fast-LRU, S3-FIFO).
+#[cfg(any(feature = "policy-fast-lru", feature = "policy-s3-fifo"))]
 pub fn op_strategy_with_get_mut() -> impl Strategy<Value = Op<u8>> {
     prop_oneof![
         6 => any::<u8>().prop_map(Op::Insert),
@@ -171,19 +189,18 @@ pub fn standard_op_list() -> impl Strategy<Value = Vec<Op<u8>>> {
     prop::collection::vec(op_strategy(), 0..120)
 }
 
+#[cfg(any(feature = "policy-two-q", feature = "policy-slru"))]
 pub fn standard_op_list_no_evict() -> impl Strategy<Value = Vec<Op<u8>>> {
     prop::collection::vec(op_strategy_no_evict(), 0..120)
 }
 
-pub fn short_op_list() -> impl Strategy<Value = Vec<Op<u8>>> {
-    prop::collection::vec(op_strategy(), 0..40)
-}
-
+#[cfg(feature = "policy-nru")]
 pub fn short_op_list_no_evict() -> impl Strategy<Value = Vec<Op<u8>>> {
     prop::collection::vec(op_strategy_no_evict(), 0..40)
 }
 
-/// MFU/heap policies: skip `Remove`/`EvictOne` (stale heap vs debug `validate_invariants`).
+/// MFU: skip `Remove`/`EvictOne` (stale heap vs debug `validate_invariants`).
+#[cfg(feature = "policy-mfu")]
 pub fn op_strategy_mfu_safe() -> impl Strategy<Value = Op<u8>> {
     prop_oneof![
         any::<u8>().prop_map(Op::Insert),
@@ -193,15 +210,7 @@ pub fn op_strategy_mfu_safe() -> impl Strategy<Value = Op<u8>> {
     ]
 }
 
+#[cfg(feature = "policy-mfu")]
 pub fn standard_op_list_mfu_safe() -> impl Strategy<Value = Vec<Op<u8>>> {
     prop::collection::vec(op_strategy_mfu_safe(), 0..120)
-}
-
-/// Collect resident keys from a cache via iteration pattern.
-pub fn resident_from_contains<K, F>(keys: &[K], contains: F) -> HashSet<K>
-where
-    K: Clone + Eq + Hash,
-    F: Fn(&K) -> bool,
-{
-    keys.iter().filter(|k| contains(k)).cloned().collect()
 }

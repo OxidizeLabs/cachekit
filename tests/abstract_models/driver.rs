@@ -13,89 +13,12 @@
 //! assert_recency_rank(cache, model.model_recency_rank(k), k);
 //! ```
 
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use cachekit::traits::{Cache, EvictingCache, RecencyTracking, VictimInspectable};
+use cachekit::traits::{RecencyTracking, VictimInspectable};
 
-use crate::abstract_models::{HitMiss, ModelStep, Op, OracleExpectation, PolicyModel};
-
-/// Compare model step against a cache implementing standard inspection traits.
-///
-/// Consolidated dual-run helper for new tests. Existing `policy_semantics/*_tests.rs` files
-/// inline equivalent assertions in their `run_ops` loops.
-pub fn assert_step<K, V, C, M>(
-    cache: &C,
-    _model: &M,
-    step: &ModelStep<K>,
-    op: &Op<K>,
-    rank_before: Option<usize>,
-) where
-    K: Clone + Eq + Hash + std::fmt::Debug,
-    C: Cache<K, V> + VictimInspectable<K, V> + RecencyTracking<K, V> + EvictingCache<K, V>,
-    M: PolicyModel<K>,
-{
-    assert_eq!(
-        cache.len(),
-        step.resident.len(),
-        "residency size mismatch after {op:?}"
-    );
-    for k in &step.resident {
-        assert!(
-            cache.contains(k),
-            "key {k:?} in model but not cache after {op:?}"
-        );
-    }
-    assert!(cache.len() <= cache.capacity());
-
-    if let Some(hit) = step.hit {
-        let actual_hit = matches!(op, Op::Get(_) | Op::Peek(_) | Op::GetMut(_))
-            && match op {
-                Op::Get(k) | Op::Peek(k) | Op::GetMut(k) => cache.contains(k),
-                _ => false,
-            };
-        match hit {
-            HitMiss::MustHit => assert!(actual_hit, "expected hit for {op:?}"),
-            HitMiss::MustMiss => assert!(!actual_hit, "expected miss for {op:?}"),
-            HitMiss::MayHitOrMiss => {},
-        }
-    }
-
-    if let Op::Insert(_) = op {
-        if let Some(evicted) = &step.evicted_on_insert {
-            assert!(!cache.contains(evicted), "evicted key still resident");
-        }
-    }
-
-    if let Op::Peek(k) = op {
-        if let Some(rank) = rank_before {
-            assert_eq!(
-                cache.recency_rank(k),
-                Some(rank),
-                "peek must not change recency rank"
-            );
-        }
-    }
-
-    if matches!(op, Op::Get(_) | Op::GetMut(_) | Op::Touch(_)) {
-        // rank updated — checked in proptest against model rank
-    }
-
-    match &step.victim {
-        OracleExpectation::Exact(victim) => {
-            if matches!(op, Op::EvictOne) {
-                assert!(!cache.contains(victim));
-            }
-        },
-        OracleExpectation::Legal(set) => {
-            // bounded: checked separately
-            let _ = set;
-        },
-        OracleExpectation::None => {},
-    }
-}
+use crate::abstract_models::PolicyModel;
 
 /// Assert `peek_victim` matches model when cache is non-empty.
 pub fn assert_peek_victim<K, V, C, M>(cache: &C, model: &M)
