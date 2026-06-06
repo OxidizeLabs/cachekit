@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`ttl` feature flag** — opt-in time-based expiration via the `Expiring<C>` decorator, wrapping any policy that implements `Cache<K, V>`. Enable with `features = ["ttl"]`; see `docs/design/ttl.md` for the full semantic contract (#132).
+- **`ExpiringCache` capability trait** — `insert_with_ttl`, `ttl_status`, `set_ttl`, and `purge_expired`, with `TtlStatus` (`Missing` / `Immortal` / `Expired` / `Live { remaining, deadline }`) and opaque `Tick` deadline type. Re-exported from `cachekit::traits` and `cachekit::prelude` when `ttl` is enabled (#132).
+- **`Expiring<C, K, V, T>` decorator** (`cachekit::policy::expiring`) — per-entry and default TTLs, lazy purge on read, and `purge_expired` for proactive cleanup. Works with any inner cache and pluggable clock (#132).
+- **`time` module** (requires `ttl`) — object-safe `Clock` trait (millisecond ticks), `StdClock` (anchored `Instant`), and `MockClock` (`advance` / `set` for deterministic tests) (#132, #136).
+- **`ExpirationIndex<K>`** and `Deadline` type alias (requires `ttl`) — key-keyed min-deadline index built on `LazyMinHeap` with auto-rebuild; exposes `set_deadline`, `next_deadline`, `pop_expired`, and `drain_expired`. Re-exported from `cachekit::ds` (#132).
+- **`LazyMinHeap::peek_best`** — non-mutating peek used by `ExpirationIndex` to inspect stale heap roots without a pop (#132).
+- **`DynExpiringCache` / `ExpiringBuilder`** — runtime-dispatch TTL wrapper via `CacheBuilder::with_default_ttl()`, mirroring the existing `DynCache` builder pattern (#132).
+- **Store fallible constructors** — non-panicking allocation when capacity comes from untrusted input (#105–#108):
+  - `HashMapStore` / `ConcurrentHashMapStore` / `ShardedHashMapStore`: `try_new`, `try_with_hasher`
+  - `HandleStore` / `ConcurrentHandleStore`: `try_new`
+  - `SlabStore` / `ConcurrentSlabStore`: `try_new`
+  - `WeightStore` / `ConcurrentWeightStore`: `try_with_capacity`
+- **`benches/ttl_overhead.rs`** — Criterion bench comparing TTL-decorated LRU against plain LRU (#132).
+- **Benchmark suite** (dev only): results schema bumped to **1.2.0** with stable case IDs; `WorkloadCase::by_id` for compile-time-safe workload lookup; policy selection guide; refreshed chart artifacts and index pages (#116, #119, #120, #121, #125, #127).
+
+### Fixed
+- **Store `clear()` metrics** — bulk clears on `HashMapStore`, `HandleStore`, `SlabStore`, and `WeightStore` (and their concurrent variants) now attribute removed entries to the `removes` counter, matching per-entry removal audit trails (#105–#108).
+- **Scan-resistance benchmark chart** — corrected chart data and documentation for the scan-resistance workload (#109).
+
+### Changed
+- **`ExpirationIndex` / TTL internals** — `Deadline` type alias replaces bare `u64` scores; `duration_to_ticks` uses `try_from` with explicit saturation; expanded `Clock`, `StdClock`, and `MockClock` docs and examples (#136).
+- **Benchmark comparison crate** — `lru` dependency updated from 0.17.0 to 0.18.0 (#122).
+- **CI** — removed the `rust-cache` GitHub Action from workflows (#137).
+
+### Documentation
+- **`docs/design/ttl.md`** — full TTL design notes: semantic contract, clock model, expiration index, decorator wiring, and Phase 2 roadmap (#132).
+- **Design docs expansion** — new/expanded sections on concurrency, metrics, error model, weighted eviction, benchmarking, hashing, sharding, serialization, and non-goals; CAR policy count and builder/dispatch clarifications (#135, #141).
+- **Store security considerations** — module-level guidance on hasher choice, capacity DoS, and sensitive-value handling for `HashMapStore`, `HandleStore`, `SlabStore`, and `WeightStore` (#105–#108).
+- **Benchmark documentation** — value-construction convention, artifact management, and chart styling/scripts (#118, #127).
+
 ## [0.8.0] - 2026-04-22
 
 ### Breaking
