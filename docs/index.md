@@ -59,4 +59,5 @@ Key features:
 ## Testing and Fuzzing
 
 - [Testing strategy](testing/testing.md)
+- [Policy semantic testing](testing/static-analysis.md)
 - [Adding fuzz targets](testing/adding-fuzz-targets.md)

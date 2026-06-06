@@ -216,6 +216,13 @@ Use conventional commit format for PR titles:
 
 Consider using `proptest` for testing complex invariants.
 
+### Policy Semantic Oracles
+
+New eviction policies with deterministic semantics should include a
+reference model in `tests/abstract_models/` and proptest/smoke coverage
+in `tests/policy_semantics/`. See
+[Policy semantic testing](docs/testing/static-analysis.md).
+
 ### Test Organization
 
 ```rust

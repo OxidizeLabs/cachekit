@@ -34,25 +34,25 @@ If you can only implement one “general purpose” policy for mixed workloads, 
 
 ### Implemented Policies (CacheKit)
 
-| Policy | Summary | Doc |
-|--------|---------|-----|
-| LRU | Strong default for temporal locality | [LRU doc](lru.md) |
-| MRU | Evicts most recent (niche: cyclic patterns) | [MRU doc](mru.md) |
-| SLRU | Segmented LRU with probation/protected | [SLRU doc](slru.md) |
-| LFU | Frequency-driven, stable hot sets | [LFU doc](lfu.md) |
-| Heap-LFU | LFU with heap eviction | [Heap-LFU doc](heap-lfu.md) |
-| MFU | Evicts highest frequency (niche/baseline) | [MFU doc](mfu.md) |
-| LRU-K | Scan-resistant recency | [LRU-K doc](lru-k.md) |
-| 2Q | Probation + protected queues | [2Q doc](2q.md) |
-| ARC | Adaptive recency/frequency balance | [ARC doc](arc.md) |
-| CAR | ARC-like with Clock (lower hit overhead) | [CAR doc](car.md) |
-| FIFO | Simple insertion-order (oldest first) | [FIFO doc](fifo.md) |
-| LIFO | Stack-based (newest first) | [LIFO doc](lifo.md) |
-| Clock | Approximate LRU | [Clock doc](clock.md) |
-| Clock-PRO | Scan-resistant Clock variant | [Clock-PRO doc](clock-pro.md) |
-| NRU | Coarse recency tracking | [NRU doc](nru.md) |
-| S3-FIFO | Scan-resistant FIFO | [S3-FIFO doc](s3-fifo.md) |
-| Random | Baseline: uniform random eviction | [Random doc](random.md) |
+| Policy | Summary | Semantic oracle | Doc |
+|--------|---------|-----------------|-----|
+| LRU | Strong default for temporal locality | exact | [LRU doc](lru.md) |
+| MRU | Evicts most recent (niche: cyclic patterns) | exact | [MRU doc](mru.md) |
+| SLRU | Segmented LRU with probation/protected | mirror | [SLRU doc](slru.md) |
+| LFU | Frequency-driven, stable hot sets | exact | [LFU doc](lfu.md) |
+| Heap-LFU | LFU with heap eviction | exact | [Heap-LFU doc](heap-lfu.md) |
+| MFU | Evicts highest frequency (niche/baseline) | exact | [MFU doc](mfu.md) |
+| LRU-K | Scan-resistant recency | exact | [LRU-K doc](lru-k.md) |
+| 2Q | Probation + protected queues | mirror | [2Q doc](2q.md) |
+| ARC | Adaptive recency/frequency balance | bounded | [ARC doc](arc.md) |
+| CAR | ARC-like with Clock (lower hit overhead) | bounded | [CAR doc](car.md) |
+| FIFO | Simple insertion-order (oldest first) | exact | [FIFO doc](fifo.md) |
+| LIFO | Stack-based (newest first) | exact | [LIFO doc](lifo.md) |
+| Clock | Approximate LRU | mirror | [Clock doc](clock.md) |
+| Clock-PRO | Scan-resistant Clock variant | bounded | [Clock-PRO doc](clock-pro.md) |
+| NRU | Coarse recency tracking | mirror | [NRU doc](nru.md) |
+| S3-FIFO | Scan-resistant FIFO | bounded | [S3-FIFO doc](s3-fifo.md) |
+| Random | Baseline: uniform random eviction | none | [Random doc](random.md) |
 
 ### Roadmap Policies (Planned)
 

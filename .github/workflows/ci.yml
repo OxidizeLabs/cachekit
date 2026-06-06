@@ -81,6 +81,7 @@ jobs:
         run: |
           cargo miri test --package cachekit --lib ds:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
           cargo miri test --package cachekit --lib policy:: -- --skip concurrent --skip stress --skip large --skip performance --skip memory
+          cargo miri test --test policy_semantics --all-features smoke_ -- --test-threads=1
         env:
           MIRIFLAGS: -Zmiri-isolation-error=warn
 
@@ -93,7 +94,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Run property tests with increased cases
-        run: PROPTEST_CASES=1000 cargo test --lib property_tests
+        run: |
+          PROPTEST_CASES=1000 cargo test --lib property_tests
+          PROPTEST_CASES=1000 cargo test --test policy_semantics --all-features
         env:
           RUST_BACKTRACE: 1
 

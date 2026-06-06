@@ -334,6 +334,9 @@ where
                 if current_freq == entry.freq {
                     self.map.remove(&entry.key);
                     self.frequencies.remove(&entry.key);
+                    if self.map.is_empty() {
+                        self.freq_heap.clear();
+                    }
 
                     #[cfg(debug_assertions)]
                     self.validate_invariants();
@@ -348,6 +351,9 @@ where
             if let Some(entry) = self.freq_heap.pop() {
                 self.map.remove(&entry.key);
                 self.frequencies.remove(&entry.key);
+                if self.map.is_empty() {
+                    self.freq_heap.clear();
+                }
 
                 #[cfg(debug_assertions)]
                 self.validate_invariants();
@@ -428,6 +434,9 @@ where
     pub fn remove(&mut self, key: &K) -> Option<V> {
         self.frequencies.remove(key);
         let result = self.map.remove(key);
+        if result.is_some() && self.map.is_empty() {
+            self.freq_heap.clear();
+        }
 
         #[cfg(debug_assertions)]
         if result.is_some() {
@@ -463,6 +472,9 @@ where
                 if current_freq == entry.freq {
                     if let Some(value) = self.map.remove(&entry.key) {
                         self.frequencies.remove(&entry.key);
+                        if self.map.is_empty() {
+                            self.freq_heap.clear();
+                        }
 
                         #[cfg(feature = "metrics")]
                         self.metrics.record_pop_mfu_found();

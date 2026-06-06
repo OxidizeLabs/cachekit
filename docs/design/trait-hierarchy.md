@@ -401,6 +401,12 @@ it. The `RecencyTracking` / `FrequencyTracking` / `HistoryTracking`
 naming established the convention; adding `WeightTracking` only when
 GDS lands keeps the surface honest.
 
+## Testing
+
+Policy semantic tests assert behavior through these capability traits
+(`VictimInspectable`, `RecencyTracking`, `EvictingCache`, etc.). See
+[Policy semantic testing](../testing/static-analysis.md).
+
 ## See also
 
 - [Design overview](design.md) — §7 frames the layering at the
