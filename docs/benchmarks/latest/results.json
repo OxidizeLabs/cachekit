@@ -4289,7 +4289,7 @@
         },
         "latency": {
           "sample_count": 2000,
-          "min_ns": 29,
+          "min_ns": 30,
           "p50_ns": 60,
           "p95_ns": 91,
           "p99_ns": 120,
@@ -5354,7 +5354,7 @@
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
-          "p50_ns": 40,
+          "p50_ns": 41,
           "p95_ns": 150,
           "p99_ns": 171,
           "max_ns": 310,
