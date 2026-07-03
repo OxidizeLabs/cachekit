@@ -1,7 +1,7 @@
 {
   "schema_version": "1.2.0",
   "metadata": {
-    "timestamp": "2026-06-08T02:49:18.012166662+00:00",
+    "timestamp": "2026-06-15T02:54:46.143531186+00:00",
     "git_commit": "42c0b7e2832ec71efa59352eaaf5c678a7af0a3c",
     "git_branch": "main",
     "git_dirty": false,
@@ -4244,10 +4244,10 @@
           "miss_rate": 0.7532974678582628
         },
         "throughput": {
-          "duration_ms": 12.003232,
-          "ops_per_sec": 29812053.95346853,
-          "gets_per_sec": 17003420.412102338,
-          "inserts_per_sec": 12808633.541366192
+          "duration_ms": 12.006642,
+          "ops_per_sec": 29803587.04790232,
+          "gets_per_sec": 16998591.279726673,
+          "inserts_per_sec": 12804995.768175649
         },
         "latency": {
           "sample_count": 2000,
@@ -4255,8 +4255,8 @@
           "p50_ns": 70,
           "p95_ns": 101,
           "p99_ns": 130,
-          "max_ns": 301,
-          "mean_ns": 75
+          "max_ns": 231,
+          "mean_ns": 76
         },
         "eviction": {
           "total_evictions": 150111,
@@ -4282,18 +4282,18 @@
           "miss_rate": 0.7532974678582628
         },
         "throughput": {
-          "duration_ms": 10.271974,
-          "ops_per_sec": 34836634.12699448,
-          "gets_per_sec": 19869209.17050608,
-          "inserts_per_sec": 14967424.956488403
+          "duration_ms": 10.141724,
+          "ops_per_sec": 35284040.46491504,
+          "gets_per_sec": 20124389.107808497,
+          "inserts_per_sec": 15159651.357106544
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 30,
           "p50_ns": 60,
           "p95_ns": 91,
-          "p99_ns": 130,
-          "max_ns": 621,
+          "p99_ns": 120,
+          "max_ns": 221,
           "mean_ns": 66
         },
         "eviction": {
@@ -4320,19 +4320,19 @@
           "miss_rate": 0.7539638209470053
         },
         "throughput": {
-          "duration_ms": 19.240047999999998,
-          "ops_per_sec": 18605826.763010155,
-          "gets_per_sec": 10607873.743350329,
-          "inserts_per_sec": 7997953.0196598265
+          "duration_ms": 19.512332,
+          "ops_per_sec": 18346192.551459253,
+          "gets_per_sec": 10459846.62417593,
+          "inserts_per_sec": 7886345.92728332
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 50,
           "p50_ns": 110,
-          "p95_ns": 160,
-          "p99_ns": 200,
-          "max_ns": 772,
-          "mean_ns": 112
+          "p95_ns": 170,
+          "p99_ns": 201,
+          "max_ns": 10911,
+          "mean_ns": 119
         },
         "eviction": {
           "total_evictions": 150247,
@@ -4358,19 +4358,19 @@
           "miss_rate": 0.7539589212919411
         },
         "throughput": {
-          "duration_ms": 32.111625,
-          "ops_per_sec": 11147863.11810754,
-          "gets_per_sec": 6355829.080589973,
-          "inserts_per_sec": 4792034.037517566
+          "duration_ms": 31.50612,
+          "ops_per_sec": 11362109.964667182,
+          "gets_per_sec": 6477979.516360631,
+          "inserts_per_sec": 4884130.448306551
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 80,
-          "p50_ns": 181,
-          "p95_ns": 290,
-          "p99_ns": 351,
-          "max_ns": 10559,
-          "mean_ns": 191
+          "p50_ns": 180,
+          "p95_ns": 271,
+          "p99_ns": 330,
+          "max_ns": 10880,
+          "mean_ns": 185
         },
         "eviction": {
           "total_evictions": 150246,
@@ -4396,19 +4396,19 @@
           "miss_rate": 0.7535179523361555
         },
         "throughput": {
-          "duration_ms": 39.626481,
-          "ops_per_sec": 9031485.788505925,
-          "gets_per_sec": 5150495.195372004,
-          "inserts_per_sec": 3880990.59313392
+          "duration_ms": 36.529449,
+          "ops_per_sec": 9797191.301735759,
+          "gets_per_sec": 5587163.386997707,
+          "inserts_per_sec": 4210027.914738052
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 60,
-          "p50_ns": 231,
-          "p95_ns": 351,
-          "p99_ns": 440,
-          "max_ns": 1082,
-          "mean_ns": 220
+          "p50_ns": 230,
+          "p95_ns": 281,
+          "p99_ns": 331,
+          "max_ns": 782,
+          "mean_ns": 204
         },
         "eviction": {
           "total_evictions": 150156,
@@ -4434,19 +4434,19 @@
           "miss_rate": 0.7533807619943556
         },
         "throughput": {
-          "duration_ms": 22.433402,
-          "ops_per_sec": 15952016.551034033,
-          "gets_per_sec": 9097862.196736813,
-          "inserts_per_sec": 6854154.354297221
+          "duration_ms": 21.975524999999998,
+          "ops_per_sec": 16284389.110157778,
+          "gets_per_sec": 9287423.167364603,
+          "inserts_per_sec": 6996965.942793176
         },
         "latency": {
           "sample_count": 2000,
-          "min_ns": 50,
+          "min_ns": 49,
           "p50_ns": 130,
-          "p95_ns": 191,
-          "p99_ns": 241,
-          "max_ns": 11672,
-          "mean_ns": 132
+          "p95_ns": 190,
+          "p99_ns": 231,
+          "max_ns": 621,
+          "mean_ns": 124
         },
         "eviction": {
           "total_evictions": 150128,
@@ -4472,19 +4472,19 @@
           "miss_rate": 0.7532680699278771
         },
         "throughput": {
-          "duration_ms": 19.433830999999998,
-          "ops_per_sec": 18412993.300188728,
-          "gets_per_sec": 10502098.11951128,
-          "inserts_per_sec": 7910895.180677449
+          "duration_ms": 19.304824,
+          "ops_per_sec": 18536040.525414787,
+          "gets_per_sec": 10572279.757639851,
+          "inserts_per_sec": 7963760.767774935
         },
         "latency": {
           "sample_count": 2000,
-          "min_ns": 40,
+          "min_ns": 30,
           "p50_ns": 130,
-          "p95_ns": 180,
-          "p99_ns": 231,
-          "max_ns": 341,
-          "mean_ns": 118
+          "p95_ns": 170,
+          "p99_ns": 220,
+          "max_ns": 10359,
+          "mean_ns": 122
         },
         "eviction": {
           "total_evictions": 150105,
@@ -4510,18 +4510,18 @@
           "miss_rate": 0.7523812323612418
         },
         "throughput": {
-          "duration_ms": 6.617047,
-          "ops_per_sec": 54050394.382872,
-          "gets_per_sec": 30843970.127460178,
-          "inserts_per_sec": 23206424.25541182
+          "duration_ms": 6.497739,
+          "ops_per_sec": 55042838.74744739,
+          "gets_per_sec": 31410310.57110789,
+          "inserts_per_sec": 23632528.176339492
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 50,
           "p95_ns": 70,
-          "p99_ns": 81,
-          "max_ns": 181,
+          "p99_ns": 90,
+          "max_ns": 191,
           "mean_ns": 50
         },
         "eviction": {
@@ -4548,19 +4548,19 @@
           "miss_rate": 0.7524008309814989
         },
         "throughput": {
-          "duration_ms": 9.827513,
-          "ops_per_sec": 36393541.27539694,
-          "gets_per_sec": 20767817.85992041,
-          "inserts_per_sec": 15625723.41547653
+          "duration_ms": 9.813743,
+          "ops_per_sec": 36444606.30362951,
+          "gets_per_sec": 20796957.898734458,
+          "inserts_per_sec": 15647648.404895054
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 40,
           "p50_ns": 60,
           "p95_ns": 100,
-          "p99_ns": 150,
-          "max_ns": 10689,
-          "mean_ns": 72
+          "p99_ns": 141,
+          "max_ns": 471,
+          "mean_ns": 67
         },
         "eviction": {
           "total_evictions": 149928,
@@ -4586,19 +4586,19 @@
           "miss_rate": 0.7525135230479774
         },
         "throughput": {
-          "duration_ms": 492.866088,
-          "ops_per_sec": 725716.393780373,
-          "gets_per_sec": 414100.31034636736,
-          "inserts_per_sec": 311616.08343400573
+          "duration_ms": 490.979416,
+          "ops_per_sec": 728505.0825837472,
+          "gets_per_sec": 415691.56129347795,
+          "inserts_per_sec": 312813.52129026933
         },
         "latency": {
           "sample_count": 2000,
-          "min_ns": 20,
+          "min_ns": 29,
           "p50_ns": 80,
-          "p95_ns": 9939,
-          "p99_ns": 10098,
-          "max_ns": 20999,
-          "mean_ns": 2496
+          "p95_ns": 9838,
+          "p99_ns": 9949,
+          "max_ns": 21159,
+          "mean_ns": 2471
         },
         "eviction": {
           "total_evictions": 149951,
@@ -4624,19 +4624,19 @@
           "miss_rate": 0.7531357792411414
         },
         "throughput": {
-          "duration_ms": 10.153512,
-          "ops_per_sec": 35239826.37731654,
-          "gets_per_sec": 20101025.14282743,
-          "inserts_per_sec": 15138801.234489111
+          "duration_ms": 10.059882,
+          "ops_per_sec": 35567812.823251806,
+          "gets_per_sec": 20288110.73529491,
+          "inserts_per_sec": 15279702.087956898
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 70,
           "p95_ns": 110,
-          "p99_ns": 150,
-          "max_ns": 351,
-          "mean_ns": 70
+          "p99_ns": 140,
+          "max_ns": 371,
+          "mean_ns": 69
         },
         "eviction": {
           "total_evictions": 150078,
@@ -4662,18 +4662,18 @@
           "miss_rate": 0.7530573847601129
         },
         "throughput": {
-          "duration_ms": 17.090708,
-          "ops_per_sec": 20934884.616833895,
-          "gets_per_sec": 11941927.742256202,
-          "inserts_per_sec": 8992956.874577696
+          "duration_ms": 17.050489,
+          "ops_per_sec": 20984266.199051537,
+          "gets_per_sec": 11970096.576115794,
+          "inserts_per_sec": 9014169.622935742
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 40,
-          "p50_ns": 110,
-          "p95_ns": 151,
+          "p50_ns": 111,
+          "p95_ns": 150,
           "p99_ns": 181,
-          "max_ns": 592,
+          "max_ns": 351,
           "mean_ns": 105
         },
         "eviction": {
@@ -4700,10 +4700,10 @@
           "miss_rate": 0.7520333568516776
         },
         "throughput": {
-          "duration_ms": 23.967391000000003,
-          "ops_per_sec": 14919563.00124615,
-          "gets_per_sec": 8515570.176161435,
-          "inserts_per_sec": 6403992.825084716
+          "duration_ms": 23.735708000000002,
+          "ops_per_sec": 15065192.072635878,
+          "gets_per_sec": 8598690.209704299,
+          "inserts_per_sec": 6466501.862931579
         },
         "latency": {
           "sample_count": 2000,
@@ -4711,8 +4711,8 @@
           "p50_ns": 150,
           "p95_ns": 260,
           "p99_ns": 311,
-          "max_ns": 11070,
-          "mean_ns": 147
+          "max_ns": 721,
+          "mean_ns": 143
         },
         "eviction": {
           "total_evictions": 149853,
@@ -4738,19 +4738,19 @@
           "miss_rate": 0.7522097444339919
         },
         "throughput": {
-          "duration_ms": 20.616322999999998,
-          "ops_per_sec": 17346400.713648114,
-          "gets_per_sec": 9899728.48213525,
-          "inserts_per_sec": 7446672.231512865
+          "duration_ms": 20.157995000000003,
+          "ops_per_sec": 17740802.098621413,
+          "gets_per_sec": 10124816.481004186,
+          "inserts_per_sec": 7615985.617617228
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 30,
-          "p50_ns": 121,
-          "p95_ns": 201,
-          "p99_ns": 271,
-          "max_ns": 10510,
-          "mean_ns": 128
+          "p50_ns": 130,
+          "p95_ns": 191,
+          "p99_ns": 241,
+          "max_ns": 681,
+          "mean_ns": 121
         },
         "eviction": {
           "total_evictions": 149889,
@@ -4776,18 +4776,18 @@
           "miss_rate": 0.7526066164941988
         },
         "throughput": {
-          "duration_ms": 11.173861,
-          "ops_per_sec": 32012211.356486358,
-          "gets_per_sec": 18265485.851309586,
-          "inserts_per_sec": 13746725.50517677
+          "duration_ms": 11.059837,
+          "ops_per_sec": 32342248.805294327,
+          "gets_per_sec": 18453798.18888832,
+          "inserts_per_sec": 13888450.61640601
         },
         "latency": {
           "sample_count": 2000,
-          "min_ns": 30,
+          "min_ns": 40,
           "p50_ns": 70,
           "p95_ns": 110,
           "p99_ns": 150,
-          "max_ns": 251,
+          "max_ns": 340,
           "mean_ns": 71
         },
         "eviction": {
@@ -4814,19 +4814,19 @@
           "miss_rate": 0.7521362496080276
         },
         "throughput": {
-          "duration_ms": 11.193658000000001,
-          "ops_per_sec": 31947018.570694227,
-          "gets_per_sec": 18233181.681984566,
-          "inserts_per_sec": 13713836.88870966
+          "duration_ms": 11.025673,
+          "ops_per_sec": 32433757.104895093,
+          "gets_per_sec": 18510978.876300793,
+          "inserts_per_sec": 13922778.2285943
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 30,
           "p50_ns": 70,
-          "p95_ns": 111,
-          "p99_ns": 160,
-          "max_ns": 881,
-          "mean_ns": 71
+          "p95_ns": 110,
+          "p99_ns": 150,
+          "max_ns": 210,
+          "mean_ns": 70
         },
         "eviction": {
           "total_evictions": 149874,
@@ -4852,19 +4852,19 @@
           "miss_rate": 0.7533366650987771
         },
         "throughput": {
-          "duration_ms": 21.088697,
-          "ops_per_sec": 16968758.19307376,
-          "gets_per_sec": 9677980.578885457,
-          "inserts_per_sec": 7290777.614188302
+          "duration_ms": 20.850306,
+          "ops_per_sec": 17162769.6974807,
+          "gets_per_sec": 9788633.317899508,
+          "inserts_per_sec": 7374136.3795811925
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 40,
-          "p50_ns": 130,
-          "p95_ns": 190,
-          "p99_ns": 230,
-          "max_ns": 602,
-          "mean_ns": 123
+          "p50_ns": 120,
+          "p95_ns": 180,
+          "p99_ns": 220,
+          "max_ns": 400,
+          "mean_ns": 117
         },
         "eviction": {
           "total_evictions": 150119,
@@ -4890,19 +4890,19 @@
           "miss_rate": 0.7529789902790843
         },
         "throughput": {
-          "duration_ms": 23.718886,
-          "ops_per_sec": 15084013.642124675,
-          "gets_per_sec": 8604788.606007887,
-          "inserts_per_sec": 6479225.036116788
+          "duration_ms": 23.752128000000003,
+          "ops_per_sec": 15062902.995470552,
+          "gets_per_sec": 8592745.879442886,
+          "inserts_per_sec": 6470157.116027667
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 30,
           "p50_ns": 150,
           "p95_ns": 230,
-          "p99_ns": 280,
-          "max_ns": 10891,
-          "mean_ns": 142
+          "p99_ns": 281,
+          "max_ns": 1903,
+          "mean_ns": 139
         },
         "eviction": {
           "total_evictions": 150046,
@@ -4928,10 +4928,10 @@
           "miss_rate": 0.1981028535591094
         },
         "throughput": {
-          "duration_ms": 19.777895,
-          "ops_per_sec": 12363702.001653867,
-          "gets_per_sec": 10319399.511424243,
-          "inserts_per_sec": 2044302.4902296225
+          "duration_ms": 19.583874,
+          "ops_per_sec": 12486191.445063422,
+          "gets_per_sec": 10421635.678415822,
+          "inserts_per_sec": 2064555.7666475999
         },
         "latency": {
           "sample_count": 2000,
@@ -4939,8 +4939,8 @@
           "p50_ns": 50,
           "p95_ns": 91,
           "p99_ns": 110,
-          "max_ns": 621,
-          "mean_ns": 57
+          "max_ns": 20317,
+          "mean_ns": 66
         },
         "eviction": {
           "total_evictions": 38746,
@@ -4966,10 +4966,10 @@
           "miss_rate": 0.1981028535591094
         },
         "throughput": {
-          "duration_ms": 16.622623,
-          "ops_per_sec": 14710554.405282488,
-          "gets_per_sec": 12278206.634416241,
-          "inserts_per_sec": 2432347.7708662464
+          "duration_ms": 16.640876,
+          "ops_per_sec": 14694418.731321597,
+          "gets_per_sec": 12264738.947637133,
+          "inserts_per_sec": 2429679.7836844646
         },
         "latency": {
           "sample_count": 2000,
@@ -4977,7 +4977,7 @@
           "p50_ns": 40,
           "p95_ns": 80,
           "p99_ns": 100,
-          "max_ns": 170,
+          "max_ns": 221,
           "mean_ns": 46
         },
         "eviction": {
@@ -5004,19 +5004,19 @@
           "miss_rate": 0.17395735340232044
         },
         "throughput": {
-          "duration_ms": 23.989743,
-          "ops_per_sec": 9987601.784646045,
-          "gets_per_sec": 8507635.950914523,
-          "inserts_per_sec": 1479965.8337315242
+          "duration_ms": 23.910434000000002,
+          "ops_per_sec": 10020729.862117935,
+          "gets_per_sec": 8535855.099911612,
+          "inserts_per_sec": 1484874.7622063237
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 40,
           "p50_ns": 60,
           "p95_ns": 141,
-          "p99_ns": 170,
-          "max_ns": 271,
-          "mean_ns": 73
+          "p99_ns": 161,
+          "max_ns": 240,
+          "mean_ns": 74
         },
         "eviction": {
           "total_evictions": 33818,
@@ -5042,19 +5042,19 @@
           "miss_rate": 0.17395735340232044
         },
         "throughput": {
-          "duration_ms": 32.026947,
-          "ops_per_sec": 7481200.128129602,
-          "gets_per_sec": 6372633.645036475,
-          "inserts_per_sec": 1108566.4830931278
+          "duration_ms": 32.086602,
+          "ops_per_sec": 7467291.176547769,
+          "gets_per_sec": 6360785.726079689,
+          "inserts_per_sec": 1106505.4504680801
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 80,
           "p50_ns": 120,
-          "p95_ns": 191,
-          "p99_ns": 251,
-          "max_ns": 11151,
-          "mean_ns": 133
+          "p95_ns": 200,
+          "p99_ns": 221,
+          "max_ns": 901,
+          "mean_ns": 127
         },
         "eviction": {
           "total_evictions": 33818,
@@ -5080,19 +5080,19 @@
           "miss_rate": 0.2518961665098777
         },
         "throughput": {
-          "duration_ms": 32.172979,
-          "ops_per_sec": 7941664.338885126,
-          "gets_per_sec": 6343708.489039825,
-          "inserts_per_sec": 1597955.8498453004
+          "duration_ms": 31.519866,
+          "ops_per_sec": 8106221.009949725,
+          "gets_per_sec": 6475154.431176833,
+          "inserts_per_sec": 1631066.578772892
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 60,
           "p50_ns": 80,
-          "p95_ns": 281,
-          "p99_ns": 360,
-          "max_ns": 1874,
-          "mean_ns": 119
+          "p95_ns": 271,
+          "p99_ns": 311,
+          "max_ns": 742,
+          "mean_ns": 117
         },
         "eviction": {
           "total_evictions": 49725,
@@ -5118,19 +5118,19 @@
           "miss_rate": 0.6813558325493885
         },
         "throughput": {
-          "duration_ms": 31.930276,
-          "ops_per_sec": 10747104.096438127,
-          "gets_per_sec": 6391927.210400562,
-          "inserts_per_sec": 4355176.886037565
+          "duration_ms": 31.486363000000004,
+          "ops_per_sec": 10898623.000693982,
+          "gets_per_sec": 6482044.30597462,
+          "inserts_per_sec": 4416578.694719361
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 30,
           "p50_ns": 130,
-          "p95_ns": 180,
-          "p99_ns": 261,
-          "max_ns": 631,
-          "mean_ns": 118
+          "p95_ns": 170,
+          "p99_ns": 201,
+          "max_ns": 581,
+          "mean_ns": 115
         },
         "eviction": {
           "total_evictions": 137376,
@@ -5156,10 +5156,10 @@
           "miss_rate": 0.23205746315459397
         },
         "throughput": {
-          "duration_ms": 20.173224,
-          "ops_per_sec": 12464938.673163991,
-          "gets_per_sec": 10117173.139999833,
-          "inserts_per_sec": 2347765.5331641585
+          "duration_ms": 20.173454,
+          "ops_per_sec": 12464796.558883768,
+          "gets_per_sec": 10117057.792879691,
+          "inserts_per_sec": 2347738.766004076
         },
         "latency": {
           "sample_count": 2000,
@@ -5167,7 +5167,7 @@
           "p50_ns": 40,
           "p95_ns": 161,
           "p99_ns": 181,
-          "max_ns": 330,
+          "max_ns": 311,
           "mean_ns": 66
         },
         "eviction": {
@@ -5194,10 +5194,10 @@
           "miss_rate": 0.1973826042646598
         },
         "throughput": {
-          "duration_ms": 14.415504,
-          "ops_per_sec": 16952650.424154438,
-          "gets_per_sec": 14158089.789992774,
-          "inserts_per_sec": 2794560.6341616637
+          "duration_ms": 14.430954,
+          "ops_per_sec": 16934500.657406297,
+          "gets_per_sec": 14142931.92258807,
+          "inserts_per_sec": 2791568.734818225
         },
         "latency": {
           "sample_count": 2000,
@@ -5205,7 +5205,7 @@
           "p50_ns": 30,
           "p95_ns": 70,
           "p99_ns": 81,
-          "max_ns": 360,
+          "max_ns": 491,
           "mean_ns": 37
         },
         "eviction": {
@@ -5232,19 +5232,19 @@
           "miss_rate": 0.6704247021009722
         },
         "throughput": {
-          "duration_ms": 18.856181,
-          "ops_per_sec": 18080384.357786976,
-          "gets_per_sec": 10823824.824337441,
-          "inserts_per_sec": 7256559.533449536
+          "duration_ms": 18.840518,
+          "ops_per_sec": 18095415.42329144,
+          "gets_per_sec": 10832823.173970057,
+          "inserts_per_sec": 7262592.2493213825
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 60,
           "p95_ns": 80,
-          "p99_ns": 101,
-          "max_ns": 10309,
-          "mean_ns": 62
+          "p99_ns": 100,
+          "max_ns": 452,
+          "mean_ns": 57
         },
         "eviction": {
           "total_evictions": 135145,
@@ -5270,19 +5270,19 @@
           "miss_rate": 0.19697593289432425
         },
         "throughput": {
-          "duration_ms": 22.607798,
-          "ops_per_sec": 10805917.498024356,
-          "gets_per_sec": 9027681.5106009,
-          "inserts_per_sec": 1778235.9874234546
+          "duration_ms": 22.668608,
+          "ops_per_sec": 10776929.92882492,
+          "gets_per_sec": 9003464.17389193,
+          "inserts_per_sec": 1773465.7549329894
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 20,
           "p50_ns": 30,
-          "p95_ns": 481,
-          "p99_ns": 521,
-          "max_ns": 621,
-          "mean_ns": 75
+          "p95_ns": 490,
+          "p99_ns": 531,
+          "max_ns": 10309,
+          "mean_ns": 81
         },
         "eviction": {
           "total_evictions": 38516,
@@ -5308,10 +5308,10 @@
           "miss_rate": 0.2300437049231734
         },
         "throughput": {
-          "duration_ms": 15.713992999999999,
-          "ops_per_sec": 15976015.771421053,
-          "gets_per_sec": 12988169.206897318,
-          "inserts_per_sec": 2987846.5645237337
+          "duration_ms": 15.556403,
+          "ops_per_sec": 16137856.54691512,
+          "gets_per_sec": 13119742.398033787,
+          "inserts_per_sec": 3018114.148881332
         },
         "latency": {
           "sample_count": 2000,
@@ -5319,7 +5319,7 @@
           "p50_ns": 30,
           "p95_ns": 90,
           "p99_ns": 110,
-          "max_ns": 190,
+          "max_ns": 150,
           "mean_ns": 42
         },
         "eviction": {
@@ -5346,18 +5346,18 @@
           "miss_rate": 0.19227716368767633
         },
         "throughput": {
-          "duration_ms": 19.282759,
-          "ops_per_sec": 12619511.554337218,
-          "gets_per_sec": 10584377.474198584,
-          "inserts_per_sec": 2035134.0801386358
+          "duration_ms": 19.037185,
+          "ops_per_sec": 12782299.483878523,
+          "gets_per_sec": 10720912.782010574,
+          "inserts_per_sec": 2061386.7018679492
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 41,
           "p95_ns": 150,
-          "p99_ns": 181,
-          "max_ns": 241,
+          "p99_ns": 171,
+          "max_ns": 310,
           "mean_ns": 60
         },
         "eviction": {
@@ -5384,19 +5384,19 @@
           "miss_rate": 0.1843789197240514
         },
         "throughput": {
-          "duration_ms": 18.71662,
-          "ops_per_sec": 12915098.986889727,
-          "gets_per_sec": 10904532.976573762,
-          "inserts_per_sec": 2010566.0103159652
+          "duration_ms": 18.51466,
+          "ops_per_sec": 13055978.343647683,
+          "gets_per_sec": 11023480.852470422,
+          "inserts_per_sec": 2032497.4911772618
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
-          "p95_ns": 171,
-          "p99_ns": 310,
-          "max_ns": 1412,
-          "mean_ns": 57
+          "p95_ns": 170,
+          "p99_ns": 260,
+          "max_ns": 411,
+          "mean_ns": 55
         },
         "eviction": {
           "total_evictions": 35945,
@@ -5422,19 +5422,19 @@
           "miss_rate": 0.17470700062715583
         },
         "throughput": {
-          "duration_ms": 19.361817,
-          "ops_per_sec": 12382773.786158603,
-          "gets_per_sec": 10541159.437670546,
-          "inserts_per_sec": 1841614.3484880577
+          "duration_ms": 18.943350000000002,
+          "ops_per_sec": 12656314.748975234,
+          "gets_per_sec": 10774018.32305268,
+          "inserts_per_sec": 1882296.4259225533
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
-          "p95_ns": 160,
-          "p99_ns": 240,
-          "max_ns": 390,
-          "mean_ns": 59
+          "p95_ns": 150,
+          "p99_ns": 210,
+          "max_ns": 440,
+          "mean_ns": 57
         },
         "eviction": {
           "total_evictions": 33971,
@@ -5460,18 +5460,18 @@
           "miss_rate": 0.1739083568516776
         },
         "throughput": {
-          "duration_ms": 16.725305,
-          "ops_per_sec": 14325000.351264147,
-          "gets_per_sec": 12202826.79448895,
-          "inserts_per_sec": 2122173.556775198
+          "duration_ms": 16.613755,
+          "ops_per_sec": 14421182.929446112,
+          "gets_per_sec": 12284760.428933736,
+          "inserts_per_sec": 2136422.5005123764
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
           "p95_ns": 81,
-          "p99_ns": 101,
-          "max_ns": 180,
+          "p99_ns": 91,
+          "max_ns": 140,
           "mean_ns": 47
         },
         "eviction": {
@@ -5498,19 +5498,19 @@
           "miss_rate": 0.17590251646284105
         },
         "throughput": {
-          "duration_ms": 16.698885,
-          "ops_per_sec": 14372037.41447408,
-          "gets_per_sec": 12222133.393936181,
-          "inserts_per_sec": 2149904.020537898
+          "duration_ms": 16.647447999999997,
+          "ops_per_sec": 14416443.889778182,
+          "gets_per_sec": 12259897.132581523,
+          "inserts_per_sec": 2156546.7571966588
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
           "p95_ns": 90,
-          "p99_ns": 120,
-          "max_ns": 10440,
-          "mean_ns": 53
+          "p99_ns": 100,
+          "max_ns": 471,
+          "mean_ns": 47
         },
         "eviction": {
           "total_evictions": 34215,
@@ -5536,19 +5536,19 @@
           "miss_rate": 0.19944535904672311
         },
         "throughput": {
-          "duration_ms": 20.649044,
-          "ops_per_sec": 11855367.250900334,
-          "gets_per_sec": 9884041.120741474,
-          "inserts_per_sec": 1971326.1301588588
+          "duration_ms": 20.017954,
+          "ops_per_sec": 12229121.91725488,
+          "gets_per_sec": 10195647.367358321,
+          "inserts_per_sec": 2033474.5498965578
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 49,
-          "p95_ns": 180,
-          "p99_ns": 251,
-          "max_ns": 1092,
-          "mean_ns": 67
+          "p95_ns": 160,
+          "p99_ns": 190,
+          "max_ns": 1633,
+          "mean_ns": 63
         },
         "eviction": {
           "total_evictions": 39020,
@@ -5574,18 +5574,18 @@
           "miss_rate": 0.1825807463154594
         },
         "throughput": {
-          "duration_ms": 18.620248999999998,
-          "ops_per_sec": 12962232.674761761,
-          "gets_per_sec": 10960970.500448195,
-          "inserts_per_sec": 2001262.174313566
+          "duration_ms": 18.661915,
+          "ops_per_sec": 12933292.21572384,
+          "gets_per_sec": 10936498.210392663,
+          "inserts_per_sec": 1996794.0053311784
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
           "p95_ns": 171,
-          "p99_ns": 221,
-          "max_ns": 1823,
+          "p99_ns": 220,
+          "max_ns": 1723,
           "mean_ns": 57
         },
         "eviction": {
@@ -5612,19 +5612,19 @@
           "miss_rate": 0.09326983380370024
         },
         "throughput": {
-          "duration_ms": 8.226949000000001,
-          "ops_per_sec": 27122083.776136205,
-          "gets_per_sec": 24808224.774457697,
-          "inserts_per_sec": 2313859.001678508
+          "duration_ms": 7.92998,
+          "ops_per_sec": 28137775.883419633,
+          "gets_per_sec": 25737265.4155496,
+          "inserts_per_sec": 2400510.4678700324
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 50,
           "p95_ns": 80,
-          "p99_ns": 110,
-          "max_ns": 371,
-          "mean_ns": 54
+          "p99_ns": 91,
+          "max_ns": 10500,
+          "mean_ns": 58
         },
         "eviction": {
           "total_evictions": 17115,
@@ -5650,18 +5650,18 @@
           "miss_rate": 0.09326983380370024
         },
         "throughput": {
-          "duration_ms": 5.190258,
-          "ops_per_sec": 42990541.125315934,
-          "gets_per_sec": 39322900.71129412,
-          "inserts_per_sec": 3667640.414021808
+          "duration_ms": 5.353755,
+          "ops_per_sec": 41677663.621140674,
+          "gets_per_sec": 38122028.37074166,
+          "inserts_per_sec": 3555635.250399019
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
-          "p95_ns": 60,
+          "p95_ns": 61,
           "p99_ns": 80,
-          "max_ns": 902,
+          "max_ns": 350,
           "mean_ns": 42
         },
         "eviction": {
@@ -5688,18 +5688,18 @@
           "miss_rate": 0.09346582000627157
         },
         "throughput": {
-          "duration_ms": 12.298765,
-          "ops_per_sec": 18145887.005727813,
-          "gets_per_sec": 16594836.961272128,
-          "inserts_per_sec": 1551050.044455683
+          "duration_ms": 12.256048,
+          "ops_per_sec": 18209132.340212766,
+          "gets_per_sec": 16652676.295001455,
+          "inserts_per_sec": 1556456.0452113112
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 40,
           "p50_ns": 60,
-          "p95_ns": 120,
-          "p99_ns": 150,
-          "max_ns": 511,
+          "p95_ns": 121,
+          "p99_ns": 141,
+          "max_ns": 230,
           "mean_ns": 69
         },
         "eviction": {
@@ -5726,19 +5726,19 @@
           "miss_rate": 0.09346582000627157
         },
         "throughput": {
-          "duration_ms": 16.32215,
-          "ops_per_sec": 13672953.624369338,
-          "gets_per_sec": 12504235.042564858,
-          "inserts_per_sec": 1168718.5818044804
+          "duration_ms": 15.691506,
+          "ops_per_sec": 14222471.699019838,
+          "gets_per_sec": 13006782.140605241,
+          "inserts_per_sec": 1215689.558414597
         },
         "latency": {
           "sample_count": 2000,
-          "min_ns": 60,
+          "min_ns": 69,
           "p50_ns": 90,
           "p95_ns": 171,
-          "p99_ns": 220,
-          "max_ns": 431,
-          "mean_ns": 101
+          "p99_ns": 200,
+          "max_ns": 260,
+          "mean_ns": 99
         },
         "eviction": {
           "total_evictions": 17155,
@@ -5764,18 +5764,18 @@
           "miss_rate": 0.09308364691125748
         },
         "throughput": {
-          "duration_ms": 15.306421,
-          "ops_per_sec": 14575190.37272005,
-          "gets_per_sec": 13334011.915652914,
-          "inserts_per_sec": 1241178.4570671353
+          "duration_ms": 15.17385,
+          "ops_per_sec": 14702530.999054294,
+          "gets_per_sec": 13450508.60526498,
+          "inserts_per_sec": 1252022.3937893151
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 60,
           "p50_ns": 71,
-          "p95_ns": 240,
-          "p99_ns": 301,
-          "max_ns": 532,
+          "p95_ns": 231,
+          "p99_ns": 280,
+          "max_ns": 741,
           "mean_ns": 89
         },
         "eviction": {
@@ -5802,19 +5802,19 @@
           "miss_rate": 0.6304484164314832
         },
         "throughput": {
-          "duration_ms": 20.440544000000003,
-          "ops_per_sec": 16279801.555183657,
-          "gets_per_sec": 9984861.459655868,
-          "inserts_per_sec": 6294940.09552779
+          "duration_ms": 20.021651000000002,
+          "ops_per_sec": 16620407.577776676,
+          "gets_per_sec": 10193764.739980733,
+          "inserts_per_sec": 6426642.837795944
         },
         "latency": {
           "sample_count": 2000,
-          "min_ns": 30,
-          "p50_ns": 130,
-          "p95_ns": 170,
-          "p99_ns": 240,
-          "max_ns": 2204,
-          "mean_ns": 114
+          "min_ns": 29,
+          "p50_ns": 120,
+          "p95_ns": 161,
+          "p99_ns": 191,
+          "max_ns": 2154,
+          "mean_ns": 111
         },
         "eviction": {
           "total_evictions": 126751,
@@ -5840,18 +5840,18 @@
           "miss_rate": 0.13902281279397932
         },
         "throughput": {
-          "duration_ms": 7.108276,
-          "ops_per_sec": 32704132.47881765,
-          "gets_per_sec": 28712447.293830458,
-          "inserts_per_sec": 3991685.1849871892
+          "duration_ms": 7.038246,
+          "ops_per_sec": 33029536.052022055,
+          "gets_per_sec": 28998133.910067935,
+          "inserts_per_sec": 4031402.141954118
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
           "p95_ns": 140,
-          "p99_ns": 170,
-          "max_ns": 431,
+          "p99_ns": 160,
+          "max_ns": 191,
           "mean_ns": 54
         },
         "eviction": {
@@ -5878,10 +5878,10 @@
           "miss_rate": 0.09318653966760737
         },
         "throughput": {
-          "duration_ms": 2.874036,
-          "ops_per_sec": 77631247.48611361,
-          "gets_per_sec": 71013724.25397594,
-          "inserts_per_sec": 6617523.232137663
+          "duration_ms": 2.866706,
+          "ops_per_sec": 77829746.0569727,
+          "gets_per_sec": 71195302.20399301,
+          "inserts_per_sec": 6634443.852979692
         },
         "latency": {
           "sample_count": 2000,
@@ -5889,7 +5889,7 @@
           "p50_ns": 30,
           "p95_ns": 50,
           "p99_ns": 60,
-          "max_ns": 91,
+          "max_ns": 80,
           "mean_ns": 32
         },
         "eviction": {
@@ -5916,19 +5916,19 @@
           "miss_rate": 0.6220651066164942
         },
         "throughput": {
-          "duration_ms": 7.604985,
-          "ops_per_sec": 43531578.30028593,
-          "gets_per_sec": 26837133.80105286,
-          "inserts_per_sec": 16694444.499233069
+          "duration_ms": 7.476304,
+          "ops_per_sec": 44280837.16231978,
+          "gets_per_sec": 27299050.439896505,
+          "inserts_per_sec": 16981786.722423274
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
-          "p50_ns": 51,
-          "p95_ns": 80,
-          "p99_ns": 100,
-          "max_ns": 241,
-          "mean_ns": 55
+          "p50_ns": 50,
+          "p95_ns": 71,
+          "p99_ns": 90,
+          "max_ns": 120,
+          "mean_ns": 54
         },
         "eviction": {
           "total_evictions": 125040,
@@ -5954,19 +5954,19 @@
           "miss_rate": 0.09317184070241458
         },
         "throughput": {
-          "duration_ms": 4.495909,
-          "ops_per_sec": 49625559.59206469,
-          "gets_per_sec": 45395936.617044516,
-          "inserts_per_sec": 4229622.9750201795
+          "duration_ms": 4.354381,
+          "ops_per_sec": 51238511.28323406,
+          "gets_per_sec": 46871415.24822931,
+          "inserts_per_sec": 4367096.035004746
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 20,
           "p50_ns": 30,
           "p95_ns": 140,
-          "p99_ns": 180,
-          "max_ns": 10921,
-          "mean_ns": 45
+          "p99_ns": 161,
+          "max_ns": 271,
+          "mean_ns": 39
         },
         "eviction": {
           "total_evictions": 17095,
@@ -5992,10 +5992,10 @@
           "miss_rate": 0.13648969112574472
         },
         "throughput": {
-          "duration_ms": 3.81167,
-          "ops_per_sec": 60853379.22747772,
-          "gets_per_sec": 53545034.06643282,
-          "inserts_per_sec": 7308345.161044897
+          "duration_ms": 3.661739,
+          "ops_per_sec": 63345039.06477223,
+          "gets_per_sec": 55737451.52235045,
+          "inserts_per_sec": 7607587.542421784
         },
         "latency": {
           "sample_count": 2000,
@@ -6003,7 +6003,7 @@
           "p50_ns": 30,
           "p95_ns": 80,
           "p99_ns": 91,
-          "max_ns": 221,
+          "max_ns": 291,
           "mean_ns": 36
         },
         "eviction": {
@@ -6030,10 +6030,10 @@
           "miss_rate": 0.09327473345876447
         },
         "throughput": {
-          "duration_ms": 6.200749,
-          "ops_per_sec": 35984846.34678811,
-          "gets_per_sec": 32914733.36527571,
-          "inserts_per_sec": 3070112.9815123947
+          "duration_ms": 6.1852160000000005,
+          "ops_per_sec": 36075215.48156119,
+          "gets_per_sec": 32997392.492032614,
+          "inserts_per_sec": 3077822.989528579
         },
         "latency": {
           "sample_count": 2000,
@@ -6041,8 +6041,8 @@
           "p50_ns": 40,
           "p95_ns": 120,
           "p99_ns": 150,
-          "max_ns": 190,
-          "mean_ns": 49
+          "max_ns": 221,
+          "mean_ns": 50
         },
         "eviction": {
           "total_evictions": 17116,
@@ -6068,19 +6068,19 @@
           "miss_rate": 0.0933237300094073
         },
         "throughput": {
-          "duration_ms": 5.053373,
-          "ops_per_sec": 44157239.13512816,
-          "gets_per_sec": 40388073.47092724,
-          "inserts_per_sec": 3769165.664200921
+          "duration_ms": 4.9121809999999995,
+          "ops_per_sec": 45426461.28064092,
+          "gets_per_sec": 41548957.58116405,
+          "inserts_per_sec": 3877503.699476872
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 31,
           "p95_ns": 110,
-          "p99_ns": 220,
-          "max_ns": 1092,
-          "mean_ns": 44
+          "p99_ns": 201,
+          "max_ns": 1093,
+          "mean_ns": 43
         },
         "eviction": {
           "total_evictions": 17126,
@@ -6106,19 +6106,19 @@
           "miss_rate": 0.09352461586704297
         },
         "throughput": {
-          "duration_ms": 6.219193,
-          "ops_per_sec": 35886328.01715592,
-          "gets_per_sec": 32817119.520169258,
-          "inserts_per_sec": 3069208.496986667
+          "duration_ms": 5.7084470000000005,
+          "ops_per_sec": 39097148.48889724,
+          "gets_per_sec": 35753331.860661924,
+          "inserts_per_sec": 3343816.628235315
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
-          "p95_ns": 111,
-          "p99_ns": 211,
-          "max_ns": 1322,
-          "mean_ns": 51
+          "p95_ns": 110,
+          "p99_ns": 160,
+          "max_ns": 1343,
+          "mean_ns": 50
         },
         "eviction": {
           "total_evictions": 17167,
@@ -6144,10 +6144,10 @@
           "miss_rate": 0.09348051897146437
         },
         "throughput": {
-          "duration_ms": 5.696736,
-          "ops_per_sec": 39175942.15354196,
-          "gets_per_sec": 35826831.36448661,
-          "inserts_per_sec": 3349110.789055347
+          "duration_ms": 5.387226999999999,
+          "ops_per_sec": 41426693.17628532,
+          "gets_per_sec": 37885168.00944159,
+          "inserts_per_sec": 3541525.1668437216
         },
         "latency": {
           "sample_count": 2000,
@@ -6155,7 +6155,7 @@
           "p50_ns": 40,
           "p95_ns": 61,
           "p99_ns": 80,
-          "max_ns": 151,
+          "max_ns": 150,
           "mean_ns": 43
         },
         "eviction": {
@@ -6182,18 +6182,18 @@
           "miss_rate": 0.0935001175917215
         },
         "throughput": {
-          "duration_ms": 4.9131,
-          "ops_per_sec": 45425291.56744214,
-          "gets_per_sec": 41541185.80936679,
-          "inserts_per_sec": 3884105.7580753495
+          "duration_ms": 5.828691,
+          "ops_per_sec": 38289729.20334943,
+          "gets_per_sec": 35015752.25037663,
+          "inserts_per_sec": 3273976.952972803
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 40,
-          "p95_ns": 60,
+          "p95_ns": 61,
           "p99_ns": 80,
-          "max_ns": 120,
+          "max_ns": 501,
           "mean_ns": 43
         },
         "eviction": {
@@ -6220,19 +6220,19 @@
           "miss_rate": 0.09611163374098464
         },
         "throughput": {
-          "duration_ms": 7.761028,
-          "ops_per_sec": 28825047.403514072,
-          "gets_per_sec": 26297547.180605456,
-          "inserts_per_sec": 2527500.2229086147
+          "duration_ms": 7.183829,
+          "ops_per_sec": 31141053.051234934,
+          "gets_per_sec": 28410475.80614739,
+          "inserts_per_sec": 2730577.245087543
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 41,
-          "p95_ns": 140,
-          "p99_ns": 241,
-          "max_ns": 631,
-          "mean_ns": 55
+          "p95_ns": 120,
+          "p99_ns": 151,
+          "max_ns": 330,
+          "mean_ns": 51
         },
         "eviction": {
           "total_evictions": 17695,
@@ -6258,19 +6258,19 @@
           "miss_rate": 0.09680248510504863
         },
         "throughput": {
-          "duration_ms": 5.5689470000000005,
-          "ops_per_sec": 40196647.58885297,
-          "gets_per_sec": 36648939.198020734,
-          "inserts_per_sec": 3547708.390832234
+          "duration_ms": 5.253878,
+          "ops_per_sec": 42607194.15258595,
+          "gets_per_sec": 38846733.784073405,
+          "inserts_per_sec": 3760460.368512554
         },
         "latency": {
           "sample_count": 2000,
           "min_ns": 29,
           "p50_ns": 31,
-          "p95_ns": 140,
-          "p99_ns": 241,
-          "max_ns": 530,
-          "mean_ns": 46
+          "p95_ns": 130,
+          "p99_ns": 210,
+          "max_ns": 411,
+          "mean_ns": 44
         },
         "eviction": {
           "total_evictions": 17836,
