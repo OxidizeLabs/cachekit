@@ -99,7 +99,13 @@ fn bench_hit_rates(c: &mut Criterion) {
                                     &mut generator,
                                     OPS,
                                     &mut op_model,
-                                    |k| Arc::clone(&value_pool[k as usize]),
+                                    |k| {
+                                        Arc::clone(
+                                            value_pool
+                                                .get(k as usize)
+                                                .expect("generator produced key outside configured UNIVERSE"),
+                                        )
+                                    },
                                 );
                                 total += start.elapsed();
                             }
@@ -214,7 +220,16 @@ fn bench_comprehensive(c: &mut Criterion) {
                                     policy_id,
                                     &mut cache,
                                     cfg,
-                                    |key| Arc::clone(&value_pool[key as usize]),
+                                    |key| {
+                                        let idx = key as usize;
+                                        Arc::clone(value_pool.get(idx).unwrap_or_else(|| {
+                                            panic!(
+                                                "workload key {} out of range for value_pool (len {}, expected < UNIVERSE)",
+                                                key,
+                                                value_pool.len()
+                                            )
+                                        }))
+                                    },
                                 );
                                 total += start.elapsed();
                             }
