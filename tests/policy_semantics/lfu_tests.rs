@@ -96,6 +96,20 @@ fn smoke_lfu_naive_agreement() {
 }
 
 #[test]
+fn lfu_naive_agreement_uses_bucket_arrival_for_ties() {
+    let ops = [
+        Op::Insert(1),
+        Op::Insert(2),
+        Op::Touch(2),
+        Op::Touch(1),
+        Op::EvictOne,
+    ];
+    let mut naive = NaiveLfuModel::new(2);
+    let mut current = LfuModel::new(2);
+    assert_models_agree(&mut naive, &mut current, &ops);
+}
+
+#[test]
 fn smoke_lfu() {
     let ops = [
         Op::Insert(1),

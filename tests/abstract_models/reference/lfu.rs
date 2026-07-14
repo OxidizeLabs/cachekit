@@ -3,7 +3,7 @@
 //! **Source:** [`docs/testing/specs/policies/exact/lfu.md`](../../../docs/testing/specs/policies/exact/lfu.md) ·
 //! [matrix.md](../../../docs/testing/specs/matrix.md)
 //! **Tier:** reference (spec-first oracle).
-//! **Formulation:** `HashMap<K, u64>` + append-only `first_seen` log for FIFO tie-break;
+//! **Formulation:** `HashMap<K, u64>` + append-only bucket-arrival log for FIFO tie-break;
 //! independent of [`FrequencyBuckets`](cachekit::ds::FrequencyBuckets).
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -14,7 +14,7 @@ use crate::abstract_models::{HitMiss, ModelStep, Op, OracleExpectation, PolicyMo
 #[derive(Debug, Clone)]
 pub struct NaiveLfuModel<K> {
     freq: HashMap<K, u64>,
-    first_seen: VecDeque<K>,
+    bucket_arrivals: VecDeque<K>,
     capacity: usize,
 }
 
@@ -25,7 +25,7 @@ where
     pub fn new(capacity: usize) -> Self {
         Self {
             freq: HashMap::new(),
-            first_seen: VecDeque::new(),
+            bucket_arrivals: VecDeque::new(),
             capacity,
         }
     }
@@ -42,9 +42,9 @@ where
         self.freq.values().copied().min()
     }
 
-    /// Last append index for `key` in the tie-break log (re-inserts append again).
-    fn last_seen_index(&self, key: &K) -> usize {
-        self.first_seen
+    /// Last bucket-arrival index for `key` (touches and re-inserts append again).
+    fn bucket_arrival_index(&self, key: &K) -> usize {
+        self.bucket_arrivals
             .iter()
             .rposition(|k| k == key)
             .unwrap_or(usize::MAX)
@@ -56,7 +56,7 @@ where
             .iter()
             .filter(|(_, f)| **f == min)
             .map(|(k, _)| k)
-            .min_by_key(|k| self.last_seen_index(k))
+            .min_by_key(|k| self.bucket_arrival_index(k))
             .cloned()
     }
 
@@ -69,6 +69,7 @@ where
     fn touch(&mut self, key: &K) -> bool {
         if let Some(f) = self.freq.get_mut(key) {
             *f = f.saturating_add(1);
+            self.bucket_arrivals.push_back(key.clone());
             true
         } else {
             false
@@ -84,7 +85,7 @@ where
             evicted = self.evict_victim();
         }
         self.freq.insert(key.clone(), 1);
-        self.first_seen.push_back(key);
+        self.bucket_arrivals.push_back(key);
         evicted
     }
 
