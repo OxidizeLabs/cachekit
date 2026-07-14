@@ -633,6 +633,8 @@ where
     /// hit/miss counters.
     #[cfg(feature = "concurrency")]
     #[inline]
+    // `try_update` is the nightly name, but `fetch_update` is required by our Rust 1.85 MSRV.
+    #[allow(deprecated)]
     pub(crate) fn get_shared(&self, key: &K) -> Option<&V> {
         let &id = self.map.get(key)?;
         let node = self.arena.get(id).expect("map/arena out of sync");
