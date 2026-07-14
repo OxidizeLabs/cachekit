@@ -871,11 +871,10 @@ impl<T> IntrusiveList<T> {
     #[inline]
     fn attach_front(&mut self, id: SlotId) -> Option<()> {
         let old_head = self.head;
-        if let Some(node) = self.arena.get_mut(id) {
+        {
+            let node = self.arena.get_mut(id)?;
             node.prev = None;
             node.next = old_head;
-        } else {
-            return None;
         }
         if let Some(old_head) = old_head {
             if let Some(head_node) = self.arena.get_mut(old_head) {
@@ -891,11 +890,10 @@ impl<T> IntrusiveList<T> {
     #[inline]
     fn attach_back(&mut self, id: SlotId) -> Option<()> {
         let old_tail = self.tail;
-        if let Some(node) = self.arena.get_mut(id) {
+        {
+            let node = self.arena.get_mut(id)?;
             node.next = None;
             node.prev = old_tail;
-        } else {
-            return None;
         }
         if let Some(old_tail) = old_tail {
             if let Some(tail_node) = self.arena.get_mut(old_tail) {
