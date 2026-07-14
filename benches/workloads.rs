@@ -46,6 +46,8 @@ const CAPACITY: usize = 4096;
 const UNIVERSE: u64 = 16_384;
 const OPS: usize = 200_000;
 const SEED: u64 = 42;
+/// Read-through probability used by the operation model (1.0 = always read-through).
+const READ_THROUGH_RATIO: f64 = 1.0;
 
 fn make_generator(workload: Workload) -> WorkloadGenerator {
     WorkloadSpec {
