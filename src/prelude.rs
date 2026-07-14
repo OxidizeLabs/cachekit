@@ -18,3 +18,10 @@ pub use crate::traits::{
 
 #[cfg(feature = "metrics")]
 pub use crate::metrics::snapshot::CacheMetricsSnapshot;
+
+#[cfg(feature = "ttl")]
+pub use crate::{
+    builder::{DynExpiringCache, ExpiringBuilder},
+    time::{Clock, MockClock, StdClock},
+    traits::{ExpiringCache, Tick, TtlStatus},
+};

@@ -30,7 +30,7 @@ jobs:
     outputs:
       targets: ${{ steps.list-targets.outputs.targets }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -60,11 +60,12 @@ jobs:
       matrix:
         target: ${{ fromJson(needs.discover-targets.outputs.targets) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
+          cache: false
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -74,7 +75,7 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Restore corpus
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
@@ -104,7 +105,7 @@ jobs:
 
       - name: Save corpus
         if: always()
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
@@ -188,11 +189,12 @@ jobs:
     needs: fuzz-continuous
     if: always() && github.event_name == 'schedule'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
+          cache: false
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -202,7 +204,7 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Restore all corpora
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: fuzz/corpus/
           key: fuzz-corpus-all-${{ github.sha }}

@@ -1,0 +1,73 @@
+//! Clock dual-run semantic oracle tests.
+//!
+//! **Model:** `ClockModel` · **Op strategy:** `standard_op_list`
+//! **Asserted:** residency, insert eviction
+
+use cachekit::policy::clock::ClockCache;
+use cachekit::traits::{Cache, EvictingCache};
+use proptest::prelude::*;
+
+use crate::abstract_models::driver::assert_dual_run_step_no_victim;
+use crate::abstract_models::exact::clock::ClockModel;
+use crate::abstract_models::{Op, PolicyModel, standard_capacity, standard_op_list};
+
+fn run_ops(cache: &mut ClockCache<u8, ()>, model: &mut ClockModel<u8, ()>, ops: &[Op<u8>]) {
+    for op in ops {
+        let step = model.apply(op.clone());
+        match op {
+            Op::Insert(k) => {
+                cache.insert(*k, ());
+            },
+            Op::Get(k) => {
+                let _ = cache.get(k);
+            },
+            Op::Peek(k) => {
+                let _ = cache.peek(k);
+            },
+            Op::GetMut(_) | Op::Touch(_) => {},
+            Op::Remove(k) => {
+                cache.remove(k);
+            },
+            Op::EvictOne => {
+                let _ = cache.evict_one();
+            },
+        }
+        assert_dual_run_step_no_victim(
+            cache,
+            model,
+            &step,
+            |k| cache.contains(k),
+            |cache, _, step| {
+                if let Some(e) = &step.evicted_on_insert {
+                    assert!(!cache.contains(e));
+                }
+            },
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn prop_clock_matches_model(capacity in standard_capacity(), ops in standard_op_list()) {
+        let mut cache = ClockCache::new(capacity);
+        let mut model = ClockModel::new(capacity);
+        run_ops(&mut cache, &mut model, &ops);
+    }
+}
+
+#[test]
+fn smoke_clock() {
+    let ops = [
+        Op::Insert(1),
+        Op::Get(1),
+        Op::Insert(2),
+        Op::Insert(3),
+        Op::Insert(4),
+    ];
+    let mut cache = ClockCache::new(3);
+    let mut model = ClockModel::new(3);
+    run_ops(&mut cache, &mut model, &ops);
+}

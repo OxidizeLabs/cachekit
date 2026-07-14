@@ -48,6 +48,28 @@ out/
 .DS_Store
 /dhat-heap.json
 
-# Benchmark artifacts
-docs/benchmarks/latest/
-docs/benchmarks/*/
+# Benchmark artifacts.
+#
+# `docs/benchmarks/<version>/` mixes published Pages assets (which must be
+# committed so GitHub Pages can serve them) with raw run artifacts (which
+# must not). We exclude *files inside* each version dir, then explicitly
+# re-include the five files that `bench-support::render_docs` produces
+# and that `charts.html` references at runtime — the page 404s without
+# `charts.js` / `charts.css`.
+#
+# Pattern note: `docs/benchmarks/*/*` (file-level) is required instead of
+# `docs/benchmarks/*/` (directory-level) because git refuses to re-include
+# files whose parent directory is excluded.
+docs/benchmarks/*/*
+!docs/benchmarks/*/charts.html
+!docs/benchmarks/*/charts.css
+!docs/benchmarks/*/charts.js
+!docs/benchmarks/*/index.md
+!docs/benchmarks/*/results.json
+
+# TLA+ TLC run artifacts (manual model checking — see docs/testing/specs/formal/).
+# Spec sources (*.tla, *.cfg) stay tracked; TLC writes these on each run.
+docs/testing/specs/formal/**/states/
+docs/testing/specs/formal/**/*_TTrace_*.bin
+docs/testing/specs/formal/**/*_TTrace_*.tla
+docs/testing/specs/formal/**/*.tlc

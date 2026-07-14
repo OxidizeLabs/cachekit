@@ -1,6 +1,6 @@
 # Test Organization
 
-This directory contains all integration and regression tests for cachekit.
+This directory contains all integration and regression tests for cachekit. For a full map of test types, CI coverage, and gaps, see the [Testing catalog](../docs/testing/catalog.md).
 
 ## Test Files
 
@@ -23,9 +23,17 @@ This directory contains all integration and regression tests for cachekit.
 
 - **`policy_invariants.rs`** - Cross-policy behavioral consistency (e.g. capacity-0 semantics)
 
+### Policy Semantic Tests
+
+- **`abstract_models/`** — Reference models (exact, mirror, bounded) used as test-side oracles.
+  See [abstract_models/README.md](abstract_models/README.md).
+- **`policy_semantics/`** — Proptest and Miri smoke traces: dual-run for exact/mirror policies,
+  invariant-only for bounded policies. Run: `cargo test --test policy_semantics --all-features`.
+
 ### Integration Tests
 
 - **`lru_integration_test.rs`** - LRU policy integration tests
+- **`ttl_integration_test.rs`** - TTL layer tests (reuses `LruOccupancyModel`)
 
 ## Performance Testing Philosophy
 

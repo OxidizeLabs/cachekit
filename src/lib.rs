@@ -36,10 +36,14 @@
 //! │                                                                      │
 //! │   traits        Cache<K,V> trait + capability traits                  │
 //! │   builder       CacheBuilder + DynCache<K,V> runtime wrapper         │
+//! │                 (+ DynExpiringCache via `ttl`)                       │
 //! │   policy        18 eviction policies behind feature flags            │
+//! │                 (+ `policy::expiring::Expiring<C>` via `ttl`)        │
 //! │   ds            Arena, ring buffer, intrusive list, ghost list, …    │
+//! │                 (+ `ExpirationIndex` via `ttl`)                      │
 //! │   store         Storage backends (HashMap, slab, weighted)           │
 //! │   metrics       Hit/miss counters and snapshots (feature-gated)      │
+//! │   time          Clock trait, StdClock, MockClock (`ttl` feature)     │
 //! │   error         ConfigError and InvariantError types                 │
 //! └──────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -114,6 +118,7 @@
 //! | `policy-all` | no | Enable every policy |
 //! | `metrics` | no | Hit/miss counters, [`metrics::snapshot::CacheMetricsSnapshot`] |
 //! | `concurrency` | no | `parking_lot`-backed concurrent data structures |
+//! | `ttl` | no | Time-based expiration: [`Expiring<C>`](policy::expiring::Expiring), [`DynExpiringCache`](builder::DynExpiringCache), [`Clock`](time::Clock) — see `docs/design/ttl.md` |
 //!
 //! Disable defaults and cherry-pick for smaller builds:
 //!
@@ -188,6 +193,9 @@ pub mod store;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
+
+#[cfg(feature = "ttl")]
+pub mod time;
 
 pub mod builder;
 pub mod prelude;

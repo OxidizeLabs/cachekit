@@ -34,3 +34,6 @@ pub mod s3_fifo;
 pub mod slru;
 #[cfg(feature = "policy-two-q")]
 pub mod two_q;
+
+#[cfg(feature = "ttl")]
+pub mod expiring;

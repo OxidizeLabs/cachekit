@@ -36,6 +36,9 @@ default = ["policy-s3-fifo", "policy-lru", "policy-fast-lru", "policy-lru-k", "p
 metrics = []
 serde = ["dep:serde"]
 concurrency = ["parking_lot"]
+# Time-based expiration (`Expiring<C>` decorator, `Clock` trait, `DynExpiringCache`).
+# See `docs/design/ttl.md`.
+ttl = []
 
 # Eviction policy feature flags. Enable only the policies you need for smaller builds.
 # Use `default-features = false` and select specific policies, or use `policy-all` for every policy.
@@ -149,6 +152,13 @@ harness = false
 name = "policy_s3_fifo"
 path = "benches/policy/s3_fifo.rs"
 harness = false
+
+# TTL decorator overhead (requires the `ttl` feature)
+[[bench]]
+name = "ttl_overhead"
+path = "benches/ttl_overhead.rs"
+harness = false
+required-features = ["ttl"]
 
 # Development profile - optimized for fast compilation and good debugging
 [profile.dev]

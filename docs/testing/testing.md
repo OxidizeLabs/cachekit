@@ -84,7 +84,22 @@ cargo test prop_
 PROPTEST_CASES=10000 cargo test prop_len_within_capacity
 ```
 
-### 3. Fuzz Tests
+### 3. Policy Semantic Tests
+
+**Location**: `tests/abstract_models/`, `tests/policy_semantics/`
+
+**Purpose**: Catch semantic drift in eviction, residency, and rank behavior. Exact and mirror policies use dual-run reference models; bounded policies (ARC, CAR, Clock-PRO, S3-FIFO) use invariant-only structural checks.
+
+**Run**:
+
+```bash
+cargo test --test policy_semantics --all-features
+PROPTEST_CASES=1000 cargo test --test policy_semantics --all-features
+```
+
+See [Policy semantic testing (static analysis oracles)](static-analysis.md) for architecture, policy matrix, and contributor checklist. Operational specs live under [specs/policies/](specs/policies/README.md) by tier; FIFO and LRU also have [formal/](specs/formal/README.md) TLA+ pilots. Spec-derived `reference/` models are cross-checked against `exact/` oracles before impl dual-run.
+
+### 4. Fuzz Tests
 
 **Location**: `fuzz/fuzz_targets/`
 
@@ -159,10 +174,11 @@ cargo test --features concurrency
 
 Our CI runs:
 1. Unit tests on all supported platforms
-2. Property tests with increased case count (1000)
-3. Quick fuzz tests on PRs (60 seconds per target)
-4. Continuous fuzzing nightly (1 hour per target)
-5. Tests with all feature combinations
+2. Property tests with increased case count (1000), including `policy_semantics`
+3. Miri smoke tests for `policy_semantics` (`smoke_*` traces)
+4. Quick fuzz tests on PRs (60 seconds per target)
+5. Continuous fuzzing nightly (1 hour per target)
+6. Tests with all feature combinations
 
 **See [Fuzzing in CI/CD](fuzzing-cicd.md) for detailed fuzzing setup.**
 
@@ -267,6 +283,7 @@ fuzz_target!(|data: &[u8]| {
 
 ## Related Documentation
 
+- [Testing catalog](catalog.md) — test types, current coverage, and gaps
 - [Contributing Guide](../../CONTRIBUTING.md)
 - [Fuzz Testing](../../fuzz/README.md)
 - [Benchmarking](../../benches/README.md)

@@ -16,7 +16,7 @@ jobs:
     name: Validate Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Ensure tag points to main
         run: |
           # `actions/checkout` is typically shallow; ensure we have enough `origin/main`
@@ -30,7 +30,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
 
       - name: Format check
         run: cargo fmt --check
@@ -56,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -69,7 +68,7 @@ jobs:
       id-token: write
     needs: validate
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - run: cargo publish

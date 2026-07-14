@@ -198,6 +198,10 @@ Use conventional commit format for PR titles:
 
 ## Testing Guidelines
 
+### Testing overview
+
+For a full taxonomy of test types, what CacheKit runs today, coverage gaps, and suggested priorities, see the [Testing catalog](docs/testing/catalog.md).
+
 ### Unit Tests
 
 - Write tests for each public function
@@ -215,6 +219,13 @@ Use conventional commit format for PR titles:
 ### Property-Based Testing
 
 Consider using `proptest` for testing complex invariants.
+
+### Policy Semantic Oracles
+
+New eviction policies with deterministic semantics should include a
+reference model in `tests/abstract_models/` and proptest/smoke coverage
+in `tests/policy_semantics/`. See
+[Policy semantic testing](docs/testing/static-analysis.md).
 
 ### Test Organization
 
