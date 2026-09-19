@@ -39,7 +39,7 @@ jobs:
           fetch-depth: 0  # Full history for git metadata
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: true
 

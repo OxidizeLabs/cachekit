@@ -27,7 +27,7 @@ jobs:
             git fetch --no-tags --prune origin main
           fi
           git merge-base --is-ancestor "${GITHUB_SHA}^{}" origin/main
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: rustfmt, clippy
 
